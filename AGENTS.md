@@ -12,7 +12,7 @@ Java 21（`--release 21` 编译，本机 JDK 25 运行）、Spring Boot 3.5.16�
 
 - 版本权威：Java 21 LTS、Spring Boot 3.5.x、Maven 3.9.x、springdoc-openapi 2.x、MyBatis-Plus 3.5.17、Spring Security 6.x、Spring WebClient、Resilience4j 2.x——均与 Boot 3.5 兼容，按模块落地时引入。
 - ehe-core 5.0.0.0-SNAPSHOT 与 Boot 3.5 不兼容（Java 11 字节码 / javax.servlet / springfox）：等客户 jakarta 版再接；过渡期认证上下文自实现，保留 `LocalVariable.getPrincipalInfo()` 同名 API 形状。见 ADR-0002。
-- 存储路线未定：不引任何 DB/缓存依赖，仓储接口先行。见 ADR-0001，考察材料在 `.scratch/persistence-route/`。
+- 存储方向已采纳：MySQL 保存业务事实、Redis 承载非事实能力、Pi Session 首期使用 Node sidecar SQLite；环境版本、连接和账号证据仍待补齐。见 ADR-0001，考察材料在 `.scratch/persistence-route/`。
 
 技术规范硬性条目（编码/建表/部署时强制）：
 

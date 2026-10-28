@@ -1,29 +1,55 @@
 package ltd.qianc.iotagent.error;
 
 import org.junit.jupiter.api.Test;
-import org.springframework.http.ResponseEntity;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.annotation.Import;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.test.web.servlet.MockMvc;
 
-import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+@SpringBootTest
+@AutoConfigureMockMvc
+@Import(BusinessErrorAdviceTest.TestErrorController.class)
 class BusinessErrorAdviceTest {
 
-    private final BusinessErrorAdvice advice = new BusinessErrorAdvice();
+    @Autowired
+    private MockMvc mockMvc;
 
     @Test
-    void mapsBusinessErrorToConfiguredStatusAndBody() {
-        ResponseEntity<ErrorResponse> resp = advice.onBusiness(
-                new BusinessException("DRAFT_CONFLICT", "草案已过期", "请重新发起", 409));
-
-        assertThat(resp.getStatusCode().value()).isEqualTo(409);
-        assertThat(resp.getBody()).isEqualTo(new ErrorResponse("DRAFT_CONFLICT", "草案已过期", "请重新发起"));
+    void mapsBusinessErrorToConfiguredStatusAndBody() throws Exception {
+        mockMvc.perform(get("/test/errors/business"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("DRAFT_CONFLICT"))
+                .andExpect(jsonPath("$.message").value("草案已过期"))
+                .andExpect(jsonPath("$.recovery").value("请重新发起"));
     }
 
     @Test
-    void hidesUnexpectedFailureDetailsFromCaller() {
-        ResponseEntity<ErrorResponse> resp = advice.onUnexpected(new IllegalStateException("敏感内部细节"));
+    void hidesUnexpectedFailureDetailsFromCaller() throws Exception {
+        mockMvc.perform(get("/test/errors/unexpected"))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.code").value("INTERNAL"))
+                .andExpect(jsonPath("$.message").value("原因未确认"))
+                .andExpect(jsonPath("$.recovery").doesNotExist());
+    }
 
-        assertThat(resp.getStatusCode().value()).isEqualTo(500);
-        assertThat(resp.getBody()).isEqualTo(new ErrorResponse("INTERNAL", "原因未确认", null));
-        assertThat(resp.getBody().recovery()).isNull();
+    @RestController
+    static class TestErrorController {
+
+        @GetMapping("/test/errors/business")
+        void business() {
+            throw new BusinessException("DRAFT_CONFLICT", "草案已过期", "请重新发起", 409);
+        }
+
+        @GetMapping("/test/errors/unexpected")
+        void unexpected() {
+            throw new IllegalStateException("敏感内部细节");
+        }
     }
 }

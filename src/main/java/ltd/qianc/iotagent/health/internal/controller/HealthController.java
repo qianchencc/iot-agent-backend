@@ -1,4 +1,4 @@
-package ltd.qianc.iotagent.health;
+package ltd.qianc.iotagent.health.internal.controller;
 
 import java.util.Map;
 import org.springframework.web.bind.annotation.GetMapping;

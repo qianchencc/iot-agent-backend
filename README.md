@@ -4,10 +4,6 @@
 
 架构约定、模块边界纪律与 runtime→Java 模块映射见 [AGENTS.md](./AGENTS.md)；issue tracker 与领域文档规则见 `docs/agents/`。
 
-```sh
-mvn test                 # 单元测试 + ArchUnit 模块边界
-mvn spring-boot:run      # 127.0.0.1:3200
-curl -s http://127.0.0.1:3200/healthz
-```
+构建、测试、启动和本地 healthz 验证命令见 [AGENTS.md](./AGENTS.md)；本地服务端口为 `127.0.0.1:3200`。
 
 `java` 不在 PATH：直接运行 jar 用 `/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home/bin/java`。

@@ -5,6 +5,3 @@ server:
 spring:
   application:
     name: iot-agent-backend
-  jackson:
-    # recovery 为 null 时不下发该字段：错误体形如 {code,message} / {code,message,recovery}
-    default-property-inclusion: non_null

@@ -22,4 +22,4 @@
 - sidecar 停止后重新启动，Java/Node 两个 healthz 均恢复 200。
 - 探针使用 faux model 产生确定性模型响应；不联网、不访问真实设备。该目录不属于生产源码。
 - 2026-10-29 review remediation：补齐 `conversationId` / `turnId`、按 conversation 隔离 Pi Session、断线后的事件重放、timeout、重复 `runId` 409 和取消竞态处理。
-- 复验观察到：断开 Java run 响应后，`GET /runs/{runId}/events` 仍返回完整事件并以 `run.failed` 超时终态收口；不同 conversation 的事件身份保持隔离。
+- 复验观察到：断开 Java run 响应后运行继续；完成后通过 `GET /runs/{runId}/events` 重放完整事件，包含身份字段并以终态收口。

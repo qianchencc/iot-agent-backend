@@ -1,5 +1,7 @@
-package ltd.qianc.iotagent.error;
+package ltd.qianc.iotagent.error.internal;
 
+import ltd.qianc.iotagent.error.BusinessException;
+import ltd.qianc.iotagent.error.ErrorResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
