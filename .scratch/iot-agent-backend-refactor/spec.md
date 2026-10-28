@@ -88,3 +88,4 @@ Date: 2026-10-28
 - `apps/runtime/src/agent` 的 Pi runner、`app.ts` 的会话/事件/确认执行和 `iot/adapter.ts` 的授权上游边界是迁移时的主要行为 oracle。
 - 迁移顺序应先完成架构探针，再按 conversation → iot/authorization → draft/task → read-only domains → reports/admin 逐步推进。
 - 任何存储或内部协议变更都不能改变小程序可观察的外部契约。
+- 云端现有生产 Runtime、进程、数据库、密钥和网关配置不属于本轮实施范围；所有票据只修改本地 `iot-agent-backend` 工作树，未经另行授权不得部署、重启、切换或写入生产环境。

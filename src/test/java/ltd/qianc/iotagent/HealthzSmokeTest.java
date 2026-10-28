@@ -18,9 +18,11 @@ class HealthzSmokeTest {
     private MockMvc mockMvc;
 
     @Test
-    void healthzRespondsOk() throws Exception {
+    void healthzMatchesRuntimeContractShape() throws Exception {
         mockMvc.perform(get("/healthz"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("ok"));
+                .andExpect(jsonPath("$.service").value("iot-agent-backend"))
+                .andExpect(jsonPath("$.status").value("ok"))
+                .andExpect(jsonPath("$.version").value("0.1.0"));
     }
 }

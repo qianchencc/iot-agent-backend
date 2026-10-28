@@ -9,6 +9,6 @@ public class HealthController {
 
     @GetMapping("/healthz")
     public Map<String, String> healthz() {
-        return Map.of("status", "ok");
+        return Map.of("service", "iot-agent-backend", "status", "ok", "version", "0.1.0");
     }
 }
