@@ -80,7 +80,7 @@ def java_inventory(root: Path) -> tuple[set[str], list[tuple[str, str]]]:
     paths: set[str] = set()
     operations: list[tuple[str, str]] = []
     mapping = re.compile(r"@(Get|Post|Put|Patch|Delete|Head|Request)Mapping(?:\s*\((.*?)\))?", re.S)
-    string_arg = re.compile(r"(?:value|path)\s*=\s*\"([^\"]*)\"|(?:\(\s*\"([^\"]*)\")")
+    string_arg = re.compile(r"(?:value|path)\s*=\s*\"([^\"]*)\"|^\s*\"([^\"]*)\"")
     for source in sorted(root.rglob("*.java")):
         text = source.read_text(encoding="utf-8")
         class_position = text.find("class ")
