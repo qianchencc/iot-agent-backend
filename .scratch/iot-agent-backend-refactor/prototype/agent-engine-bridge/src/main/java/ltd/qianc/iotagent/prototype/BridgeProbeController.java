@@ -68,13 +68,25 @@ public class BridgeProbeController {
     }
 
     @PostMapping("/cancel/{runId}")
-    public Map<String, Object> cancel(@PathVariable String runId) throws IOException, InterruptedException {
+    public CancelResponse cancel(@PathVariable String runId) throws IOException, InterruptedException {
         HttpRequest request = HttpRequest.newBuilder(nodeBaseUrl.resolve("/cancel/" + runId))
                 .timeout(Duration.ofSeconds(3))
                 .POST(HttpRequest.BodyPublishers.noBody())
                 .build();
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-        return Map.of("runId", runId, "nodeStatus", response.statusCode(), "body", response.body());
+        return new CancelResponse(runId, response.statusCode(), response.body());
+    }
+
+    @GetMapping(value = "/runs/{runId}/events", produces = "application/x-ndjson")
+    public void events(@PathVariable String runId, HttpServletResponse response) throws IOException, InterruptedException {
+        HttpRequest request = HttpRequest.newBuilder(nodeBaseUrl.resolve("/runs/" + runId + "/events"))
+                .timeout(Duration.ofSeconds(3))
+                .GET()
+                .build();
+        HttpResponse<String> nodeResponse = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        response.setStatus(nodeResponse.statusCode());
+        response.setContentType("application/x-ndjson;charset=UTF-8");
+        response.getWriter().write(nodeResponse.body());
     }
 
     @PostMapping(value = "/tool", consumes = MediaType.APPLICATION_JSON_VALUE)
@@ -101,12 +113,21 @@ public class BridgeProbeController {
                 .build();
     }
 
-    public record RunRequest(String runId, String content, String toolBridgeUrl, boolean slow) {
+    public record RunRequest(
+            String runId,
+            String conversationId,
+            String turnId,
+            String content,
+            String toolBridgeUrl,
+            boolean slow,
+            Long timeoutMs) {
     }
 
     public record ToolRequest(String runId, String toolName, Map<String, Object> arguments) {
     }
 
     public record ToolResponse(boolean ok, String text, Map<String, Object> details) {
+    }
+    public record CancelResponse(String runId, int nodeStatus, String body) {
     }
 }

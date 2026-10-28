@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [x] Java 与 Node sidecar 可独立启动并通过受控内网 HTTP/NDJSON 通信。
 - [x] Node 使用真实 `pi-agent-core` / `pi-ai`，不以 Java 重写 Agent loop。
@@ -21,3 +21,5 @@
 - `slow=true` 场景实际调用 `/cancel/{runId}`，返回 `aborted:true`，流以 `run.aborted` 收口。
 - sidecar 停止后重新启动，Java/Node 两个 healthz 均恢复 200。
 - 探针使用 faux model 产生确定性模型响应；不联网、不访问真实设备。该目录不属于生产源码。
+- 2026-10-29 review remediation：补齐 `conversationId` / `turnId`、按 conversation 隔离 Pi Session、断线后的事件重放、timeout、重复 `runId` 409 和取消竞态处理。
+- 复验观察到：断开 Java run 响应后，`GET /runs/{runId}/events` 仍返回完整事件并以 `run.failed` 超时终态收口；不同 conversation 的事件身份保持隔离。

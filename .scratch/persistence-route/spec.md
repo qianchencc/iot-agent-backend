@@ -32,7 +32,7 @@ iot-agent-backend 的会话/事件/任务/审计数据需要从 Runtime 的单 S
 
 ## 来源
 
-- `docs/adr/0001-storage-route-undecided.md`
+- `docs/adr/0001-business-fact-storage.md`
 - `docs/reference/项目技术选型清单.docx`
 - `docs/reference/技术规范(1).pdf`
 - `../iot-agent-runtime/apps/runtime/src/app.ts`
