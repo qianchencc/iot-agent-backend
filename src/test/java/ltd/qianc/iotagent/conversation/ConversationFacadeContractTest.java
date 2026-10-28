@@ -1,0 +1,176 @@
+package ltd.qianc.iotagent.conversation;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.Executor;
+import java.util.function.Consumer;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import ltd.qianc.iotagent.auth.PrincipalInfo;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.junit.jupiter.api.Test;
+
+class ConversationFacadeContractTest {
+
+    private static final PrincipalInfo PRINCIPAL = new PrincipalInfo("Bearer test-token", "TENANT-1");
+
+    @Test
+    void bridgeEventsArePersistedWithLocalMonotonicSequenceAndVerifiedSource() {
+        MemoryConversationStore conversations = new MemoryConversationStore();
+        MemoryEventStore events = new MemoryEventStore();
+        RecordingBridge bridge = new RecordingBridge(false);
+        ConversationFacade facade = new ConversationFacade(new ObjectMapper(), conversations, events, bridge, Runnable::run);
+        Map<String, Object> created = facade.create(PRINCIPAL, "company");
+
+        facade.message(PRINCIPAL, (String) created.get("id"), "查询状态", "idem-1", "company");
+
+        assertThat(bridge.request.get().source()).isEqualTo("company");
+        assertThat(events.values).extracting(ConversationEventFact::sequence).containsExactly(1L, 2L, 3L);
+        assertThat(events.values).extracting(ConversationEventFact::type)
+                .containsExactly("run.started", "message.delta", "run.completed");
+        assertThat(events.values.get(1).payloadJson()).doesNotContain("\"sequence\":99");
+    }
+
+    @Test
+    void explicitCancelEmitsAbortedAndCallsEngineCancelWithoutDisconnectCancellation() {
+        MemoryConversationStore conversations = new MemoryConversationStore();
+        MemoryEventStore events = new MemoryEventStore();
+        RecordingBridge bridge = new RecordingBridge(true);
+        ConversationFacade facade = new ConversationFacade(new ObjectMapper(), conversations, events, bridge, Runnable::run);
+        String id = (String) facade.create(PRINCIPAL, "office").get("id");
+
+        facade.message(PRINCIPAL, id, "停止前运行", "idem-cancel");
+        facade.cancel(PRINCIPAL, id);
+
+        assertThat(bridge.cancelledRunId.get()).isEqualTo(bridge.request.get().runId());
+        assertThat(events.values).extracting(ConversationEventFact::type).contains("run.aborted");
+    }
+
+    @Test
+    void sameIdempotencyKeyReplaysExistingTurnWithoutStartingSecondEngineRun() {
+        MemoryConversationStore conversations = new MemoryConversationStore();
+        MemoryEventStore events = new MemoryEventStore();
+        RecordingBridge bridge = new RecordingBridge(false);
+        ConversationFacade facade = new ConversationFacade(new ObjectMapper(), conversations, events, bridge, Runnable::run);
+        String id = (String) facade.create(PRINCIPAL, "office").get("id");
+
+        facade.message(PRINCIPAL, id, "重复安全", "idem-replay");
+        facade.message(PRINCIPAL, id, "重复安全", "idem-replay");
+
+        assertThat(bridge.startCount.get()).isEqualTo(1);
+        assertThat(conversations.turns(id)).hasSize(1);
+    }
+
+    private static final class RecordingBridge implements AgentEngineBridge {
+        private final boolean holdOpen;
+        private final AtomicInteger startCount = new AtomicInteger();
+        private final AtomicReference<AgentRunRequest> request = new AtomicReference<>();
+        private final AtomicReference<String> cancelledRunId = new AtomicReference<>();
+
+        private RecordingBridge(boolean holdOpen) {
+            this.holdOpen = holdOpen;
+        }
+
+        @Override
+        public CompletionStage<Void> start(AgentRunRequest request, Consumer<AgentEngineEvent> events) {
+            startCount.incrementAndGet();
+            this.request.set(request);
+            events.accept(new AgentEngineEvent(request.runId(), request.conversationId(), request.turnId(),
+                    "message.delta", Map.of("sequence", 99, "content", "状态")));
+            if (holdOpen) return new CompletableFuture<>();
+            events.accept(new AgentEngineEvent(request.runId(), request.conversationId(), request.turnId(),
+                    "run.completed", Map.of("outcome", "message")));
+            return CompletableFuture.completedFuture(null);
+        }
+
+        @Override
+        public CompletionStage<Void> cancel(String runId) {
+            cancelledRunId.set(runId);
+            return CompletableFuture.completedFuture(null);
+        }
+    }
+
+    private static final class MemoryConversationStore implements ConversationStore {
+        private ConversationRecord conversation;
+        private final List<ConversationTurn> values = new ArrayList<>();
+
+        @Override
+        public ConversationRecord create(String tenantCode, String ownerKey, String source, Instant createdAt) {
+            conversation = new ConversationRecord("conversation-1", tenantCode, ownerKey, source, createdAt, false);
+            return conversation;
+        }
+
+        @Override
+        public Optional<ConversationRecord> find(String conversationId, String tenantCode, String ownerKey) {
+            return conversation != null && conversation.id().equals(conversationId)
+                    && conversation.tenantCode().equals(tenantCode) && conversation.ownerKey().equals(ownerKey)
+                    ? Optional.of(conversation) : Optional.empty();
+        }
+
+        @Override
+        public Optional<ConversationRecord> current(String tenantCode, String ownerKey, String source, Instant activeAfter) {
+            return conversation == null ? Optional.empty() : Optional.of(conversation);
+        }
+
+        @Override
+        public ConversationTurn startTurn(String conversationId, String content, Instant startedAt, String idempotencyKey) {
+            ConversationTurn turn = new ConversationTurn("turn-" + (values.size() + 1), conversationId, content, startedAt, idempotencyKey);
+            values.add(turn);
+            return turn;
+        }
+
+        @Override
+        public Optional<ConversationTurn> findTurnByIdempotencyKey(String conversationId, String idempotencyKey) {
+            return values.stream().filter(turn -> turn.conversationId().equals(conversationId)
+                    && turn.idempotencyKey().equals(idempotencyKey)).findFirst();
+        }
+
+        @Override
+        public Optional<ConversationTurn> latestTurn(String conversationId) {
+            return values.stream().filter(turn -> turn.conversationId().equals(conversationId)).reduce((first, second) -> second);
+        }
+
+        @Override
+        public List<ConversationTurn> turns(String conversationId) {
+            return values.stream().filter(turn -> turn.conversationId().equals(conversationId)).toList();
+        }
+
+        @Override
+        public void clear(String conversationId) {
+            values.clear();
+        }
+
+        @Override
+        public void discardTurn(String conversationId, String turnId) {
+            values.removeIf(turn -> turn.id().equals(turnId));
+        }
+    }
+
+    private static final class MemoryEventStore implements ConversationEventStore {
+        private final List<ConversationEventFact> values = new ArrayList<>();
+
+        @Override
+        public ConversationEventFact append(ConversationEventFact event) {
+            values.add(event);
+            return event;
+        }
+
+        @Override
+        public List<ConversationEventFact> read(String conversationId) {
+            return values.stream().filter(event -> event.conversationId().equals(conversationId)).toList();
+        }
+
+        @Override
+        public Optional<ConversationEventFact> findByIdempotencyKey(String conversationId, String idempotencyKey) {
+            return values.stream().filter(event -> event.conversationId().equals(conversationId)
+                    && event.idempotencyKey().equals(idempotencyKey)).findFirst();
+        }
+    }
+}

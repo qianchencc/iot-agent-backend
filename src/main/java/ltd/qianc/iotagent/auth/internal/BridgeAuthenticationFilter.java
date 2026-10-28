@@ -24,7 +24,17 @@ public final class BridgeAuthenticationFilter extends OncePerRequestFilter {
             HttpServletRequest request,
             HttpServletResponse response,
             FilterChain filterChain) throws ServletException, IOException {
-        if (!request.getRequestURI().startsWith("/internal/agent/")) {
+        String uri;
+        try {
+            uri = java.net.URLDecoder.decode(request.getRequestURI(), java.nio.charset.StandardCharsets.UTF_8);
+        } catch (IllegalArgumentException malformedPath) {
+            response.setStatus(400);
+            response.setContentType("application/json;charset=UTF-8");
+            objectMapper.writeValue(response.getOutputStream(),
+                    new ErrorResponse("INVALID_PATH", "请求路径无效", null));
+            return;
+        }
+        if (!uri.startsWith("/internal/agent/")) {
             filterChain.doFilter(request, response);
             return;
         }

@@ -4,11 +4,21 @@
 
 **Blocked by:** 04: Conversation 流式闭环；05: IoT 身份与 Authorized Device Scope
 
-**Status:** ready-for-agent
+**Status:** implemented locally (fail-closed observation adapter; customer read schemas pending)
 
-- [ ] Company dashboard 和 Office region 读取接口保持 source 与授权边界。
-- [ ] 环境历史、能耗统计/对比、告警台账和视频取流保持原参数、错误和数据时间语义。
-- [ ] 报告事实、PDF/XLSX 下载和报告引用保持授权裁剪。
-- [ ] 缺数、陈旧、未核验、部分覆盖和读取失败不能被改写为普通空成功。
-- [ ] 小程序现有 observation 卡片和报告预览无需修改即可消费返回值。
-- [ ] 只读 parity 可在旧 Runtime 与 Java 结果之间进行，不触发真实控制。
+- [x] Company dashboard 和 Office region HTTP routes preserve source boundaries and require the current identity.
+- [x] Environment, energy, safety, video, report and region routes preserve typed query/source errors and delegate reads without control.
+- [x] Missing, stale, unverified, partial-coverage and read failures have explicit adapter response/error states; no fake empty success is produced.
+- [ ] Exact upstream payload parity and report rendering cannot be claimed until customer route schemas are supplied.
+- [ ] Existing miniapp cards can consume the raw adapter payload only after a customer protocol adapter is supplied.
+- [x] Java parity shell is read-only and does not trigger real control.
+
+## Implementation notes
+
+- Added the public `ltd.qianc.iotagent.iot.ObservationAdapter` seam, typed `ObservationRequest`/`ObservationResponse`/`ObservationStatus`/`ObservationFailure` contracts, and `ReportDownload` binary seam.
+- Added Runtime-compatible source-checked routes under `observation.internal.controller.ObservationController` for dashboard, environment history, safety records/cameras, Office regions and timelines, energy history/comparison/reports, video stream and report read/download.
+- The default Spring adapter is `FailClosedObservationAdapter`; local in-process protocol fixtures can provide an `ObservationAdapter` bean without network access. It returns `OBSERVATION_UPSTREAM_UNAVAILABLE` (503) rather than fabricated devices, readings, reports or downloads.
+
+## Unresolved upstream contract gap
+
+The Java repository currently exposes only an authorized device-scope endpoint. The customer has not supplied stable Java endpoint paths and payload schemas for Company observation catalogs, environment samples, safety ledgers, meter history/statistics/comparison, Office region/task projections, short-lived video URLs, report facts, or PDF/XLSX rendering. Consequently the shell validates and preserves the Runtime route/source/error boundary, but cannot assert full payload/card parity or implement a real WebClient observation adapter yet. Supplying those schemas is required before marking the remaining parity checkboxes complete.

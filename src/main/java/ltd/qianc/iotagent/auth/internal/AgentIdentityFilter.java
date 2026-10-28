@@ -24,7 +24,14 @@ public final class AgentIdentityFilter extends OncePerRequestFilter {
             HttpServletRequest request,
             HttpServletResponse response,
             FilterChain filterChain) throws ServletException, IOException {
-        if (!request.getRequestURI().startsWith("/api/agent/")) {
+        String uri;
+        try {
+            uri = java.net.URLDecoder.decode(request.getRequestURI(), java.nio.charset.StandardCharsets.UTF_8);
+        } catch (IllegalArgumentException malformedPath) {
+            writeError(response, 400, "INVALID_PATH", "请求路径无效");
+            return;
+        }
+        if (!uri.startsWith("/api/agent/")) {
             filterChain.doFilter(request, response);
             return;
         }
