@@ -1,91 +1,100 @@
 # 物联 Agent Java 重构规格
 
 Status: ready-for-agent
-Date: 2026-10-28
+Date: 2026-10-29
 
 ## Problem Statement
 
 现有 `iot-agent-runtime` 已形成可运行的物联 Agent 业务闭环，但运行时采用 Fastify/TypeScript、SQLite 和 Node 生态，未对齐客户要求的 Java 21 / Spring Boot 3.5 / MyBatis-Plus / MySQL / Redis / Spring Security / WebClient / Resilience4j 技术方案。客户同时要求保留 `pi-agent-core` 能力，并要求小程序页面无需额外改动。
 
-当前 `../iot-agent-backend` 只有 Spring Boot 初始化骨架，尚未承载 Runtime 的外部 HTTP 契约、业务事实、物联适配、Agent 流式协议或任务执行。
+原 Java 后端已完成外部边界、业务事实接口、NDJSON/sidecar 探针、fail-closed 适配器和部分本地准备，但尚未完成完整 Java 业务闭环。此前把身份、IoT 和 Observation 描述为“等待客户提供协议”不准确：原 Runtime 已包含这些行为源，且本机已经使用 ego-lite 当前登录态对客户唯一生产上游完成身份和 Office 目录只读验证。
 
 ## Solution
 
 建设 Java Spring MVC 主服务与 Node Agent Engine sidecar 的组合后端：
 
-- Java 主服务保持 Runtime 对外 HTTP 契约和 NDJSON 协议，承载认证、授权、业务模块、任务与报告、MySQL 事实库、Redis 非事实能力和客户物联上游适配。
+- Java 主服务保持 Runtime 对外 HTTP、Header、错误体、source、NDJSON、状态和恢复语义。
+- Java 复用小程序已有 `Authorization` token 与 `Tenantcode`，向客户现有 `/sso-api/account/me` 透传同一 Header，读取 `content.id`，形成稳定 principal owner；不建立第二套登录系统。
+- Java 承载认证上下文、授权设备范围、业务工具、Conversation、Action Draft、Task、Plan、Notification、Observation、Report、Audit 和 Admin。
+- MySQL 保存业务事实；Redis 只承载缓存、锁、幂等、限流和运行期协调。
 - Node sidecar 使用真实 `pi-agent-core` / `pi-ai` 承载 Agent loop、工具调用、流式模型、上下文压缩和 Pi Session。
-- Node 工具调用通过受控内部 Tool Bridge 委托给 Java；Node 不直接接触客户物联网关或外部身份。
-- 小程序继续使用原有 API、Header、`source`、错误码和事件语义。
-- 旧 Runtime 在切换前继续作为生产权威；只读能力允许 shadow parity，控制和任务执行禁止双跑。
+- Node 工具调用通过内网 Tool Bridge 委托给 Java；Node 不直接接触客户物联网关、客户身份或设备权限。
+- 小程序页面、请求路径、Header、source 和展示协议不变。
+- 旧 Runtime 在 Java parity 完成前继续作为生产权威；本轮不部署、重启、修改或切换云端生产后端。
+- 客户唯一生产上游只允许本地受控只读验证；控制和任务使用 Runtime 记录的协议夹具、contract tests 和本地受控 gateway 验证，不执行生产写操作。
 
 ## User Stories
 
-1. 作为小程序用户，我希望继续用原有页面创建和恢复 Office/Company Agent 会话，以便无需升级页面代码。
-2. 作为小程序用户，我希望普通回答仍以原有 NDJSON 分块流式返回，以便现有输入区和消息卡片继续工作。
-3. 作为小程序用户，我希望断开网络后重新进入仍能按事件顺序恢复当前轮次，以便不丢失已展示的处理进度。
-4. 作为小程序用户，我希望明确调用停止后运行真正进入 `run.aborted`，以便“断线”和“停止”保持不同语义。
-5. 作为小程序用户，我希望设备控制仍先生成 Action Draft，再由我确认，以便不会因 Agent 重构而绕过安全边界。
-6. 作为小程序用户，我希望草案确认、重核、参数修改和恢复继续遵守 revision / 幂等语义，以便重复点击不会重复下发设备指令。
-7. 作为小程序用户，我希望任务提案、任务确认、周期计划、通知和任务详情继续使用原有接口，以便页面无需改造。
-8. 作为小程序用户，我希望 Office 和 Company 的设备范围、历史上下文和任务来源继续隔离，以便不同来源不会互相污染。
-9. 作为小程序用户，我希望只读环境、能耗、安全、视频和报告能力继续从原有接口取得事实，以便既有观察页面不需要改写。
-10. 作为小程序用户，我希望 401、403、404、409、503 和业务错误体保持原有含义，以便页面现有恢复和提示逻辑继续有效。
-11. 作为客户运维人员，我希望主后端使用客户批准的 Java 21 / Spring Boot 3.5 技术栈，以便纳入现有交付和运维体系。
-12. 作为客户运维人员，我希望 Node Agent Engine 只在内网运行且不暴露公网端口，以便保留 Pi 能力而不扩大攻击面。
-13. 作为客户运维人员，我希望 Java 和 Node sidecar 可以独立检查、备份、重启和回滚，以便单个运行时故障不会导致不可控切换。
-14. 作为系统管理员，我希望长期业务事实落入 MySQL，以便重启、扩容和切换后仍有稳定的权威数据。
-15. 作为系统管理员，我希望 Redis 只承担可重建的缓存、锁、幂等和限流，以便 Redis 故障不会造成业务事实丢失。
-16. 作为系统管理员，我希望 Pi Session 首期保留在 Node sidecar 的 SQLite 中，以便先完成 Agent 行为 parity，再单独评估 MySQL-backed session。
-17. 作为安全审计人员，我希望认证上下文、租户、授权设备范围和审计记录由 Java 主服务统一决定，以便模型和客户端不能扩大权限。
-18. 作为开发人员，我希望 `pi-agent-core` 的工具调用通过 Tool Bridge 进入 Java 业务服务，以便 Node sidecar 不复制设备权限和控制逻辑。
-19. 作为开发人员，我希望 Java 模块只依赖包根入口，内部 Controller、Service、Mapper 和 DTO 隐藏在模块内部，以便模块边界长期可维护。
-20. 作为开发人员，我希望在迁移每个业务模块前先有外部行为测试，以便不以内部实现或数据库表复制冒充兼容。
-21. 作为发布人员，我希望旧 Runtime 在 Java parity 验证完成前继续作为生产权威，以便新后端失败时可以回退。
-22. 作为发布人员，我希望只读能力可以 shadow parity，但控制和任务不双跑，以便验证结果而不重复执行真实设备动作。
-23. 作为管理端用户，我希望 Admin API 最终保持兼容，但不阻塞小程序 Agent 主链路的首期迁移。
-24. 作为客户集成人员，我希望 OpenAPI、NDJSON schema 和路由漂移检查继续作为契约门禁，以便后端重构不会静默改变接口。
+1. 作为小程序用户，我希望继续使用原有页面创建、恢复、清理和发送 Agent 会话，以便无需修改小程序。
+2. 作为小程序用户，我希望普通回答继续通过原有 NDJSON 事件流返回，以便现有消息组件继续工作。
+3. 作为小程序用户，我希望断线后重新进入仍能按 sequence 恢复当前轮次，以便不丢失已经发生的事件。
+4. 作为小程序用户，我希望显式停止产生 `run.aborted`，而普通断线不取消运行，以便两种行为保持原 Runtime 语义。
+5. 作为小程序用户，我希望 Token 刷新后仍能看到自己的会话、任务和草案，以便登录态变化不会造成业务归属漂移。
+6. 作为小程序用户，我希望不同用户在同一 Tenantcode 下仍只能看到各自的业务事实和设备范围，以便权限不会串户。
+7. 作为小程序用户，我希望 Office 和 Company 来源继续隔离，以便设备、历史和任务不会跨来源污染。
+8. 作为小程序用户，我希望设备范围由当前服务端身份重新核验，以便客户端或模型不能伪造设备权限。
+9. 作为小程序用户，我希望自然语言设备请求仍能从真实授权目录中找到照明、空调、门禁和视频设备，以便不依赖硬编码设备 ID。
+10. 作为小程序用户，我希望只读环境、能耗、安全、区域、视频和报告能力继续返回真实事实、覆盖范围和缺数语义。
+11. 作为小程序用户，我希望设备控制先生成 Action Draft，再由我确认，以便模型不能直接下发设备操作。
+12. 作为小程序用户，我希望修改、恢复、重核和确认草案继续遵守 revision、CAS 和幂等规则，以便重复点击不会重复执行。
+13. 作为小程序用户，我希望控制受理、拒绝、超时、未知和 readback 结果被区分，以便系统不把平台受理误报为物理完成。
+14. 作为小程序用户，我希望一次性任务和周期计划能够创建、确认、修改、取消和恢复，以便 Agent 保持完整业务能力。
+15. 作为小程序用户，我希望任务在服务重启、扫描器中断和重复请求后不会重复控制，以便后台自动化可恢复。
+16. 作为小程序用户，我希望任务通知只产生一次并且不泄露凭据，以便通知可靠且安全。
+17. 作为管理员，我希望继续使用 Runtime Admin API 管理模型、提示词、预算、观测和版本，以便运维界面无需重写。
+18. 作为管理员，我希望配置密钥只显示配置状态、不返回原文，以便管理接口不会泄露密钥。
+19. 作为运维人员，我希望 Java、Node、MySQL、Redis 和 Pi Session 可以独立健康检查、备份和恢复，以便局部故障可诊断。
+20. 作为运维人员，我希望 Java 与 Node sidecar 只在私网通信，只有 Java 对外暴露，以便缩小攻击面。
+21. 作为系统管理员，我希望业务事实重启后仍在 MySQL 中可恢复，以便 Redis 故障不会丢失会话、任务、草案和报告。
+22. 作为发布人员，我希望 Java 可以先对只读能力进行 shadow parity，而不重复执行控制、任务和通知，以便切换前验证结果不会产生副作用。
+23. 作为发布人员，我希望 parity、事实迁移、备份、回滚和切换 runbook 完成后再考虑生产切换，以便旧 Runtime 始终可回退。
+24. 作为客户集成人员，我希望 66 个路径、69 个 operation、错误码、Header 和 NDJSON 通过自动契约门禁，以便后端重构不会静默改变外部行为。
 
 ## Implementation Decisions
 
-- 外部兼容目标为现 Runtime 的 66 个路径、69 个 operation，包括 Agent、Admin 和 `/healthz`；首期实现顺序先 Agent，再 Admin。
-- Java 使用 Spring MVC 对外提供 REST/NDJSON；不把 Pi 内部事件形状直接暴露给客户端。
-- Java 使用 Spring Security 6 建立过渡认证上下文，保留客户 `LocalVariable.getPrincipalInfo()` 的 API 形状；当前不直接依赖不兼容的 ehe-core 5.0.0.0-SNAPSHOT。
-- Java 使用模块根入口 + `internal` 实现的 deep-module 结构；Controller、Service、Mapper、Domain 和 DTO 归入模块内部。
-- Agent Engine 使用 Node >=22.19 的 `@earendil-works/pi-agent-core` 与 `@earendil-works/pi-ai`。
-- Tool Bridge 使用同一部署内网的受控 HTTP/NDJSON；必须支持 runId、conversationId、turnId、取消、超时、重复调用和 sidecar 重启。
-- Java 主服务负责工具授权、设备范围、物联 WebClient、业务事务、草案/任务状态、审计和对外事件。
-- MySQL 保存长期业务事实；Redis 保存可重建缓存、分布式锁、幂等、限流和运行期协调；Pi Session 首期保存于 Node sidecar SQLite。
-- 数据库设计遵循客户技术规范：字段和表名使用小写下划线；表有 `id/create_time/update_time`；小数使用 decimal；不使用外键和级联；业务唯一性由唯一索引保证；超过 JavaScript 安全整数范围的 ID 以 String 对外返回。
-- Java 与 Node 以 Docker 独立容器部署于同一私网，只有 Java 接入客户网关；配置和日志映射到宿主机。
-- 不做控制或任务执行双跑、双写；切换前旧 Runtime 为生产权威，Java 只读能力可以 shadow parity。
-- 首个 runnable probe 只验证 Java MVC → Node Pi → Java fake tool bridge → NDJSON 的普通回答、工具调用、取消、断线恢复和 session 边界，不接真实设备。
+- 外部兼容目标为 Runtime 的 66 个路径、69 个 operation，包括 Agent、Admin 和 `/healthz`。
+- Java 使用 Spring MVC 对外提供 REST/NDJSON；Pi 内部事件只在 Java/Node bridge 内部使用，不能直接暴露给小程序。
+- 认证上下文使用 Spring Security 6 与 `PrincipalContext` seam；客户已有登录系统负责登录，Java 只核验并绑定 stable principal。
+- 身份核验以现 Runtime 的 `/sso-api/account/me`、`content.id`、401/403/503 语义为行为 oracle。
+- Authorized Device Scope 由 Java 依据当前 principal、Tenantcode、source 和 Runtime 已记录的多源目录规则重新生成。
+- Java 业务事实通过包根接口隔离具体 MySQL/Redis 实现；不保留生产级内存事实 fallback。
+- MySQL 持久化会话事实、逐事件 NDJSON、Action Draft、Task、Plan、Phase、Notification、Report、Audit 和配置修订。
+- Redis 只用于可重建缓存、分布式锁、幂等键、限流和运行期协调。
+- Pi Session 首期继续使用 Node sidecar SQLite，不迁移到 MySQL。
+- Agent Engine 使用 Node >=22.19 的真实 `@earendil-works/pi-agent-core` 与 `@earendil-works/pi-ai`。
+- Tool Bridge 支持 runId、conversationId、turnId、取消、超时、重复调用、断线恢复和 sidecar 重启；工具权限、设备引用和业务校验全部由 Java 决定。
+- Office / Company 业务工具必须从 Runtime 行为源迁移，不以客户补交新接口作为前置条件。
+- 客户生产上游只做身份、目录、状态和 Observation 只读探针；控制、任务和通知不在生产上游双跑。
+- 生产切换不属于本轮执行范围；本轮只完成本地可运行后端、parity 证据、事实迁移准备和回滚材料。
 
 ## Testing Decisions
 
-- 最高测试 seam 是外部 HTTP contract：请求、Header、状态码、错误体、NDJSON 行、sequence、终态和恢复行为。
-- Java API 测试应使用进程内 fake Tool Bridge 和生产协议夹具，不联网、不监听真实公网端口、不控制真实设备。
-- Node sidecar 测试验证 Pi Agent 的工具委托、流式事件映射、取消和重启边界，不测试 Java Controller 的内部转发细节。
-- MySQL / Redis 接入前先用仓储 contract tests 锁定事实语义；不测试 SQL 文本或框架 wiring。
-- 每个迁移模块必须保留 Runtime 现有外部回归的等价场景：正常、缺数、越权、未确认、未核验、超时、重复请求和中断。
-- 控制与任务测试必须证明不会重复下发；只验证“返回 200”或 mock 回声不算验收。
-- 运行探针必须真实启动 Java 和 Node 组件，观察 HTTP/NDJSON 输出；单元测试不能替代该验证。
+- 最高测试 seam 是小程序可观察的外部 HTTP/NDJSON 边界：请求、Header、状态码、错误体、事件、sequence、终态和恢复。
+- Runtime OpenAPI、NDJSON schema、源码和历史生产验收记录是 Java 行为 oracle。
+- 身份与目录只读测试可以使用 ego-lite 当前登录态连接客户唯一生产上游，但输出必须脱敏且不能写入凭据或原始响应。
+- 控制、任务和通知使用 Runtime 生产协议夹具、本地受控 gateway 和不联网 contract tests；测试必须证明不会重复下发。
+- Node sidecar 测试真实启动 `pi-agent-core`，验证模型流、工具委托、取消、超时、断线、恢复和 Pi Session 隔离。
+- MySQL / Redis 测试先锁定业务仓储行为，再验证真实本地 Compose 连接、事务、唯一性、CAS、锁和恢复；不测试 SQL 文本或框架 wiring。
+- 每个业务域必须覆盖正常、缺数、越权、未确认、未核验、超时、重复请求、中断和恢复。
+- 最终 gate 必须报告 Java 与 Runtime 的真实差异；不得以计数相等、mock 回声或空成功冒充 parity。
 
 ## Out of Scope
 
-- 首期不重写 `pi-agent-core` 为 Java。
-- 首期不实现 MySQL-backed Pi Session。
-- 首期不把当前不兼容的 ehe-core 5.0.0.0-SNAPSHOT 强行接入 Boot 3.5。
-- 首期不迁移 EM2 业务系统、集团 AI 门户、OCR、Activiti、MinIO 或 OpenSearch 业务。
-- 首期不修改小程序页面、请求路径、Header 或展示协议。
-- 不进行控制请求的双跑、双写或影子执行。
-- 不把 Redis 作为唯一会话或业务事实来源。
-- 不在本规格内解决客户 MySQL、Redis 的具体版本、网络和账号申请；这些是部署前置条件。
+- 不重写 `pi-agent-core` 为 Java。
+- 不实现第二套微信登录、用户表或客户身份系统。
+- 不强行接入当前与 Boot 3.5 不兼容的 ehe-core 版本。
+- 不迁移 EM2、集团 AI 门户、OCR、Activiti、MinIO 或 OpenSearch 业务。
+- 不修改小程序页面、请求路径、Header 或展示协议。
+- 不在客户生产上游执行控制、任务 scanner、通知或配置写入。
+- 不进行控制、任务或通知双跑、双写或影子执行。
+- 不把 Redis 作为唯一事实来源。
+- 不部署、重启、修改或切换云端生产后端。
+- 不把客户生产环境缺少 staging 当作实现阻塞；实现优先使用 Runtime 行为源、本地夹具和受控只读验证。
 
 ## Further Notes
 
-- Runtime 的 OpenAPI 和 NDJSON 文档是外部契约基准；Runtime 各模块 `AGENTS.md` 是业务语义基准。
-- `apps/runtime/src/agent` 的 Pi runner、`app.ts` 的会话/事件/确认执行和 `iot/adapter.ts` 的授权上游边界是迁移时的主要行为 oracle。
-- 迁移顺序应先完成架构探针，再按 conversation → iot/authorization → draft/task → read-only domains → reports/admin 逐步推进。
-- 任何存储或内部协议变更都不能改变小程序可观察的外部契约。
-- 云端现有生产 Runtime、进程、数据库、密钥和网关配置不属于本轮实施范围；所有票据只修改本地 `iot-agent-backend` 工作树，未经另行授权不得部署、重启、切换或写入生产环境。
+- 当前已经完成本地 MySQL/Redis Compose、真实模型 + `pi-agent-core` sidecar 探针、Java Tool Bridge 探针、ego-lite Token 获取和客户生产上游身份/Office 目录只读验证。
+- 现有旧票据中“客户尚未提供稳定 Java endpoint/schema”的描述已过时，后续票据统一改为“Runtime 行为迁移待完成”。
+- 第一批可并行工作是身份票据和存储基础设施；Conversation 依赖二者完成后再接真实持久化。
+- Office 只读和 Company 只读可以在 Conversation 主链路后并行推进；Action Draft、Task 和最终 parity 按依赖顺序推进。
+- 任何票据只允许修改本地 `iot-agent-backend` 工作树；云端生产后端保持不动。
