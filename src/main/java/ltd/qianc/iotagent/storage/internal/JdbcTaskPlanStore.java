@@ -38,7 +38,19 @@ public final class JdbcTaskPlanStore extends JdbcFactSupport implements TaskPlan
     }
     @Override public Optional<TaskPlanFact> find(String id) { return one("SELECT plan_id,version,status,payload_json,idempotency_key FROM task_plans WHERE plan_id=?", this::map, id); }
     @Override public Optional<TaskPlanFact> findByIdempotencyKey(String key) { return one("SELECT plan_id,version,status,payload_json,idempotency_key FROM task_plans WHERE idempotency_key=?", this::map, key); }
-    @Override public Optional<TaskPlanFact> updateIfVersion(TaskPlanFact replacement, long expectedVersion) { int changed = jdbc.update("UPDATE task_plans SET version=?,status=?,payload_json=?,update_time=? WHERE plan_id=? AND version=?", replacement.version(), replacement.status(), replacement.payloadJson(), time(Instant.now()), replacement.planId(), expectedVersion); return changed == 1 ? Optional.of(replacement) : Optional.empty(); }
+    @Override public Optional<TaskPlanFact> updateIfVersion(TaskPlanFact replacement, long expectedVersion) {
+        JsonNode payload = readPayload(replacement.payloadJson());
+        Pointer pointer = "DELETED".equals(replacement.status()) || !payload.has("repeat")
+                ? new Pointer(null, null) : initialPointer(payload);
+        int changed = jdbc.update("UPDATE task_plans SET version=?,status=?,next_at=?,next_date=?,repeat_json=?,payload_json=?,update_time=? "
+                        + "WHERE plan_id=? AND version=?",
+                replacement.version(), replacement.status(),
+                pointer.at() == null ? null : time(pointer.at()),
+                pointer.date() == null ? null : java.sql.Date.valueOf(pointer.date()),
+                repeatJson(payload.get("repeat")), replacement.payloadJson(), time(Instant.now()),
+                replacement.planId(), expectedVersion);
+        return changed == 1 ? Optional.of(replacement) : Optional.empty();
+    }
     @Override public boolean claimOccurrence(String planId, String occurrenceDate, long expectedVersion) {
         return Boolean.TRUE.equals(transactions.execute(status -> {
             int inserted = jdbc.update("INSERT IGNORE INTO task_plan_occurrences(plan_id,occurrence_date,status,create_time,update_time) VALUES (?,?, 'CLAIMED',?,?)",

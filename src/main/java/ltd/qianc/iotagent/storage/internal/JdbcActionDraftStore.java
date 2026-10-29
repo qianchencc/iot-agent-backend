@@ -24,6 +24,6 @@ public final class JdbcActionDraftStore extends JdbcFactSupport implements Actio
         return replacement;
     }
     @Override public Optional<ActionDraftFact> findByIdempotencyKey(String key) { return one("SELECT draft_id,revision,status,payload_json,idempotency_key FROM action_drafts WHERE idempotency_key=?", this::map, key); }
-    @Override public List<ActionDraftFact> findByConversation(String conversationId) { return jdbc.query("SELECT draft_id,revision,status,payload_json,idempotency_key FROM action_drafts ORDER BY create_time,id", this::map).stream().filter(d -> json(d.payloadJson()).getOrDefault("conversationId", "").equals(conversationId)).toList(); }
+    @Override public List<ActionDraftFact> findByConversation(String conversationId) { return jdbc.query("SELECT draft_id,revision,status,payload_json,idempotency_key FROM action_drafts WHERE JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.conversationId'))=? ORDER BY create_time,id", this::map, conversationId); }
     private ActionDraftFact map(java.sql.ResultSet rs, int row) throws java.sql.SQLException { return new ActionDraftFact(rs.getString(1), rs.getLong(2), rs.getString(3), rs.getString(4), rs.getString(5)); }
 }

@@ -62,8 +62,9 @@ public final class JdbcTaskProjectionStore implements TaskProjectionStore {
 
     private List<FactRow> facts(PrincipalInfo principal, String source) {
         List<FactRow> result = new ArrayList<>();
-        for (FactRow row : jdbc.query("SELECT task_id,version,status,payload_json FROM task_facts ORDER BY update_time DESC",
-                (rs, n) -> new FactRow(rs.getString(1), rs.getLong(2), rs.getString(3), rs.getString(4), null, null))) {
+        for (FactRow row : jdbc.query("SELECT task_id,version,status,payload_json FROM task_facts WHERE JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.tenantCode'))=? AND JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.ownerKey'))=? AND JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.source'))=? ORDER BY update_time DESC",
+                (rs, n) -> new FactRow(rs.getString(1), rs.getLong(2), rs.getString(3), rs.getString(4), null, null),
+                principal.tenantCode(), principal.ownerKey(), source)) {
             JsonNode payload;
             try { payload = mapper.readTree(row.payloadJson); } catch (Exception ignored) { continue; }
             if (!principal.tenantCode().equals(payload.path("tenantCode").asText())

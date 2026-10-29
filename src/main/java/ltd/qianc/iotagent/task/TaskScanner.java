@@ -7,6 +7,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -40,6 +41,12 @@ public final class TaskScanner {
             attempted++;
             if (!phases.claim(phase.phaseId(), phase.version(), now)) continue;
             claimed++;
+            TaskFact task = tasks.find(phase.taskId()).orElse(null);
+            if (task == null || !dispatchable(task.status())) {
+                phases.finish(phase.phaseId(), phase.version() + 1, "CANCELLED",
+                        "{\"outcome\":\"cancelled\",\"reason\":\"task_not_dispatchable\"}", clock.instant());
+                continue;
+            }
             try {
                 TaskExecutionGateway.TaskExecutionResult result = gateway.execute(
                         new TaskExecutionGateway.TaskExecutionRequest(phase.taskId(), phase.phaseId(), phase.source(), phase.payloadJson(), phase.dueAt()));
@@ -47,20 +54,26 @@ public final class TaskScanner {
                 if (finished) {
                     completed++;
                     if (phases.allTerminal(phase.taskId())) {
-                        TaskFact terminalTask = completeTask(phase.taskId(), result.outcome(), result.payloadJson());
-                        if (terminalTask != null) terminalNotification(terminalTask, phase, result);
+                        TaskFact terminalTask = completeTask(phase.taskId(), result.outcome());
+                        if (terminalTask != null) terminalNotification(terminalTask, phase,
+                                new TaskExecutionGateway.TaskExecutionResult(terminalTask.status(), result.payloadJson(), result.dispatchStarted()));
                     }
                 }
             } catch (RuntimeException error) {
                 // Dispatch may already have crossed the gateway boundary. Preserve unknown/interrupted;
                 // do not roll back to pending and do not allow a second execution after restart.
-                if (phases.finish(phase.phaseId(), phase.version() + 1, "INTERRUPTED", "{\"outcome\":\"unknown\"}", clock.instant())) {
-                    interrupted++;
+                boolean dispatchStarted = !(error instanceof TaskExecutionGateway.DispatchException dispatch)
+                        || dispatch.dispatchStarted();
+                String status = dispatchStarted ? "INTERRUPTED" : "FAILED";
+                String payload = dispatchStarted
+                        ? "{\"outcome\":\"unknown\"}"
+                        : "{\"outcome\":\"failed\",\"reason\":\"not_dispatched\"}";
+                if (phases.finish(phase.phaseId(), phase.version() + 1, status, payload, clock.instant())) {
+                    if (dispatchStarted) interrupted++;
                     if (phases.allTerminal(phase.taskId())) {
-                        TaskExecutionGateway.TaskExecutionResult interruptedResult =
-                                new TaskExecutionGateway.TaskExecutionResult("INTERRUPTED", "{\"outcome\":\"unknown\"}", true);
-                        TaskFact terminalTask = completeTask(phase.taskId(), interruptedResult.outcome(), interruptedResult.payloadJson());
-                        if (terminalTask != null) terminalNotification(terminalTask, phase, interruptedResult);
+                        TaskFact terminalTask = completeTask(phase.taskId(), status);
+                        if (terminalTask != null) terminalNotification(terminalTask, phase,
+                                new TaskExecutionGateway.TaskExecutionResult(terminalTask.status(), payload, dispatchStarted));
                     }
                 }
             }
@@ -74,18 +87,43 @@ public final class TaskScanner {
     public int recoverInterrupted() { return recover(); }
     public void stopAndDrain() { stopping = true; }
 
-    private TaskFact completeTask(String taskId, String outcome, String resultJson) {
-        TaskFact current = tasks.find(taskId).orElse(null);
-        if (current == null || isTerminal(current.status())) return current;
-        String status = switch (outcome) {
-            case "COMPLETED" -> "COMPLETED";
-            case "FAILED" -> "FAILED";
-            case "UNCONFIRMED", "INTERRUPTED" -> "UNCONFIRMED";
-            default -> "FAILED";
-        };
-        return tasks.updateIfVersion(new TaskFact(current.taskId(), current.version() + 1, status,
-                current.payloadJson(), current.idempotencyKey()), current.version()).orElseGet(
-                () -> tasks.find(taskId).orElse(current));
+    private TaskFact completeTask(String taskId, String fallbackOutcome) {
+        for (int attempt = 0; attempt < 8; attempt++) {
+            if (!phases.allTerminal(taskId)) return tasks.find(taskId).orElse(null);
+            TaskFact current = tasks.find(taskId).orElse(null);
+            if (current == null || isTerminal(current.status())) return current;
+            String status = aggregateOutcome(phases.outcomes(taskId), fallbackOutcome);
+            Optional<TaskFact> update = tasks.updateIfVersion(new TaskFact(
+                    current.taskId(), current.version() + 1, status, current.payloadJson(), current.idempotencyKey()), current.version());
+            if (update.isPresent()) return update.get();
+        }
+        return tasks.find(taskId).orElse(null);
+    }
+
+    private static boolean dispatchable(String status) {
+        return "SCHEDULED".equals(status);
+    }
+
+    private static String aggregateOutcome(List<String> values, String fallback) {
+        if (values == null || values.isEmpty()) return normalizeOutcome(fallback);
+        boolean allCompleted = true;
+        boolean allCompletedOrUnknown = true;
+        boolean hasUsable = false;
+        for (String value : values) {
+            String outcome = normalizeOutcome(value);
+            allCompleted &= "COMPLETED".equals(outcome);
+            allCompletedOrUnknown &= "COMPLETED".equals(outcome) || "UNCONFIRMED".equals(outcome)
+                    || "INTERRUPTED".equals(outcome);
+            hasUsable |= "COMPLETED".equals(outcome) || "PARTIAL".equals(outcome)
+                    || "UNCONFIRMED".equals(outcome) || "INTERRUPTED".equals(outcome);
+        }
+        if (allCompleted) return "COMPLETED";
+        if (allCompletedOrUnknown) return "UNCONFIRMED";
+        return hasUsable ? "PARTIAL" : "FAILED";
+    }
+
+    private static String normalizeOutcome(String value) {
+        return value == null ? "FAILED" : value.trim().toUpperCase(java.util.Locale.ROOT);
     }
 
     private void terminalNotification(TaskPhaseStore.TaskPhase phase, TaskExecutionGateway.TaskExecutionResult result) {

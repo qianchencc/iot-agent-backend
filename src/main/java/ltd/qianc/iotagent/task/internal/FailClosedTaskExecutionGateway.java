@@ -7,6 +7,6 @@ public final class FailClosedTaskExecutionGateway implements TaskExecutionGatewa
     private final String reason;
     public FailClosedTaskExecutionGateway(String reason) { this.reason = reason; }
     @Override public TaskExecutionResult execute(TaskExecutionRequest request) {
-        throw new IllegalStateException(reason);
+        throw new TaskExecutionGateway.DispatchException(reason, false);
     }
 }

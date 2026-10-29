@@ -16,5 +16,7 @@
 - [x] 模型配置使用真实 `MODEL_BASE_URL` / `MODEL_ID` / `MODEL_API_KEY` 接入测试，但密钥不写入仓库或日志。
 
 ## Comments
+
 - 2026-10-29：MySQL-enabled startup created/loaded encrypted `admin_configuration_revisions`; `/healthz` returned safe `java/nodeBridge/mysql/redis/piSession` statuses without URLs or secrets. With a generated local `CONFIG_SECRET_KEY` and local admin password, login/session/config returned 200 (revision 1) and `/api/admin/test-model` returned 200 against the real configured model; response did not contain the API key.
+- 2026-10-29：`/api/admin/test-model` now requires Runtime-compatible `{changes:{...}}`, merges candidates with saved encrypted settings, and returns the exact success/failure contract without exposing secrets. Saving/applying configuration remains local and fail-closed; the running Node sidecar reads environment configuration and is not hot-reloaded by Admin.
 - 当前 Admin 边界、加密文件存储和 fail-closed apply shell 已存在；本票补齐事实存储、模型配置 parity 和运维证据。

@@ -28,4 +28,24 @@ public interface TaskExecutionGateway {
             }
         }
     }
+    /**
+     * Gateway failures may identify that dispatch definitely never crossed the
+     * customer boundary. The scanner can then record a normal failed phase
+     * instead of an unknown result.
+     */
+    final class DispatchException extends RuntimeException {
+        private final boolean dispatchStarted;
+
+        public DispatchException(String message, boolean dispatchStarted) {
+            super(message);
+            this.dispatchStarted = dispatchStarted;
+        }
+
+        public DispatchException(String message, Throwable cause, boolean dispatchStarted) {
+            super(message, cause);
+            this.dispatchStarted = dispatchStarted;
+        }
+
+        public boolean dispatchStarted() { return dispatchStarted; }
+    }
 }

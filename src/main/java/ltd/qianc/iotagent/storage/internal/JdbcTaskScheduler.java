@@ -32,7 +32,16 @@ public final class JdbcTaskScheduler implements TaskScheduler {
         }
         if (phase == null) throw new IllegalStateException("任务阶段不存在，无法调度");
         String payload = TaskPayloadSafety.withoutCredentials(mapper, phase).toString();
-        jdbc.update("INSERT IGNORE INTO task_phases(phase_id,task_id,source,version,status,due_at,payload_json,create_time,update_time) VALUES (?,?,?,1,'PENDING',?,?,?,?)",
+        jdbc.update("INSERT INTO task_phases(phase_id,task_id,source,version,status,due_at,payload_json,create_time,update_time) VALUES (?,?,?,1,'PENDING',?,?,?,?) "
+                        + "ON DUPLICATE KEY UPDATE "
+                        + "status=IF(status IN ('CANCELLED','PENDING'),'PENDING',status), "
+                        + "version=version+IF(status IN ('CANCELLED','PENDING'),1,0), "
+                        + "due_at=IF(status IN ('CANCELLED','PENDING'),VALUES(due_at),due_at), "
+                        + "payload_json=IF(status IN ('CANCELLED','PENDING'),VALUES(payload_json),payload_json), "
+                        + "source=IF(status IN ('CANCELLED','PENDING'),VALUES(source),source), "
+                        + "claimed_at=IF(status IN ('CANCELLED','PENDING'),NULL,claimed_at), "
+                        + "ended_at=IF(status IN ('CANCELLED','PENDING'),NULL,ended_at), "
+                        + "update_time=IF(status IN ('CANCELLED','PENDING'),VALUES(update_time),update_time)",
                 phaseId, taskId, source, java.sql.Timestamp.from(at), payload, java.sql.Timestamp.from(Instant.now()), java.sql.Timestamp.from(Instant.now()));
     }
 

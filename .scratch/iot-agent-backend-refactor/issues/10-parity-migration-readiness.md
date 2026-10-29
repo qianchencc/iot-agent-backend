@@ -17,4 +17,4 @@
 
 ## Comments
 
-- 2026-10-29：Do not claim full parity. Local evidence now covers MySQL/Redis durability, authenticated Java/Node conversation streaming, Office candidate/state reads, Company environment/energy direct reads, local fixture action/task control, and safe health checks. Open gaps are the active-run Tool Bridge 409, dashboard/safety/report/video composition, recurrence materialization, Pi Session backup/restore, and the 66/69 external operation gate.
+- 2026-10-29：Do not claim full parity. Local evidence now covers MySQL/Redis durability, authenticated Java/Node conversation streaming, Office candidate/state reads, Company environment/energy direct reads, local fixture action/task control, recurrence materialization, and safe health checks. Open gaps are the active-run Tool Bridge 409, dashboard/safety/report/video composition, Pi Session backup/restore, admin configuration not hot-reloading the already-running Node sidecar, and the 66/69 external operation gate.

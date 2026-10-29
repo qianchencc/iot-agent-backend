@@ -140,13 +140,19 @@ public final class AdminController {
     }
 
     @PostMapping("/test-model")
-    public ResponseEntity<?> testModel() {
+    public ResponseEntity<?> testModel(@RequestBody(required = false) Map<String, Object> body) {
+        Object raw = body == null ? null : body.get("changes");
+        if (!(raw instanceof Map<?, ?>)) return error(400, "CONFIG_INVALID", "连接参数无效");
+        Map<String, Object> candidate = new LinkedHashMap<>(store.saved());
+        ((Map<?, ?>) raw).forEach((key, value) -> {
+            if (key instanceof String name) candidate.put(name, value);
+        });
         try {
-            modelTester.test(store.active());
-            return ResponseEntity.ok(Map.of("ok", true));
+            modelTester.test(candidate);
+            return ResponseEntity.ok(Map.of("ok", true, "message", "模型连接成功"));
         } catch (Exception error) {
             if (error instanceof InterruptedException) Thread.currentThread().interrupt();
-            return error(503, "CONFIG_TEST_FAILED", "模型连接测试失败");
+            return error(502, "CONFIG_TEST_FAILED", "模型连接失败");
         }
     }
 

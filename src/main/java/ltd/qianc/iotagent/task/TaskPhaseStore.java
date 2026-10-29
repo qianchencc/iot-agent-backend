@@ -18,6 +18,12 @@ public interface TaskPhaseStore {
      */
     default boolean allTerminal(String taskId) { return true; }
 
+    /**
+     * Returns all durable phase outcomes for task-level aggregation. Implementations
+     * that do not expose durable phase rows may return an empty list.
+     */
+    default List<String> outcomes(String taskId) { return List.of(); }
+
     record TaskPhase(String taskId, String phaseId, long version, String source,
                      String payloadJson, Instant dueAt, String status) {
         public TaskPhase {
