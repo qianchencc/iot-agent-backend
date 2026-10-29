@@ -6,7 +6,7 @@
 
 **Status:** implemented locally (fail-closed scope adapter; identity/family upstream contracts pending)
 
-- [ ] Authorization / tenantcode 按原协议透传并完成客户身份核验；当前仅实现透传与未配置时 fail closed。
+- [ ] Authorization / tenantcode 复用小程序登录态透传，并按 Runtime 的 `/sso-api/account/me` 返回 `content.id` 完成稳定 principal 绑定；当前 Java 尚未实现该核验 adapter。
 - [x] Office / Company 来源隔离，Authorized Device Scope 由服务端当前身份重新核验。
 - [ ] 目录、状态、能耗、视频和安全读取保留当前 Runtime 的权限边界。
 - [x] WebClient 调用具备单调用超时、取消传播和可接入 Resilience4j 的策略边界。
@@ -20,6 +20,8 @@
 - `WebClient` forwards only `Authorization` and `Tenantcode`; the source selects an
   isolated route and is retained on the returned scope. Timeout and subscriber
   cancellation are per call. `IotCallPolicy` is the Resilience4j-compatible reactive seam.
+
+- 认证并不新建登录系统：小程序继续提供已有 `Authorization` token 与 `Tenantcode`；Runtime 已有 `iot.readAccountPrincipalId`，向 `/sso-api/account/me` 透传同一 Header，读取 `content.id`，再将 credential owner 绑定到稳定 principal owner。Java 应迁移这条已知 Runtime 行为。
 - Missing gateway configuration, malformed responses, transport failures, and non-401/403
   HTTP failures fail closed with a 503 business error. No local identity or fake device
   list is returned.
