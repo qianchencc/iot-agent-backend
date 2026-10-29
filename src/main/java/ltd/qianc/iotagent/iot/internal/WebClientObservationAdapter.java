@@ -315,36 +315,58 @@ public final class WebClientObservationAdapter implements ObservationAdapter {
     private static Map<String, List<String>> queryParameters(
             ObservationOperation operation, Map<String, String> parameters) {
         Map<String, List<String>> values = new LinkedHashMap<>();
-        parameters.forEach((key, value) -> {
-            if (value == null || key.equals("source") || key.equals("from") || key.equals("to")
-                    || key.equals("section") || key.equals("type") || key.equals("limit")
-                    || key.equals("cursor") || key.equals("mode") || key.equals("beginTime")
-                    || key.equals("endTime") || key.equals("ledger") || key.equals("id")) return;
-            values.computeIfAbsent(key, ignored -> new ArrayList<>()).add(value);
-        });
-        if (operation == ObservationOperation.ENVIRONMENT_HISTORY) {
-            String from = parameters.get("from"), to = parameters.get("to");
-            if (from != null) values.put("startDate", List.of(localDate(from)));
-            if (to != null) values.put("endDate", List.of(localDate(to)));
-            values.putIfAbsent("page", List.of(parameters.getOrDefault("page", "0")));
-            values.putIfAbsent("size", List.of("100"));
-        } else if (operation == ObservationOperation.ENERGY_HISTORY) {
-            String from = parameters.get("from"), to = parameters.get("to");
-            if (from != null) values.put("startTime", List.of(localDateTime(from)));
-            if (to != null) values.put("endTime", List.of(localDateTime(to)));
-            values.putIfAbsent("page", List.of(parameters.getOrDefault("page", "0")));
-            values.putIfAbsent("size", List.of("20"));
-            values.computeIfAbsent("sort", ignored -> new ArrayList<>()).addAll(List.of("readTime,desc", "id,desc"));
-        } else if (operation == ObservationOperation.SAFETY_EVENTS
-                || operation == ObservationOperation.SAFETY_EVENT) {
-            String ledger = ledger(parameters.getOrDefault("type", parameters.getOrDefault("ledger", "gas")));
-            values.put("page", List.of(parameters.getOrDefault("page", "0")));
-            values.put("size", List.of("100"));
-            if (parameters.get("deviceId") != null) values.put("deviceId", List.of(parameters.get("deviceId")));
-            values.put("sort", List.of("createdAt,desc", "id,desc", "deviceId,desc"));
-            if (operation == ObservationOperation.SAFETY_EVENTS) values.put("ledger", List.of(ledger));
+        switch (operation) {
+            case ENVIRONMENT_HISTORY -> {
+                String from = parameters.get("from"), to = parameters.get("to");
+                if (from != null) values.put("startDate", List.of(localDate(from)));
+                if (to != null) values.put("endDate", List.of(localDate(to)));
+                values.put("page", List.of(parameters.getOrDefault("page", "0")));
+                values.put("size", List.of("100"));
+                values.put("sort", List.of("createdAt,desc", "id,desc", "deviceCode,desc"));
+            }
+            case ENERGY_HISTORY -> {
+                copyAllowed(values, parameters, "equipmentId");
+                String from = parameters.get("from"), to = parameters.get("to");
+                if (from != null) values.put("startTime", List.of(localDateTime(from)));
+                if (to != null) values.put("endTime", List.of(localDateTime(to)));
+                values.put("page", List.of(parameters.getOrDefault("page", "0")));
+                values.put("size", List.of("20"));
+                values.put("sort", List.of("readTime,desc", "id,desc"));
+            }
+            case SAFETY_EVENTS, SAFETY_EVENT -> {
+                String ledger = ledger(parameters.getOrDefault("type", parameters.getOrDefault("ledger", "gas")));
+                values.put("page", List.of(parameters.getOrDefault("page", "0")));
+                values.put("size", List.of("100"));
+                copyAllowed(values, parameters, "deviceId");
+                values.put("sort", List.of("createdAt,desc", "id,desc", "deviceId,desc"));
+                if (operation == ObservationOperation.SAFETY_EVENTS) values.put("ledger", List.of(ledger));
+            }
+            case REGION_TIMELINE, DEVICE_TIMELINE -> copyAllowed(values, parameters, "date");
+            case REGION_CALENDAR, DEVICE_CALENDAR -> copyAllowed(values, parameters, "from", "to");
+            case ENERGY_COMPARISON -> copyAllowed(values, parameters, "equipmentId", "weeks", "endDate", "boundaryHour");
+            case ENERGY_REPORT -> copyAllowed(values, parameters, "kind", "from", "to", "equipmentIds",
+                    "baselineFrom", "baselineTo", "periods", "growthThreshold");
+            case COMPANY_ENERGY_DAILY -> copyAllowed(values, parameters, "days", "end");
+            case COMPANY_ENERGY_REPORT -> copyAllowed(values, parameters, "months", "endMonth", "boundaryHour");
+            case COMPANY_METER_REPORT -> copyAllowed(values, parameters, "kind", "axis", "scopeLevel", "floor",
+                    "text", "meterId", "meterIds", "from", "to", "windowFrom", "windowTo", "grain", "baseFrom",
+                    "baseTo", "otherScopeLevel", "otherFloor", "otherText", "otherMeterId", "otherMeterIds");
+            case REPORT_DOWNLOAD -> copyAllowed(values, parameters, "format");
+            case DASHBOARD, SAFETY_EVENT_CAMERAS, REGION_LIST, REGION_SEEN, REGION_DEVICES, REGION_STATES,
+                    VIDEO_STREAM, REPORT -> {
+                // These Runtime parameters select an internal route or response shape,
+                // not a customer upstream query parameter.
+            }
         }
         return values;
+    }
+
+    private static void copyAllowed(
+            Map<String, List<String>> target, Map<String, String> parameters, String... keys) {
+        for (String key : keys) {
+            String value = parameters.get(key);
+            if (value != null) target.put(key, List.of(value));
+        }
     }
 
     private static String ledger(String value) {

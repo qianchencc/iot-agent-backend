@@ -18,6 +18,7 @@ import ltd.qianc.iotagent.error.BusinessException;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseBodyEmitter;
 
 public final class ConversationFacade {
+ // Node/Pi bridge event contract includes message.delta; unknown bridge event types are forwarded without reinterpretation.
  private static final Set<String> TERMINALS=Set.of("run.completed","run.awaiting_confirmation","run.failed","run.aborted");
  private final ObjectMapper mapper; private final ConversationStore store; private final ConversationEventStore events; private final AgentEngineBridge bridge; private final Executor executor; private final ScheduledExecutorService scheduler; private final long heartbeatMs; private final Map<String,Run> active=new ConcurrentHashMap<>(); private final Map<String,Run> toolContexts=new ConcurrentHashMap<>(); private final Map<String,Run> toolContextsById=new ConcurrentHashMap<>();
  public ConversationFacade(ObjectMapper m,ConversationStore s,ConversationEventStore e,AgentEngineBridge b,Executor x){this(m,s,e,b,x,null,0);}

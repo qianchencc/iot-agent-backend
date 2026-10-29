@@ -11,6 +11,14 @@ public interface TaskPhaseStore {
     Optional<TaskPhase> find(String phaseId);
     boolean finish(String phaseId, long expectedVersion, String status, String payloadJson, Instant endedAt);
     int recoverExecuting(Instant at);
+    /**
+     * Recovers executing phases and returns their new terminal rows so the scanner
+     * can also close the parent task and emit its durable notification.
+     */
+    default List<TaskPhase> recoverInterrupted(Instant at) {
+        recoverExecuting(at);
+        return List.of();
+    }
 
     /**
      * Returns whether no phase for the task is still pending or executing. Durable

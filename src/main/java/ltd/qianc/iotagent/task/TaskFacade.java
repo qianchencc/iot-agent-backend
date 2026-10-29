@@ -73,7 +73,11 @@ public final class TaskFacade {
 
     public TaskFact confirm(PrincipalInfo principal, String proposalId, long expectedVersion) {
         TaskProposalFact proposal = proposal(principal, proposalId);
-        if (CONFIRMED.equals(proposal.status())) return taskForProposal(principal, proposalId);
+        if (CONFIRMED.equals(proposal.status())) {
+            TaskFact existing = taskForProposal(principal, proposalId);
+            scheduleIfDue(existing);
+            return existing;
+        }
         if (!PENDING.equals(proposal.status())) throw conflict("TASK_PROPOSAL_NOT_PENDING", "任务提案已结束");
         if (proposal.version() != expectedVersion) throw conflict("VERSION_CONFLICT", "任务提案已变化，请刷新后重试");
         TaskProposalFact confirmed = proposals.updateIfVersion(
@@ -107,6 +111,37 @@ public final class TaskFacade {
         if (!owns(task.payloadJson(), principal)) throw notFound("TASK_NOT_FOUND", "任务不存在");
         return task;
     }
+    /**
+     * Returns the durable lighting device identities for a task. The controller
+     * rechecks those identities against the current gateway scope before reading
+     * any state; malformed legacy payloads fail closed instead of being guessed.
+     */
+    public List<String> lightingDeviceIds(PrincipalInfo principal, String taskId, String requestedSource) {
+        checkPrincipal(principal);
+        TaskFact task = current(principal, taskId);
+        JsonNode payload = safePayload(task.payloadJson());
+        String taskSource = source(payload.path("source").asText("office"));
+        if (!taskSource.equals(source(requestedSource))) throw notFound("TASK_NOT_FOUND", "任务不存在");
+        JsonNode phases = payload.path("phases");
+        if (!phases.isArray()) {
+            throw new BusinessException("TASK_LIGHTING_STATES_UNAVAILABLE", "任务缺少可读取的照明设备事实", 503);
+        }
+        java.util.LinkedHashSet<String> ids = new java.util.LinkedHashSet<>();
+        for (JsonNode phase : phases) {
+            JsonNode actions = phase.path("actions");
+            if (!actions.isArray()) continue;
+            for (JsonNode action : actions) {
+                if (!"lighting".equalsIgnoreCase(action.path("kind").asText())) continue;
+                String deviceId = action.path("deviceId").asText("");
+                if (deviceId.isBlank()) {
+                    throw new BusinessException("TASK_LIGHTING_STATES_UNAVAILABLE", "任务缺少可读取的照明设备事实", 503);
+                }
+                ids.add(deviceId);
+            }
+        }
+        return List.copyOf(ids);
+    }
+
 
     public TaskFact update(PrincipalInfo principal, String taskId, long expectedVersion, String payloadJson) {
         TaskFact current = current(principal, taskId);

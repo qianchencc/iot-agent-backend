@@ -81,7 +81,19 @@ public final class TaskScanner {
         return new ScanResult(attempted, claimed, completed, interrupted);
     }
 
-    public int recover() { return phases.recoverExecuting(clock.instant()); }
+    public int recover() {
+        List<TaskPhaseStore.TaskPhase> recovered = phases.recoverInterrupted(clock.instant());
+        for (TaskPhaseStore.TaskPhase phase : recovered) {
+            if (!phases.allTerminal(phase.taskId())) continue;
+            TaskFact task = completeTask(phase.taskId(), "INTERRUPTED");
+            if (task != null) {
+                terminalNotification(task, phase,
+                        new TaskExecutionGateway.TaskExecutionResult(task.status(),
+                                "{\"outcome\":\"unknown\",\"reason\":\"service_restart\"}", true));
+            }
+        }
+        return recovered.size();
+    }
     public ScanResult scan() { return scanOnce(); }
 
     public int recoverInterrupted() { return recover(); }

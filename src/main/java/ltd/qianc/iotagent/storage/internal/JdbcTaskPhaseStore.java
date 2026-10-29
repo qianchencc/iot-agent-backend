@@ -29,8 +29,15 @@ public final class JdbcTaskPhaseStore extends JdbcFactSupport implements TaskPha
     @Override public boolean finish(String phaseId, long expectedVersion, String status, String payloadJson, Instant endedAt) {
         return jdbc.update("UPDATE task_phases SET status=?,version=version+1,payload_json=?,ended_at=?,update_time=? WHERE phase_id=? AND version=? AND status='EXECUTING'", status, payloadJson, time(endedAt), time(endedAt), phaseId, expectedVersion) == 1;
     }
-    @Override public int recoverExecuting(Instant at) {
-        return jdbc.update("UPDATE task_phases SET status='INTERRUPTED',version=version+1,payload_json='{\"outcome\":\"unknown\",\"reason\":\"service_restart\"}',ended_at=?,update_time=? WHERE status='EXECUTING'", time(at), time(at));
+    @Override public int recoverExecuting(Instant at) { return recoverInterrupted(at).size(); }
+    @Override public List<TaskPhase> recoverInterrupted(Instant at) {
+        return transactions.execute(status -> {
+            List<TaskPhase> executing = jdbc.query("SELECT task_id,phase_id,version,source,payload_json,due_at,status FROM task_phases WHERE status='EXECUTING' FOR UPDATE", this::map);
+            if (executing.isEmpty()) return List.of();
+            jdbc.update("UPDATE task_phases SET status='INTERRUPTED',version=version+1,payload_json='{\"outcome\":\"unknown\",\"reason\":\"service_restart\"}',ended_at=?,update_time=? WHERE status='EXECUTING'", time(at), time(at));
+            return executing.stream().map(phase -> new TaskPhase(phase.taskId(), phase.phaseId(), phase.version() + 1,
+                    phase.source(), "{\"outcome\":\"unknown\",\"reason\":\"service_restart\"}", phase.dueAt(), "INTERRUPTED")).toList();
+        });
     }
     @Override public boolean allTerminal(String taskId) {
         Integer active = jdbc.queryForObject("SELECT COUNT(*) FROM task_phases WHERE task_id=? AND status IN ('PENDING','RETRY','EXECUTING')", Integer.class, taskId);

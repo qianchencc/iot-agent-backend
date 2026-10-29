@@ -2,9 +2,20 @@ package ltd.qianc.iotagent.task.internal.controller;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import ltd.qianc.iotagent.auth.PrincipalContext;
+import ltd.qianc.iotagent.error.BusinessException;
+import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
+import ltd.qianc.iotagent.iot.DeviceStateReadResult;
+import ltd.qianc.iotagent.iot.IotAdapter;
+import ltd.qianc.iotagent.iot.IotSource;
+import ltd.qianc.iotagent.iot.RequestIdentity;
+import ltd.qianc.iotagent.iot.UpstreamUnavailableException;
 import ltd.qianc.iotagent.task.TaskFacade;
 import ltd.qianc.iotagent.task.TaskPlanFact;
 import ltd.qianc.iotagent.task.TaskProposalFact;
@@ -23,10 +34,14 @@ public final class TaskController {
     private final TaskFacade facade;
     private final ObjectMapper mapper;
     private final ltd.qianc.iotagent.task.TaskProjectionStore projections;
-    public TaskController(TaskFacade facade, ObjectMapper mapper) { this(facade, mapper, null); }
-    @org.springframework.beans.factory.annotation.Autowired
+    private final IotAdapter iot;
+    public TaskController(TaskFacade facade, ObjectMapper mapper) { this(facade, mapper, null, null); }
     public TaskController(TaskFacade facade, ObjectMapper mapper, ltd.qianc.iotagent.task.TaskProjectionStore projections) {
-        this.facade = facade; this.mapper = mapper; this.projections = projections;
+        this(facade, mapper, projections, null);
+    }
+    @org.springframework.beans.factory.annotation.Autowired
+    public TaskController(TaskFacade facade, ObjectMapper mapper, ltd.qianc.iotagent.task.TaskProjectionStore projections, IotAdapter iot) {
+        this.facade = facade; this.mapper = mapper; this.projections = projections; this.iot = iot;
     }
 
     @PostMapping("/task-proposals")
@@ -46,6 +61,34 @@ public final class TaskController {
     public Map<String, Object> discard(@PathVariable String id, @RequestBody(required = false) Map<String, Object> body) {
         return facade.proposalView(facade.discard(PrincipalContext.getPrincipalInfo(), id, version(body)));
     }
+    /** Runtime alias for clients that identify the pending proposal as a task. */
+    @PostMapping("/tasks/{id}/confirm")
+    public Map<String, Object> confirmTask(@PathVariable String id, @RequestBody(required = false) Map<String, Object> body) {
+        return facade.view(facade.confirm(PrincipalContext.getPrincipalInfo(), id, version(body)));
+    }
+    /** Runtime alias for clients that identify the pending proposal as a task. */
+    @PostMapping("/tasks/{id}/discard")
+    public Map<String, Object> discardTask(@PathVariable String id, @RequestBody(required = false) Map<String, Object> body) {
+        return facade.proposalView(facade.discard(PrincipalContext.getPrincipalInfo(), id, version(body)));
+    }
+
+    @PostMapping("/task-changes/{id}/confirm")
+    public Map<String, Object> confirmTaskChange(@PathVariable String id) {
+        throw unsupportedTaskChange();
+    }
+    @PostMapping("/task-changes/{id}/discard")
+    public Map<String, Object> discardTaskChange(@PathVariable String id) {
+        throw unsupportedTaskChange();
+    }
+    @PostMapping("/task-cancellations/{id}/confirm")
+    public Map<String, Object> confirmTaskCancellation(@PathVariable String id) {
+        throw unsupportedTaskCancellation();
+    }
+    @PostMapping("/task-cancellations/{id}/discard")
+    public Map<String, Object> discardTaskCancellation(@PathVariable String id) {
+        throw unsupportedTaskCancellation();
+    }
+
 
     @GetMapping("/tasks")
     public Map<String, Object> tasks(@RequestParam(defaultValue = "office") String source,
@@ -74,6 +117,40 @@ public final class TaskController {
     }
     @GetMapping("/tasks/{id}")
     public Map<String, Object> task(@PathVariable String id) { return facade.view(facade.current(PrincipalContext.getPrincipalInfo(), id)); }
+    @GetMapping("/tasks/{id}/lighting-states")
+    public Map<String, Object> lightingStates(@PathVariable String id,
+                                               @RequestParam(defaultValue = "office") String source) {
+        if (iot == null) throw new UpstreamUnavailableException("物联设备状态适配器未接入");
+        try {
+            var principal = PrincipalContext.getPrincipalInfo();
+            IotSource requestedSource = parseSource(source);
+            List<String> deviceIds = facade.lightingDeviceIds(principal, id, requestedSource.wireValue());
+            RequestIdentity identity = new RequestIdentity(principal.authorization(), principal.tenantCode(), requestedSource);
+            AuthorizedDeviceScope scope = iot.loadAuthorizedDeviceScope(identity).block(Duration.ofSeconds(30));
+            if (scope == null || scope.source() != requestedSource) throw new UpstreamUnavailableException("读取任务设备授权范围");
+            for (String deviceId : deviceIds) {
+                var authorized = scope.device(deviceId);
+                if (authorized.isEmpty() || !"lighting".equalsIgnoreCase(authorized.get().kind())) {
+                    throw new BusinessException("TASK_NOT_FOUND", "任务不存在", 404);
+                }
+            }
+            DeviceStateReadResult result = deviceIds.isEmpty()
+                    ? new DeviceStateReadResult(Map.of(), Instant.now().toString())
+                    : iot.readDeviceStates(identity, deviceIds).block(Duration.ofSeconds(30));
+            if (result == null) throw new UpstreamUnavailableException("读取设备状态");
+            List<Map<String, Object>> states = new ArrayList<>();
+            for (String deviceId : deviceIds) states.add(stateView(deviceId, result.states().get(deviceId)));
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("observedAt", result.observedAt());
+            response.put("states", states);
+            return response;
+        } catch (BusinessException failure) {
+            throw failure;
+        } catch (RuntimeException failure) {
+            throw new UpstreamUnavailableException("读取任务设备状态");
+        }
+    }
+
     @PostMapping("/tasks/{id}/update")
     public Map<String, Object> update(@PathVariable String id, @RequestBody Map<String, Object> body) {
         return facade.view(facade.update(PrincipalContext.getPrincipalInfo(), id, version(body), json(body.get("payload"))));
@@ -142,5 +219,27 @@ public final class TaskController {
         Object value = body == null ? null : body.get("version");
         if (!(value instanceof Number number) || number.longValue() < 1) throw new IllegalArgumentException("version is required");
         return number.longValue();
+    }
+    private static Map<String, Object> stateView(String id, Object raw) {
+        Map<String, Object> view = new LinkedHashMap<>();
+        view.put("id", id);
+        if (raw instanceof Map<?, ?> values) {
+            values.forEach((key, value) -> { if (key instanceof String name) view.put(name, value); });
+        } else {
+            view.put("state", raw);
+        }
+        view.putIfAbsent("state", null);
+        view.putIfAbsent("reportedAt", null);
+        return view;
+    }
+    private static IotSource parseSource(String value) {
+        try { return IotSource.parse(value == null ? "office" : value); }
+        catch (RuntimeException error) { throw new BusinessException("INVALID_AGENT_SOURCE", "Agent 来源无效", 400); }
+    }
+    private static BusinessException unsupportedTaskChange() {
+        return new BusinessException("TASK_CHANGE_UNAVAILABLE", "任务修改暂未接入，未执行任何变更", 503);
+    }
+    private static BusinessException unsupportedTaskCancellation() {
+        return new BusinessException("TASK_CANCELLATION_UNAVAILABLE", "任务取消提案暂未接入，未执行任何变更", 503);
     }
 }

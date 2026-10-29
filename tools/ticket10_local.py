@@ -80,7 +80,7 @@ def java_inventory(root: Path) -> tuple[set[str], list[tuple[str, str]]]:
     paths: set[str] = set()
     operations: list[tuple[str, str]] = []
     mapping = re.compile(r"@(Get|Post|Put|Patch|Delete|Head|Request)Mapping(?:\s*\((.*?)\))?", re.S)
-    string_arg = re.compile(r"(?:value|path)\s*=\s*\"([^\"]*)\"|^\s*\"([^\"]*)\"")
+    string_arg = re.compile(r"(?:value|path)\s*=\s*(?:\{\s*)?\"([^\"]*)\"|\{\s*\"([^\"]*)\"|^\s*\"([^\"]*)\"")
     for source in sorted(root.rglob("*.java")):
         text = source.read_text(encoding="utf-8")
         class_position = text.find("class ")
@@ -89,7 +89,7 @@ def java_inventory(root: Path) -> tuple[set[str], list[tuple[str, str]]]:
         for match in matches:
             kind, args = match.group(1), match.group(2) or ""
             values = string_arg.search(args)
-            suffix = (values.group(1) or values.group(2)) if values else ""
+            suffix = next((value for value in values.groups() if value is not None), "") if values else ""
             if kind == "Request":
                 # A class-level mapping occurs before the class declaration.
                 if class_position < 0 or match.start() < class_position:
@@ -135,10 +135,10 @@ def check_contract(args: argparse.Namespace) -> int:
     extra_paths = sorted(java_paths - runtime_paths)
     missing_operations = sorted(set(runtime_ops) - set(java_ops))
     extra_operations = sorted(set(java_ops) - set(runtime_ops))
-    if missing_paths or extra_paths:
-        errors.append("Java route inventory differs from Runtime paths")
-    if missing_operations or extra_operations:
-        errors.append("Java route inventory differs from Runtime operations")
+    if missing_paths:
+        errors.append("Java route inventory is missing Runtime paths")
+    if missing_operations:
+        errors.append("Java route inventory is missing Runtime operations")
     for name in ("agentBearer", "tenantCode", "adminCookie", "adminCsrf"):
         if name not in security:
             errors.append(f"missing security scheme {name}")

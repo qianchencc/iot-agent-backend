@@ -194,8 +194,13 @@ public final class WebClientIotAdapter implements IotAdapter {
             if (content.isArray()) return new PageResult(toList(content), true);
             JsonNode rows = content.get("content");
             if (rows == null || !rows.isArray()) throw new UpstreamUnavailableException("读取授权设备目录响应");
-            return new PageResult(toList(rows), content.path("last").asBoolean(true));
-        })).takeUntil(PageResult::last).collectList().map(pages -> pages.stream().flatMap(result -> result.records().stream()).toList());
+            return new PageResult(toList(rows), content.has("last") && content.path("last").isBoolean() && content.path("last").asBoolean());
+        })).takeUntil(PageResult::last).collectList().flatMap(pages -> {
+            if (pages.isEmpty() || !pages.get(pages.size() - 1).last()) {
+                return Mono.error(new UpstreamUnavailableException("读取授权设备目录分页未完成"));
+            }
+            return Mono.just(pages.stream().flatMap(result -> result.records().stream()).toList());
+        });
     }
 
     private Mono<JsonNode> getJson(String path, Map<String, String> params, RequestIdentity identity) {

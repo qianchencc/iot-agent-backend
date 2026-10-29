@@ -7,6 +7,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import ltd.qianc.iotagent.error.BusinessException;
 import ltd.qianc.iotagent.auth.PrincipalInfo;
 import ltd.qianc.iotagent.auth.PrincipalContext;
@@ -66,7 +67,7 @@ public final class ObservationController {
     public ResponseEntity<?> safetyEvents(HttpServletRequest request) {
         ResponseEntity<?> source = requireCompanySource(request, "SAFETY_SOURCE_UNAVAILABLE", "安全历史仅支持公司来源");
         if (source != null) return source;
-        ResponseEntity<?> duplicate = rejectDuplicates(request, "INVALID_SAFETY_QUERY", "查询参数不可重复", "type", "from", "to", "limit", "cursor");
+        ResponseEntity<?> duplicate = rejectDuplicates(request, "INVALID_SAFETY_QUERY", "查询参数不可重复", "type", "from", "to", "limit", "cursor", "page");
         if (duplicate != null) return duplicate;
         String type = valueOr(request, "type", "gas");
         String limit = valueOr(request, "limit", "20");
@@ -200,7 +201,7 @@ public final class ObservationController {
         RequestIdentity identity = identity(request, IotSource.COMPANY);
         try {
             ReportDownload result = adapter.download(new ObservationRequest(identity, ObservationOperation.REPORT_DOWNLOAD,
-                    parameters(request, Map.of("id", id, "format", format)))).block(ADAPTER_TIMEOUT);
+                    parameters(request, ObservationOperation.REPORT_DOWNLOAD, Map.of("id", id, "format", format)))).block(ADAPTER_TIMEOUT);
             if (result == null) throw new ObservationUnavailableException("报告下载适配器返回空结果");
             return ResponseEntity.ok().header(HttpHeaders.CACHE_CONTROL, "no-store")
                     .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + result.filename() + "\"")
@@ -225,7 +226,7 @@ public final class ObservationController {
 
     private ResponseEntity<?> read(HttpServletRequest request, ObservationOperation operation, Map<String, String> extras) {
         ObservationResponse result = readAdapter(new ObservationRequest(identity(request, sourceFor(request)), operation,
-                parameters(request, extras)));
+                parameters(request, operation, extras)));
         if (result.status() == ObservationStatus.UNAVAILABLE) throw new ObservationUnavailableException("只读观察读取失败");
         Map<String, Object> body = new LinkedHashMap<>(result.payload());
         if (result.status() != ObservationStatus.AVAILABLE && !body.containsKey("status")) {
@@ -330,10 +331,32 @@ public final class ObservationController {
         }
     }
 
-    private static Map<String, String> parameters(HttpServletRequest request, Map<String, String> extras) {
+    private static Map<String, String> parameters(
+            HttpServletRequest request, ObservationOperation operation, Map<String, String> extras) {
+        Set<String> allowed = switch (operation) {
+            case DASHBOARD -> Set.of("section");
+            case ENVIRONMENT_HISTORY -> Set.of("from", "to", "page");
+            case SAFETY_EVENTS -> Set.of("type", "from", "to", "limit", "cursor", "page");
+            case SAFETY_EVENT, SAFETY_EVENT_CAMERAS -> Set.of("ledger", "deviceId");
+            case REGION_LIST -> Set.of("section");
+            case REGION_TIMELINE, DEVICE_TIMELINE -> Set.of("date");
+            case REGION_CALENDAR, DEVICE_CALENDAR -> Set.of("from", "to");
+            case ENERGY_HISTORY -> Set.of("equipmentId", "from", "to", "page");
+            case ENERGY_COMPARISON -> Set.of("equipmentId", "weeks", "endDate", "boundaryHour");
+            case ENERGY_REPORT -> Set.of("kind", "from", "to", "equipmentIds", "baselineFrom", "baselineTo",
+                    "periods", "growthThreshold");
+            case COMPANY_ENERGY_DAILY -> Set.of("days", "end");
+            case COMPANY_ENERGY_REPORT -> Set.of("months", "endMonth", "boundaryHour");
+            case COMPANY_METER_REPORT -> Set.of("kind", "axis", "scopeLevel", "floor", "text", "meterId",
+                    "meterIds", "from", "to", "windowFrom", "windowTo", "grain", "baseFrom", "baseTo",
+                    "otherScopeLevel", "otherFloor", "otherText", "otherMeterId", "otherMeterIds");
+            case VIDEO_STREAM -> Set.of("mode", "beginTime", "endTime");
+            case REPORT_DOWNLOAD -> Set.of("format");
+            case REGION_SEEN, REGION_DEVICES, REGION_STATES, REPORT -> Set.of();
+        };
         Map<String, String> values = new LinkedHashMap<>();
         request.getParameterMap().forEach((key, all) -> {
-            if (all != null && all.length > 0) values.put(key, all[0]);
+            if (allowed.contains(key) && all != null && all.length > 0) values.put(key, all[0]);
         });
         values.putAll(extras);
         return values;
