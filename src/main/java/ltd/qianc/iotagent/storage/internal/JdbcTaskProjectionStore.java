@@ -27,7 +27,11 @@ public final class JdbcTaskProjectionStore implements TaskProjectionStore {
     }
 
     @Override public List<Map<String, Object>> list(PrincipalInfo principal, String source, Instant from, Instant to) {
-        return facts(principal, source).stream().filter(row -> overlaps(row.payload, from, to)).map(row -> summary(row, from, to)).toList();
+        return listByOwner(principal.tenantCode(), principal.ownerKey(), source, from, to);
+    }
+
+    @Override public List<Map<String, Object>> listByOwner(String tenantCode, String ownerKey, String source, Instant from, Instant to) {
+        return facts(tenantCode, ownerKey, source).stream().filter(row -> overlaps(row.payload, from, to)).map(row -> summary(row, from, to)).toList();
     }
 
     @Override public List<Map<String, Object>> regionTimeline(PrincipalInfo principal, String source, String regionId, Instant from, Instant to) {
@@ -61,14 +65,18 @@ public final class JdbcTaskProjectionStore implements TaskProjectionStore {
     }
 
     private List<FactRow> facts(PrincipalInfo principal, String source) {
+        return facts(principal.tenantCode(), principal.ownerKey(), source);
+    }
+
+    private List<FactRow> facts(String tenantCode, String ownerKey, String source) {
         List<FactRow> result = new ArrayList<>();
         for (FactRow row : jdbc.query("SELECT task_id,version,status,payload_json FROM task_facts WHERE JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.tenantCode'))=? AND JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.ownerKey'))=? AND JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.source'))=? ORDER BY update_time DESC",
                 (rs, n) -> new FactRow(rs.getString(1), rs.getLong(2), rs.getString(3), rs.getString(4), null, null),
-                principal.tenantCode(), principal.ownerKey(), source)) {
+                tenantCode, ownerKey, source)) {
             JsonNode payload;
             try { payload = mapper.readTree(row.payloadJson); } catch (Exception ignored) { continue; }
-            if (!principal.tenantCode().equals(payload.path("tenantCode").asText())
-                    || !principal.ownerKey().equals(payload.path("ownerKey").asText())
+            if (!tenantCode.equals(payload.path("tenantCode").asText())
+                    || !ownerKey.equals(payload.path("ownerKey").asText())
                     || !source.equals(payload.path("source").asText("office"))) continue;
             JsonNode safe = TaskPayloadSafety.withoutCredentials(mapper, payload);
             result.add(new FactRow(row.taskId, row.version, row.status, row.payloadJson, payload, safe));

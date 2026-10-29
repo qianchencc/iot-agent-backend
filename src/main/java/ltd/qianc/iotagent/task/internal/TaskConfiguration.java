@@ -16,9 +16,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import ltd.qianc.iotagent.iot.IotAdapter;
-import ltd.qianc.iotagent.auth.PrincipalInfo;
 import ltd.qianc.iotagent.iot.AutomationSummaryReader;
-import ltd.qianc.iotagent.iot.RequestIdentity;
 import reactor.core.publisher.Mono;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -61,8 +59,8 @@ public class TaskConfiguration {
     @ConditionalOnMissingBean(AutomationSummaryReader.class)
     AutomationSummaryReader automationSummaryReader(TaskProjectionStore projections) {
         return identity -> Mono.fromCallable(() -> {
-            PrincipalInfo principal = new PrincipalInfo(identity.authorization(), identity.tenantCode());
-            List<Map<String, Object>> rows = projections.list(principal, identity.source().wireValue(), null, null);
+            List<Map<String, Object>> rows = projections.listByOwner(
+                    identity.tenantCode(), identity.ownerKey(), identity.source().wireValue(), null, null);
             Map<String, Object> summary = new LinkedHashMap<>();
             summary.put("enabledPlans", null);
             summary.put("active", rows.stream().filter(row -> "EXECUTING".equalsIgnoreCase(String.valueOf(row.get("status")))).count());
