@@ -1,0 +1,11 @@
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  /* Subdued neutral backdrop; aligns with the runtime console's muted tone. */
+  background: var(--color-fill-2);
+}

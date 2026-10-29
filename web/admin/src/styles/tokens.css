@@ -1,0 +1,20 @@
+/*
+ * Theme: subdued green/neutral, matching the runtime admin console
+ * (iot-agent-runtime apps/admin: primary #275e47, surface #f0f4f0).
+ * Arco reads --primary-* which aliases --arcoblue-*; it defines the
+ * palette on `body`, so the override must sit on `body` too — a `:root`
+ * override loses because body's own declaration beats the inherited one.
+ * Values are RGB triplets — Arco wraps them in rgb()/rgba() itself.
+ */
+body {
+  --arcoblue-1: 234, 242, 236;
+  --arcoblue-2: 225, 234, 225;
+  --arcoblue-3: 200, 219, 205;
+  --arcoblue-4: 146, 178, 156;
+  --arcoblue-5: 88, 136, 106;
+  --arcoblue-6: 39, 94, 71;
+  --arcoblue-7: 36, 85, 62;
+  --arcoblue-8: 30, 74, 55;
+  --arcoblue-9: 25, 62, 46;
+  --arcoblue-10: 20, 50, 37;
+}

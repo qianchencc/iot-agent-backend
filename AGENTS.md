@@ -2,6 +2,8 @@
 
 `../iot-agent-runtime`（Fastify/TypeScript）的 Java 版实现，逐功能对齐，全本地开发。HTTP 契约以 runtime 的 `docs/api/`（openapi + NDJSON 事件协议）为对齐基准；业务语义以 runtime `apps/runtime/src` 各模块 `AGENTS.md` 为准。
 
+前端控制台在 `web/admin/`（Vite + Vue3 + Arco，按客户选型清单）；开发与组件规范 `web/admin/AGENTS.md`，部署与维护 `web/admin/docs/maintenance.md`。
+
 ## 技术栈
 
 Java 21（`--release 21` 编译，本机 JDK 25 运行）、Spring Boot 3.5.16、Maven、ArchUnit 1.5.1（模块边界强制）。

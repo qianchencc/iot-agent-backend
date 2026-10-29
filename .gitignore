@@ -5,3 +5,7 @@ var/
 *.iml
 .DS_Store
 .mvn/wrapper/maven-wrapper.jar
+
+# web/admin (Vite + Vue)
+web/admin/node_modules/
+web/admin/dist/
