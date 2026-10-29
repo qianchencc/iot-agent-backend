@@ -154,7 +154,7 @@ public final class TaskFacade {
             throw new BusinessException("TASK_CANCELLATION_UNSUPPORTED", "当前仅支持一次性任务取消", 409);
         }
         String taskId = targetId(target);
-        TaskFact current = current(principal, taskId);
+        TaskFact current = current(principal, taskId, normalizedSource);
         assertSource(current.payloadJson(), normalizedSource);
         String key = scoped(principal, idempotencyKey);
         Optional<TaskProposalFact> prior = proposals.findByIdempotencyKey(key);
@@ -723,12 +723,12 @@ public final class TaskFacade {
         return id;
     }
     private JsonNode taskForProposal(PrincipalInfo principal, String source, String id) {
-        TaskFact task = current(principal, id);
+        TaskFact task = current(principal, id, source);
         assertSource(task.payloadJson(), source);
         return safePayload(task.payloadJson());
     }
     private JsonNode planForProposal(PrincipalInfo principal, String source, String id) {
-        TaskPlanFact plan = plan(principal, id);
+        TaskPlanFact plan = plan(principal, id, source);
         assertSource(plan.payloadJson(), source);
         return safePayload(plan.payloadJson());
     }
@@ -738,7 +738,7 @@ public final class TaskFacade {
     }
     private JsonNode occurrenceForProposal(PrincipalInfo principal, String source,
                                            TaskRecurrence.OccurrenceReference occurrence) {
-        TaskPlanFact plan = plan(principal, occurrence.planId());
+        TaskPlanFact plan = plan(principal, occurrence.planId(), source);
         assertSource(plan.payloadJson(), source);
         TaskPlanOccurrence existing;
         try {

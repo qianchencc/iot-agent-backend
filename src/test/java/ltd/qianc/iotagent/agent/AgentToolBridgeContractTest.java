@@ -45,6 +45,29 @@ class AgentToolBridgeContractTest {
     }
 
     @Test
+    void safetyToolArgumentsPreserveRuntimeEventIdentityAndTypeFilters() {
+        ConversationFacade conversations = mock(ConversationFacade.class);
+        ObservationAdapter observations = mock(ObservationAdapter.class);
+        when(conversations.toolPrincipal("tool-1", "conversation-1", "turn-1")).thenReturn(principal);
+        java.util.concurrent.atomic.AtomicReference<ObservationRequest> request = new java.util.concurrent.atomic.AtomicReference<>();
+        when(observations.read(any(ObservationRequest.class))).thenAnswer(invocation -> {
+            request.set(invocation.getArgument(0));
+            return Mono.just(ObservationResponse.available(Map.of("record", Map.of("eventId", "event-1"))));
+        });
+        AgentToolBridge bridge = AgentToolBridgeFactory.local(conversations, mock(IotAdapter.class), observations,
+                mock(TaskProjectionStore.class), mock(ActionDraftFacade.class), mock(TaskFacade.class), mapper, null);
+
+        bridge.execute(Map.of("toolContextId", "tool-1", "conversationId", "conversation-1",
+                "turnId", "turn-1", "toolName", "review_safety_event",
+                "arguments", Map.of("source", "company", "eventId", "event-1", "deviceId", "gas-1", "ledger", "gas")));
+
+        assertThat(request.get().operation()).isEqualTo(ltd.qianc.iotagent.iot.ObservationOperation.SAFETY_EVENT);
+        assertThat(request.get().parameters()).containsEntry("id", "event-1")
+                .containsEntry("deviceId", "gas-1")
+                .containsEntry("ledger", "gas");
+    }
+
+    @Test
     void publicFactoryFailsClosedForProductionVideoPayloads() {
         ConversationFacade conversations = mock(ConversationFacade.class);
         when(conversations.toolPrincipal("tool-1", "conversation-1", "turn-1")).thenReturn(principal);

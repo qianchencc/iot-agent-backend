@@ -145,6 +145,28 @@ class TaskManagementContractTest {
         verify(plans, never()).cancelAllIfVersion(anyString(), anyLong(), any());
     }
 
+    @Test
+    void companyCancellationProposalLoadsTheTargetUsingTheRequestedSource() {
+        TaskPlanStore plans = org.mockito.Mockito.mock(TaskPlanStore.class);
+        TaskProposalStore proposals = org.mockito.Mockito.mock(TaskProposalStore.class);
+        TaskFactStore tasks = org.mockito.Mockito.mock(TaskFactStore.class);
+        TaskFacade facade = facade(plans, proposals, tasks);
+        String owner = PRINCIPAL.ownerKey();
+        TaskFact companyTask = new TaskFact("company-task", 1, "SCHEDULED",
+                "{\"source\":\"company\",\"tenantCode\":\"LOCAL\",\"ownerKey\":\"" + owner
+                        + "\",\"phases\":[]}", "company-key");
+        when(tasks.find("company-task")).thenReturn(Optional.of(companyTask));
+        when(proposals.findByIdempotencyKey(anyString())).thenReturn(Optional.empty());
+        when(proposals.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        TaskProposalFact proposal = facade.proposeCancellation(PRINCIPAL, "company", "conversation-company",
+                "turn-company", "{\"target\":{\"type\":\"task\",\"taskId\":\"company-task\"}}", "cancel-company");
+
+        assertThat(proposal.source()).isEqualTo("company");
+        assertThat(proposal.targetJson()).contains("company-task");
+        verify(tasks).find("company-task");
+    }
+
     private static TaskFacade facade(TaskPlanStore plans, TaskProposalStore proposals, TaskFactStore tasks) {
         return new TaskFacade(new ObjectMapper(), tasks, proposals, plans,
                 org.mockito.Mockito.mock(TaskNotificationStore.class), org.mockito.Mockito.mock(TaskScheduler.class),

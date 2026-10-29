@@ -13,16 +13,6 @@ public final class CompanyEnergyObservationComposerFactory {
         return new CompanyEnergyObservationComposerImpl(rawHistory, iot, clock);
     }
 
-    /** Alias used by application composition code. */
-    public static CompanyEnergyObservationComposer local(
-            ObservationAdapter rawHistory, IotAdapter iot, Clock clock) {
-        return composed(rawHistory, iot, clock);
-    }
-    /** Conventional construction alias for dependency-injection adapters. */
-    public static CompanyEnergyObservationComposer create(
-            ObservationAdapter rawHistory, IotAdapter iot, Clock clock) {
-        return composed(rawHistory, iot, clock);
-    }
 
     /** Test and deployment seam for making the read budget explicit. */
     public static CompanyEnergyObservationComposer composed(

@@ -80,7 +80,8 @@ public final class WebClientIotAdapter implements IotAdapter {
         if (identity.source() != IotSource.OFFICE) return Mono.error(new BusinessException("IOT_SOURCE_UNAVAILABLE", "设备候选仅支持 Office 来源", 404));
         return execute("find authorized Office device candidates", loadAuthorizedDeviceScope(identity).map(scope -> {
             List<AuthorizedDevice> matching = scope.devices().stream()
-                    .filter(device -> device.kind().equalsIgnoreCase(query.kind()))
+                    .filter(device -> "unknown".equalsIgnoreCase(query.kind())
+                            || device.kind().equalsIgnoreCase(query.kind()))
                     .filter(device -> query.deviceIds().isEmpty() || query.deviceIds().contains(device.id()))
                     .filter(device -> matches(device, query))
                     .toList();

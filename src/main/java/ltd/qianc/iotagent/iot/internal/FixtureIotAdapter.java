@@ -37,7 +37,8 @@ public final class FixtureIotAdapter implements IotAdapter {
     public Mono<DeviceCandidateSet> findDeviceCandidates(RequestIdentity identity, DeviceCandidateQuery query) {
         return loadAuthorizedDeviceScope(identity).map(scope -> {
             List<AuthorizedDevice> matches = scope.devices().stream()
-                    .filter(device -> device.kind().equalsIgnoreCase(query.kind()))
+                    .filter(device -> "unknown".equalsIgnoreCase(query.kind())
+                            || device.kind().equalsIgnoreCase(query.kind()))
                     .filter(device -> query.deviceIds().isEmpty() || query.deviceIds().contains(device.id()))
                     .filter(device -> query.deviceText() == null || (device.name() + " " + device.installAddress()).contains(query.deviceText()))
                     .toList();

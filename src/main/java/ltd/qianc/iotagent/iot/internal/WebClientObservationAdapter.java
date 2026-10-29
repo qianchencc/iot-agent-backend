@@ -337,7 +337,7 @@ public final class WebClientObservationAdapter implements ObservationAdapter {
                 String ledger = ledger(parameters.getOrDefault("type", parameters.getOrDefault("ledger", "gas")));
                 values.put("page", List.of(parameters.getOrDefault("page", "0")));
                 values.put("size", List.of("100"));
-                copyAllowed(values, parameters, "deviceId");
+                copyAllowed(values, parameters, "deviceId", "id", "from", "to", "days", "unreportedOnly");
                 values.put("sort", List.of("createdAt,desc", "id,desc", "deviceId,desc"));
                 if (operation == ObservationOperation.SAFETY_EVENTS) values.put("ledger", List.of(ledger));
             }

@@ -100,13 +100,14 @@ public final class AgentToolBridgeController {
             case "get_device_details" -> findCandidates(principal, source(arguments), detailQuery(arguments));
             case "read_device_states", "read_device_readback", "readback_device_states" -> readStates(principal, source(arguments), arguments);
             case "inspect_device_capabilities" -> inspectCapabilities(principal, source(arguments), arguments);
-            case "query_alerts" -> observation(principal, source(arguments), ObservationOperation.SAFETY_EVENTS, arguments);
+            case "query_alerts" -> queryAlerts(principal, source(arguments), arguments);
             case "query_environment_history" -> observation(principal, source(arguments), ObservationOperation.ENVIRONMENT_HISTORY, arguments);
             case "query_energy_history" -> observation(principal, source(arguments), ObservationOperation.ENERGY_HISTORY, arguments);
             case "summarize_energy" -> observation(principal, source(arguments), ObservationOperation.ENERGY_REPORT, arguments);
             case "compare_energy" -> observation(principal, source(arguments), ObservationOperation.ENERGY_COMPARISON, arguments);
             case "review_safety_event" -> observation(principal, source(arguments),
-                    arguments.containsKey("cameraDeviceId") ? ObservationOperation.SAFETY_EVENT_CAMERAS : ObservationOperation.SAFETY_EVENT, arguments);
+                    arguments.containsKey("cameraDeviceId") ? ObservationOperation.SAFETY_EVENT_CAMERAS : ObservationOperation.SAFETY_EVENT,
+                    arguments);
             case "propose_action_draft", "propose_lighting_draft" -> proposeAction(principal, conversationId, turnId, arguments);
             case "read_action_draft" -> readAction(principal, arguments);
             case "read_action_device_states" -> actions.deviceStates(principal, identifier(arguments));
@@ -139,11 +140,57 @@ public final class AgentToolBridgeController {
                 conversationId, turnId, text(args, "idempotencyKey", turnId), content);
         return Map.of("reportId", result.reportId(), "reused", result.reused(), "report", result.report());
     }
+    private Map<String, Object> queryAlerts(PrincipalInfo principal, IotSource source,
+            Map<String, Object> args) {
+        List<String> types = strings(args.get("types"));
+        if (types.size() <= 1) {
+            Map<String, Object> normalized = new LinkedHashMap<>(args);
+            if (types.size() == 1) normalized.put("type", types.get(0));
+            return observation(principal, source, ObservationOperation.SAFETY_EVENTS, normalized);
+        }
+        Map<String, Object> merged = new LinkedHashMap<>();
+        List<Object> items = new ArrayList<>();
+        int total = 0;
+        int scanned = 0;
+        int excluded = 0;
+        boolean complete = true;
+        for (String type : types) {
+            Map<String, Object> normalized = new LinkedHashMap<>(args);
+            normalized.put("type", type);
+            Map<String, Object> part = observation(principal, source, ObservationOperation.SAFETY_EVENTS, normalized);
+            if (merged.isEmpty()) merged.putAll(part);
+            appendValues(items, part.get("items"));
+            appendValues(items, part.get("records"));
+            total += number(part.get("total"));
+            scanned += number(part.get("scanned"));
+            excluded += number(part.get("excludedCount"));
+            complete &= !Boolean.FALSE.equals(part.get("coverageComplete"));
+        }
+        if (!items.isEmpty()) {
+            merged.put("items", items);
+            merged.remove("records");
+        }
+        merged.put("total", total);
+        merged.put("scanned", scanned);
+        merged.put("excludedCount", excluded);
+        merged.put("coverageComplete", complete);
+        return merged;
+    }
+
+    private static void appendValues(List<Object> target, Object value) {
+        if (value instanceof List<?> values) target.addAll(values);
+    }
+
+    private static int number(Object value) {
+        return value instanceof Number numeric ? numeric.intValue() : 0;
+    }
+
     private Map<String, Object> observation(PrincipalInfo principal, IotSource source,
             ObservationOperation operation, Map<String, Object> args) {
         if (observations == null) throw new BusinessException("AGENT_TOOL_UNAVAILABLE", "只读观察工具未接入", 404);
         try {
-            ObservationResponse result = observations.read(new ObservationRequest(identity(principal, source), operation, parameterMap(args))).block(TIMEOUT);
+            ObservationResponse result = observations.read(new ObservationRequest(identity(principal, source), operation,
+                    parameterMap(normalizeObservationParameters(operation, args)))).block(TIMEOUT);
             if (result == null || result.status() == ObservationStatus.UNAVAILABLE) {
                 throw new BusinessException("AGENT_TOOL_UNAVAILABLE", "只读观察工具不可用", 404);
             }
@@ -241,6 +288,20 @@ public final class AgentToolBridgeController {
         } catch (JsonProcessingException error) {
             throw new BusinessException("INVALID_TASK_PAYLOAD", "任务内容无效");
         }
+    }
+
+    private static Map<String, Object> normalizeObservationParameters(
+            ObservationOperation operation, Map<String, Object> args) {
+        Map<String, Object> normalized = new LinkedHashMap<>(args);
+        if (operation == ObservationOperation.SAFETY_EVENT && args.get("eventId") instanceof String eventId
+                && !eventId.isBlank()) {
+            normalized.put("id", eventId);
+        }
+        if (operation == ObservationOperation.SAFETY_EVENTS && args.get("types") instanceof List<?> types
+                && types.size() == 1 && types.get(0) instanceof String type && !type.isBlank()) {
+            normalized.put("type", type);
+        }
+        return normalized;
     }
 
     private Map<String, String> parameterMap(Map<String, Object> args) {
