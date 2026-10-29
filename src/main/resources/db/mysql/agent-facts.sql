@@ -1,4 +1,4 @@
-CREATE TABLE conversations (
+CREATE TABLE IF NOT EXISTS conversations (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     conversation_id VARCHAR(64) NOT NULL,
     tenant_code VARCHAR(128) NOT NULL,
@@ -9,7 +9,7 @@ CREATE TABLE conversations (
     update_time DATETIME NOT NULL,
     PRIMARY KEY (id), UNIQUE KEY uk_conversation_id (conversation_id), KEY ix_conversation_owner (tenant_code, owner_key, source, cleared, update_time)
 ) ENGINE=InnoDB;
-CREATE TABLE conversation_turns (
+CREATE TABLE IF NOT EXISTS conversation_turns (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     turn_id VARCHAR(64) NOT NULL,
     conversation_id VARCHAR(64) NOT NULL,
@@ -20,7 +20,7 @@ CREATE TABLE conversation_turns (
     update_time DATETIME NOT NULL,
     PRIMARY KEY (id), UNIQUE KEY uk_turn_id (turn_id), UNIQUE KEY uk_turn_idempotency (conversation_id, idempotency_key)
 ) ENGINE=InnoDB;
-CREATE TABLE conversation_events (
+CREATE TABLE IF NOT EXISTS conversation_events (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     conversation_id VARCHAR(64) NOT NULL,
     turn_id VARCHAR(64) NOT NULL,
@@ -32,7 +32,7 @@ CREATE TABLE conversation_events (
     update_time DATETIME NOT NULL,
     PRIMARY KEY (id), UNIQUE KEY uk_conversation_turn_sequence (conversation_id, turn_id, sequence_no), UNIQUE KEY uk_conversation_idempotency (conversation_id, idempotency_key)
 ) ENGINE=InnoDB;
-CREATE TABLE action_drafts (
+CREATE TABLE IF NOT EXISTS action_drafts (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     draft_id VARCHAR(64) NOT NULL,
     revision BIGINT UNSIGNED NOT NULL,
@@ -43,7 +43,7 @@ CREATE TABLE action_drafts (
     update_time DATETIME NOT NULL,
     PRIMARY KEY (id), UNIQUE KEY uk_action_draft_id (draft_id), UNIQUE KEY uk_action_draft_idempotency (idempotency_key)
 ) ENGINE=InnoDB;
-CREATE TABLE task_facts (
+CREATE TABLE IF NOT EXISTS task_facts (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     task_id VARCHAR(64) NOT NULL,
     version BIGINT UNSIGNED NOT NULL,
@@ -54,7 +54,7 @@ CREATE TABLE task_facts (
     update_time DATETIME NOT NULL,
     PRIMARY KEY (id), UNIQUE KEY uk_task_fact_id (task_id), UNIQUE KEY uk_task_fact_idempotency (idempotency_key)
 ) ENGINE=InnoDB;
-CREATE TABLE report_facts (
+CREATE TABLE IF NOT EXISTS report_facts (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     report_id VARCHAR(64) NOT NULL,
     source VARCHAR(32) NOT NULL,
@@ -63,7 +63,7 @@ CREATE TABLE report_facts (
     update_time DATETIME NOT NULL,
     PRIMARY KEY (id), UNIQUE KEY uk_report_fact_id (report_id)
 ) ENGINE=InnoDB;
-CREATE TABLE audit_events (
+CREATE TABLE IF NOT EXISTS audit_events (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     event_id VARCHAR(64) NOT NULL,
     tenant_code VARCHAR(64) NOT NULL,
@@ -73,7 +73,7 @@ CREATE TABLE audit_events (
     update_time DATETIME NOT NULL,
     PRIMARY KEY (id), UNIQUE KEY uk_audit_event_id (event_id)
 ) ENGINE=InnoDB;
-CREATE TABLE task_proposals (
+CREATE TABLE IF NOT EXISTS task_proposals (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     proposal_id VARCHAR(64) NOT NULL,
     tenant_code VARCHAR(128) NOT NULL,
@@ -89,7 +89,7 @@ CREATE TABLE task_proposals (
     PRIMARY KEY (id), UNIQUE KEY uk_task_proposal_id (proposal_id),
     UNIQUE KEY uk_task_proposal_idempotency (tenant_code, owner_key, idempotency_key)
 ) ENGINE=InnoDB;
-CREATE TABLE task_plans (
+CREATE TABLE IF NOT EXISTS task_plans (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     plan_id VARCHAR(64) NOT NULL,
     tenant_code VARCHAR(128) NOT NULL,
@@ -108,7 +108,7 @@ CREATE TABLE task_plans (
     UNIQUE KEY uk_task_plan_idempotency (tenant_code, owner_key, idempotency_key),
     KEY ix_task_plan_due (status, next_at)
 ) ENGINE=InnoDB;
-CREATE TABLE task_phases (
+CREATE TABLE IF NOT EXISTS task_phases (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     phase_id VARCHAR(64) NOT NULL,
     task_id VARCHAR(64) NOT NULL,
@@ -124,7 +124,7 @@ CREATE TABLE task_phases (
     PRIMARY KEY (id), UNIQUE KEY uk_task_phase_id (phase_id),
     KEY ix_task_phase_due (status, due_at), KEY ix_task_phase_task (task_id)
 ) ENGINE=InnoDB;
-CREATE TABLE task_notifications (
+CREATE TABLE IF NOT EXISTS task_notifications (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     notification_id VARCHAR(64) NOT NULL,
     task_id VARCHAR(64) NOT NULL,

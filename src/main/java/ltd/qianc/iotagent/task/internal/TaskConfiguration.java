@@ -13,22 +13,29 @@ import ltd.qianc.iotagent.task.TaskScheduler;
 import ltd.qianc.iotagent.task.TaskScanner;
 import ltd.qianc.iotagent.task.TaskProjectionStore;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
-import org.springframework.context.annotation.Bean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Bean;
 
 /** All durable and external task seams fail closed until real adapters are supplied. */
 @Configuration(proxyBeanMethods = false)
 public class TaskConfiguration {
-    @Bean @ConditionalOnMissingBean(TaskFactStore.class)
+    @Bean @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "false", matchIfMissing = true)
+    @ConditionalOnMissingBean(TaskFactStore.class)
     TaskFactStore taskFactStore() { return new FailClosedTaskFactStore("任务事实存储未配置"); }
-    @Bean @ConditionalOnMissingBean(TaskProposalStore.class)
+    @Bean @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "false", matchIfMissing = true)
+    @ConditionalOnMissingBean(TaskProposalStore.class)
     TaskProposalStore taskProposalStore() { return new FailClosedTaskProposalStore("任务提案存储未配置"); }
-    @Bean @ConditionalOnMissingBean(TaskPlanStore.class)
+    @Bean @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "false", matchIfMissing = true)
+    @ConditionalOnMissingBean(TaskPlanStore.class)
     TaskPlanStore taskPlanStore() { return new FailClosedTaskPlanStore("周期计划存储未配置"); }
-    @Bean @ConditionalOnMissingBean(TaskNotificationStore.class)
+    @Bean @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "false", matchIfMissing = true)
+    @ConditionalOnMissingBean(TaskNotificationStore.class)
     TaskNotificationStore taskNotificationStore() { return new FailClosedTaskNotificationStore("任务通知存储未配置"); }
-    @Bean @ConditionalOnMissingBean(TaskPhaseStore.class)
+    @Bean @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "false", matchIfMissing = true)
+    @ConditionalOnMissingBean(TaskPhaseStore.class)
     TaskPhaseStore taskPhaseStore() { return new FailClosedTaskPhaseStore("任务阶段存储未配置"); }
+
     @Bean @ConditionalOnMissingBean(TaskExecutionGateway.class)
     TaskExecutionGateway taskExecutionGateway() { return new FailClosedTaskExecutionGateway("任务执行适配器未配置"); }
     @Bean @ConditionalOnMissingBean(TaskProjectionStore.class)

@@ -11,14 +11,16 @@ import ltd.qianc.iotagent.iot.IotAdapter;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
-import org.springframework.context.annotation.Bean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Bean;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 /** Storage and control are explicit seams; absent infrastructure fails closed. */
 @Configuration(proxyBeanMethods = false)
 public class ActionDraftConfiguration {
     @Bean
+    @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "false", matchIfMissing = true)
     @ConditionalOnMissingBean(ActionDraftStore.class)
     ActionDraftStore actionDraftStore() {
         return new FailClosedActionDraftStore("草案事实存储未配置");

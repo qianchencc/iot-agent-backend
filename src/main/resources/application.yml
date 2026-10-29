@@ -11,6 +11,11 @@ agent:
     base-url: ${AGENT_BRIDGE_BASE_URL:}
     run-timeout-ms: ${AGENT_BRIDGE_RUN_TIMEOUT_MS:120000}
   heartbeat-ms: ${AGENT_HEARTBEAT_MS:15000}
+  storage:
+    mysql:
+      enabled: ${AGENT_STORAGE_MYSQL_ENABLED:false}
+    redis:
+      enabled: ${AGENT_STORAGE_REDIS_ENABLED:false}
 
 iot:
   gateway:

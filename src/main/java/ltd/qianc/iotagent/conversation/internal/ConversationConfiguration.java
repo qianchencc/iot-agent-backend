@@ -15,8 +15,9 @@ import ltd.qianc.iotagent.conversation.ConversationStore;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
-import org.springframework.context.annotation.Bean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Bean;
 
 @Configuration
 public class ConversationConfiguration {
@@ -37,9 +38,11 @@ public class ConversationConfiguration {
             return thread;
         });
     }
-    @Bean @ConditionalOnMissingBean(ConversationStore.class)
+    @Bean @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "false", matchIfMissing = true)
+    @ConditionalOnMissingBean(ConversationStore.class)
     ConversationStore conversationStore() { return new FailClosedConversationStore(); }
-    @Bean @ConditionalOnMissingBean(ConversationEventStore.class)
+    @Bean @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "false", matchIfMissing = true)
+    @ConditionalOnMissingBean(ConversationEventStore.class)
     ConversationEventStore conversationEventStore() { return new FailClosedConversationEventStore(); }
     @Bean @ConditionalOnMissingBean(AgentEngineBridge.class)
     AgentEngineBridge agentEngineBridge(ObjectMapper mapper,
