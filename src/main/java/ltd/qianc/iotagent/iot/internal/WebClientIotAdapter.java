@@ -55,9 +55,7 @@ public final class WebClientIotAdapter implements IotAdapter {
         Objects.requireNonNull(identity, "identity");
         Mono<AuthorizedDeviceScope> request = identity.source() == IotSource.OFFICE && routes.hasOfficeDirectoryRoutes()
                 ? loadOfficeScope(identity)
-                : webClient.get().uri(routes.path(identity.source()))
-                        .headers(headers -> identity.gatewayHeaders().forEach(headers::set))
-                        .exchangeToMono(response -> decode(response, identity));
+                : loadPaginatedScope(identity);
         return execute("load authorized " + identity.source().wireValue() + " device scope", request);
     }
 
@@ -147,6 +145,20 @@ public final class WebClientIotAdapter implements IotAdapter {
 
     private Mono<List<AuthorizedDevice>> readSource(OfficeDeviceSource source, Map<String, String> params, RequestIdentity identity, String officeName) {
         return page(source.path(), params, identity).map(rows -> rows.stream().map(row -> parseDevice(row, source, officeName)).toList());
+    }
+
+    private Mono<AuthorizedDeviceScope> loadPaginatedScope(RequestIdentity identity) {
+        return page(routes.path(identity.source()), Map.of(), identity).map(records -> {
+            Map<String, AuthorizedDevice> unique = new LinkedHashMap<>();
+            for (JsonNode record : records) {
+                AuthorizedDevice device = parseDevice(record, null, null);
+                AuthorizedDevice previous = unique.putIfAbsent(device.kind() + ":" + device.id(), device);
+                if (previous != null && !previous.equals(device)) {
+                    throw new UpstreamUnavailableException("读取物联授权设备范围响应");
+                }
+            }
+            return (AuthorizedDeviceScope) new AuthorizedDeviceScopeSnapshot(identity, new ArrayList<>(unique.values()));
+        });
     }
 
     private Mono<List<JsonNode>> readOfficeRecords(RequestIdentity identity) {
