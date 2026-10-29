@@ -70,8 +70,12 @@ public final class ObservationController {
         if (duplicate != null) return duplicate;
         String type = valueOr(request, "type", "gas");
         String limit = valueOr(request, "limit", "20");
-        if (!List.of("gas", "smoke", "water").contains(type) || !integerBetween(limit, 1, 100)) {
-            return error(400, "INVALID_SAFETY_QUERY", "台账类别或分页数量无效");
+        if (request.getParameter("cursor") != null) {
+            return error(503, "SAFETY_CURSOR_UNAVAILABLE", "安全台账继续分页暂不可用，请重新查询");
+        }
+        if (!List.of("gas", "smoke", "water").contains(type) || !integerBetween(limit, 1, 100)
+                || !validSafetyWindow(request.getParameter("from"), request.getParameter("to"))) {
+            return error(400, "INVALID_SAFETY_QUERY", "台账类别、分页数量或查询时间范围无效");
         }
         return read(request, ObservationOperation.SAFETY_EVENTS, Map.of());
     }
@@ -291,6 +295,24 @@ public final class ObservationController {
             int parsed = Integer.parseInt(value);
             return parsed >= min && parsed <= max;
         } catch (NumberFormatException ignored) {
+            return false;
+        }
+    }
+
+    private static boolean validSafetyWindow(String from, String to) {
+        if (from == null && to == null) return true;
+        if ((from != null && !zonedDateTime(from)) || (to != null && !zonedDateTime(to))) return false;
+        return from == null || to == null || !OffsetDateTime.parse(from).isAfter(OffsetDateTime.parse(to));
+    }
+
+    private static boolean zonedDateTime(String value) {
+        if (!value.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?(?:Z|[+-]\\d{2}:\\d{2})$")) {
+            return false;
+        }
+        try {
+            OffsetDateTime.parse(value, DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+            return true;
+        } catch (RuntimeException ignored) {
             return false;
         }
     }

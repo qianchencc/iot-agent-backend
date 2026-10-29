@@ -16,9 +16,11 @@ import org.springframework.core.env.Environment;
 import org.springframework.web.reactive.function.client.WebClient;
 
 /**
- * Customer read-only routes are explicit configuration. Only the two routes
- * present in the Runtime observation source have safe defaults; report/video
- * schemas remain unavailable until their exact customer contract is configured.
+ * Customer read-only routes are explicit configuration. Defaults are limited to
+ * paths and response envelopes copied from the Runtime observation reader:
+ * environment/energy history, safety ledgers, and Office membership regions.
+ * Report/video and composed dashboard capabilities remain unavailable until
+ * their exact customer protocol is configured.
  */
 @Configuration(proxyBeanMethods = false)
 public class ObservationAdapterConfiguration {
@@ -39,10 +41,15 @@ public class ObservationAdapterConfiguration {
         configured.put(ObservationOperation.ENERGY_HISTORY,
                 route(environment, ObservationOperation.ENERGY_HISTORY,
                         "/micro-api/api/energy/electricData/page"));
-        for (ObservationOperation operation : ObservationOperation.values()) {
-            String path = route(environment, operation, null);
-            if (path != null) configured.put(operation, path);
-        }
+        configured.put(ObservationOperation.SAFETY_EVENTS,
+                route(environment, ObservationOperation.SAFETY_EVENTS,
+                        "/micro-api/api/perception/fire/{ledger}/alarm/page"));
+        configured.put(ObservationOperation.SAFETY_EVENT,
+                route(environment, ObservationOperation.SAFETY_EVENT,
+                        "/micro-api/api/perception/fire/{ledger}/alarm/page"));
+        configured.put(ObservationOperation.REGION_LIST,
+                route(environment, ObservationOperation.REGION_LIST,
+                        "/micro-api/api/office/office/member/my/office"));
         configured.values().removeIf(path -> path == null || path.isBlank());
         try {
             return ObservationAdapterFactory.webClient(

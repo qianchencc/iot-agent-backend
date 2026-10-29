@@ -114,6 +114,20 @@ public class StorageConfiguration {
     @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
     @ConditionalOnMissingBean(TaskScheduler.class)
     JdbcTaskScheduler jdbcTaskScheduler(JdbcTemplate jdbc, ObjectMapper mapper) { return new JdbcTaskScheduler(jdbc, mapper); }
+    @Bean
+    @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
+    JdbcTaskRecurrenceMaterializer jdbcTaskRecurrenceMaterializer(
+            JdbcTemplate jdbc, TransactionTemplate transactions, ObjectMapper mapper,
+            org.springframework.core.env.Environment environment) {
+        int batch = environment.getProperty("agent.task.recurrence.batch-size", Integer.class, 25);
+        return new JdbcTaskRecurrenceMaterializer(jdbc, transactions, mapper, java.time.Clock.systemUTC(), batch);
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
+    JdbcTaskRecurrenceLoop jdbcTaskRecurrenceLoop(JdbcTaskRecurrenceMaterializer materializer) {
+        return new JdbcTaskRecurrenceLoop(materializer);
+    }
 
     @Bean
     @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")

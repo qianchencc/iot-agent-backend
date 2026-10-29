@@ -4,18 +4,19 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
-import java.time.DayOfWeek;
 import java.util.HashSet;
 import java.util.Set;
 
 /** Pure recurrence calculations; all dates use the Runtime's Asia/Shanghai boundary. */
 public final class TaskRecurrence {
     public static final ZoneId ZONE = ZoneId.of("Asia/Shanghai");
+    private static final Set<String> FREQUENCIES = Set.of("daily", "weekdays", "weekly", "monthly");
+
     private TaskRecurrence() { }
 
     public record RepeatRule(String frequency, Set<Integer> weekdays, Integer dayOfMonth, LocalDate until) {
         public RepeatRule {
-            if (frequency == null || frequency.isBlank()) throw new IllegalArgumentException("重复规则无效");
+            if (frequency == null || !FREQUENCIES.contains(frequency)) throw new IllegalArgumentException("重复规则无效");
             weekdays = weekdays == null ? Set.of() : Set.copyOf(weekdays);
             if ("weekly".equals(frequency) && (weekdays.isEmpty() || weekdays.stream().anyMatch(day -> day < 1 || day > 7))) {
                 throw new IllegalArgumentException("请指定有效且不重复的周几");
@@ -47,15 +48,33 @@ public final class TaskRecurrence {
         };
     }
     public static LocalDate next(RepeatRule rule, Instant anchor, Instant after) {
-        LocalDate start = localDate(after);
-        if (!occurrenceAt(anchor, start).isAfter(after)) start = start.plusDays(1);
+        return next(rule, anchor, after, null);
+    }
+    /** Returns the first matching local date strictly after the instant and optional date. */
+    public static LocalDate next(RepeatRule rule, Instant anchor, Instant after, LocalDate afterDateExclusive) {
         LocalDate anchorDate = localDate(anchor);
+        LocalDate start = localDate(after);
+        if (afterDateExclusive != null && !start.isAfter(afterDateExclusive)) start = afterDateExclusive.plusDays(1);
+        if (!occurrenceAt(anchor, start).isAfter(after)) start = start.plusDays(1);
         if (start.isBefore(anchorDate)) start = anchorDate;
-        int horizon = "monthly".equals(rule.frequency()) ? 62 : 14;
+        int horizon = "monthly".equals(rule.frequency()) ? 62 : 7;
         for (int i = 0; i <= horizon; i++) {
             LocalDate candidate = start.plusDays(i);
-            if (matches(rule, candidate) && occurrenceAt(anchor, candidate).isAfter(after)) return candidate;
+            if (matches(rule, candidate) && occurrenceAt(anchor, candidate).isAfter(after)
+                    && (afterDateExclusive == null || candidate.isAfter(afterDateExclusive))) return candidate;
         }
         return null;
+    }
+
+    /** Parse and validate a JSON weekday array without silently accepting duplicates. */
+    public static Set<Integer> weekdays(java.util.Collection<Integer> values) {
+        if (values == null || values.isEmpty()) throw new IllegalArgumentException("请指定有效且不重复的周几");
+        Set<Integer> result = new HashSet<>();
+        for (Integer value : values) {
+            if (value == null || value < 1 || value > 7 || !result.add(value)) {
+                throw new IllegalArgumentException("请指定有效且不重复的周几");
+            }
+        }
+        return Set.copyOf(result);
     }
 }

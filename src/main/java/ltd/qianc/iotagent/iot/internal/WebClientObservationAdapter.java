@@ -79,8 +79,8 @@ public final class WebClientObservationAdapter implements ObservationAdapter {
     public Mono<ObservationResponse> read(ObservationRequest request) {
         Objects.requireNonNull(request, "request");
         validateSource(request.identity().source(), request.operation());
-        String path = routes.path(request.operation());
-        if (path == null) return Mono.error(unavailable(request.operation(), "客户观察路由未配置"));
+        String path = routes.resolvedPath(request.operation(), request.parameters());
+        if (path == null) return Mono.error(unavailable(request.operation(), "客户观察路由未配置或参数无效"));
         Mono<ObservationResponse> call = webClient.get()
                 .uri(builder -> {
                     var uri = builder.path(path);
@@ -89,7 +89,7 @@ public final class WebClientObservationAdapter implements ObservationAdapter {
                     return uri.build();
                 })
                 .headers(headers -> request.identity().gatewayHeaders().forEach(headers::set))
-                .exchangeToMono(response -> decode(response, request.operation()));
+                .exchangeToMono(response -> decode(response, request.operation(), request.parameters()));
         return guarded(request.operation(), call);
     }
 
@@ -100,7 +100,7 @@ public final class WebClientObservationAdapter implements ObservationAdapter {
             return Mono.error(unavailable(request.operation(), "报告下载操作无效"));
         }
         validateSource(request.identity().source(), request.operation());
-        String path = routes.path(ObservationOperation.REPORT_DOWNLOAD);
+        String path = routes.resolvedPath(ObservationOperation.REPORT_DOWNLOAD, request.parameters());
         if (path == null) return Mono.error(unavailable(ObservationOperation.REPORT_DOWNLOAD, "客户报告下载路由未配置"));
         Mono<ReportDownload> call = webClient.get()
                 .uri(builder -> {
@@ -114,7 +114,8 @@ public final class WebClientObservationAdapter implements ObservationAdapter {
         return guarded(ObservationOperation.REPORT_DOWNLOAD, call);
     }
 
-    private Mono<ObservationResponse> decode(ClientResponse response, ObservationOperation operation) {
+    private Mono<ObservationResponse> decode(
+            ClientResponse response, ObservationOperation operation, Map<String, String> parameters) {
         HttpStatusCode status = response.statusCode();
         if (status.value() == 401 || status.value() == 403) {
             return response.releaseBody().then(Mono.error(new GatewayAuthorizationException(status.value())));
@@ -124,19 +125,48 @@ public final class WebClientObservationAdapter implements ObservationAdapter {
         }
         return response.bodyToMono(JsonNode.class)
                 .switchIfEmpty(Mono.error(unavailable(operation, "客户观察上游响应为空")))
-                .flatMap(body -> parseBody(body, operation));
+                .flatMap(body -> parseBody(body, operation, parameters));
     }
 
-    private Mono<ObservationResponse> parseBody(JsonNode body, ObservationOperation operation) {
+    private Mono<ObservationResponse> parseBody(
+            JsonNode body, ObservationOperation operation, Map<String, String> parameters) {
         if (body == null || !body.isObject() || !body.path("code").isNumber()) {
             return Mono.error(unavailable(operation, "客户观察上游响应格式无效"));
         }
         int code = body.path("code").asInt();
         if (code == 401 || code == 403) return Mono.error(new GatewayAuthorizationException(code));
-        if (code == 204) return Mono.just(ObservationResponse.empty(Map.of("status", "empty")));
+        if (code == 204) {
+            if (operation == ObservationOperation.REGION_LIST) {
+                return Mono.just(ObservationResponse.available(Map.of("regions", List.of())));
+            }
+            if (operation == ObservationOperation.SAFETY_EVENTS) {
+                Map<String, Object> empty = new LinkedHashMap<>();
+                empty.put("source", "company");
+                empty.put("items", List.of());
+                empty.put("total", null);
+                empty.put("excludedCount", 0);
+                empty.put("scanned", 0);
+                empty.put("coverageComplete", true);
+                empty.put("nextCursor", null);
+                return Mono.just(ObservationResponse.available(empty));
+            }
+            return Mono.just(ObservationResponse.empty(Map.of("status", "empty")));
+        }
         if (code != 0 && code != 200) return Mono.error(unavailable(operation, "客户观察上游返回失败"));
         JsonNode content = body.get("content");
-        if (content == null || !content.isObject()) {
+        if (content == null || content.isNull()) {
+            return Mono.error(unavailable(operation, "客户观察上游内容格式无效"));
+        }
+        if (operation == ObservationOperation.REGION_LIST) {
+            return parseRegions(content, operation);
+        }
+        if (operation == ObservationOperation.SAFETY_EVENTS || operation == ObservationOperation.SAFETY_EVENT) {
+            if (!content.isObject()) {
+                return Mono.error(unavailable(operation, "安全台账上游内容格式无效"));
+            }
+            return parseSafety(content, operation, parameters);
+        }
+        if (!content.isObject()) {
             return Mono.error(unavailable(operation, "客户观察上游内容格式无效"));
         }
         Map<String, Object> payload = objectPayload(content);
@@ -147,6 +177,121 @@ public final class WebClientObservationAdapter implements ObservationAdapter {
             return Mono.error(unavailable(operation, "客户视频响应模式未配置"));
         }
         return Mono.just(ObservationResponse.available(payload));
+    }
+
+    private Mono<ObservationResponse> parseSafety(
+            JsonNode content, ObservationOperation operation, Map<String, String> parameters) {
+        JsonNode rows = content.get("content");
+        if (rows == null || !rows.isArray()) {
+            return Mono.error(unavailable(operation, "安全台账上游分页格式无效"));
+        }
+        String ledger = parameters.get("ledger");
+        if (ledger == null) {
+            ledger = "water".equals(parameters.get("type")) ? "flooding" : parameters.getOrDefault("type", "gas");
+        }
+        String requestedId = parameters.get("id");
+        String requestedDevice = parameters.get("deviceId");
+        String from = parameters.get("from");
+        String to = parameters.get("to");
+        long fromMillis = from == null ? Long.MIN_VALUE : instantMillis(from);
+        long toMillis = to == null ? Long.MAX_VALUE : instantMillis(to);
+        List<Map<String, Object>> records = new ArrayList<>();
+        for (JsonNode row : rows) {
+            String id = text(row, "id");
+            String deviceId = text(row, "deviceId");
+            String deviceName = text(row, "deviceName");
+            String occurredAt = safetyTime(row.get("createdAt"));
+            if (id == null || deviceId == null || deviceName == null || occurredAt == null) continue;
+            long occurredMillis = instantMillis(occurredAt);
+            if (occurredMillis < fromMillis || occurredMillis > toMillis) continue;
+            if (requestedDevice != null && !requestedDevice.equals(deviceId)) continue;
+            if (requestedId != null && !requestedId.equals(id)) continue;
+            Map<String, Object> record = new LinkedHashMap<>();
+            record.put("eventId", id);
+            record.put("ledger", ledger);
+            record.put("deviceId", deviceId);
+            record.put("deviceName", deviceName);
+            record.put("recordedDeviceName", deviceName);
+            Map<String, Object> currentDevice = new LinkedHashMap<>();
+            currentDevice.put("name", null);
+            currentDevice.put("location", "");
+            record.put("currentDevice", currentDevice);
+            record.put("location", "");
+            record.put("subtype", "flooding".equals(ledger) ? "water" : ledger);
+            record.put("occurredAt", occurredAt);
+            record.put("alarm", row.has("alarm") && !row.get("alarm").isNull() ? row.get("alarm").asBoolean() : null);
+            record.put("report", row.has("report") && !row.get("report").isNull() ? row.get("report").asBoolean() : null);
+            records.add(record);
+        }
+        if (operation == ObservationOperation.SAFETY_EVENT) {
+            if (records.isEmpty()) return Mono.error(unavailable(operation, "当前授权范围内未找到安全台账记录"));
+            return Mono.just(ObservationResponse.available(Map.of("source", "company", "record", records.get(0))));
+        }
+        int limit = parseLimit(parameters.get("limit"));
+        if (records.size() > limit) records = new ArrayList<>(records.subList(0, limit));
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("source", "company");
+        payload.put("items", records);
+        payload.put("window", Map.of("from", from == null ? "1970-01-01T00:00:00.000Z" : from,
+                "to", to == null ? "9999-12-31T23:59:59.999Z" : to));
+        payload.put("total", content.has("totalElements") ? content.get("totalElements").asInt() : null);
+        payload.put("excludedCount", 0);
+        payload.put("scanned", rows.size());
+        payload.put("coverageComplete", content.path("last").asBoolean(rows.size() < 100));
+        payload.put("nextCursor", null);
+        return Mono.just(ObservationResponse.available(payload));
+    }
+
+    private static int parseLimit(String value) {
+        try {
+            int parsed = Integer.parseInt(value == null ? "20" : value);
+            return Math.max(1, Math.min(100, parsed));
+        } catch (NumberFormatException ignored) {
+            return 20;
+        }
+    }
+
+    private static String safetyTime(JsonNode value) {
+        if (value == null || value.isNull() || !value.isValueNode()) return null;
+        String raw = value.asText();
+        try {
+            return OffsetDateTime.parse(raw).toInstant().toString();
+        } catch (RuntimeException ignored) {
+            try {
+                return OffsetDateTime.parse(raw.replace(' ', 'T') + "+08:00").toInstant().toString();
+            } catch (RuntimeException invalid) {
+                return null;
+            }
+        }
+    }
+
+    private static long instantMillis(String value) {
+        try {
+            return java.time.Instant.parse(value).toEpochMilli();
+        } catch (RuntimeException ignored) {
+            try {
+                return OffsetDateTime.parse(value).toInstant().toEpochMilli();
+            } catch (RuntimeException invalid) {
+                return Long.MIN_VALUE;
+            }
+        }
+    }
+
+    private Mono<ObservationResponse> parseRegions(JsonNode content, ObservationOperation operation) {
+        JsonNode rows = content.isArray() ? content : content.get("content");
+        if (rows == null || !rows.isArray()) {
+            return Mono.error(unavailable(operation, "Office 区域响应格式无效"));
+        }
+        List<Map<String, Object>> regions = new ArrayList<>();
+        for (JsonNode row : rows) {
+            String id = text(row, "elementId", "id");
+            if (id == null || id.isBlank()) {
+                return Mono.error(unavailable(operation, "Office 区域响应缺少区域标识"));
+            }
+            String name = text(row, "elementName", "name");
+            regions.add(Map.of("id", id, "name", name == null || name.isBlank() ? "未命名区域" : name));
+        }
+        return Mono.just(ObservationResponse.available(Map.of("regions", regions)));
     }
 
     private Mono<ReportDownload> decodeDownload(ClientResponse response) {
@@ -171,9 +316,11 @@ public final class WebClientObservationAdapter implements ObservationAdapter {
             ObservationOperation operation, Map<String, String> parameters) {
         Map<String, List<String>> values = new LinkedHashMap<>();
         parameters.forEach((key, value) -> {
-            if (value != null && !key.equals("source") && !key.equals("from") && !key.equals("to")) {
-                values.computeIfAbsent(key, ignored -> new ArrayList<>()).add(value);
-            }
+            if (value == null || key.equals("source") || key.equals("from") || key.equals("to")
+                    || key.equals("section") || key.equals("type") || key.equals("limit")
+                    || key.equals("cursor") || key.equals("mode") || key.equals("beginTime")
+                    || key.equals("endTime") || key.equals("ledger") || key.equals("id")) return;
+            values.computeIfAbsent(key, ignored -> new ArrayList<>()).add(value);
         });
         if (operation == ObservationOperation.ENVIRONMENT_HISTORY) {
             String from = parameters.get("from"), to = parameters.get("to");
@@ -188,10 +335,26 @@ public final class WebClientObservationAdapter implements ObservationAdapter {
             values.putIfAbsent("page", List.of(parameters.getOrDefault("page", "0")));
             values.putIfAbsent("size", List.of("20"));
             values.computeIfAbsent("sort", ignored -> new ArrayList<>()).addAll(List.of("readTime,desc", "id,desc"));
+        } else if (operation == ObservationOperation.SAFETY_EVENTS
+                || operation == ObservationOperation.SAFETY_EVENT) {
+            String ledger = ledger(parameters.getOrDefault("type", parameters.getOrDefault("ledger", "gas")));
+            values.put("page", List.of(parameters.getOrDefault("page", "0")));
+            values.put("size", List.of("100"));
+            if (parameters.get("deviceId") != null) values.put("deviceId", List.of(parameters.get("deviceId")));
+            values.put("sort", List.of("createdAt,desc", "id,desc", "deviceId,desc"));
+            if (operation == ObservationOperation.SAFETY_EVENTS) values.put("ledger", List.of(ledger));
         }
         return values;
     }
 
+    private static String ledger(String value) {
+        return switch (value == null ? "" : value.toLowerCase(Locale.ROOT)) {
+            case "smoke" -> "smoke";
+            case "water", "flooding" -> "flooding";
+            case "gas" -> "gas";
+            default -> throw new ObservationUnavailableException("SAFETY_EVENTS：安全台账类型无效");
+        };
+    }
     private static String localDate(String value) {
         try {
             return OffsetDateTime.parse(value).withOffsetSameInstant(ZoneOffset.ofHours(8)).toLocalDate().toString();
@@ -207,6 +370,18 @@ public final class WebClientObservationAdapter implements ObservationAdapter {
         } catch (RuntimeException invalid) {
             return value;
         }
+    }
+
+    private static String text(JsonNode node, String... keys) {
+        if (node == null || !node.isObject()) return null;
+        for (String key : keys) {
+            JsonNode value = node.get(key);
+            if (value != null && value.isValueNode() && !value.isNull()) {
+                String text = value.asText();
+                if (text != null && !text.isBlank()) return text;
+            }
+        }
+        return null;
     }
 
     private static Map<String, Object> objectPayload(JsonNode object) {

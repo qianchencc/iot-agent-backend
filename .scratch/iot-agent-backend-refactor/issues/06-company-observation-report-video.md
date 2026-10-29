@@ -4,7 +4,7 @@
 
 **Blocked by:** 02: Runtime 身份核验与稳定 Principal；03: MySQL / Redis 业务事实基础设施；04: Conversation 与 Pi Agent 生产闭环
 
-**Status:** partially-implemented (environment/energy direct read adapters and redaction pass; dashboard/safety composition and report/video require remaining Runtime route/protocol migration)
+**Status:** partially-implemented (environment/energy history, Runtime-derived safety ledger reads, and Office membership region reads are wired; dashboard composition, region device/state composition, region seen persistence, and report/video remain unavailable without exact upstream/local protocols)
 
 - [ ] 迁移 Company dashboard、environment、energy history/comparison、safety、region、video 和 report 只读接口。
 - [x] Observation adapter 依据 Runtime 路由、请求参数和 `{code,content}` 解析真实上游响应。
@@ -17,4 +17,4 @@
 
 ## Comments
 
-- 2026-10-29：Real customer read-only smoke: `/api/agent/environment-history?source=company` returned 200 with the upstream page envelope. Adapter maps Runtime date/page/sort parameters and recursively redacts secret-shaped fields. Dashboard/safety composition and report/video are explicit 503 until their Runtime-derived route/action protocols and MySQL report snapshot path are migrated; no empty success fallback.
+- 2026-10-29：Real customer read-only smoke: Company environment history returned 200 with the upstream page envelope; Company safety-events returned 200 with Runtime-shaped `items/window/coverageComplete`; Office `/regions` returned 200 with one membership region. Adapter maps Runtime date/page/sort parameters, safety ledger resolution and recursive redaction. Dashboard composition, region devices/states/seen, report and video remain explicit unavailable paths until exact Runtime-derived protocols are migrated; no empty success fallback.
