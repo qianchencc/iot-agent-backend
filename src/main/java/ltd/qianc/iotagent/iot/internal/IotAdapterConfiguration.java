@@ -16,23 +16,40 @@ import org.springframework.web.reactive.function.client.WebClient;
 public class IotAdapterConfiguration {
 
     @Bean
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = "agent.control.mode", havingValue = "fixture")
+    IotAdapter fixtureIotAdapter() {
+        return new FixtureIotAdapter();
+    }
+
+    @Bean
     @ConditionalOnMissingBean(IotAdapter.class)
     IotAdapter iotAdapter(
             WebClient.Builder builder,
             @Value("${iot.gateway.base-url:}") String baseUrl,
             @Value("${iot.gateway.office-scope-path:}") String officePath,
             @Value("${iot.gateway.company-scope-path:}") String companyPath,
+            @Value("${iot.gateway.office-membership-path:/micro-api/api/office/office/member/my/office}") String membershipPath,
+            @Value("${iot.gateway.office-ac-path:/micro-api/api/office/app/device/ac/myOffice/pageByAc}") String acPath,
+            @Value("${iot.gateway.office-lighting-path:/micro-api/api/office/device/page}") String lightingPath,
+            @Value("${iot.gateway.office-access-path:/micro-api/api/office/device/page}") String accessPath,
+            @Value("${iot.gateway.office-video-path:/micro-api/api/office/device/page}") String videoPath,
+            @Value("${iot.gateway.office-ac-association-path:/micro-api/api/office/acAreaDevice/page}") String acAssociationPath,
+            @Value("${iot.gateway.office-lighting-association-path:/micro-api/api/office/lightingAreaDevice/page}") String lightingAssociationPath,
+            @Value("${iot.gateway.office-access-association-path:/micro-api/api/office/accessAreaDevice/page}") String accessAssociationPath,
             @Value("${iot.gateway.call-timeout-ms:10000}") long timeoutMs) {
-        if (baseUrl == null || baseUrl.isBlank()) {
-            return IotAdapterFactory.failClosed("物联上游未配置");
-        }
+        if (baseUrl == null || baseUrl.isBlank()) return IotAdapterFactory.failClosed("物联上游未配置");
         if (officePath == null || officePath.isBlank() || companyPath == null || companyPath.isBlank()) {
             return IotAdapterFactory.failClosed("物联授权设备范围路径未配置");
         }
         try {
             return IotAdapterFactory.webClient(
                     builder.baseUrl(baseUrl).build(),
-                    new IotGatewayRoutes(officePath, companyPath),
+                    IotGatewayRoutes.officeDirectory(
+                            officePath,
+                            companyPath,
+                            membershipPath,
+                            IotGatewayRoutes.runtimeOfficeSources(acPath, lightingPath, accessPath, videoPath,
+                                    acAssociationPath, lightingAssociationPath, accessAssociationPath)),
                     Duration.ofMillis(timeoutMs),
                     IotCallPolicy.passThrough());
         } catch (RuntimeException invalidConfiguration) {

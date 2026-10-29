@@ -14,7 +14,8 @@ public final class StorageSchemaInitializer {
 
     public void initialize() {
         ResourceDatabasePopulator populator = new ResourceDatabasePopulator(
-                new ClassPathResource("db/mysql/agent-facts.sql"));
+                new ClassPathResource("db/mysql/agent-facts.sql"),
+                new ClassPathResource("db/mysql/admin-configuration.sql"));
         populator.setContinueOnError(false);
         DatabasePopulatorUtils.execute(populator, dataSource);
     }

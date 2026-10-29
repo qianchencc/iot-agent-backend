@@ -12,6 +12,12 @@ public interface TaskPhaseStore {
     boolean finish(String phaseId, long expectedVersion, String status, String payloadJson, Instant endedAt);
     int recoverExecuting(Instant at);
 
+    /**
+     * Returns whether no phase for the task is still pending or executing. Durable
+     * stores override this to prevent early terminal notifications.
+     */
+    default boolean allTerminal(String taskId) { return true; }
+
     record TaskPhase(String taskId, String phaseId, long version, String source,
                      String payloadJson, Instant dueAt, String status) {
         public TaskPhase {

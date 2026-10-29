@@ -5,10 +5,11 @@ import ltd.qianc.iotagent.iot.RequestIdentity;
 
 /**
  * Explicit seam for the customer control protocol. The action module does not
- * invent an upstream endpoint or schema; production wiring is fail-closed until
- * a protocol adapter is supplied.
+ * invent a production endpoint or schema; production wiring is fail-closed.
+ * A Runtime-derived local fixture may be selected only by explicit control mode.
  */
 public interface ActionCommandGateway {
 
     ActionDispatchResult dispatch(RequestIdentity identity, AuthorizedDeviceScope scope, String selectedActionsJson);
+
 }

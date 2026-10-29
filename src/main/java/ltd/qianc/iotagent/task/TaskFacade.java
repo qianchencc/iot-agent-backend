@@ -81,10 +81,9 @@ public final class TaskFacade {
                         proposal.payloadJson(), proposal.idempotencyKey()), proposal.version())
                 .orElseThrow(() -> conflict("VERSION_CONFLICT", "任务提案已变化，请刷新后重试"));
         String taskKey = "task:" + confirmed.proposalId();
-        Optional<TaskFact> existing = tasks.findByIdempotencyKey(taskKey);
-        if (existing.isPresent()) return existing.get();
+        String taskPayload = materializePhaseIds(confirmed.payloadJson());
         TaskFact task = new TaskFact(UUID.randomUUID().toString(), 1, SCHEDULED,
-                confirmed.payloadJson(), taskKey);
+                taskPayload, taskKey);
         TaskFact saved;
         try { saved = tasks.save(task); }
         catch (RuntimeException error) { saved = tasks.findByIdempotencyKey(taskKey).orElseThrow(() -> error); }
@@ -119,8 +118,9 @@ public final class TaskFacade {
                 .put("tenantCode", principal.tenantCode())
                 .put("ownerKey", ownerKey(principal))
                 .put("source", source(safePayload(current.payloadJson()).path("source").asText("office")));
+        String normalizedPayload = materializePhaseIds(nextPayload.toString());
         TaskFact replacement = new TaskFact(taskId, expectedVersion + 1, SCHEDULED,
-                nextPayload.toString(), current.idempotencyKey());
+                normalizedPayload, current.idempotencyKey());
         TaskFact updated = tasks.updateIfVersion(replacement, expectedVersion)
                 .orElseThrow(() -> conflict("VERSION_CONFLICT", "任务状态已变化，请刷新后再试"));
         cancelScheduledPhases(current);
@@ -188,6 +188,10 @@ public final class TaskFacade {
         return notifications.list(principal.tenantCode(), ownerKey(principal), source(source), limit, before)
                 .stream().map(this::notificationView).toList();
     }
+    public long unreadNotificationCount(PrincipalInfo principal, String source) {
+        return notifications.unreadCount(principal.tenantCode(), ownerKey(principal), source(source));
+    }
+
 
     public Map<String, Object> seenNotification(PrincipalInfo principal, String source, String id) {
         TaskNotificationFact fact = notifications.markSeen(principal.tenantCode(), ownerKey(principal), source(source), id, clock.instant());
@@ -226,6 +230,21 @@ public final class TaskFacade {
         return tasks.findByIdempotencyKey("task:" + proposalId)
                 .orElseThrow(() -> new BusinessException("TASK_RECOVERY_REQUIRED", "任务确认已记账，正在恢复任务事实", 503));
     }
+    private String materializePhaseIds(String payloadJson) {
+        JsonNode parsed = safePayload(payloadJson);
+        if (!parsed.isObject() || !parsed.path("phases").isArray()) return parsed.toString();
+        com.fasterxml.jackson.databind.node.ObjectNode root = (com.fasterxml.jackson.databind.node.ObjectNode) parsed;
+        for (JsonNode item : root.withArray("phases")) {
+            if (item.isObject()) {
+                com.fasterxml.jackson.databind.node.ObjectNode phase = (com.fasterxml.jackson.databind.node.ObjectNode) item;
+                if (!phase.path("phaseId").isTextual() || phase.path("phaseId").asText().isBlank()) {
+                    phase.put("phaseId", UUID.randomUUID().toString());
+                }
+            }
+        }
+        return root.toString();
+    }
+
     private void scheduleIfDue(TaskFact task) {
         JsonNode payload = safePayload(task.payloadJson());
         JsonNode phases = payload.path("phases");
@@ -233,7 +252,9 @@ public final class TaskFacade {
         for (JsonNode phase : phases) {
             if (phase.path("phaseId").isTextual() && phase.path("at").isTextual()) {
                 try { scheduler.schedule(task.taskId(), phase.path("phaseId").asText(), Instant.parse(phase.path("at").asText())); }
-                catch (RuntimeException error) { /* durable task remains scheduled for recovery */ }
+                catch (RuntimeException error) {
+                    throw new BusinessException("TASK_SCHEDULER_UNAVAILABLE", "任务已记账，但调度服务暂不可用，请稍后重试", 503);
+                }
             }
         }
     }

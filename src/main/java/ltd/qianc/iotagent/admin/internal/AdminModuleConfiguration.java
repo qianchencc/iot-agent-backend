@@ -5,12 +5,17 @@ import ltd.qianc.iotagent.admin.AdminApplyCoordinator;
 import ltd.qianc.iotagent.admin.AdminConfigurationStore;
 import ltd.qianc.iotagent.admin.AdminPasswordPolicy;
 import ltd.qianc.iotagent.admin.AdminWorkState;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.support.TransactionTemplate;
+
+import ltd.qianc.iotagent.admin.AdminConfigurationFactory;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -25,15 +30,33 @@ public class AdminModuleConfiguration {
     @ConditionalOnMissingBean
     AdminConfigurationStore adminConfigurationStore(ObjectMapper mapper, Environment environment,
             @Value("${admin.config-file:${ADMIN_CONFIG_FILE:var/admin-config.bin}}") String configFile,
-            @Value("${admin.config-secret-key:${CONFIG_SECRET_KEY:}}") String secretKey) {
+            @Value("${admin.config-secret-key:${CONFIG_SECRET_KEY:}}") String secretKey,
+            ObjectProvider<JdbcTemplate> jdbcProvider, ObjectProvider<TransactionTemplate> transactionProvider) {
+        boolean mysqlEnabled = Boolean.parseBoolean(environment.getProperty("agent.storage.mysql.enabled", "false"));
         if (!secretKey.matches("[a-fA-F0-9]{64}")) return new FailClosedAdminConfigurationStore();
         Map<String, Object> initial = initial(environment);
         Set<String> locked = locked(environment);
+        if (mysqlEnabled) {
+            JdbcTemplate jdbc = jdbcProvider.getIfAvailable();
+            TransactionTemplate transactions = transactionProvider.getIfAvailable();
+            if (jdbc == null || transactions == null) return new FailClosedAdminConfigurationStore();
+            try {
+                return AdminConfigurationFactory.mysql(jdbc, transactions, mapper, hex(secretKey), initial, locked);
+            } catch (RuntimeException e) {
+                return new FailClosedAdminConfigurationStore();
+            }
+        }
         try {
-            return new EncryptedFileAdminConfigurationStore(mapper, Path.of(configFile), hex(secretKey), initial, locked);
+            return AdminConfigurationFactory.encryptedFile(mapper, Path.of(configFile), hex(secretKey), initial, locked);
         } catch (RuntimeException e) {
             return new FailClosedAdminConfigurationStore();
         }
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    AdminModelTester adminModelTester(ObjectMapper mapper) {
+        return new AdminModelTester(mapper);
     }
 
     @Bean

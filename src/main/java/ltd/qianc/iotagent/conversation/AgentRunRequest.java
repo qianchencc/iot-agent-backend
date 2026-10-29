@@ -11,5 +11,6 @@ public record AgentRunRequest(
         String content,
         String tenantCode,
         String focusRegionId,
-        Map<String, Object> reference) {
+        Map<String, Object> reference,
+        String toolContextId) {
 }

@@ -3,6 +3,8 @@ package ltd.qianc.iotagent.storage.internal;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.net.URI;
 import javax.sql.DataSource;
+import ltd.qianc.iotagent.action.ActionReadbackStore;
+import ltd.qianc.iotagent.action.ActionReceiptStore;
 import ltd.qianc.iotagent.action.ActionDraftStore;
 import ltd.qianc.iotagent.audit.AuditEventStore;
 import ltd.qianc.iotagent.conversation.ConversationEventStore;
@@ -14,7 +16,8 @@ import ltd.qianc.iotagent.task.TaskNotificationStore;
 import ltd.qianc.iotagent.task.TaskPhaseStore;
 import ltd.qianc.iotagent.task.TaskPlanStore;
 import ltd.qianc.iotagent.task.TaskProposalStore;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import ltd.qianc.iotagent.task.TaskProjectionStore;
+import ltd.qianc.iotagent.task.TaskScheduler;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.jdbc.DataSourceBuilder;
@@ -75,6 +78,20 @@ public class StorageConfiguration {
 
     @Bean
     @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
+    @ConditionalOnMissingBean(ActionReceiptStore.class)
+    JdbcActionReceiptStore jdbcActionReceiptStore(JdbcTemplate jdbc, TransactionTemplate transactions, ObjectMapper mapper) {
+        return new JdbcActionReceiptStore(jdbc, transactions, mapper);
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
+    @ConditionalOnMissingBean(ActionReadbackStore.class)
+    JdbcActionReadbackStore jdbcActionReadbackStore(JdbcTemplate jdbc, TransactionTemplate transactions, ObjectMapper mapper) {
+        return new JdbcActionReadbackStore(jdbc, transactions, mapper);
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
     @ConditionalOnMissingBean(TaskFactStore.class)
     JdbcTaskFactStore jdbcTaskFactStore(JdbcTemplate jdbc, TransactionTemplate transactions, ObjectMapper mapper) { return new JdbcTaskFactStore(jdbc, transactions, mapper); }
 
@@ -92,6 +109,16 @@ public class StorageConfiguration {
     @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
     @ConditionalOnMissingBean(TaskPhaseStore.class)
     JdbcTaskPhaseStore jdbcTaskPhaseStore(JdbcTemplate jdbc, TransactionTemplate transactions, ObjectMapper mapper) { return new JdbcTaskPhaseStore(jdbc, transactions, mapper); }
+
+    @Bean
+    @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
+    @ConditionalOnMissingBean(TaskScheduler.class)
+    JdbcTaskScheduler jdbcTaskScheduler(JdbcTemplate jdbc, ObjectMapper mapper) { return new JdbcTaskScheduler(jdbc, mapper); }
+
+    @Bean
+    @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
+    @ConditionalOnMissingBean(TaskProjectionStore.class)
+    JdbcTaskProjectionStore jdbcTaskProjectionStore(JdbcTemplate jdbc, ObjectMapper mapper) { return new JdbcTaskProjectionStore(jdbc, mapper); }
 
     @Bean
     @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")

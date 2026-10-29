@@ -2,10 +2,12 @@ package ltd.qianc.iotagent.task;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
+import java.util.UUID;
 
 /**
  * Recovery-safe scanner. A phase must be claimed by durable CAS before gateway
@@ -18,6 +20,7 @@ public final class TaskScanner {
     private final TaskExecutionGateway gateway;
     private final TaskNotificationStore notifications;
     private final Clock clock;
+    private volatile boolean stopping;
 
     public TaskScanner(TaskPhaseStore phases, TaskFactStore tasks, TaskExecutionGateway gateway,
                        TaskNotificationStore notifications, Clock clock) {
@@ -29,6 +32,7 @@ public final class TaskScanner {
     }
 
     public ScanResult scanOnce() {
+        if (stopping) return new ScanResult(0, 0, 0, 0);
         Instant now = clock.instant();
         int attempted = 0, claimed = 0, completed = 0, interrupted = 0;
         List<TaskPhaseStore.TaskPhase> due = phases.due(now, 4);
@@ -42,12 +46,23 @@ public final class TaskScanner {
                 boolean finished = phases.finish(phase.phaseId(), phase.version() + 1, result.outcome(), result.payloadJson(), clock.instant());
                 if (finished) {
                     completed++;
-                    if (isTerminal(result.outcome())) terminalNotification(phase, result);
+                    if (phases.allTerminal(phase.taskId())) {
+                        TaskFact terminalTask = completeTask(phase.taskId(), result.outcome(), result.payloadJson());
+                        if (terminalTask != null) terminalNotification(terminalTask, phase, result);
+                    }
                 }
             } catch (RuntimeException error) {
                 // Dispatch may already have crossed the gateway boundary. Preserve unknown/interrupted;
                 // do not roll back to pending and do not allow a second execution after restart.
-                if (phases.finish(phase.phaseId(), phase.version() + 1, "INTERRUPTED", "{\"outcome\":\"unknown\"}", clock.instant())) interrupted++;
+                if (phases.finish(phase.phaseId(), phase.version() + 1, "INTERRUPTED", "{\"outcome\":\"unknown\"}", clock.instant())) {
+                    interrupted++;
+                    if (phases.allTerminal(phase.taskId())) {
+                        TaskExecutionGateway.TaskExecutionResult interruptedResult =
+                                new TaskExecutionGateway.TaskExecutionResult("INTERRUPTED", "{\"outcome\":\"unknown\"}", true);
+                        TaskFact terminalTask = completeTask(phase.taskId(), interruptedResult.outcome(), interruptedResult.payloadJson());
+                        if (terminalTask != null) terminalNotification(terminalTask, phase, interruptedResult);
+                    }
+                }
             }
         }
         return new ScanResult(attempted, claimed, completed, interrupted);
@@ -57,21 +72,44 @@ public final class TaskScanner {
     public ScanResult scan() { return scanOnce(); }
 
     public int recoverInterrupted() { return recover(); }
+    public void stopAndDrain() { stopping = true; }
+
+    private TaskFact completeTask(String taskId, String outcome, String resultJson) {
+        TaskFact current = tasks.find(taskId).orElse(null);
+        if (current == null || isTerminal(current.status())) return current;
+        String status = switch (outcome) {
+            case "COMPLETED" -> "COMPLETED";
+            case "FAILED" -> "FAILED";
+            case "UNCONFIRMED", "INTERRUPTED" -> "UNCONFIRMED";
+            default -> "FAILED";
+        };
+        return tasks.updateIfVersion(new TaskFact(current.taskId(), current.version() + 1, status,
+                current.payloadJson(), current.idempotencyKey()), current.version()).orElseGet(
+                () -> tasks.find(taskId).orElse(current));
+    }
 
     private void terminalNotification(TaskPhaseStore.TaskPhase phase, TaskExecutionGateway.TaskExecutionResult result) {
         TaskFact task = tasks.find(phase.taskId()).orElse(null);
-        if (task == null || !isTerminal(result.outcome())) return;
+        if (task != null) terminalNotification(task, phase, result);
+    }
+
+    private void terminalNotification(TaskFact task, TaskPhaseStore.TaskPhase phase,
+                                      TaskExecutionGateway.TaskExecutionResult result) {
+        if (!isTerminal(result.outcome())) return;
         var payload = task.payloadJson();
         String tenant = field(payload, "tenantCode", "unknown");
         String recipient = field(payload, "ownerKey", "unknown");
         String source = field(payload, "source", phase.source());
         try {
             notifications.record(new TaskNotificationFact(
-                    phase.taskId() + ":" + recipient, phase.taskId(), tenant, recipient, source,
+                    notificationId(phase.taskId(), recipient), phase.taskId(), tenant, recipient, source,
                     result.outcome(), clock.instant(), null, result.payloadJson()));
         } catch (RuntimeException ignored) {
             // Notification persistence is retried from the terminal fact, never by redispatching the phase.
         }
+    }
+    private static String notificationId(String taskId, String recipient) {
+        return UUID.nameUUIDFromBytes((taskId + "\u0000" + recipient).getBytes(StandardCharsets.UTF_8)).toString();
     }
     private static boolean isTerminal(String value) {
         return "COMPLETED".equals(value) || "PARTIAL".equals(value) || "FAILED".equals(value)

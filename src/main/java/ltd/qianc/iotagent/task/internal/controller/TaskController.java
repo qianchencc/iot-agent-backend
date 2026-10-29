@@ -88,7 +88,7 @@ public final class TaskController {
                                              @RequestParam(defaultValue = "30") int limit,
                                              @RequestParam(required = false) String before) {
         var items = facade.notifications(PrincipalContext.getPrincipalInfo(), source, limit, before);
-        return Map.of("notifications", items, "unreadCount", items.stream().filter(item -> item.get("readAt") == null).count());
+        return Map.of("notifications", items, "unreadCount", facade.unreadNotificationCount(PrincipalContext.getPrincipalInfo(), source));
     }
     @PostMapping("/notifications/{id}/seen")
     public Map<String, Object> seen(@PathVariable String id, @RequestParam(defaultValue = "office") String source) {

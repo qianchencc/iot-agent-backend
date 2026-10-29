@@ -18,12 +18,43 @@ agent:
     redis:
       enabled: ${AGENT_STORAGE_REDIS_ENABLED:false}
 
+
+  control:
+    mode: ${AGENT_CONTROL_MODE:}
+    fixture:
+      outcome: ${AGENT_CONTROL_FIXTURE_OUTCOME:accepted}
+      readback: ${AGENT_CONTROL_FIXTURE_READBACK:confirmed}
+      task-outcome: ${AGENT_CONTROL_FIXTURE_TASK_OUTCOME:COMPLETED}
 iot:
   gateway:
     base-url: ${IOT_GATEWAY_BASE_URL:}
     office-scope-path: ${IOT_GATEWAY_OFFICE_SCOPE_PATH:}
     company-scope-path: ${IOT_GATEWAY_COMPANY_SCOPE_PATH:}
+    office-membership-path: ${IOT_GATEWAY_OFFICE_MEMBERSHIP_PATH:/micro-api/api/office/office/member/my/office}
+    office-ac-path: ${IOT_GATEWAY_OFFICE_AC_PATH:/micro-api/api/office/app/device/ac/myOffice/pageByAc}
+    office-lighting-path: ${IOT_GATEWAY_OFFICE_LIGHTING_PATH:/micro-api/api/office/device/page}
+    office-access-path: ${IOT_GATEWAY_OFFICE_ACCESS_PATH:/micro-api/api/office/device/page}
+    office-video-path: ${IOT_GATEWAY_OFFICE_VIDEO_PATH:/micro-api/api/office/device/page}
+    office-ac-association-path: ${IOT_GATEWAY_OFFICE_AC_ASSOCIATION_PATH:/micro-api/api/office/acAreaDevice/page}
+    office-lighting-association-path: ${IOT_GATEWAY_OFFICE_LIGHTING_ASSOCIATION_PATH:/micro-api/api/office/lightingAreaDevice/page}
+    office-access-association-path: ${IOT_GATEWAY_OFFICE_ACCESS_ASSOCIATION_PATH:/micro-api/api/office/accessAreaDevice/page}
     call-timeout-ms: ${IOT_GATEWAY_CALL_TIMEOUT_MS:15000}
+  observation:
+    routes:
+      environment-history: ${IOT_OBSERVATION_ROUTE_ENVIRONMENT_HISTORY:/micro-api/api/iot-center/env/history/page}
+      energy-history: ${IOT_OBSERVATION_ROUTE_ENERGY_HISTORY:/micro-api/api/energy/electricData/page}
+      dashboard: ${IOT_OBSERVATION_ROUTE_DASHBOARD:}
+      safety-events: ${IOT_OBSERVATION_ROUTE_SAFETY_EVENTS:}
+      safety-event: ${IOT_OBSERVATION_ROUTE_SAFETY_EVENT:}
+      safety-event-cameras: ${IOT_OBSERVATION_ROUTE_SAFETY_EVENT_CAMERAS:}
+      energy-comparison: ${IOT_OBSERVATION_ROUTE_ENERGY_COMPARISON:}
+      energy-report: ${IOT_OBSERVATION_ROUTE_ENERGY_REPORT:}
+      company-energy-daily: ${IOT_OBSERVATION_ROUTE_COMPANY_ENERGY_DAILY:}
+      company-energy-report: ${IOT_OBSERVATION_ROUTE_COMPANY_ENERGY_REPORT:}
+      company-meter-report: ${IOT_OBSERVATION_ROUTE_COMPANY_METER_REPORT:}
+      video-stream: ${IOT_OBSERVATION_ROUTE_VIDEO_STREAM:}
+      report: ${IOT_OBSERVATION_ROUTE_REPORT:}
+      report-download: ${IOT_OBSERVATION_ROUTE_REPORT_DOWNLOAD:}
   identity:
     verify: ${IOT_IDENTITY_VERIFY:true}
     verify-timeout-ms: ${IOT_IDENTITY_VERIFY_TIMEOUT_MS:10000}

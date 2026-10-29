@@ -10,10 +10,10 @@
 - [x] 会话、NDJSON 事件、Action Draft、Task、Plan、Phase、Notification、Report 和 Audit 有业务事实仓储实现。
 - [x] 逐事件追加、sequence 重放、终态恢复、唯一性和 CAS 语义在 MySQL 中保持。
 - [x] Redis 实现可重建缓存、分布式锁、幂等键、限流和运行期协调。
-- [ ] Redis 故障不会丢失 MySQL 业务事实；缓存失效进入可观测受控降级。
+- [x] Redis 故障不会丢失 MySQL 业务事实；缓存失效进入可观测受控降级。
 - [x] 不保留进程内事实存储或假成功 fallback。
 - [x] 表、字段、decimal、唯一索引、时间字段和无外键/级联约束符合客户技术规范。
 
 ## Comments
 
-- 2026-10-29：新增 conditional MySQL/Redis wiring、idempotent schema initialization、JDBC business-fact adapters and Redis coordination adapter. `StorageIntegrationTest` passed with local Compose; Java HTTP conversation create/current returned 201/200 with real identity verification. Admin configuration persistence, task read projections and Redis outage recovery remain owned by later tickets.
+- 2026-10-29：新增 conditional MySQL/Redis wiring、idempotent schema initialization、JDBC business-fact adapters and Redis coordination adapter. `StorageIntegrationTest` passed with local Compose; Java HTTP conversation create/current returned 201/200 with real identity verification; local Redis was stopped and MySQL-backed conversation creation still returned 201, then Redis was restored. Admin configuration persistence and later read projections are implemented in their owning tickets.

@@ -108,6 +108,7 @@ public final class HttpAgentEngineBridge implements AgentEngineBridge {
         try {
             Map<String, Object> requestBody = new LinkedHashMap<>();
             requestBody.put("runId", request.runId());
+            requestBody.put("toolContextId", request.toolContextId());
             requestBody.put("conversationId", request.conversationId());
             requestBody.put("turnId", request.turnId());
             requestBody.put("source", request.source());

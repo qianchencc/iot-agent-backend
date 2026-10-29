@@ -36,7 +36,8 @@ import reactor.core.publisher.Mono;
 /**
  * The only service allowed to move an Action Draft into execution. The draft
  * fact is the idempotency and CAS authority; the command gateway is an explicit
- * adapter seam and never a local or fake device implementation.
+ * adapter seam. Production wiring remains fail-closed; fixture wiring is local-only
+ * and enabled only by the explicit control mode.
  */
 public final class ActionDraftFacade {
     private final ObjectMapper mapper;
@@ -45,6 +46,8 @@ public final class ActionDraftFacade {
     private final ActionCommandGateway gateway;
     private final ConversationEventStore conversationEvents;
     private final AuditEventStore audit;
+    private final ActionReceiptStore receiptStore;
+    private final ActionReadbackStore readbackStore;
     private final Clock clock;
     private final Duration scopeTimeout;
     private final Duration draftTtl;
@@ -52,12 +55,20 @@ public final class ActionDraftFacade {
     public ActionDraftFacade(ObjectMapper mapper, ActionDraftStore store, IotAdapter iot,
                              ActionCommandGateway gateway, Clock clock, Duration scopeTimeout,
                              Duration draftTtl) {
-        this(mapper, store, iot, gateway, null, null, clock, scopeTimeout, draftTtl);
+        this(mapper, store, iot, gateway, null, null, null, null, clock, scopeTimeout, draftTtl);
     }
 
     public ActionDraftFacade(ObjectMapper mapper, ActionDraftStore store, IotAdapter iot,
                              ActionCommandGateway gateway, ConversationEventStore conversationEvents,
                              AuditEventStore audit, Clock clock, Duration scopeTimeout,
+                             Duration draftTtl) {
+        this(mapper, store, iot, gateway, conversationEvents, audit, null, null, clock, scopeTimeout, draftTtl);
+    }
+
+    public ActionDraftFacade(ObjectMapper mapper, ActionDraftStore store, IotAdapter iot,
+                             ActionCommandGateway gateway, ConversationEventStore conversationEvents,
+                             AuditEventStore audit, ActionReceiptStore receiptStore,
+                             ActionReadbackStore readbackStore, Clock clock, Duration scopeTimeout,
                              Duration draftTtl) {
         this.mapper = Objects.requireNonNull(mapper, "mapper");
         this.store = Objects.requireNonNull(store, "store");
@@ -65,6 +76,8 @@ public final class ActionDraftFacade {
         this.gateway = Objects.requireNonNull(gateway, "gateway");
         this.conversationEvents = conversationEvents;
         this.audit = audit;
+        this.receiptStore = receiptStore;
+        this.readbackStore = readbackStore;
         this.clock = Objects.requireNonNull(clock, "clock");
         this.scopeTimeout = requirePositive(scopeTimeout, "scopeTimeout");
         this.draftTtl = requirePositive(draftTtl, "draftTtl");
@@ -248,6 +261,7 @@ public final class ActionDraftFacade {
             body.set("result", resultBody);
             body.put("dispatchStarted", result.dispatchStarted());
             ActionDraftFact done = cas(executing, body, result.status().name());
+            persistExecutionFacts(done, resultBody);
             emit(done, "action.resolved");
             audit(done, "ACTION_DRAFT_" + result.status().name());
             return done;
@@ -296,16 +310,38 @@ public final class ActionDraftFacade {
         return view;
     }
 
-    /** State/readback protocol is not guessed; callers get an explicit unavailable seam. */
+    /** Read durable post-dispatch evidence; an empty list means no readback was recorded. */
     public Map<String, Object> deviceStates(PrincipalInfo principal, String draftId) {
-        current(principal, draftId);
-        throw new ActionDraftUnavailableException("设备状态读取适配器未配置");
+        ActionDraftFact draft = current(principal, draftId);
+        List<Map<String, Object>> states = new ArrayList<>();
+        if (readbackStore != null) {
+            for (ActionReadbackFact fact : readbackStore.findByDraft(draft.draftId())) {
+                Map<String, Object> state = new LinkedHashMap<>();
+                state.put("actionId", fact.actionId());
+                state.put("outcome", fact.outcome());
+                state.put("observedAt", fact.observedAt());
+                state.put("observedState", parseObject(fact.observedStateJson()));
+                states.add(state);
+            }
+        }
+        return Map.of("draftId", draft.draftId(), "states", states);
     }
 
-    /** Summary generation is an Agent-side concern and remains unavailable until its seam is wired. */
+    /** Summary is derived from durable receipt/readback facts, never fabricated by the Java service. */
     public Map<String, Object> summary(PrincipalInfo principal, String draftId) {
-        current(principal, draftId);
-        throw new ActionDraftUnavailableException("执行总结适配器未配置");
+        ActionDraftFact draft = current(principal, draftId);
+        List<Map<String, Object>> receipts = new ArrayList<>();
+        if (receiptStore != null) {
+            for (ActionReceiptFact fact : receiptStore.findByDraft(draft.draftId())) {
+                Map<String, Object> receipt = new LinkedHashMap<>();
+                receipt.put("actionId", fact.actionId());
+                receipt.put("outcome", fact.outcome().name());
+                receipt.put("payload", parseObject(fact.payloadJson()));
+                receipts.add(receipt);
+            }
+        }
+        return Map.of("draftId", draft.draftId(), "status", draft.status(), "receipts", receipts,
+                "readbacks", deviceStates(principal, draft.draftId()).get("states"));
     }
 
     private ActionDraftFact find(PrincipalInfo principal, String draftId) {
@@ -385,11 +421,49 @@ public final class ActionDraftFacade {
         result.put("status", ActionDraftStatus.INTERRUPTED.name());
         result.put("outcome", ActionReceiptOutcome.UNKNOWN.name());
         result.put("message", "执行中断，已下发指令结果未知，请先查询设备状态");
-        body.set("result", result);
+        ArrayNode receipts = mapper.createArrayNode();
+        Set<String> selectedIds = actionIds(array(body, "selectedActionIds"));
+        for (JsonNode action : array(body, "actions")) {
+            if (!selectedIds.contains(action.path("id").asText())) continue;
+            ObjectNode receipt = mapper.createObjectNode();
+            receipt.put("actionId", action.path("id").asText());
+            receipt.put("outcome", ActionReceiptOutcome.UNKNOWN.name());
+            receipts.add(receipt);
+        }
+        result.set("receipts", receipts);
         ActionDraftFact done = cas(executing, body, ActionDraftStatus.INTERRUPTED.name());
-        emit(done, "action.resolved");
+        persistExecutionFacts(done, result);
         audit(done, "ACTION_DRAFT_INTERRUPTED");
         return done;
+    }
+
+    private void persistExecutionFacts(ActionDraftFact draft, ObjectNode result) {
+        JsonNode receipts = result.get("receipts");
+        if (receiptStore != null && receipts != null && receipts.isArray()) {
+            for (JsonNode receipt : receipts) {
+                String actionId = receipt.path("actionId").asText("");
+                String outcome = receipt.path("outcome").asText("");
+                if (actionId.isBlank() || outcome.isBlank()) continue;
+                try {
+                    receiptStore.append(new ActionReceiptFact(draft.draftId(), draft.revision(), actionId,
+                            ActionReceiptOutcome.valueOf(outcome.toUpperCase(java.util.Locale.ROOT)), json(receipt)));
+                } catch (IllegalArgumentException ignored) {
+                    // An adapter cannot create an invalid durable outcome fact.
+                }
+            }
+        }
+        JsonNode readbacks = result.get("readbacks");
+        if (readbackStore != null && readbacks != null && readbacks.isArray()) {
+            for (JsonNode readback : readbacks) {
+                String actionId = readback.path("actionId").asText("");
+                if (actionId.isBlank()) continue;
+                JsonNode observed = readback.get("observedState");
+                readbackStore.append(new ActionReadbackFact(draft.draftId(), draft.revision(), actionId,
+                        readback.path("outcome").asText("unconfirmed"),
+                        json(observed == null ? mapper.createObjectNode() : observed),
+                        readback.path("observedAt").asText(null)));
+            }
+        }
     }
 
     private AuthorizedDeviceScope verifyScope(PrincipalInfo principal, ObjectNode body) {
@@ -404,6 +478,7 @@ public final class ActionDraftFacade {
             String kind = action.path("kind").asText(null);
             AuthorizedDevice device = scope.device(id).orElse(null);
             if (device == null || !device.kind().equals(kind) || device.observationOnly()) throw new ActionDraftScopeChangedException();
+            validateCommand(kind, action.path("command"));
         }
     }
 
@@ -423,6 +498,37 @@ public final class ActionDraftFacade {
             Throwable cause = error.getCause() == null ? error : error.getCause();
             if (cause instanceof GatewayAuthorizationException auth) throw auth;
             throw new ActionDraftUnavailableException("当前用户设备范围暂不可用", error);
+        }
+    }
+
+    private void validateCommand(String kind, JsonNode command) {
+        if (command == null || !command.isObject()) throw new BusinessException("INVALID_ACTION_DRAFT", "command is required", 422);
+        switch (kind) {
+            case "lighting" -> {
+                boolean power = command.path("power").isTextual()
+                        && Set.of("on", "off").contains(command.path("power").textValue());
+                boolean switchValue = command.path("closeOrOpen").isIntegralNumber()
+                        && (command.path("closeOrOpen").asInt() == 0 || command.path("closeOrOpen").asInt() == 1);
+                if (!power && !switchValue) throw new BusinessException("UNSUPPORTED_ACTION_DRAFT", "照明指令参数无效", 422);
+            }
+            case "access" -> {
+                if (!command.path("controlType").isIntegralNumber() || command.path("controlType").asInt() != 2) {
+                    throw new BusinessException("UNSUPPORTED_ACTION_DRAFT", "门禁指令参数无效", 422);
+                }
+            }
+            case "ac" -> {
+                boolean valid = true;
+                if (command.has("power")) valid &= command.path("power").isTextual() && Set.of("on", "off").contains(command.path("power").textValue());
+                if (command.has("temperature")) valid &= command.path("temperature").isIntegralNumber()
+                        && command.path("temperature").asInt() >= 16 && command.path("temperature").asInt() <= 30;
+                if (command.has("mode")) valid &= command.path("mode").isTextual()
+                        && Set.of("auto", "cool", "heat", "dry", "fan").contains(command.path("mode").textValue());
+                if (command.has("fanSpeed")) valid &= command.path("fanSpeed").isTextual()
+                        && Set.of("low", "high", "auto").contains(command.path("fanSpeed").textValue());
+                if (!command.has("power") && !command.has("temperature") && !command.has("mode") && !command.has("fanSpeed")) valid = false;
+                if (!valid) throw new BusinessException("UNSUPPORTED_ACTION_DRAFT", "空调指令参数无效", 422);
+            }
+            default -> throw new BusinessException("UNSUPPORTED_ACTION_DRAFT", "设备类型不可控", 422);
         }
     }
 
@@ -448,6 +554,7 @@ public final class ActionDraftFacade {
             action.put("name", device.name());
             action.put("location", device.installAddress());
             if (!action.has("command") || !action.get("command").isObject()) throw new BusinessException("INVALID_ACTION_DRAFT", "command is required");
+            validateCommand(kind, action.path("command"));
             normalized.add(action);
             index++;
         }
@@ -483,7 +590,7 @@ public final class ActionDraftFacade {
 
     private Set<String> actionIds(JsonNode actions) {
         Set<String> ids = new HashSet<>();
-        actions.forEach(a -> ids.add(a.path("id").asText()));
+        actions.forEach(a -> ids.add(a.isTextual() ? a.textValue() : a.path("id").asText()));
         return ids;
     }
 
@@ -531,6 +638,13 @@ public final class ActionDraftFacade {
         catch (RuntimeException error) { throw new BusinessException("INVALID_AGENT_SOURCE", "Agent 来源无效"); }
     }
 
+    private Object parseObject(String json) {
+        try {
+            return mapper.readValue(json, Object.class);
+        } catch (JsonProcessingException error) {
+            throw new ActionDraftUnavailableException("草案执行事实格式无效", error);
+        }
+    }
     private void emit(ActionDraftFact draft, String type) {
         if (conversationEvents == null) return;
         ObjectNode event = mapper.createObjectNode();

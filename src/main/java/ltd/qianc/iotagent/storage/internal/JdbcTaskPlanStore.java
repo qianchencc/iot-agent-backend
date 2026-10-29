@@ -21,7 +21,17 @@ public final class JdbcTaskPlanStore extends JdbcFactSupport implements TaskPlan
     @Override public Optional<TaskPlanFact> find(String id) { return one("SELECT plan_id,version,status,payload_json,idempotency_key FROM task_plans WHERE plan_id=?", this::map, id); }
     @Override public Optional<TaskPlanFact> findByIdempotencyKey(String key) { return one("SELECT plan_id,version,status,payload_json,idempotency_key FROM task_plans WHERE idempotency_key=?", this::map, key); }
     @Override public Optional<TaskPlanFact> updateIfVersion(TaskPlanFact replacement, long expectedVersion) { int changed = jdbc.update("UPDATE task_plans SET version=?,status=?,payload_json=?,update_time=? WHERE plan_id=? AND version=?", replacement.version(), replacement.status(), replacement.payloadJson(), time(java.time.Instant.now()), replacement.planId(), expectedVersion); return changed == 1 ? Optional.of(replacement) : Optional.empty(); }
-    @Override public boolean claimOccurrence(String planId, String occurrenceDate, long expectedVersion) { return jdbc.update("UPDATE task_plans SET next_date=?,version=version+1,update_time=? WHERE plan_id=? AND version=? AND status='enabled'", occurrenceDate, time(java.time.Instant.now()), planId, expectedVersion) == 1; }
+    @Override public boolean claimOccurrence(String planId, String occurrenceDate, long expectedVersion) {
+        return Boolean.TRUE.equals(transactions.execute(status -> {
+            int inserted = jdbc.update("INSERT IGNORE INTO task_plan_occurrences(plan_id,occurrence_date,status,create_time,update_time) VALUES (?,?, 'CLAIMED',?,?)",
+                    planId, occurrenceDate, time(java.time.Instant.now()), time(java.time.Instant.now()));
+            if (inserted != 1) return false;
+            boolean updated = jdbc.update("UPDATE task_plans SET next_date=?,version=version+1,update_time=? WHERE plan_id=? AND version=? AND status='ENABLED'",
+                    occurrenceDate, time(java.time.Instant.now()), planId, expectedVersion) == 1;
+            if (!updated) status.setRollbackOnly();
+            return updated;
+        }));
+    }
     @Override public List<TaskPlanFact> list(String tenantCode, String ownerKey, String source) { return jdbc.query("SELECT plan_id,version,status,payload_json,idempotency_key FROM task_plans WHERE tenant_code=? AND owner_key=? AND source=? ORDER BY update_time DESC", this::map, tenantCode, ownerKey, source); }
     private TaskPlanFact map(java.sql.ResultSet rs, int row) throws java.sql.SQLException { return new TaskPlanFact(rs.getString(1), rs.getLong(2), rs.getString(3), rs.getString(4), rs.getString(5)); }
 }

@@ -19,7 +19,7 @@ import org.springframework.web.servlet.mvc.method.annotation.ResponseBodyEmitter
 
 public final class ConversationFacade {
  private static final Set<String> TERMINALS=Set.of("run.completed","run.awaiting_confirmation","run.failed","run.aborted");
- private final ObjectMapper mapper; private final ConversationStore store; private final ConversationEventStore events; private final AgentEngineBridge bridge; private final Executor executor; private final ScheduledExecutorService scheduler; private final long heartbeatMs; private final Map<String,Run> active=new ConcurrentHashMap<>();
+ private final ObjectMapper mapper; private final ConversationStore store; private final ConversationEventStore events; private final AgentEngineBridge bridge; private final Executor executor; private final ScheduledExecutorService scheduler; private final long heartbeatMs; private final Map<String,Run> active=new ConcurrentHashMap<>(); private final Map<String,Run> toolContexts=new ConcurrentHashMap<>(); private final Map<String,Run> toolContextsById=new ConcurrentHashMap<>();
  public ConversationFacade(ObjectMapper m,ConversationStore s,ConversationEventStore e,AgentEngineBridge b,Executor x){this(m,s,e,b,x,null,0);}
  public ConversationFacade(ObjectMapper m,ConversationStore s,ConversationEventStore e,AgentEngineBridge b,Executor x,ScheduledExecutorService scheduler,long heartbeatMs){mapper=m;store=s;events=e;bridge=b;executor=x;this.scheduler=scheduler;this.heartbeatMs=heartbeatMs;}
  public Map<String,Object> create(PrincipalInfo p,String source){String s=source==null?"office":source; validSource(s); ConversationRecord c=store.create(p.tenantCode(),owner(p),s,Instant.now());return Map.of("id",c.id(),"source",c.source(),"createdAt",c.createdAt().toString());}
@@ -43,15 +43,16 @@ public final class ConversationFacade {
    return out;
   }
   ConversationTurn turn=store.startTurn(id,content,Instant.now(),key);
-  String tid=turn.id(),rid=UUID.randomUUID().toString();
-  Run r=new Run(id,tid,rid,out);
-  if(active.putIfAbsent(id,r)!=null){store.discardTurn(id,tid);throw new BusinessException("CONVERSATION_BUSY","当前会话正在处理请求，请等待完成或停止",409);}
+  String tid=turn.id(),rid=UUID.randomUUID().toString(),tcid=UUID.randomUUID().toString();
+  Run r=new Run(id,tid,rid,tcid,p,conversation.source(),out);
+  toolContextsById.put(tcid,r);
+  if(active.putIfAbsent(id,r)!=null){toolContextsById.remove(tcid,r);store.discardTurn(id,tid);throw new BusinessException("CONVERSATION_BUSY","当前会话正在处理请求，请等待完成或停止",409);}
   try{emit(r,"run.started",Map.of("createdAt",Instant.now().toString()));scheduleHeartbeat(r);}
-  catch(RuntimeException error){active.remove(id,r);try{store.discardTurn(id,tid);}catch(RuntimeException ignored){}throw error;}
+  catch(RuntimeException error){active.remove(id,r);toolContextsById.remove(tcid,r);try{store.discardTurn(id,tid);}catch(RuntimeException ignored){}throw error;}
   try {
    executor.execute(()->{
    try{
-    bridge.start(new AgentRunRequest(rid,id,tid,conversation.source(),content,p.tenantCode(),focusRegionId,reference),e->{if(!r.terminal.get()&&!"run.started".equals(e.type()))emit(r,e.type(),e.fields());}).whenComplete((v,x)->{
+    bridge.start(new AgentRunRequest(rid,id,tid,conversation.source(),content,p.tenantCode(),focusRegionId,reference,tcid),e->{if(!r.terminal.get()&&!"run.started".equals(e.type()))emit(r,e.type(),e.fields());}).whenComplete((v,x)->{
      if(x!=null&&!r.terminal.get()){Throwable cause=x instanceof CompletionException&&x.getCause()!=null?x.getCause():x;String message=cause instanceof BusinessException be&&"AGENT_ENGINE_TIMEOUT".equals(be.code())?"运行超时":"Agent Engine 暂不可用";finish(r,"run.failed",Map.of("message",message));}
      else if(!r.terminal.get())finish(r,"run.failed",Map.of("message","运行未返回终态"));
     });
@@ -64,6 +65,12 @@ public final class ConversationFacade {
  }
  public Map<String,Object> cancel(PrincipalInfo p,String id){return cancel(p,id,null);}
  public Map<String,Object> cancel(PrincipalInfo p,String id,String source){verify(p,id,source);Run r=active.get(id);if(r==null)throw new BusinessException("NO_ACTIVE_RUN","当前没有正在处理的请求",409);finish(r,"run.aborted",Map.of("message","已停止"));bridge.cancel(r.runId);return Map.of("cancelled",true);}
+ public PrincipalInfo toolPrincipal(String toolContextId,String conversationId,String turnId){
+  Run r=toolContextsById.get(toolContextId);
+  if(r==null)r=active.get(conversationId);
+  if(r==null)throw new BusinessException("AGENT_TOOL_RUN_UNAVAILABLE","Agent 运行上下文不可用",409);
+  return r.principal;
+ }
  private void emit(Run r,String type,Map<String,Object> f){
   if("heartbeat".equals(type)){sendHeartbeat(r);return;}
   if(TERMINALS.contains(type)){finish(r,type,f);return;}
@@ -73,7 +80,7 @@ public final class ConversationFacade {
   synchronized(r){
    if(!r.terminal.compareAndSet(false,true))return;
    try{ObjectNode n=node(r,type,f);append(r,n);send(r,n);}catch(RuntimeException ignored){}
-   finally{if(r.heartbeat!=null)r.heartbeat.cancel(false);try{r.out.complete();}catch(Exception ignored){}active.remove(r.conversationId,r);}
+   finally{if(r.heartbeat!=null)r.heartbeat.cancel(false);try{r.out.complete();}catch(Exception ignored){}active.remove(r.conversationId,r);toolContexts.put(r.conversationId,r);if(scheduler!=null){scheduler.schedule(()->toolContexts.remove(r.conversationId,r),60,TimeUnit.SECONDS);scheduler.schedule(()->toolContextsById.remove(r.toolContextId,r),60,TimeUnit.SECONDS);}}
   }
  }
  private void scheduleHeartbeat(Run r){
@@ -99,7 +106,7 @@ public final class ConversationFacade {
  private static void validSource(String s){if(!s.equals("office")&&!s.equals("company"))throw new BusinessException("INVALID_AGENT_SOURCE","Agent 来源无效");}
  private static String owner(PrincipalInfo p){return p.ownerKey();}
  private static final class Run{
-  final String conversationId,turnId,runId;final ResponseBodyEmitter out;final AtomicBoolean terminal=new AtomicBoolean();final AtomicBoolean disconnected=new AtomicBoolean();long sequence;ScheduledFuture<?> heartbeat;
-  Run(String c,String t,String r,ResponseBodyEmitter o){conversationId=c;turnId=t;runId=r;out=o;o.onError(x->disconnected.set(true));o.onCompletion(()->disconnected.set(true));}
+  final String conversationId,turnId,runId,toolContextId,source;final PrincipalInfo principal;final ResponseBodyEmitter out;final AtomicBoolean terminal=new AtomicBoolean();final AtomicBoolean disconnected=new AtomicBoolean();long sequence;ScheduledFuture<?> heartbeat;
+  Run(String c,String t,String r,String tc,PrincipalInfo p,String s,ResponseBodyEmitter o){conversationId=c;turnId=t;runId=r;toolContextId=tc;principal=p;source=s;out=o;o.onError(x->disconnected.set(true));o.onCompletion(()->disconnected.set(true));}
  }
 }

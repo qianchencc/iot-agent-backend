@@ -43,6 +43,29 @@ CREATE TABLE IF NOT EXISTS action_drafts (
     update_time DATETIME NOT NULL,
     PRIMARY KEY (id), UNIQUE KEY uk_action_draft_id (draft_id), UNIQUE KEY uk_action_draft_idempotency (idempotency_key)
 ) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS action_receipts (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    draft_id VARCHAR(64) NOT NULL,
+    draft_revision BIGINT UNSIGNED NOT NULL,
+    action_id VARCHAR(128) NOT NULL,
+    outcome VARCHAR(32) NOT NULL,
+    payload_json JSON NOT NULL,
+    create_time DATETIME NOT NULL,
+    update_time DATETIME NOT NULL,
+    PRIMARY KEY (id), UNIQUE KEY uk_action_receipt_action (draft_id, action_id)
+) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS action_readbacks (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    draft_id VARCHAR(64) NOT NULL,
+    draft_revision BIGINT UNSIGNED NOT NULL,
+    action_id VARCHAR(128) NOT NULL,
+    outcome VARCHAR(32) NOT NULL,
+    observed_state_json JSON NOT NULL,
+    observed_at VARCHAR(64) NULL,
+    create_time DATETIME NOT NULL,
+    update_time DATETIME NOT NULL,
+    PRIMARY KEY (id), UNIQUE KEY uk_action_readback_action (draft_id, action_id)
+) ENGINE=InnoDB;
 CREATE TABLE IF NOT EXISTS task_facts (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     task_id VARCHAR(64) NOT NULL,
@@ -108,6 +131,18 @@ CREATE TABLE IF NOT EXISTS task_plans (
     UNIQUE KEY uk_task_plan_idempotency (tenant_code, owner_key, idempotency_key),
     KEY ix_task_plan_due (status, next_at)
 ) ENGINE=InnoDB;
+CREATE TABLE IF NOT EXISTS task_plan_occurrences (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    plan_id VARCHAR(64) NOT NULL,
+    occurrence_date DATE NOT NULL,
+    task_id VARCHAR(64) NULL,
+    status VARCHAR(32) NOT NULL,
+    create_time DATETIME NOT NULL,
+    update_time DATETIME NOT NULL,
+    PRIMARY KEY (id), UNIQUE KEY uk_task_plan_occurrence (plan_id, occurrence_date),
+    KEY ix_task_plan_occurrence_status (status, occurrence_date)
+) ENGINE=InnoDB;
+
 CREATE TABLE IF NOT EXISTS task_phases (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     phase_id VARCHAR(64) NOT NULL,

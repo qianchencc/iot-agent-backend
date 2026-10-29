@@ -8,17 +8,19 @@ import ltd.qianc.iotagent.task.TaskFacade;
 import ltd.qianc.iotagent.task.TaskNotificationStore;
 import ltd.qianc.iotagent.task.TaskPhaseStore;
 import ltd.qianc.iotagent.task.TaskPlanStore;
+import ltd.qianc.iotagent.task.TaskProjectionStore;
 import ltd.qianc.iotagent.task.TaskProposalStore;
 import ltd.qianc.iotagent.task.TaskScheduler;
 import ltd.qianc.iotagent.task.TaskScanner;
-import ltd.qianc.iotagent.task.TaskProjectionStore;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Bean;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /** All durable and external task seams fail closed until real adapters are supplied. */
 @Configuration(proxyBeanMethods = false)
+@EnableScheduling
 public class TaskConfiguration {
     @Bean @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "false", matchIfMissing = true)
     @ConditionalOnMissingBean(TaskFactStore.class)
@@ -36,6 +38,13 @@ public class TaskConfiguration {
     @ConditionalOnMissingBean(TaskPhaseStore.class)
     TaskPhaseStore taskPhaseStore() { return new FailClosedTaskPhaseStore("任务阶段存储未配置"); }
 
+    @Bean
+    @ConditionalOnProperty(name = "agent.control.mode", havingValue = "fixture")
+    TaskExecutionGateway fixtureTaskExecutionGateway(
+            ObjectMapper mapper,
+            @org.springframework.beans.factory.annotation.Value("${agent.control.fixture.task-outcome:COMPLETED}") String outcome) {
+        return new FixtureTaskExecutionGateway(mapper, outcome);
+    }
     @Bean @ConditionalOnMissingBean(TaskExecutionGateway.class)
     TaskExecutionGateway taskExecutionGateway() { return new FailClosedTaskExecutionGateway("任务执行适配器未配置"); }
     @Bean @ConditionalOnMissingBean(TaskProjectionStore.class)
@@ -53,4 +62,8 @@ public class TaskConfiguration {
                             TaskNotificationStore notifications) {
         return new TaskScanner(phases, tasks, gateway, notifications, Clock.systemUTC());
     }
+    @Bean
+    @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
+    TaskScanLoop taskScanLoop(TaskScanner scanner) { return new TaskScanLoop(scanner); }
+
 }

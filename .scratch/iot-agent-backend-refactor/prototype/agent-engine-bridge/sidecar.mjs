@@ -28,7 +28,7 @@ async function readJson(req) {
 }
 
 function eventContext(record) {
-  return { runId: record.runId, conversationId: record.conversationId, turnId: record.turnId }
+  return { runId: record.runId, toolContextId: record.toolContextId, conversationId: record.conversationId, turnId: record.turnId }
 }
 
 function writeEvent(record, res, event) {
@@ -71,6 +71,67 @@ function toolFor({ runId, toolBridgeUrl }) {
   }
 }
 
+function businessTool({ name, description, parameters, runId, toolContextId, conversationId, turnId }) {
+  return {
+    name,
+    label: name,
+    description,
+    parameters,
+    async execute(_toolCallId, args, signal) {
+      const response = await fetch(`${process.env.AGENT_TOOL_BRIDGE_URL || 'http://127.0.0.1:3200/internal/agent/tools'}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'X-Agent-Bridge-Token': bridgeToken },
+        body: JSON.stringify({ runId, toolContextId, conversationId, turnId, toolName: name, arguments: args }),
+        signal,
+      })
+      if (!response.ok) throw new Error(`Java Agent Tool Bridge returned ${response.status}: ${await response.text()}`)
+      return { content: [{ type: 'text', text: JSON.stringify(await response.json()) }] }
+    },
+  }
+}
+
+function businessTools(record) {
+  return [
+    businessTool({
+      name: 'find_device_candidates',
+      description: 'Read current authorized Office device candidates.',
+      parameters: Type.Object({
+        kind: Type.String(),
+        source: Type.Optional(Type.String()),
+        scopeText: Type.Optional(Type.String()),
+        deviceText: Type.Optional(Type.String()),
+      }),
+      ...eventContext(record),
+    }),
+    businessTool({
+      name: 'read_device_states',
+      description: 'Read current authorized Office device states.',
+      parameters: Type.Object({ deviceIds: Type.Array(Type.String()), source: Type.Optional(Type.String()) }),
+      ...eventContext(record),
+    }),
+    businessTool({
+      name: 'propose_action_draft',
+      description: 'Create a server-validated action draft; never dispatches without confirmation.',
+      parameters: Type.Object({
+        payload: Type.Object({ actions: Type.Array(Type.Object({})) }),
+        source: Type.Optional(Type.String()),
+        idempotencyKey: Type.Optional(Type.String()),
+      }),
+      ...eventContext(record),
+    }),
+    businessTool({
+      name: 'propose_task',
+      description: 'Create a server-validated task proposal.',
+      parameters: Type.Object({
+        payload: Type.Object({}),
+        source: Type.Optional(Type.String()),
+        idempotencyKey: Type.Optional(Type.String()),
+      }),
+      ...eventContext(record),
+    }),
+  ]
+}
+
 function createModel() {
   const baseUrl = String(process.env.MODEL_BASE_URL || '').trim()
   const modelId = String(process.env.MODEL_ID || '').trim()
@@ -104,12 +165,12 @@ function createAgent(body, record) {
     initialState: {
       model,
       messages: structuredClone(sessions.get(record.conversationId) || []),
-      tools: [toolFor({
-        runId: record.runId,
-        toolBridgeUrl: String(body.toolBridgeUrl || 'http://127.0.0.1:3200/prototype/bridge'),
-      })],
+      tools: [
+        toolFor({ runId: record.runId, toolBridgeUrl: String(body.toolBridgeUrl || 'http://127.0.0.1:3200/prototype/bridge') }),
+        ...businessTools(record),
+      ],
       thinkingLevel: process.env.AGENT_THINKING_LEVEL || 'low',
-      systemPrompt: '这是本地 Agent Engine 探针。先调用 echo_tool 获取 Java Tool Bridge 的事实，再用一句话完成答复。',
+      systemPrompt: '这是本地 Agent Engine。涉及设备查询时必须调用 find_device_candidates 或 read_device_states；涉及设备控制时必须调用 propose_action_draft；涉及任务时必须调用 propose_task。工具结果只来自 Java Tool Bridge。其他问题直接简洁回答。',
     },
     streamFn: (currentModel, context, options) => streamSimple(currentModel, context, {
       ...options,
@@ -130,8 +191,11 @@ async function executeRun(body, record, res) {
   }, record.timeoutMs) : undefined
 
   agent.subscribe((event, signal) => {
+    const type = event.type === 'tool_execution_start' ? 'tool.started'
+      : event.type === 'tool_execution_end' ? 'tool.completed'
+      : `pi.${event.type}`
     writeEvent(record, res, {
-      type: `pi.${event.type}`,
+      type,
       ...(event.type === 'message_update' ? { assistantMessageEvent: event.assistantMessageEvent } : {}),
       ...(event.type === 'tool_execution_start' ? { toolName: event.toolName, args: event.args } : {}),
       ...(event.type === 'tool_execution_end' ? { toolName: event.toolName, isError: event.isError, result: event.result } : {}),
@@ -167,6 +231,7 @@ async function run(req, res) {
   if (runRecords.has(runId)) return json(res, 409, { code: 'RUN_ID_CONFLICT', runId })
   const record = {
     runId,
+    toolContextId: String(body.toolContextId || runId),
     conversationId: String(body.conversationId || 'probe-conversation'),
     turnId: String(body.turnId || randomUUID()),
     timeoutMs: Number(body.timeoutMs || 0),
