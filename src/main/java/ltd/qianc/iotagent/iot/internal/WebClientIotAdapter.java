@@ -53,9 +53,16 @@ public final class WebClientIotAdapter implements IotAdapter {
     @Override
     public Mono<AuthorizedDeviceScope> loadAuthorizedDeviceScope(RequestIdentity identity) {
         Objects.requireNonNull(identity, "identity");
-        Mono<AuthorizedDeviceScope> request = identity.source() == IotSource.OFFICE && routes.hasOfficeDirectoryRoutes()
-                ? loadOfficeScope(identity)
-                : loadPaginatedScope(identity);
+        Mono<AuthorizedDeviceScope> request;
+        if (identity.source() == IotSource.OFFICE && routes.hasOfficeDirectoryRoutes()) {
+            request = loadOfficeScope(identity);
+        } else if (identity.source() == IotSource.COMPANY && routes.hasCompanyCatalogRoutes()) {
+            request = loadCompanyScope(identity);
+        } else if (routes.path(identity.source()) != null) {
+            request = loadPaginatedScope(identity);
+        } else {
+            request = Mono.error(new UpstreamUnavailableException("物联授权设备范围路径未配置"));
+        }
         return execute("load authorized " + identity.source().wireValue() + " device scope", request);
     }
 
@@ -147,6 +154,136 @@ public final class WebClientIotAdapter implements IotAdapter {
         return page(source.path(), params, identity).map(rows -> rows.stream().map(row -> parseDevice(row, source, officeName)).toList());
     }
 
+    private Mono<AuthorizedDeviceScope> loadCompanyScope(RequestIdentity identity) {
+        Mono<List<AuthorizedDevice>> observed = Flux.just(new String[]{"environment", "YQ-ENV-SENSOR"}, new String[]{"energy", "YQ-ENERGY-EQUIPMENT"}, new String[]{"safety", "YQ-SAFETY-OBSERVATION"})
+                .concatMap(spec -> page(routes.companyObservationPath(), Map.of("modelCode", spec[1]), identity)
+                        .map(rows -> rows.stream().map(row -> parseCompanyObservation(row, spec[0])).toList()))
+                .collectList().map(groups -> {
+                    List<AuthorizedDevice> all = new ArrayList<>();
+                    for (List<AuthorizedDevice> group : groups) all.addAll(group);
+                    return all;
+                });
+        return Mono.zip(observed, collectCompanySmart(identity, "lighting"), collectCompanySmart(identity, "access"),
+                collectCompanySmart(identity, "monitor"), collectCompanyAc(identity)).map(tuple -> {
+            Map<String, AuthorizedDevice> unique = new LinkedHashMap<>();
+            List<List<AuthorizedDevice>> groups = List.of(tuple.getT1(), tuple.getT2(), tuple.getT3(), tuple.getT4(), tuple.getT5());
+            for (List<AuthorizedDevice> group : groups) {
+                for (AuthorizedDevice device : group) {
+                    String key = device.kind() + ":" + device.id();
+                    AuthorizedDevice prior = unique.putIfAbsent(key, device);
+                    if (prior != null && !prior.equals(device)) throw new UpstreamUnavailableException("读取公司授权设备范围响应");
+                }
+            }
+            return (AuthorizedDeviceScope) new AuthorizedDeviceScopeSnapshot(identity, List.copyOf(unique.values()));
+        });
+    }
+
+    private Mono<List<AuthorizedDevice>> collectCompanySmart(RequestIdentity identity, String family) {
+        return areaLeaves(routes.companySmartBasePath() + "/" + family + "/myAreaList", identity)
+                .flatMapMany(Flux::fromIterable)
+                .concatMap(leaf -> page(routes.companySmartBasePath() + "/" + family + "/devicePage",
+                                Map.of("areaFullCode", leaf.code()), identity)
+                        .map(rows -> rows.stream().map(row -> parseSmart(row, family, leaf)).toList()))
+                .collectList().map(groups -> {
+                    Map<String, AuthorizedDevice> unique = new LinkedHashMap<>();
+                    for (List<AuthorizedDevice> group : groups) {
+                        for (AuthorizedDevice device : group) unique.putIfAbsent(device.kind() + ":" + device.id(), device);
+                    }
+                    return List.copyOf(unique.values());
+                });
+    }
+
+
+    private Mono<List<AreaLeaf>> areaLeaves(String path, RequestIdentity identity) {
+        return areaChildren(path, null, List.of(), identity).collectList();
+    }
+
+    private Flux<AreaLeaf> areaChildren(String path, String parent, List<String> names, RequestIdentity identity) {
+        Map<String, String> params = parent == null ? Map.of() : Map.of("parentId", parent);
+        return getJson(path, params, identity).flatMapMany(body -> Flux.fromIterable(contentArray(body, "读取智慧设备区域")).flatMap(node -> {
+            String id = text(node, "id", "elementId");
+            if (id == null) return Flux.error(new UpstreamUnavailableException("智慧设备区域格式无效"));
+            String name = text(node, "name", "elementName");
+            List<String> next = name != null && !"全部".equals(name) ? append(names, name) : names;
+            String code = text(node, "fullCode", "areaFullCode");
+            return areaChildren(path, id, next, identity).switchIfEmpty(code == null
+                    ? Flux.error(new UpstreamUnavailableException("智慧设备区域缺少区域编码")) : Flux.just(new AreaLeaf(code, next)));
+        }));
+    }
+
+    private Mono<List<AuthorizedDevice>> collectCompanyAc(RequestIdentity identity) {
+        Mono<List<AuthorizedDevice>> scoped = areaLeaves(routes.companyAcAreaPath(), identity)
+                .flatMapMany(Flux::fromIterable)
+                .concatMap(leaf -> page(routes.companyAcDevicePath(), Map.of("areaFullCode", leaf.code()), identity)
+                        .map(rows -> rows.stream().map(row -> parseAc(row, leaf)).toList()))
+                .collectList().map(groups -> {
+                    List<AuthorizedDevice> all = new ArrayList<>();
+                    for (List<AuthorizedDevice> group : groups) all.addAll(group);
+                    return all;
+                });
+        return scoped.zipWith(page(routes.companyAcBindingPath(), Map.of("modelCode", "YQ_AIR_CONDITION"), identity))
+                .map(tuple -> {
+                    Map<String, JsonNode> bindings = new LinkedHashMap<>();
+                    for (JsonNode row : tuple.getT2()) {
+                        String id = text(row, "id", "hubDeviceId");
+                        if (id != null) bindings.put(id, row);
+                    }
+                    return tuple.getT1().stream().map(device -> {
+                        JsonNode binding = bindings.get(device.hubDeviceId());
+                        String control = binding == null ? null : text(binding, "controlRef");
+                        if (control == null && binding != null) control = actionId(binding, "airCondition");
+                        boolean validBinding = binding != null && control != null && hasAction(binding, "airCondition")
+                                && hasAction(binding, "acDetail");
+                        return new AuthorizedDevice(device.id(), device.kind(), device.name(), device.installAddress(),
+                                !validBinding, validBinding ? control : null, device.officeDeviceRef(), device.hubDeviceId(),
+                                device.smartAreaCode(), device.locationPaths());
+                    }).toList();
+                });
+    }
+
+    private static boolean hasAction(JsonNode binding, String type) {
+        JsonNode actions = binding.get("actionList");
+        if (actions == null || !actions.isArray()) return false;
+        for (JsonNode action : actions) if (type.equals(text(action, "actionType"))) return true;
+        return false;
+    }
+    private static String actionId(JsonNode binding, String type) {
+        JsonNode actions = binding.get("actionList");
+        if (actions != null && actions.isArray()) for (JsonNode action : actions)
+            if (type.equals(text(action, "actionType"))) return text(action, "id");
+        return null;
+    }
+
+    private AuthorizedDevice parseCompanyObservation(JsonNode row, String kind) {
+        String id = text(row, "id", "deviceId", "hubDeviceId"), name = text(row, "name", "deviceName");
+        if (id == null || name == null) throw new UpstreamUnavailableException("读取公司观察设备响应");
+        return new AuthorizedDevice(id, kind, name, text(row, "installAddress", "installAddr"), true, null, id,
+                text(row, "hubDeviceId", "id"), null, List.of());
+    }
+
+    private AuthorizedDevice parseSmart(JsonNode row, String family, AreaLeaf leaf) {
+        String id = text(row, "id", "officeDeviceRef"), hub = text(row, "hubDeviceId");
+        if (id == null || hub == null) throw new UpstreamUnavailableException("智慧设备缺少控制绑定");
+        String kind = "monitor".equals(family) ? "video" : family;
+        String name = text(row, "name", "deviceName");
+        return new AuthorizedDevice(id, kind, name == null ? kind : name, text(row, "installAddress", "installAddr"),
+                "video".equals(kind), "video".equals(kind) ? null : id, id, hub, leaf.code(), List.of(leaf.path()));
+    }
+
+    private AuthorizedDevice parseAc(JsonNode row, AreaLeaf leaf) {
+        String hub = text(row, "hubDeviceId", "id");
+        if (hub == null) throw new UpstreamUnavailableException("空调设备缺少控制绑定");
+        String name = text(row, "name", "deviceName");
+        return new AuthorizedDevice(hub, "ac", name == null ? "空调" : name, text(row, "installAddress", "installAddr"),
+                true, null, hub, hub, leaf.code(), List.of(leaf.path()));
+    }
+
+    private static List<String> append(List<String> values, String value) {
+        List<String> result = new ArrayList<>(values); result.add(value); return result;
+    }
+
+    private record AreaLeaf(String code, List<String> path) { }
+
     private Mono<AuthorizedDeviceScope> loadPaginatedScope(RequestIdentity identity) {
         return page(routes.path(identity.source()), Map.of(), identity).map(records -> {
             Map<String, AuthorizedDevice> unique = new LinkedHashMap<>();
@@ -200,13 +337,15 @@ public final class WebClientIotAdapter implements IotAdapter {
 
     private Mono<List<JsonNode>> page(String path, Map<String, String> params, RequestIdentity identity) {
         return Flux.range(0, 1000).concatMap(page -> getJson(path, withPage(params, page), identity).map(body -> {
+            if (body.isArray()) return new PageResult(toList(body), true);
             if (body.path("code").asInt() == 204) return PageResult.empty();
             JsonNode content = body.get("content");
             if (content == null || content.isNull()) throw new UpstreamUnavailableException("读取授权设备目录响应");
             if (content.isArray()) return new PageResult(toList(content), true);
             JsonNode rows = content.get("content");
             if (rows == null || !rows.isArray()) throw new UpstreamUnavailableException("读取授权设备目录响应");
-            return new PageResult(toList(rows), content.has("last") && content.path("last").isBoolean() && content.path("last").asBoolean());
+            boolean last = content.path("last").isBoolean() && content.path("last").asBoolean();
+            return new PageResult(toList(rows), last || !content.has("last"));
         })).takeUntil(PageResult::last).collectList().flatMap(pages -> {
             if (pages.isEmpty() || !pages.get(pages.size() - 1).last()) {
                 return Mono.error(new UpstreamUnavailableException("读取授权设备目录分页未完成"));
@@ -229,7 +368,9 @@ public final class WebClientIotAdapter implements IotAdapter {
         if (status.value() == 401 || status.value() == 403) return response.releaseBody().then(Mono.error(new GatewayAuthorizationException(status.value())));
         if (!status.is2xxSuccessful()) return response.releaseBody().then(Mono.error(new UpstreamUnavailableException(operation)));
         return response.bodyToMono(JsonNode.class).switchIfEmpty(Mono.error(new UpstreamUnavailableException(operation))).flatMap(body -> {
-            if (body == null || !body.isObject() || !body.path("code").isNumber()) return Mono.error(new UpstreamUnavailableException(operation + "响应"));
+            if (body == null || (!body.isObject() && !body.isArray())) return Mono.error(new UpstreamUnavailableException(operation + "响应"));
+            if (body.isArray()) return Mono.just(body);
+            if (!body.path("code").isNumber()) return Mono.error(new UpstreamUnavailableException(operation + "响应"));
             int code = body.path("code").asInt();
             if (code == 401 || code == 403) return Mono.error(new GatewayAuthorizationException(code));
             if (code != 0 && code != 200 && code != 204) return Mono.error(new UpstreamUnavailableException(operation));
@@ -260,14 +401,16 @@ public final class WebClientIotAdapter implements IotAdapter {
 
     private AuthorizedDevice parseDevice(JsonNode record, OfficeDeviceSource source, String officeName) {
         if (record == null || !record.isObject()) throw new IllegalArgumentException("device record is not an object");
-        String id = text(record, "id");
+        String id = text(record, "id", "deviceId");
         String kind = source == null ? text(record, "kind", "deviceKind") : source.kind();
         String name = text(record, "name", "deviceName");
         String address = text(record, "installAddress", "installAddr");
         if (id == null || kind == null || name == null) throw new IllegalArgumentException("device identity is incomplete");
         if (address == null) address = officeName == null ? "" : officeName;
         boolean observationOnly = "video".equalsIgnoreCase(kind) || record.path("observationOnly").asBoolean(false);
-        return new AuthorizedDevice(id, kind, name, address, observationOnly);
+        return new AuthorizedDevice(id, kind, name, address, observationOnly,
+                text(record, "controlRef"), text(record, "officeDeviceRef", "id"), text(record, "hubDeviceId"),
+                text(record, "smartAreaCode"), List.of());
     }
 
     private DeviceCapabilityInspection.DeviceCapability capability(AuthorizedDevice device) {
@@ -315,6 +458,7 @@ public final class WebClientIotAdapter implements IotAdapter {
     }
 
     private static List<JsonNode> contentArray(JsonNode body, String operation) {
+        if (body.isArray()) return toList(body);
         JsonNode content = body.get("content");
         if (content != null && content.isObject()) content = content.get("content");
         if (body.path("code").asInt() == 204) return List.of();

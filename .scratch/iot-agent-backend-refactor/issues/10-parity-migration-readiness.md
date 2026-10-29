@@ -2,7 +2,7 @@
 
 **What to build:** Java 后端在不触碰云端生产后端的前提下完成 Runtime 外部契约、业务事实、只读 shadow、备份恢复和回滚证据，达到可被人工审核的单向切换准备状态。
 
-**Blocked by:** 05: Office Authorized Device Scope 与只读工具；06: Company Observation、Report、Video 只读闭环；07: Action Draft、控制安全与 Readback；08: Task、Plan、Notification 与 Durable Scheduler；09: Admin、模型配置与运维边界
+**Blocked by:** 05: Office Authorized Device Scope 与只读工具；06: Company Observation、Report、Video 只读闭环；07: Action Draft、控制安全与 Readback；08: Task、Plan、Notification 与 Durable Scheduler；09: Admin、模型配置与运维边界；11–16: Phase 2 Runtime behavior migration slices
 
 **Status:** blocked-by-parity-gaps (local Java backend, fixtures, health and evidence exist; no production deployment or cutover performed)
 
@@ -17,4 +17,4 @@
 
 ## Comments
 
-- 2026-10-29：Do not claim full parity. Local evidence now covers MySQL/Redis durability, authenticated Java/Node conversation streaming, Office candidate/state reads, Company device catalog pagination/capability, Company environment/energy/safety direct reads, local fixture action/task control, recurrence materialization, durable scanner recovery, query allowlisting and safe health checks. Open gaps are task change/cancellation proposal semantics (routes fail closed at 503 until a durable domain is added), dashboard/report/video composition, Pi Session backup/restore, admin configuration not hot-reloading the already-running Node sidecar, and the 66/69 external operation behavior gate.
+- 2026-10-30：Runtime source review corrected the blocker classification. Task change/cancellation, Dashboard/Region composition, Report artifacts, Video, Company multi-source catalog/controlRef and Admin apply are implementation slices backed by Runtime code/tests, not requests for new customer protocol documentation. The new dependency-ordered Phase 2 tickets are 11–16; ticket 17 is the final parity/cutover-readiness gate. External inputs remain limited to deployment volume/backup/supervisor permissions and production control/video/cutover acceptance.

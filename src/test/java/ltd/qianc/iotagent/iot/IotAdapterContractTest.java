@@ -112,4 +112,68 @@ class IotAdapterContractTest {
                 })
                 .verify();
     }
+
+    @Test
+    void companyCatalogTraversesRuntimeSourcesAndKeepsBindingsInternal() {
+        AtomicReference<java.util.List<String>> requests = new AtomicReference<>(new java.util.ArrayList<>());
+        ExchangeFunction fixture = candidate -> {
+            var url = candidate.url();
+            requests.get().add(url.getPath() + "?" + url.getQuery());
+            String path = url.getPath();
+            String parent = url.getQuery() == null ? null : java.util.Arrays.stream(url.getQuery().split("&"))
+                    .filter(value -> value.startsWith("parentId=")).findFirst()
+                    .map(value -> java.net.URLDecoder.decode(value.substring("parentId=".length()), java.nio.charset.StandardCharsets.UTF_8))
+                    .orElse(null);
+            if (path.endsWith("/myAreaList")) {
+                if (parent == null || parent.isBlank()) {
+                    return Mono.just(json("{\"code\":200,\"content\":[{\"id\":\"root\",\"fullCode\":\"root\",\"name\":\"Root\"}]}"));
+                }
+                return Mono.just(json("{\"code\":204,\"content\":null}"));
+            }
+            if (path.endsWith("/devicePage")) {
+                if (path.contains("/lighting/")) return Mono.just(json("[{\"id\":\"light-1\",\"hubDeviceId\":\"hub-light\",\"name\":\"灯\",\"installAddress\":\"A\"}]"));
+                if (path.contains("/ac/")) return Mono.just(json("[{\"id\":\"ac-1\",\"hubDeviceId\":\"hub-ac\",\"name\":\"空调\",\"installAddress\":\"B\"}]"));
+                return Mono.just(json("{\"code\":204,\"content\":null}"));
+            }
+            if (path.endsWith("/iot-center/device/page")) {
+                String query = url.getQuery() == null ? "" : url.getQuery();
+                if (query.contains("YQ_AIR_CONDITION")) {
+                    return Mono.just(json("{\"code\":200,\"content\":{\"content\":[{\"id\":\"hub-ac\",\"modelCode\":\"YQ_AIR_CONDITION\",\"actionList\":[{\"id\":\"ac-control\",\"actionType\":\"airCondition\"},{\"id\":\"ac-detail\",\"actionType\":\"acDetail\"}]}],\"last\":true}}"));
+                }
+                String kind = query.contains("YQ-ENV-SENSOR") ? "environment" : query.contains("YQ-ENERGY-EQUIPMENT") ? "energy" : "safety";
+                return Mono.just(json("{\"code\":200,\"content\":{\"content\":[{\"id\":\"" + kind + "-1\",\"name\":\"" + kind + "\",\"installAddress\":\"C\"}],\"last\":true}}"));
+            }
+            return Mono.just(json("{\"code\":204,\"content\":null}"));
+        };
+        IotAdapter adapter = IotAdapterFactory.webClient(
+                WebClient.builder().exchangeFunction(fixture).build(),
+                IotGatewayRoutes.runtimeCompany("/office-scope", null,
+                        "/micro-api/api/iot-center/device/page",
+                        "/micro-api/api/office/app/device",
+                        "/micro-api/api/office/app/device/ac/myAreaList",
+                        "/micro-api/api/office/app/device/ac/devicePage",
+                        "/micro-api/api/iot-center/device/page"),
+                Duration.ofSeconds(1),
+                IotCallPolicy.passThrough());
+
+        AuthorizedDeviceScope scope = adapter.loadAuthorizedDeviceScope(
+                        new RequestIdentity("Bearer company-token", "TENANT-1", IotSource.COMPANY))
+                .block(Duration.ofSeconds(1));
+
+        assertThat(scope).isNotNull();
+        assertThat(scope.devices()).extracting(AuthorizedDevice::kind)
+                .contains("environment", "energy", "safety", "lighting", "ac");
+        assertThat(scope.device("light-1").orElseThrow().controlRef()).isEqualTo("light-1");
+        assertThat(scope.device("hub-ac")).as("devices=%s", scope.devices()).isPresent();
+        assertThat(scope.device("hub-ac").orElseThrow().controlRef()).isEqualTo("ac-control");
+        assertThat(requests.get()).anyMatch(value -> value.contains("myAreaList"));
+        assertThat(requests.get()).anyMatch(value -> value.contains("modelCode=YQ_AIR_CONDITION"));
+    }
+
+    private static ClientResponse json(String body) {
+        return ClientResponse.create(HttpStatus.OK)
+                .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                .body(body)
+                .build();
+    }
 }

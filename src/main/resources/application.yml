@@ -39,6 +39,11 @@ iot:
     office-lighting-association-path: ${IOT_GATEWAY_OFFICE_LIGHTING_ASSOCIATION_PATH:/micro-api/api/office/lightingAreaDevice/page}
     office-access-association-path: ${IOT_GATEWAY_OFFICE_ACCESS_ASSOCIATION_PATH:/micro-api/api/office/accessAreaDevice/page}
     call-timeout-ms: ${IOT_GATEWAY_CALL_TIMEOUT_MS:15000}
+    company-observation-path: ${IOT_GATEWAY_COMPANY_OBSERVATION_PATH:/micro-api/api/iot-center/device/page}
+    company-smart-base-path: ${IOT_GATEWAY_COMPANY_SMART_BASE_PATH:/micro-api/api/office/app/device}
+    company-ac-area-path: ${IOT_GATEWAY_COMPANY_AC_AREA_PATH:/micro-api/api/office/app/device/ac/myAreaList}
+    company-ac-device-path: ${IOT_GATEWAY_COMPANY_AC_DEVICE_PATH:/micro-api/api/office/app/device/ac/devicePage}
+    company-ac-binding-path: ${IOT_GATEWAY_COMPANY_AC_BINDING_PATH:/micro-api/api/iot-center/device/page}
   observation:
     routes:
       environment-history: ${IOT_OBSERVATION_ROUTE_ENVIRONMENT_HISTORY:/micro-api/api/iot-center/env/history/page}

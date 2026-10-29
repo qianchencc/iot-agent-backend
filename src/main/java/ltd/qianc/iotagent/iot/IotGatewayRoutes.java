@@ -9,52 +9,56 @@ public record IotGatewayRoutes(
         String officeScopePath,
         String companyScopePath,
         String officeMembershipPath,
-        List<OfficeDeviceSource> officeDeviceSources) {
+        List<OfficeDeviceSource> officeDeviceSources,
+        String companyObservationPath,
+        String companySmartBasePath,
+        String companyAcAreaPath,
+        String companyAcDevicePath,
+        String companyAcBindingPath) {
 
-    /** Compatibility constructor for existing scope callers and contract fixtures. */
     public IotGatewayRoutes(String officeScopePath, String companyScopePath) {
-        this(officeScopePath, companyScopePath, null, List.of());
+        this(officeScopePath, companyScopePath, null, List.of(), null, null, null, null, null);
+    }
+
+    public IotGatewayRoutes(String officeScopePath, String companyScopePath, String membershipPath,
+                            List<OfficeDeviceSource> sources) {
+        this(officeScopePath, companyScopePath, membershipPath, sources, null, null, null, null, null);
     }
 
     public IotGatewayRoutes {
         officeScopePath = requirePath(officeScopePath, "officeScopePath");
-        companyScopePath = requirePath(companyScopePath, "companyScopePath");
-        if (officeMembershipPath != null && !officeMembershipPath.isBlank()) {
-            officeMembershipPath = requirePath(officeMembershipPath, "officeMembershipPath");
-        } else {
-            officeMembershipPath = null;
-        }
+        companyScopePath = optionalPath(companyScopePath, "companyScopePath");
+        officeMembershipPath = optionalPath(officeMembershipPath, "officeMembershipPath");
         officeDeviceSources = List.copyOf(officeDeviceSources == null ? List.of() : officeDeviceSources);
+        companyObservationPath = optionalPath(companyObservationPath, "companyObservationPath");
+        companySmartBasePath = optionalPath(companySmartBasePath, "companySmartBasePath");
+        companyAcAreaPath = optionalPath(companyAcAreaPath, "companyAcAreaPath");
+        companyAcDevicePath = optionalPath(companyAcDevicePath, "companyAcDevicePath");
+        companyAcBindingPath = optionalPath(companyAcBindingPath, "companyAcBindingPath");
     }
 
     public String path(IotSource source) {
         Objects.requireNonNull(source, "source");
         return source == IotSource.OFFICE ? officeScopePath : companyScopePath;
     }
-
-    public boolean hasOfficeDirectoryRoutes() {
-        return officeMembershipPath != null && !officeDeviceSources.isEmpty();
+    public boolean hasOfficeDirectoryRoutes() { return officeMembershipPath != null && !officeDeviceSources.isEmpty(); }
+    public boolean hasCompanyCatalogRoutes() {
+        return companyObservationPath != null && companySmartBasePath != null && companyAcAreaPath != null
+                && companyAcDevicePath != null && companyAcBindingPath != null;
     }
-
-    public static IotGatewayRoutes officeDirectory(
-            String officeScopePath,
-            String companyScopePath,
-            String membershipPath,
-            List<OfficeDeviceSource> sources) {
+    public static IotGatewayRoutes officeDirectory(String officeScopePath, String companyScopePath,
+                                                    String membershipPath, List<OfficeDeviceSource> sources) {
         return new IotGatewayRoutes(officeScopePath, companyScopePath, membershipPath, sources);
     }
-
-    /** Runtime's verified read-only Office directory sources. Paths remain configurable. */
-    public static List<OfficeDeviceSource> runtimeOfficeSources(
-            String acMyOffice,
-            String lightingMyOffice,
-            String accessMyOffice,
-            String videoMyOffice,
-            String acAssociation,
-            String lightingAssociation,
+    public static IotGatewayRoutes runtimeCompany(String officeScopePath, String companyScopePath,
+                                                   String observation, String smartBase, String acArea,
+                                                   String acDevice, String acBinding) {
+        return new IotGatewayRoutes(officeScopePath, companyScopePath, null, List.of(), observation, smartBase, acArea, acDevice, acBinding);
+    }
+    public static List<OfficeDeviceSource> runtimeOfficeSources(String acMyOffice, String lightingMyOffice,
+            String accessMyOffice, String videoMyOffice, String acAssociation, String lightingAssociation,
             String accessAssociation) {
-        return List.of(
-                new OfficeDeviceSource("my-office.ac", "ac", acMyOffice, Map.of("type", "AirCold"), true),
+        return List.of(new OfficeDeviceSource("my-office.ac", "ac", acMyOffice, Map.of("type", "AirCold"), true),
                 new OfficeDeviceSource("my-office.lighting", "lighting", lightingMyOffice, Map.of("type", "LIGHTING"), true),
                 new OfficeDeviceSource("my-office.access", "access", accessMyOffice, Map.of("type", "SECURITY_PROTECTION", "subClass", "ACCESS"), true),
                 new OfficeDeviceSource("my-office.video", "video", videoMyOffice, Map.of("type", "SECURITY_PROTECTION", "subClass", "VIDEO"), true),
@@ -62,11 +66,11 @@ public record IotGatewayRoutes(
                 new OfficeDeviceSource("office-association.lighting", "lighting", lightingAssociation, Map.of(), false),
                 new OfficeDeviceSource("office-association.access", "access", accessAssociation, Map.of(), false));
     }
-
     private static String requirePath(String value, String name) {
-        if (value == null || value.isBlank() || !value.startsWith("/")) {
-            throw new IllegalArgumentException(name + " must be an absolute path");
-        }
+        if (value == null || value.isBlank() || !value.startsWith("/")) throw new IllegalArgumentException(name + " must be an absolute path");
         return value;
+    }
+    private static String optionalPath(String value, String name) {
+        return value == null || value.isBlank() ? null : requirePath(value, name);
     }
 }
