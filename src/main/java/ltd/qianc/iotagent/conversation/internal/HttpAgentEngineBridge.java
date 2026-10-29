@@ -44,12 +44,13 @@ public final class HttpAgentEngineBridge implements AgentEngineBridge {
     private final HttpClient client;
     private final Duration runTimeout;
     private final ScheduledExecutorService scheduler;
+    private final String bridgeToken;
 
     public HttpAgentEngineBridge(
             ObjectMapper objectMapper,
             @Value("${agent.bridge.base-url:}") String baseUrl,
             Executor executor) {
-        this(objectMapper, baseUrl, executor, Duration.ofMinutes(2));
+        this(objectMapper, baseUrl, "", executor, Duration.ofMinutes(2));
     }
 
     public HttpAgentEngineBridge(
@@ -57,7 +58,25 @@ public final class HttpAgentEngineBridge implements AgentEngineBridge {
             String baseUrl,
             Executor executor,
             Duration runTimeout) {
-        this(objectMapper, baseUrl, executor, runTimeout,
+        this(objectMapper, baseUrl, "", executor, runTimeout);
+    }
+
+    public HttpAgentEngineBridge(
+            ObjectMapper objectMapper,
+            String baseUrl,
+            Executor executor,
+            Duration runTimeout,
+            ScheduledExecutorService scheduler) {
+        this(objectMapper, baseUrl, "", executor, runTimeout, scheduler);
+    }
+
+    public HttpAgentEngineBridge(
+            ObjectMapper objectMapper,
+            String baseUrl,
+            String bridgeToken,
+            Executor executor,
+            Duration runTimeout) {
+        this(objectMapper, baseUrl, bridgeToken, executor, runTimeout,
                 new ScheduledThreadPoolExecutor(1, runnable -> {
                     Thread thread = new Thread(runnable, "agent-bridge-timeout");
                     thread.setDaemon(true);
@@ -68,21 +87,24 @@ public final class HttpAgentEngineBridge implements AgentEngineBridge {
     public HttpAgentEngineBridge(
             ObjectMapper objectMapper,
             String baseUrl,
+            String bridgeToken,
             Executor executor,
             Duration runTimeout,
             ScheduledExecutorService scheduler) {
         this.objectMapper = objectMapper;
         this.baseUri = baseUrl == null || baseUrl.isBlank() ? null
                 : URI.create(baseUrl.endsWith("/") ? baseUrl : baseUrl + "/");
+        this.bridgeToken = bridgeToken == null ? "" : bridgeToken.trim();
         this.executor = executor;
         this.runTimeout = requireTimeout(runTimeout);
         this.scheduler = scheduler;
         this.client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).executor(executor).build();
     }
 
+
     @Override
     public CompletionStage<Void> start(AgentRunRequest request, Consumer<AgentEngineEvent> events) {
-        if (baseUri == null) return CompletableFuture.failedFuture(unavailable());
+        if (baseUri == null || bridgeToken.isBlank()) return CompletableFuture.failedFuture(unavailable());
         try {
             Map<String, Object> requestBody = new LinkedHashMap<>();
             requestBody.put("runId", request.runId());
@@ -98,6 +120,7 @@ public final class HttpAgentEngineBridge implements AgentEngineBridge {
                     .timeout(runTimeout)
                     .header("content-type", "application/json")
                     .header("accept", "application/x-ndjson")
+                    .header("authorization", "Bearer " + bridgeToken)
                     .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
                     .build();
             CompletableFuture<Void> result = new CompletableFuture<>();
@@ -165,10 +188,11 @@ public final class HttpAgentEngineBridge implements AgentEngineBridge {
 
     @Override
     public CompletionStage<Void> cancel(String runId) {
-        if (baseUri == null) return CompletableFuture.failedFuture(unavailable());
+        if (baseUri == null || bridgeToken.isBlank()) return CompletableFuture.failedFuture(unavailable());
         HttpRequest request = HttpRequest.newBuilder(baseUri.resolve("cancel/" + encodePathSegment(runId)))
                 .timeout(Duration.ofSeconds(2))
                 .header("accept", "application/json")
+                .header("authorization", "Bearer " + bridgeToken)
                 .POST(HttpRequest.BodyPublishers.noBody())
                 .build();
         return client.sendAsync(request, HttpResponse.BodyHandlers.discarding())

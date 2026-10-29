@@ -5,6 +5,8 @@ import { Type } from '../../../../../iot-agent-runtime/node_modules/@earendil-wo
 import { streamSimple } from '../../../../../iot-agent-runtime/node_modules/@earendil-works/pi-ai/dist/api/openai-completions.js'
 
 const port = Number(process.env.PORT || 3211)
+const bridgeToken = String(process.env.AGENT_BRIDGE_TOKEN || '').trim()
+if (!bridgeToken) throw new Error('AGENT_BRIDGE_TOKEN is required')
 const activeRuns = new Map()
 const runRecords = new Map()
 const sessions = new Map()
@@ -13,6 +15,10 @@ function json(res, status, value) {
   res.statusCode = status
   res.setHeader('content-type', 'application/json; charset=utf-8')
   res.end(JSON.stringify(value))
+}
+
+function authorized(req) {
+  return req.headers.authorization === `Bearer ${bridgeToken}`
 }
 
 async function readJson(req) {
@@ -190,6 +196,7 @@ async function replay(res, runId) {
 const server = http.createServer(async (req, res) => {
   try {
     if (req.method === 'GET' && req.url === '/healthz') return json(res, 200, { service: 'pi-agent-engine-probe', status: 'ok' })
+    if (!authorized(req)) return json(res, 401, { code: 'UNAUTHORIZED' })
     if (req.method === 'POST' && req.url === '/run') return await run(req, res)
     const replayMatch = req.method === 'GET' && /^\/runs\/([^/]+)\/events$/.exec(req.url || '')
     if (replayMatch) return await replay(res, replayMatch[1])

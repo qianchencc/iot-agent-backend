@@ -44,13 +44,16 @@ public class ConversationConfiguration {
     @Bean @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "false", matchIfMissing = true)
     @ConditionalOnMissingBean(ConversationEventStore.class)
     ConversationEventStore conversationEventStore() { return new FailClosedConversationEventStore(); }
-    @Bean @ConditionalOnMissingBean(AgentEngineBridge.class)
+    @Bean
+    @ConditionalOnMissingBean(AgentEngineBridge.class)
     AgentEngineBridge agentEngineBridge(ObjectMapper mapper,
             @Qualifier("conversationExecutor") ExecutorService executor,
             @Qualifier("conversationScheduler") ScheduledExecutorService conversationScheduler,
             @Value("${agent.bridge.base-url:}") String baseUrl,
+            @Value("${agent.bridge.token:}") String bridgeToken,
             @Value("${agent.bridge.run-timeout-ms:120000}") long timeoutMs) {
-        return new HttpAgentEngineBridge(mapper, baseUrl, executor, java.time.Duration.ofMillis(timeoutMs), conversationScheduler);
+        return new HttpAgentEngineBridge(mapper, baseUrl, bridgeToken, executor,
+                java.time.Duration.ofMillis(timeoutMs), conversationScheduler);
     }
     @Bean
     ConversationFacade conversationFacade(ObjectMapper mapper, ConversationStore conversations,
