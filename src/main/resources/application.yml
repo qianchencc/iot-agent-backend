@@ -1,7 +1,23 @@
 server:
-  address: 127.0.0.1
-  port: 3200
+  address: ${SERVER_ADDRESS:127.0.0.1}
+  port: ${SERVER_PORT:3200}
 
 spring:
   application:
     name: iot-agent-backend
+
+agent:
+  bridge:
+    base-url: ${AGENT_BRIDGE_BASE_URL:}
+    run-timeout-ms: ${AGENT_BRIDGE_RUN_TIMEOUT_MS:120000}
+  heartbeat-ms: ${AGENT_HEARTBEAT_MS:15000}
+
+iot:
+  gateway:
+    base-url: ${IOT_GATEWAY_BASE_URL:}
+    office-scope-path: ${IOT_GATEWAY_OFFICE_SCOPE_PATH:}
+    company-scope-path: ${IOT_GATEWAY_COMPANY_SCOPE_PATH:}
+    call-timeout-ms: ${IOT_GATEWAY_CALL_TIMEOUT_MS:15000}
+  identity:
+    verify: ${IOT_IDENTITY_VERIFY:true}
+    verify-timeout-ms: ${IOT_IDENTITY_VERIFY_TIMEOUT_MS:10000}

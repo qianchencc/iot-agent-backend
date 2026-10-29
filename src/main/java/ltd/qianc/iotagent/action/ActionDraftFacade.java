@@ -5,8 +5,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -525,15 +523,7 @@ public final class ActionDraftFacade {
     private String tenantOf(ActionDraftFact draft) { return payload(draft).path("tenantCode").asText(""); }
 
     private static String ownerKey(PrincipalInfo principal) {
-        try {
-            byte[] digest = MessageDigest.getInstance("SHA-256")
-                    .digest((principal.tenantCode() + "\u0000" + principal.authorization()).getBytes(StandardCharsets.UTF_8));
-            StringBuilder result = new StringBuilder(digest.length * 2);
-            for (byte value : digest) result.append(String.format("%02x", value));
-            return result.toString();
-        } catch (Exception error) {
-            throw new IllegalStateException("Unable to derive owner key", error);
-        }
+        return principal.ownerKey();
     }
 
     private IotSource parseSource(String value) {

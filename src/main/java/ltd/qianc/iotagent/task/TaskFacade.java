@@ -2,8 +2,6 @@ package ltd.qianc.iotagent.task;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -301,8 +299,6 @@ public final class TaskFacade {
         return principal.tenantCode() + "\u0000" + ownerKey(principal) + "\u0000" + key;
     }
     public static String ownerKey(PrincipalInfo principal) {
-        try { byte[] digest = MessageDigest.getInstance("SHA-256").digest((principal.tenantCode() + "\u0000" + principal.authorization()).getBytes(StandardCharsets.UTF_8));
-            StringBuilder result = new StringBuilder(64); for (byte item : digest) result.append(String.format("%02x", item)); return result.toString();
-        } catch (Exception error) { throw new IllegalStateException(error); }
+        return principal.ownerKey();
     }
 }

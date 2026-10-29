@@ -2,8 +2,6 @@ package ltd.qianc.iotagent.conversation;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
@@ -99,7 +97,7 @@ public final class ConversationFacade {
   return conversation;
 }
  private static void validSource(String s){if(!s.equals("office")&&!s.equals("company"))throw new BusinessException("INVALID_AGENT_SOURCE","Agent 来源无效");}
- private static String owner(PrincipalInfo p){try{byte[] b=MessageDigest.getInstance("SHA-256").digest((p.tenantCode()+"\0"+p.authorization()).getBytes(StandardCharsets.UTF_8));StringBuilder s=new StringBuilder();for(byte x:b)s.append(String.format("%02x",x));return s.toString();}catch(Exception e){throw new IllegalStateException(e);}}
+ private static String owner(PrincipalInfo p){return p.ownerKey();}
  private static final class Run{
   final String conversationId,turnId,runId;final ResponseBodyEmitter out;final AtomicBoolean terminal=new AtomicBoolean();final AtomicBoolean disconnected=new AtomicBoolean();long sequence;ScheduledFuture<?> heartbeat;
   Run(String c,String t,String r,ResponseBodyEmitter o){conversationId=c;turnId=t;runId=r;out=o;o.onError(x->disconnected.set(true));o.onCompletion(()->disconnected.set(true));}

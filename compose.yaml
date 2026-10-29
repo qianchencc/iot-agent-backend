@@ -1,0 +1,36 @@
+name: iot-agent-backend-local
+
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-iot_agent}
+      MYSQL_USER: ${MYSQL_USERNAME:-iot_agent}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-iot_agent_local}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root_local_only}
+      TZ: Asia/Shanghai
+    ports:
+      - "${MYSQL_PORT:-3307}:3306"
+    volumes:
+      - ./var/docker/mysql:/var/lib/mysql
+      - ./src/main/resources/db/mysql/agent-facts.sql:/docker-entrypoint-initdb.d/001-agent-facts.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u$${MYSQL_USER} -p$${MYSQL_PASSWORD} --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+    ports:
+      - "${REDIS_PORT:-6380}:6379"
+    volumes:
+      - ./var/docker/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20

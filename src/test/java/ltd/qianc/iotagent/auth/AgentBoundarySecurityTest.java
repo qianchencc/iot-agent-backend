@@ -1,5 +1,6 @@
 package ltd.qianc.iotagent.auth;
 
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -13,7 +14,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@SpringBootTest(properties = "agent.bridge-token=test-bridge")
+@SpringBootTest(properties = {"agent.bridge-token=test-bridge", "iot.identity.verify=false"})
 @AutoConfigureMockMvc
 @Import(AgentBoundarySecurityTest.ProbeController.class)
 class AgentBoundarySecurityTest {
@@ -59,6 +60,16 @@ class AgentBoundarySecurityTest {
                         .header("X-Agent-Bridge-Token", "test-bridge"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.bridge").value("ok"));
+    }
+
+    @Test
+    void stablePrincipalOwnerSurvivesTokenRotation() {
+        PrincipalInfo first = new PrincipalInfo("Bearer token-a", "XSJ", "principal-1", "https://ncim.577119.com");
+        PrincipalInfo rotated = new PrincipalInfo("Bearer token-b", "XSJ", "principal-1", "https://ncim.577119.com");
+        PrincipalInfo other = new PrincipalInfo("Bearer token-b", "XSJ", "principal-2", "https://ncim.577119.com");
+
+        Assertions.assertEquals(first.ownerKey(), rotated.ownerKey());
+        Assertions.assertNotEquals(first.ownerKey(), other.ownerKey());
     }
 
     @RestController

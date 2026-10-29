@@ -1,14 +1,13 @@
 # Agent Engine bridge 探针（throwaway）
 
-验证 Java Spring MVC → Node `pi-agent-core` → Java Tool Bridge → NDJSON 的组合架构。该目录不属于生产源码，不接客户网关，不控制真实设备。
-运行前提：`../iot-agent-runtime/node_modules` 已按 Runtime 的 Node 依赖安装；探针通过相对路径加载 `@earendil-works/pi-agent-core` 与 `@earendil-works/pi-ai`，不复制或重写这两个包。
+- 运行时复用 `../iot-agent-runtime/node_modules` 中真实的 `@earendil-works/pi-agent-core` / `@earendil-works/pi-ai`，模型配置由本机 `.env` 注入；不复制或重写这两个包。该探针只接 `echo_tool`，不代表业务 Tool Bridge 已完成。
 
 ## 运行
 
 从 `iot-agent-backend` 根目录启动 Node sidecar：
 
 ```sh
-node .scratch/iot-agent-backend-refactor/prototype/agent-engine-bridge/sidecar.mjs
+set -a; . ./.env; set +a; node .scratch/iot-agent-backend-refactor/prototype/agent-engine-bridge/sidecar.mjs
 ```
 
 另一个终端启动 Java probe：
@@ -44,4 +43,4 @@ curl -sS http://127.0.0.1:3200/prototype/bridge/runs/<runId>/events
 curl -sS -X POST http://127.0.0.1:3200/prototype/bridge/cancel/<runId>
 ```
 
-相同 `runId` 重复提交返回 409；不同 `conversationId` 使用独立 Pi Session 上下文。sidecar 停止并重新启动后，两个 healthz 均应恢复 200。探针用 faux model 产生确定性模型响应，但 Agent loop、工具 schema、工具执行、取消、超时和事件生命周期均使用真实 `pi-agent-core`。
+相同 `runId` 重复提交返回 409；不同 `conversationId` 使用独立 Pi Session 上下文。sidecar 停止并重新启动后，两个 healthz 均应恢复 200。探针使用本机 `.env` 的真实 Chat Completions 模型配置，Agent loop、工具 schema、工具执行、取消、超时和事件生命周期均使用真实 `pi-agent-core`；仅 `echo_tool` 是探针工具，不代表业务 Tool Bridge 已完成。

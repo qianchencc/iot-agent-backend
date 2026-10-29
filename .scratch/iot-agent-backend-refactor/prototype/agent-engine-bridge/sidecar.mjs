@@ -2,7 +2,7 @@ import http from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { Agent } from '../../../../../iot-agent-runtime/node_modules/@earendil-works/pi-agent-core/dist/index.js'
 import { Type } from '../../../../../iot-agent-runtime/node_modules/@earendil-works/pi-ai/dist/index.js'
-import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from '../../../../../iot-agent-runtime/node_modules/@earendil-works/pi-ai/dist/providers/faux.js'
+import { streamSimple } from '../../../../../iot-agent-runtime/node_modules/@earendil-works/pi-ai/dist/api/openai-completions.js'
 
 const port = Number(process.env.PORT || 3211)
 const activeRuns = new Map()
@@ -65,26 +65,50 @@ function toolFor({ runId, toolBridgeUrl }) {
   }
 }
 
+function createModel() {
+  const baseUrl = String(process.env.MODEL_BASE_URL || '').trim()
+  const modelId = String(process.env.MODEL_ID || '').trim()
+  if (!baseUrl || !modelId || !String(process.env.MODEL_API_KEY || '').trim()) {
+    throw new Error('MODEL_BASE_URL, MODEL_API_KEY and MODEL_ID are required')
+  }
+  return {
+    id: modelId,
+    name: modelId,
+    api: 'openai-completions',
+    provider: 'iot-agent-model',
+    baseUrl,
+    reasoning: false,
+    input: ['text'],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 32768,
+    maxTokens: 2048,
+    samplingParams: {},
+    compat: {
+      supportsDeveloperRole: false,
+      supportsReasoningEffort: false,
+      supportsUsageInStreaming: false,
+      maxTokensField: 'max_tokens',
+    },
+  }
+}
+
 function createAgent(body, record) {
-  const provider = fauxProvider(body.slow ? { tokensPerSecond: 1 } : {})
-  provider.setResponses([
-    fauxAssistantMessage(fauxToolCall('echo_tool', {
-      text: String(body.content || 'bridge probe'),
-      ...(body.slow ? { delayMs: 3000 } : {}),
-    }), { stopReason: 'toolUse' }),
-    fauxAssistantMessage(fauxText('Agent Engine 完成：Java Tool Bridge 已返回结果。')),
-  ])
+  const model = createModel()
   return new Agent({
     initialState: {
-      model: provider.getModel(),
+      model,
       messages: structuredClone(sessions.get(record.conversationId) || []),
       tools: [toolFor({
         runId: record.runId,
         toolBridgeUrl: String(body.toolBridgeUrl || 'http://127.0.0.1:3200/prototype/bridge'),
       })],
-      systemPrompt: '这是架构探针。先调用 echo_tool 获取 Java Tool Bridge 的事实，再用一句话完成答复。',
+      thinkingLevel: process.env.AGENT_THINKING_LEVEL || 'low',
+      systemPrompt: '这是本地 Agent Engine 探针。先调用 echo_tool 获取 Java Tool Bridge 的事实，再用一句话完成答复。',
     },
-    streamFn: provider.provider.streamSimple.bind(provider.provider),
+    streamFn: (currentModel, context, options) => streamSimple(currentModel, context, {
+      ...options,
+      apiKey: String(process.env.MODEL_API_KEY),
+    }),
   })
 }
 

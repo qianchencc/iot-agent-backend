@@ -5,8 +5,10 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import ltd.qianc.iotagent.auth.AccountPrincipalVerifier;
 import ltd.qianc.iotagent.auth.PrincipalContext;
 import ltd.qianc.iotagent.auth.PrincipalInfo;
+import ltd.qianc.iotagent.error.BusinessException;
 import ltd.qianc.iotagent.error.ErrorResponse;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.web.filter.OncePerRequestFilter;
@@ -14,9 +16,13 @@ import org.springframework.web.filter.OncePerRequestFilter;
 public final class AgentIdentityFilter extends OncePerRequestFilter {
 
     private final ObjectMapper objectMapper;
+    private final AccountPrincipalVerifier verifier;
+    private final boolean verifyIdentity;
 
-    public AgentIdentityFilter(ObjectMapper objectMapper) {
+    public AgentIdentityFilter(ObjectMapper objectMapper, AccountPrincipalVerifier verifier, boolean verifyIdentity) {
         this.objectMapper = objectMapper;
+        this.verifier = verifier;
+        this.verifyIdentity = verifyIdentity;
     }
 
     @Override
@@ -49,10 +55,12 @@ public final class AgentIdentityFilter extends OncePerRequestFilter {
             writeError(response, 400, "INVALID_AGENT_SOURCE", "Agent 来源无效");
             return;
         }
-
-        PrincipalContext.set(new PrincipalInfo(authorization, tenantCode));
+        PrincipalInfo presented = new PrincipalInfo(authorization, tenantCode);
         try {
+            PrincipalContext.set(verifyIdentity ? verifier.verify(presented) : presented);
             filterChain.doFilter(request, response);
+        } catch (BusinessException error) {
+            writeError(response, error.httpStatus(), error.code(), error.getMessage());
         } finally {
             PrincipalContext.clear();
         }
