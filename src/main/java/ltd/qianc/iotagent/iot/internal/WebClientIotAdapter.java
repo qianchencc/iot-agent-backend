@@ -168,18 +168,24 @@ public final class WebClientIotAdapter implements IotAdapter {
                         String officeName = text(office, "elementName", "name");
                         Map<String, String> params = new LinkedHashMap<>(source.params());
                         params.put("elementId", officeId);
-                        jobs.add(readSource(source, params, identity, officeName));
+                        jobs.add(readSource(source, params, identity, officeId, officeName));
                     }
                 } else {
-                    jobs.add(readSource(source, source.params(), identity, null));
+                    jobs.add(readSource(source, source.params(), identity, null, null));
                 }
             }
             return Flux.concat(jobs).collectList().map(groups -> mergeScope(identity, groups));
         });
     }
 
-    private Mono<List<AuthorizedDevice>> readSource(OfficeDeviceSource source, Map<String, String> params, RequestIdentity identity, String officeName) {
-        return page(source.path(), params, identity).map(rows -> rows.stream().map(row -> parseDevice(row, source, officeName)).toList());
+    private Mono<List<AuthorizedDevice>> readSource(
+            OfficeDeviceSource source,
+            Map<String, String> params,
+            RequestIdentity identity,
+            String officeId,
+            String officeName) {
+        return page(source.path(), params, identity)
+                .map(rows -> rows.stream().map(row -> parseDevice(row, source, officeId, officeName)).toList());
     }
 
     private Mono<AuthorizedDeviceScope> loadCompanyScope(RequestIdentity identity) {
@@ -287,7 +293,7 @@ public final class WebClientIotAdapter implements IotAdapter {
                         putMetadata(metadata, "companyAcActionId", validBinding ? airCondition : null);
                         return new AuthorizedDevice(device.id(), device.kind(), device.name(), device.installAddress(),
                                 !validBinding, validBinding ? providerCode : null, device.officeDeviceRef(),
-                                device.hubDeviceId(), device.smartAreaCode(), device.locationPaths(), metadata);
+                                device.hubDeviceId(), device.smartAreaCode(), device.locationPaths(), device.officeIds(), metadata);
                     }).toList();
                 });
     }
@@ -313,7 +319,7 @@ public final class WebClientIotAdapter implements IotAdapter {
         }
         return new AuthorizedDevice(first.id(), first.kind(), first.name(), first.installAddress(),
                 first.observationOnly(), first.controlRef(), first.officeDeviceRef(), first.hubDeviceId(),
-                first.smartAreaCode(), paths, first.metadata());
+                first.smartAreaCode(), paths, first.officeIds(), first.metadata());
     }
 
     private static boolean isPrefix(List<String> prefix, List<String> value) {
@@ -439,7 +445,7 @@ public final class WebClientIotAdapter implements IotAdapter {
         putMetadata(metadata, "code", text(row, "code"));
         putMetadata(metadata, "actionList", row.get("actionList"));
         return new AuthorizedDevice(id, "environment", name, text(row, "installAddress"), true, null, id,
-                text(row, "hubDeviceId", "id"), null, List.of(), metadata);
+                text(row, "hubDeviceId", "id"), null, List.of(), List.of(), metadata);
     }
 
     private AuthorizedDevice parseEnergyObservation(JsonNode row) {
@@ -449,7 +455,7 @@ public final class WebClientIotAdapter implements IotAdapter {
         putMetadata(metadata, "feeSchemeName", text(row, "feeSchemeName"));
         putMetadata(metadata, "energyType", text(row, "energyType"));
         return new AuthorizedDevice(id, "energy", name, text(row, "areaName"), true, null, id,
-                text(row, "hubDeviceId", "id"), null, List.of(), metadata);
+                text(row, "hubDeviceId", "id"), null, List.of(), List.of(), metadata);
     }
 
     private static boolean isFireSafetyRecord(JsonNode row) {
@@ -481,7 +487,7 @@ public final class WebClientIotAdapter implements IotAdapter {
         Map<String, Object> metadata = new LinkedHashMap<>();
         putMetadata(metadata, "subtype", textFrom(row, detail, "subtype", "subType"));
         putMetadata(metadata, "currentDevice", currentDevice);
-        return new AuthorizedDevice(id, "safety", name, address, true, null, id, hubDeviceId, null, List.of(), metadata);
+        return new AuthorizedDevice(id, "safety", name, address, true, null, id, hubDeviceId, null, List.of(), List.of(), metadata);
     }
 
     private static JsonNode detailObject(JsonNode body) {
@@ -503,7 +509,7 @@ public final class WebClientIotAdapter implements IotAdapter {
         String name = text(row, "name", "deviceName");
         return new AuthorizedDevice(id, kind, name == null ? kind : name, text(row, "installAddress", "installAddr"),
                 "video".equals(kind), "video".equals(kind) ? null : id, monitorReference, hub, leaf.code(),
-                List.of(leaf.path()), Map.of());
+                List.of(leaf.path()), List.of(), Map.of());
     }
 
     private AuthorizedDevice parseAc(JsonNode row, AreaLeaf leaf) {
@@ -511,7 +517,7 @@ public final class WebClientIotAdapter implements IotAdapter {
         if (hub == null) throw new UpstreamUnavailableException("空调设备缺少控制绑定");
         String name = text(row, "name", "deviceName");
         return new AuthorizedDevice(hub, "ac", name == null ? "空调" : name, text(row, "installAddress", "installAddr"),
-                true, null, hub, hub, leaf.code(), List.of(leaf.path()), Map.of());
+                true, null, hub, hub, leaf.code(), List.of(leaf.path()), List.of(), Map.of());
     }
 
     private static List<String> append(List<String> values, String value) {
@@ -524,7 +530,7 @@ public final class WebClientIotAdapter implements IotAdapter {
         return page(routes.path(identity.source()), Map.of(), identity).map(records -> {
             Map<String, AuthorizedDevice> unique = new LinkedHashMap<>();
             for (JsonNode record : records) {
-                AuthorizedDevice device = parseDevice(record, null, null);
+                AuthorizedDevice device = parseDevice(record, null, null, null);
                 AuthorizedDevice previous = unique.putIfAbsent(device.kind() + ":" + device.id(), device);
                 if (previous != null && !previous.equals(device)) {
                     throw new UpstreamUnavailableException("读取物联授权设备范围响应");
@@ -559,10 +565,25 @@ public final class WebClientIotAdapter implements IotAdapter {
         for (List<AuthorizedDevice> group : groups) {
             for (AuthorizedDevice candidate : group) {
                 String key = candidate.kind() + ":" + candidate.id();
-                unique.putIfAbsent(key, candidate);
+                AuthorizedDevice previous = unique.putIfAbsent(key, candidate);
+                if (previous != null) unique.put(key, mergeOfficeMembership(previous, candidate));
             }
         }
         return new AuthorizedDeviceScopeSnapshot(identity, List.copyOf(unique.values()));
+    }
+
+    private static AuthorizedDevice mergeOfficeMembership(AuthorizedDevice first, AuthorizedDevice duplicate) {
+        List<String> officeIds = new ArrayList<>(first.officeIds());
+        for (String officeId : duplicate.officeIds()) {
+            if (!officeIds.contains(officeId)) officeIds.add(officeId);
+        }
+        Map<String, Object> metadata = new LinkedHashMap<>(first.metadata());
+        List<String> sourceKeys = new ArrayList<>(first.sourceKeys());
+        sourceKeys.addAll(duplicate.sourceKeys());
+        metadata.put("sourceKeys", sourceKeys.stream().distinct().sorted().toList());
+        return new AuthorizedDevice(first.id(), first.kind(), first.name(), first.installAddress(),
+                first.observationOnly(), first.controlRef(), first.officeDeviceRef(), first.hubDeviceId(),
+                first.smartAreaCode(), first.locationPaths(), officeIds, metadata);
     }
 
     private Mono<List<JsonNode>> page(String path, Map<String, String> params, RequestIdentity identity) {
@@ -644,7 +665,7 @@ public final class WebClientIotAdapter implements IotAdapter {
         try {
             Map<String, AuthorizedDevice> unique = new LinkedHashMap<>();
             for (JsonNode record : content) {
-                AuthorizedDevice device = parseDevice(record, null, null);
+                AuthorizedDevice device = parseDevice(record, null, null, null);
                 AuthorizedDevice prior = unique.putIfAbsent(device.kind() + ":" + device.id(), device);
                 if (prior != null && !prior.equals(device)) return Mono.error(new UpstreamUnavailableException("读取物联授权设备范围响应"));
             }
@@ -654,7 +675,7 @@ public final class WebClientIotAdapter implements IotAdapter {
         }
     }
 
-    private AuthorizedDevice parseDevice(JsonNode record, OfficeDeviceSource source, String officeName) {
+    private AuthorizedDevice parseDevice(JsonNode record, OfficeDeviceSource source, String officeId, String officeName) {
         if (record == null || !record.isObject()) throw new IllegalArgumentException("device record is not an object");
         String id = text(record, "id", "deviceId");
         String kind = source == null ? text(record, "kind", "deviceKind") : source.kind();
@@ -666,9 +687,10 @@ public final class WebClientIotAdapter implements IotAdapter {
         Map<String, Object> metadata = new LinkedHashMap<>();
         putMetadata(metadata, "code", text(record, "code"));
         putMetadata(metadata, "actionList", record.get("actionList"));
+        putMetadata(metadata, "sourceKeys", List.of(source == null ? "microbrain." + kind : source.key()));
         return new AuthorizedDevice(id, kind, name, address, observationOnly,
                 text(record, "controlRef"), text(record, "officeDeviceRef", "id"), text(record, "hubDeviceId"),
-                text(record, "smartAreaCode"), List.of(), metadata);
+                text(record, "smartAreaCode"), List.of(), officeId == null ? List.of() : List.of(officeId), metadata);
     }
 
     private DeviceCapabilityInspection.DeviceCapability capability(AuthorizedDevice device) {

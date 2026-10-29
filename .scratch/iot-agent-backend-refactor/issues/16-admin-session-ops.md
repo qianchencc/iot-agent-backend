@@ -2,9 +2,9 @@
 
 **What to build:** Admin 配置保存/恢复/测试/应用和 Node Pi Session 具备 Runtime 兼容的 busy-gate、监督重启、会话恢复、备份、恢复与完整性检查，且不误报配置已生效。
 
-**Blocked by:** 03: MySQL / Redis 业务事实基础设施；04: Conversation 与 Pi Agent 生产闭环；09: Admin、模型配置与运维边界
+**Blocked by:** 03: MySQL / Redis 业务事实基础设施；04: Conversation 与 Pi Agent 生产闭环；09: Admin、模型配置与运维边界；18: Independent Node Pi Agent Sidecar
 
-**Status:** implemented-local (Admin apply, fail-closed supervisor handoff, Pi Session local/sidecar seam and SQLite operations are wired)
+**Status:** implemented-java-boundary-partial (Java adapters and local SQLite implementation exist; independent sidecar contract remains ticket 18)
 
 - [x] Admin apply 在 active run、execution summary、executing draft 或 task phase 存在时拒绝。
 - [x] apply 只在受监督进程 handoff 成功后返回成功；未接入 supervisor 时保持明确 fail-closed。

@@ -114,6 +114,36 @@ class IotAdapterContractTest {
     }
 
     @Test
+    void officeMembershipIdsSurviveScopeDeduplication() {
+        AtomicReference<java.util.List<String>> officeIds = new AtomicReference<>(new java.util.ArrayList<>());
+        ExchangeFunction fixture = candidate -> {
+            var url = candidate.url();
+            if (url.getPath().equals("/membership")) {
+                return Mono.just(json("{\"code\":200,\"content\":[{\"elementId\":\"office-a\",\"elementName\":\"一号楼\"},{\"elementId\":\"office-b\",\"elementName\":\"二号楼\"}]}"));
+            }
+            if (url.getPath().equals("/ac")) {
+                officeIds.get().add(url.getQuery());
+                return Mono.just(json("{\"code\":200,\"content\":[{\"id\":\"ac-shared\",\"name\":\"共享空调\",\"installAddress\":\"机房\"}]}"));
+            }
+            return Mono.just(json("{\"code\":204,\"content\":null}"));
+        };
+        IotAdapter adapter = IotAdapterFactory.webClient(
+                WebClient.builder().exchangeFunction(fixture).build(),
+                IotGatewayRoutes.officeDirectory("/office-scope", null, "/membership",
+                        java.util.List.of(new OfficeDeviceSource("fixture-office", "ac", "/ac", java.util.Map.of(), true))),
+                Duration.ofSeconds(1),
+                IotCallPolicy.passThrough());
+
+        AuthorizedDeviceScope scope = adapter.loadAuthorizedDeviceScope(
+                        new RequestIdentity("Bearer office-token", "TENANT-1", IotSource.OFFICE))
+                .block(Duration.ofSeconds(1));
+
+        AuthorizedDevice device = scope.device("ac-shared").orElseThrow();
+        assertThat(device.officeIds()).containsExactly("office-a", "office-b");
+        assertThat(officeIds.get()).allMatch(query -> query.contains("elementId=office-"));
+    }
+
+    @Test
     void companyCatalogUsesRuntimeShapesAndMergesAcLocations() {
         AtomicReference<java.util.List<String>> requests = new AtomicReference<>(new java.util.ArrayList<>());
         java.util.concurrent.atomic.AtomicBoolean validBinding = new java.util.concurrent.atomic.AtomicBoolean(true);

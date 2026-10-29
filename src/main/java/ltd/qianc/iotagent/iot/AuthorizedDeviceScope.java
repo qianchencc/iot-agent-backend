@@ -1,5 +1,9 @@
 package ltd.qianc.iotagent.iot;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 
@@ -14,6 +18,34 @@ public interface AuthorizedDeviceScope {
     IotSource source();
 
     List<AuthorizedDevice> devices();
+
+    /** Non-secret fingerprint of the complete authorized catalog snapshot. */
+    default String catalogFingerprint() {
+        return fingerprint(devices().stream()
+                .sorted(Comparator.comparing(AuthorizedDevice::id).thenComparing(AuthorizedDevice::kind))
+                .map(device -> device.id() + ":" + device.catalogFingerprint())
+                .toList());
+    }
+
+    /** Stronger non-secret fingerprint including current control bindings. */
+    default String bindingFingerprint() {
+        return fingerprint(devices().stream()
+                .sorted(Comparator.comparing(AuthorizedDevice::id).thenComparing(AuthorizedDevice::kind))
+                .map(device -> device.id() + ":" + device.bindingFingerprint())
+                .toList());
+    }
+
+    private static String fingerprint(List<String> values) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(String.join("|", values).getBytes(StandardCharsets.UTF_8));
+            StringBuilder result = new StringBuilder(digest.length * 2);
+            for (byte item : digest) result.append(String.format("%02x", item));
+            return result.toString();
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is unavailable", impossible);
+        }
+    }
 
     default Optional<AuthorizedDevice> device(String id) {
         return devices().stream().filter(device -> device.id().equals(id)).findFirst();

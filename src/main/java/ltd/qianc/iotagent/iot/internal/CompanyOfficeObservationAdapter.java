@@ -271,7 +271,7 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
         return officeContext(request.identity()).map(context -> {
             Map<String, Object> region = findRegion(context.regions, regionId)
                     .orElseThrow(() -> new BusinessException("REGION_NOT_FOUND", "区域不存在", 404));
-            return ObservationResponse.available(Map.of("devices", deviceViews(devicesInRegion(context.scope.devices(), region))));
+            return ObservationResponse.available(Map.of("devices", deviceViews(devicesInRegion(context.scope.devices(), regionId))));
         });
     }
 
@@ -281,7 +281,7 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
         return officeContext(request.identity()).flatMap(context -> {
             Map<String, Object> region = findRegion(context.regions, regionId)
                     .orElseThrow(() -> new BusinessException("REGION_NOT_FOUND", "区域不存在", 404));
-            List<AuthorizedDevice> devices = devicesInRegion(context.scope.devices(), region);
+            List<AuthorizedDevice> devices = devicesInRegion(context.scope.devices(), regionId);
             List<String> ids = devices.stream().map(AuthorizedDevice::id).toList();
             if (ids.isEmpty()) return Mono.just(ObservationResponse.available(Map.of("states", List.of())));
             return iot.readDeviceStates(request.identity(), ids).map(read -> ObservationResponse.available(Map.of("states", stateViews(devices, read))));
@@ -323,18 +323,8 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
         return result;
     }
 
-    private static List<AuthorizedDevice> devicesInRegion(List<AuthorizedDevice> devices, Map<String, Object> region) {
-        String id = String.valueOf(region.get("id"));
-        String name = String.valueOf(region.get("name"));
-        List<AuthorizedDevice> matches = devices.stream().filter(device -> belongsTo(device, id, name)).toList();
-        return matches.isEmpty() && devices.size() > 0 ? (devices.size() == 1 ? devices : List.of()) : matches;
-    }
-
-    private static boolean belongsTo(AuthorizedDevice device, String id, String name) {
-        if (id.equals(device.metadata().get("regionId")) || id.equals(device.metadata().get("officeId"))) return true;
-        if (device.locationPaths().stream().anyMatch(path -> path.contains(id) || path.contains(name))) return true;
-        return !name.isBlank() && !device.installAddress().isBlank()
-                && (name.equals(device.installAddress()) || device.installAddress().contains(name));
+    private static List<AuthorizedDevice> devicesInRegion(List<AuthorizedDevice> devices, String regionId) {
+        return devices.stream().filter(device -> device.officeIds().contains(regionId)).toList();
     }
 
     private static List<Map<String, Object>> dashboardDevices(List<AuthorizedDevice>... groups) {

@@ -2,6 +2,7 @@ package ltd.qianc.iotagent.task.internal;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Clock;
+import ltd.qianc.iotagent.report.ReportFactProducer;
 import ltd.qianc.iotagent.task.TaskExecutionGateway;
 import ltd.qianc.iotagent.task.TaskFactStore;
 import ltd.qianc.iotagent.task.TaskFacade;
@@ -79,8 +80,10 @@ public class TaskConfiguration {
     }
     @Bean
     TaskScanner taskScanner(TaskPhaseStore phases, TaskFactStore tasks, TaskExecutionGateway gateway,
-                            TaskNotificationStore notifications) {
-        return new TaskScanner(phases, tasks, gateway, notifications, Clock.systemUTC());
+                            TaskNotificationStore notifications,
+                            java.util.Optional<ReportFactProducer> reports) {
+        return new TaskScanner(phases, tasks, gateway, notifications,
+                reports.orElseGet(() -> checkpoint -> java.util.Optional.empty()), Clock.systemUTC());
     }
     @Bean
     @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")

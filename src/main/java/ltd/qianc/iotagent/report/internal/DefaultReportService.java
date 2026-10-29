@@ -4,8 +4,6 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Duration;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import ltd.qianc.iotagent.error.BusinessException;
@@ -72,11 +70,16 @@ public final class DefaultReportService implements ReportService {
                 || !identity.ownerKey().equals(text(report, "ownerKey", ""))) {
             throw new ReportNotFoundException();
         }
-        List<String> fixedIds = fixedDeviceIds(report);
         AuthorizedDeviceScope scope = loadScope(identity);
-        for (String id : fixedIds) {
-            AuthorizedDevice device = scope.device(id).orElseThrow(ReportNotFoundException::new);
-            if (!energy(device)) throw new ReportNotFoundException();
+        try {
+            for (ReportReferenceExtractor.Reference reference : ReportReferenceExtractor.extract(mapper.valueToTree(report))) {
+                AuthorizedDevice device = scope.device(reference.id()).orElseThrow(ReportNotFoundException::new);
+                if (reference.meter() && !energy(device)) throw new ReportNotFoundException();
+            }
+        } catch (ReportNotFoundException missing) {
+            throw missing;
+        } catch (RuntimeException invalid) {
+            throw new ReportNotFoundException();
         }
         report.remove("tenantCode");
         report.remove("ownerKey");
@@ -129,13 +132,6 @@ public final class DefaultReportService implements ReportService {
         }
     }
 
-    private static List<String> fixedDeviceIds(Map<String, Object> report) {
-        Object value = report.containsKey("meterIds") ? report.get("meterIds") : report.get("deviceIds");
-        if (!(value instanceof List<?> list)) return List.of();
-        List<String> ids = new ArrayList<>();
-        for (Object item : list) if (item instanceof String id && !id.isBlank() && !ids.contains(id)) ids.add(id);
-        return List.copyOf(ids);
-    }
 
     private static boolean energy(AuthorizedDevice device) {
         String kind = device.kind() == null ? "" : device.kind().toLowerCase(Locale.ROOT);

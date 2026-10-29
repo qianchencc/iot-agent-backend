@@ -1,6 +1,6 @@
 # 物联 Agent Java 重构规格
 
-Status: ready-for-agent
+Status: report-conversation-core-implemented-runtime-parity-open
 Date: 2026-10-29
 
 ## Problem Statement

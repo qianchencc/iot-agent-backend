@@ -28,6 +28,8 @@ public final class TaskRecurrence {
             if (!"monthly".equals(frequency) && dayOfMonth != null) throw new IllegalArgumentException("请指定有效的每月日期");
         }
     }
+    public record OccurrenceReference(String planId, LocalDate date) { }
+
 
     public static LocalDate localDate(Instant value) { return value.atZone(ZONE).toLocalDate(); }
     public static Instant occurrenceAt(Instant anchor, LocalDate date) {
@@ -36,6 +38,22 @@ public final class TaskRecurrence {
     }
     public static String occurrenceId(String planId, LocalDate date) {
         return "occurrence:" + planId + ":" + date;
+    }
+    public static OccurrenceReference parseOccurrenceId(String value) {
+        if (value == null || !value.startsWith("occurrence:")) return null;
+        String remainder = value.substring("occurrence:".length());
+        int separator = remainder.lastIndexOf(':');
+        if (separator <= 0 || separator == remainder.length() - 1
+                || remainder.substring(0, separator).contains(":")) return null;
+        String planId = remainder.substring(0, separator);
+        String date = remainder.substring(separator + 1);
+        try {
+            LocalDate parsed = LocalDate.parse(date);
+            if (!parsed.toString().equals(date)) return null;
+            return new OccurrenceReference(planId, parsed);
+        } catch (RuntimeException error) {
+            return null;
+        }
     }
     public static boolean matches(RepeatRule rule, LocalDate date) {
         if (rule.until() != null && date.isAfter(rule.until())) return false;

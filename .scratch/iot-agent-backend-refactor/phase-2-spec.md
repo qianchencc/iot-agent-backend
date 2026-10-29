@@ -1,26 +1,27 @@
 # Java Backend Parity Phase 2
 
-**Status:** ready-for-agent
+**Status:** implementation-in-progress-with-independent-sidecar-core
 **Date:** 2026-10-30
 **Parent:** `spec.md`, ticket 10 parity readiness
 
 ## Problem Statement
 
-The Java backend already preserves the public route surface and has a working Conversation → Node sidecar → `pi-agent-core` path, durable MySQL/Redis facts, Office read-only scope, local control fixtures, and durable one-shot/recurring task execution. It is not yet a behavioral replacement for `iot-agent-runtime`: Company device scope is modeled as one generic endpoint, Dashboard and Region composition are incorrectly treated as upstream reads, task change/cancellation proposals return 503, reports are not rendered locally, and video live/playback is not wired.
+The replacement must not depend on `../iot-agent-runtime` at runtime, as a source checkout, or as an imported application module. `iot-agent-runtime` remains a behavior oracle only. The refactor ships an independent Node sidecar service that retains `pi-agent-core` capability and exposes a private contract to the Java backend. The core sidecar process is now locally executable; full Runtime event/tool parity and evidence remain tickets 19–22.
 
-The Runtime source already contains the authoritative customer routes, payloads, state machines, fixtures, and regression tests for these gaps. Waiting for new customer protocol documentation is not a valid prerequisite for this phase.
+The Runtime source already contains the authoritative customer routes, payloads, state machines, fixtures, and regression tests for the remaining gaps. Waiting for new customer protocol documentation is not a valid prerequisite for local implementation; production control/video/cutover acceptance remains external.
 
-## Solution
+## Independent Node Sidecar Contract
 
-Migrate the remaining Runtime behavior into the Java topology in dependency order:
+The Node sidecar is a separate service and deliverable, not the original Runtime process:
 
-1. Build a Runtime-derived Company device catalog with multi-source area-tree traversal, pagination, deduplication, observation-only video devices, control references, hub bindings, and current-principal scope verification.
-2. Compose Dashboard and Region responses in Java from authorized observation/device/task facts. Do not model local composition as a customer gateway endpoint.
-3. Port task change and cancellation proposals as durable MySQL state machines with version CAS, expiry, authorization rechecks, idempotent confirmation, and no duplicate execution.
-4. Persist and serve local Report artifacts, including metadata, authorization scope, PDF and XLSX downloads, replay, and stable report references.
-5. Implement uncached Company/Office video live and playback entry points using the Runtime-derived device bindings and window/error rules.
-6. Match Runtime Admin apply busy-gate and supervised-restart handoff; document Pi Session backup/restore and make the local sidecar boundary operationally verifiable.
-7. Run the final parity gate and produce a no-production-cutover readiness report.
+- owns `pi-agent-core` / `pi-ai` model execution and Pi Session SQLite;
+- exposes private loopback routes for `/run`, `/cancel`, `/internal/agent/tools`, Pi Session operations, and supervised apply handoff;
+- calls Java `/internal/agent/tools` for business facts and tools, never accesses Java MySQL directly;
+- uses an explicit bridge token and never exposes private routes through the public mini-program gateway;
+- is built and tested from its own package directory with no import or runtime filesystem dependency on `../iot-agent-runtime`;
+- keeps Java MySQL business facts and Node Pi Session facts as separate authorities.
+
+The Java backend remains the only public API and remains the owner of customer identity, HTTP/NDJSON response contracts, authorization, durable business facts, and public error mapping.
 
 ## User Stories
 
@@ -35,6 +36,8 @@ Migrate the remaining Runtime behavior into the Java topology in dependency orde
 9. As an administrator, I want apply to reject active work and otherwise hand off to a supervisor, so that configuration changes cannot interrupt an in-flight run or execution.
 10. As an operator, I want Pi Session backup, restore, integrity, and capacity checks to be explicit, so that Node-side durable context is not confused with Java business facts.
 11. As a release operator, I want all remaining parity differences reported before any production cutover, so that the old Runtime remains a safe rollback authority.
+12. As the Java backend operator, I want the independent Node sidecar to run and recover `pi-agent-core` sessions without importing or starting `iot-agent-runtime`, so that the Java backend can replace Runtime while retaining the Node agent capability.
+13. As the Java backend, I want the sidecar bridge and Pi Session operations to have a private authenticated contract, so that customer-facing HTTP never exposes model/session internals.
 
 ## Implementation Decisions
 
@@ -46,6 +49,8 @@ Migrate the remaining Runtime behavior into the Java topology in dependency orde
 - Reports are locally generated artifacts. Redis never becomes the report source of truth.
 - Video URLs are returned only on authorized requests, marked `no-store`, and never persisted as business facts.
 - Admin apply is a supervised-restart contract, not hot reload. Busy work rejects apply; successful handoff does not claim success before the supervisor accepts it.
+- The independent Node sidecar is a separately buildable service in the backend deliverable. It may depend on published `pi-agent-core`, `pi-ai`, and Pi Session SQLite packages, but never imports Runtime source or reads Runtime files at runtime.
+- The sidecar contract includes authenticated NDJSON `/run`, `/cancel`, Java tool callbacks, Pi Session backup/restore/integrity/capacity, writer-lease recovery, and supervised apply handoff. The Java backend owns the public HTTP and durable business facts.
 - Production cloud remains untouched. Real control writes, task scanner dual-run, notification dual-write, video decode acceptance, deployment cutover, and rollback execution remain out of this phase's local implementation checks.
 
 ## Testing Decisions
@@ -55,6 +60,7 @@ Migrate the remaining Runtime behavior into the Java topology in dependency orde
 - Tests must cover normal, empty, partial, unauthorized, out-of-scope, malformed, timeout, duplicate, stale-version, expired, restart, and recovery behavior where relevant.
 - Full verification is `mvn -q test`, the route/NDJSON contract gate, and a local health/business smoke with real local MySQL/Redis and the configured Node sidecar model.
 - Tests must not assert SQL strings, framework wiring, mock echoes, or incidental defaults.
+- Sidecar tests start the independent Node service from its own package directory, exercise the private HTTP/NDJSON contract, and prove a clean install/build does not resolve `../iot-agent-runtime`.
 
 ## Out of Scope
 
@@ -64,8 +70,12 @@ Migrate the remaining Runtime behavior into the Java topology in dependency orde
 - Sending device control, task scanner, notification, or configuration writes to the customer production gateway.
 - Claiming successful production video decoding or production cutover without an external acceptance window.
 
-## Further Notes
+## Completion tickets added after audit
 
-- Ticket 11 is the first ready slice. It unblocks Dashboard/Region, Video, and production-control protocol plumbing.
-- Tickets 12–16 are independent after their listed blockers and can be worked on separate integration branches, but the final parity ticket must wait for all of them.
-- The existing ticket 10 remains the release-readiness parent; these tickets replace its obsolete assumption that customer protocol documents are required before implementation.
+- Ticket 18 closes the independent sidecar core: package, published Pi execution, SQLite operations, private auth, Java callback, and local model/process smoke.
+- Ticket 19 closes remaining Runtime task-plan semantics: scoped cancellation, resume confirmation, occurrence validation, and query boundaries.
+- Ticket 20 closes conversation-generated reports, attachment idempotency, block-level device authorization, and report fixtures.
+- Ticket 21 replaces source/static parity claims with behavioral fixture parity, migration, shadow, single-owner execution, and recovery evidence.
+- Ticket 22 closes sidecar event/tool union, active cancellation/timeout/disconnect/restart tests, Java adapter process tests, and backup-path/redaction hardening.
+- Ticket 17 is blocked by 19, 20, 21, and 22 in addition to 11–16; it is not complete when route inventory alone passes.
+- The production cloud backend remains untouched and is not a local acceptance target.

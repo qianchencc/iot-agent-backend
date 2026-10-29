@@ -68,12 +68,35 @@ public final class JdbcTaskRecurrenceMaterializer {
                 LocalDate date = LocalDate.parse(row.nextDate());
                 TaskRecurrence.RepeatRule repeat = repeat(row.repeatJson(), anchorDate);
                 if (date.isBefore(anchorDate) || !TaskRecurrence.matches(repeat, date)) return false;
-                Instant occurrenceAt = TaskRecurrence.occurrenceAt(anchor, date);
+
+                OverrideRow override = jdbc.query("SELECT status,override_payload_json FROM task_plan_occurrences WHERE plan_id=? AND occurrence_date=?",
+                        (rs, index) -> new OverrideRow(rs.getString(1), rs.getString(2)), row.planId(), date)
+                        .stream().findFirst().orElse(null);
+                Instant occurrenceAt = override != null && override.overridePayloadJson() != null
+                        ? effectiveAt(mapper.readTree(override.overridePayloadJson())) : TaskRecurrence.occurrenceAt(anchor, date);
                 if (occurrenceAt.isAfter(now)) return false;
+
+                if (override != null && "SKIPPED".equals(override.status())) {
+                    Pointer pointer = nextPointer(row, repeat, anchor, date, now);
+                    int changed = jdbc.update("UPDATE task_plans SET next_at=?,next_date=?,version=version+1,update_time=? "
+                                    + "WHERE plan_id=? AND status='ENABLED' AND version=? AND next_at=? AND next_date=?",
+                            pointer.at() == null ? null : Timestamp.from(pointer.at()), pointer.date() == null ? null : pointer.date().toString(),
+                            Timestamp.from(now), row.planId(), row.version(), Timestamp.from(row.nextAt()), row.nextDate());
+                    if (changed != 1) { status.setRollbackOnly(); return false; }
+                    return true;
+                }
 
                 String occurrenceId = TaskRecurrence.occurrenceId(row.planId(), date);
                 String taskId = deterministicId("task\0" + occurrenceId);
-                JsonNode snapshot = shifted(payload, date, anchorDate, occurrenceId);
+                JsonNode snapshot = override != null && override.overridePayloadJson() != null
+                        ? mapper.readTree(override.overridePayloadJson()) : shifted(payload, date, anchorDate, occurrenceId);
+                if (!snapshot.isObject()) throw new IllegalArgumentException("周期任务内容无效");
+                ((ObjectNode) snapshot).put("sourcePlanId", row.planId()).put("occurrenceDate", date.toString());
+                JsonNode phases = snapshot.path("phases");
+                for (int index = 0; index < phases.size(); index++) {
+                    if (phases.get(index).isObject()) ((ObjectNode) phases.get(index)).put("phaseId",
+                            deterministicId("phase\0" + occurrenceId + "\0" + index));
+                }
                 String taskPayload = TaskPayloadSafety.withoutCredentials(mapper, snapshot).toString();
                 jdbc.update("INSERT IGNORE INTO task_facts(task_id,version,status,payload_json,idempotency_key,create_time,update_time) VALUES (?,?,?,?,?,?,?)",
                         taskId, 1, "SCHEDULED", taskPayload, occurrenceId, Timestamp.from(now), Timestamp.from(now));
@@ -82,11 +105,10 @@ public final class JdbcTaskRecurrenceMaterializer {
                                 + "VALUES (?,?,?,'MATERIALIZED',?,?) ON DUPLICATE KEY UPDATE task_id=VALUES(task_id),status='MATERIALIZED',update_time=VALUES(update_time)",
                         row.planId(), date.toString(), taskId, Timestamp.from(now), Timestamp.from(now));
 
-                LocalDate nextDate = TaskRecurrence.next(repeat, anchor, occurrenceAt, date);
-                Instant nextAt = nextDate == null ? null : TaskRecurrence.occurrenceAt(anchor, nextDate);
+                Pointer pointer = nextPointer(row, repeat, anchor, date, now);
                 int changed = jdbc.update("UPDATE task_plans SET next_at=?,next_date=?,version=version+1,update_time=? "
                                 + "WHERE plan_id=? AND status='ENABLED' AND version=? AND next_at=? AND next_date=?",
-                        nextAt == null ? null : Timestamp.from(nextAt), nextDate == null ? null : nextDate.toString(),
+                        pointer.at() == null ? null : Timestamp.from(pointer.at()), pointer.date() == null ? null : pointer.date().toString(),
                         Timestamp.from(now), row.planId(), row.version(), Timestamp.from(row.nextAt()), row.nextDate());
                 if (changed != 1) { status.setRollbackOnly(); return false; }
                 return true;
@@ -99,6 +121,25 @@ public final class JdbcTaskRecurrenceMaterializer {
                 return false;
             }
         });
+    }
+
+    private Pointer nextPointer(PlanRow row, TaskRecurrence.RepeatRule repeat, Instant anchor,
+                                LocalDate completedDate, Instant now) throws Exception {
+        LocalDate regularDate = TaskRecurrence.next(repeat, anchor, TaskRecurrence.occurrenceAt(anchor, completedDate), completedDate);
+        Instant selectedAt = regularDate == null ? null : TaskRecurrence.occurrenceAt(anchor, regularDate);
+        LocalDate selectedDate = regularDate;
+        List<OverrideCandidate> overrides = jdbc.query("SELECT occurrence_date,override_payload_json FROM task_plan_occurrences "
+                        + "WHERE plan_id=? AND status='OVERRIDDEN' AND task_id IS NULL",
+                (rs, index) -> new OverrideCandidate(rs.getDate(1).toLocalDate(), rs.getString(2)), row.planId());
+        for (OverrideCandidate override : overrides) {
+            if (!TaskRecurrence.matches(repeat, override.date()) || override.payloadJson() == null) continue;
+            Instant at = effectiveAt(mapper.readTree(override.payloadJson()));
+            if (!at.isAfter(now) || selectedAt != null && (at.isAfter(selectedAt)
+                    || at.equals(selectedAt) && !override.date().isBefore(selectedDate))) continue;
+            selectedAt = at;
+            selectedDate = override.date();
+        }
+        return new Pointer(selectedAt, selectedDate);
     }
 
     private void insertPhases(JsonNode payload, String taskId, String source, Instant now) {
@@ -163,6 +204,13 @@ public final class JdbcTaskRecurrenceMaterializer {
         return root;
     }
 
+    private Instant effectiveAt(JsonNode payload) {
+        String value = payload.path("interval").path("startsAt").asText("");
+        if (value.isBlank()) value = payload.path("phases").path(0).path("at").asText("");
+        if (value.isBlank()) throw new IllegalArgumentException("周期任务缺少时间锚点");
+        return Instant.parse(value);
+    }
+
     private String shift(String value, LocalDate date, LocalDate anchorDate) {
         if (value.isBlank()) throw new IllegalArgumentException("周期任务时间无效");
         return Instant.parse(value).plus(Duration.ofDays(ChronoUnit.DAYS.between(anchorDate, date))).toString();
@@ -177,6 +225,10 @@ public final class JdbcTaskRecurrenceMaterializer {
         return UUID.nameUUIDFromBytes(value.getBytes(StandardCharsets.UTF_8)).toString();
     }
 
+    private record Pointer(Instant at, LocalDate date) { }
+    private record OverrideCandidate(LocalDate date, String payloadJson) { }
+
     private record PlanRow(String planId, long version, String status, Instant nextAt, String nextDate,
                            String repeatJson, String payloadJson) { }
+    private record OverrideRow(String status, String overridePayloadJson) { }
 }

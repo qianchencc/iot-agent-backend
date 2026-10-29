@@ -144,6 +144,8 @@ CREATE TABLE IF NOT EXISTS task_plan_occurrences (
     occurrence_date DATE NOT NULL,
     task_id VARCHAR(64) NULL,
     status VARCHAR(32) NOT NULL,
+    override_payload_json JSON NULL,
+    version BIGINT UNSIGNED NOT NULL DEFAULT 1,
     create_time DATETIME NOT NULL,
     update_time DATETIME NOT NULL,
     PRIMARY KEY (id), UNIQUE KEY uk_task_plan_occurrence (plan_id, occurrence_date),

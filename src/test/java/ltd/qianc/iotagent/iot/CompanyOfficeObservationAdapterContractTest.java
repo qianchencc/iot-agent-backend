@@ -44,6 +44,40 @@ class CompanyOfficeObservationAdapterContractTest {
     }
 
     @Test
+    void regionMembershipUsesExactOfficeIdsForDevicesStatesAndSeen() {
+        AtomicReference<List<String>> stateIds = new AtomicReference<>();
+        MemorySeenStore seen = new MemorySeenStore();
+        AuthorizedDevice member = new AuthorizedDevice("ac-a", "ac", "空调 A", "一号楼", false,
+                null, "ac-a", null, null, List.of(), List.of("office-a"), Map.of());
+        AuthorizedDevice sameNameDifferentOffice = new AuthorizedDevice("ac-b", "ac", "空调 B", "一号楼", false,
+                null, "ac-b", null, null, List.of(), List.of("office-b"), Map.of());
+        AuthorizedDevice noMembership = new AuthorizedDevice("ac-c", "ac", "空调 C", "一号楼", false,
+                null, "ac-c", null, null, List.of(), List.of(), Map.of());
+        ObservationAdapter upstream = request -> Mono.just(ObservationResponse.available(Map.of(
+                "regions", List.of(Map.of("id", "office-a", "name", "一号楼")))));
+        ObservationAdapter adapter = ObservationAdapterFactory.composed(
+                upstream, iot(OFFICE, List.of(member, sameNameDifferentOffice, noMembership), stateIds),
+                identity -> Mono.just(Map.of()), seen, Clock.systemUTC());
+
+        Map<String, Object> devices = adapter.read(new ObservationRequest(OFFICE, ObservationOperation.REGION_DEVICES,
+                Map.of("regionId", "office-a"))).block().payload();
+        List<?> deviceRows = (List<?>) devices.get("devices");
+        assertThat(deviceRows).hasSize(1);
+        assertThat(((Map<?, ?>) deviceRows.get(0)).get("id")).isEqualTo("ac-a");
+
+        Map<String, Object> states = adapter.read(new ObservationRequest(OFFICE, ObservationOperation.REGION_STATES,
+                Map.of("regionId", "office-a"))).block().payload();
+        List<?> stateRows = (List<?>) states.get("states");
+        assertThat(stateRows).hasSize(1);
+        assertThat(((Map<?, ?>) stateRows.get(0)).get("id")).isEqualTo("ac-a");
+        assertThat(stateIds.get()).containsExactly("ac-a");
+
+        adapter.read(new ObservationRequest(OFFICE, ObservationOperation.REGION_SEEN,
+                Map.of("regionId", "office-a"))).block();
+        assertThat(seen.markedRegion).isEqualTo("office-a");
+    }
+
+    @Test
     void regionDevicesRejectRegionOutsideCurrentOfficeIdentity() {
         ObservationAdapter upstream = request -> Mono.just(ObservationResponse.available(Map.of(
                 "regions", List.of(Map.of("id", "region-a", "name", "一号楼")))));
@@ -58,6 +92,13 @@ class CompanyOfficeObservationAdapterContractTest {
     }
 
     private static IotAdapter iot(RequestIdentity expected, List<AuthorizedDevice> devices) {
+        return iot(expected, devices, null);
+    }
+
+    private static IotAdapter iot(
+            RequestIdentity expected,
+            List<AuthorizedDevice> devices,
+            AtomicReference<List<String>> stateIds) {
         return new IotAdapter() {
             @Override
             public Mono<AuthorizedDeviceScope> loadAuthorizedDeviceScope(RequestIdentity identity) {
@@ -68,12 +109,22 @@ class CompanyOfficeObservationAdapterContractTest {
                     @Override public List<AuthorizedDevice> devices() { return devices; }
                 });
             }
+
+            @Override
+            public Mono<DeviceStateReadResult> readDeviceStates(RequestIdentity identity, List<String> ids) {
+                if (stateIds != null) stateIds.set(List.copyOf(ids));
+                return Mono.just(new DeviceStateReadResult(Map.of("ac-a", Map.of("power", "on")), Instant.now().toString()));
+            }
         };
     }
 
 
     private static final class MemorySeenStore implements RegionSeenStore {
-        @Override public void markSeen(String tenantCode, String ownerKey, String regionId, Instant at) { }
+        private String markedRegion;
+
+        @Override public void markSeen(String tenantCode, String ownerKey, String regionId, Instant at) {
+            markedRegion = regionId;
+        }
         @Override public Optional<Instant> seenAt(String tenantCode, String ownerKey, String regionId) { return Optional.empty(); }
     }
 }

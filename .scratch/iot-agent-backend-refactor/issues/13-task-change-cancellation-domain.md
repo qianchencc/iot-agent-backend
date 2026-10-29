@@ -4,16 +4,15 @@
 
 **Blocked by:** 08: Task、Plan、Notification 与 Durable Scheduler；11: Company 多源设备目录与 Control Reference
 
-**Status:** implemented-local-partial (durable task/change/cancellation lifecycle is wired; occurrence edit/skip remains fail-closed because the current Java plan seam lacks an occurrence override mutation)
+**Status:** implemented-core-open-runtime-plan-parity
 
 - [x] MySQL 保存 task change、task cancellation proposal、before/after、version、expiry、source、owner 和终态。
 - [x] confirm/discard 具备 CAS、幂等回放、过期拒绝、授权范围复核和 Runtime 错误语义。
 - [x] 已执行 phase 不可修改；未来 phase 可按 Runtime 规则更新、重排、跳过或取消。
-- [ ] 周期计划支持 occurrence edit/skip、pause/resume/delete，并保持 occurrence identity、历史报告和通知。
+- [ ] 周期计划支持 Runtime-compatible future occurrence edit/skip、pause/resume/delete，并保持 occurrence identity、历史报告和通知；scoped cancellation/resume confirmation/query boundaries are ticket 19.
 - [x] cancel 不会重新派发已终态阶段，重复 cancel 不重复写入或执行。
-- [ ] 使用 Runtime task-reference-management、task-cancellation、task-plan-management fixture 迁移测试。
+- [ ] 使用 Runtime task-reference-management、task-plan-management、task-cancellation essential fixture 行为迁移为 Java contract tests；existing domain tests cover the durable core.
 
 ## Comments
 
-- 当前同名 Java 路由故意 fail-closed 返回 503；本票完成后移除该占位语义。
-- 不接触客户生产 scanner 或控制 gateway。
+- occurrence edit/skip now uses the durable MySQL occurrence override seam; already-materialized occurrences and non-identity targets remain explicit fail-closed cases. Ticket 19 adds scoped plan cancellation, resume confirmation, and complete validation. No production scanner or control gateway is touched.

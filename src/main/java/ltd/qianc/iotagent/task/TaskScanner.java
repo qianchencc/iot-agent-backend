@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import ltd.qianc.iotagent.report.ReportFactProducer;
 
 /**
  * Recovery-safe scanner. A phase must be claimed by durable CAS before gateway
@@ -20,15 +21,22 @@ public final class TaskScanner {
     private final TaskFactStore tasks;
     private final TaskExecutionGateway gateway;
     private final TaskNotificationStore notifications;
+    private final ReportFactProducer reports;
     private final Clock clock;
     private volatile boolean stopping;
 
     public TaskScanner(TaskPhaseStore phases, TaskFactStore tasks, TaskExecutionGateway gateway,
                        TaskNotificationStore notifications, Clock clock) {
+        this(phases, tasks, gateway, notifications, checkpoint -> java.util.Optional.empty(), clock);
+    }
+
+    public TaskScanner(TaskPhaseStore phases, TaskFactStore tasks, TaskExecutionGateway gateway,
+                       TaskNotificationStore notifications, ReportFactProducer reports, Clock clock) {
         this.phases = Objects.requireNonNull(phases, "phases");
         this.tasks = Objects.requireNonNull(tasks, "tasks");
         this.gateway = Objects.requireNonNull(gateway, "gateway");
         this.notifications = Objects.requireNonNull(notifications, "notifications");
+        this.reports = Objects.requireNonNull(reports, "reports");
         this.clock = Objects.requireNonNull(clock, "clock");
     }
 
@@ -53,10 +61,14 @@ public final class TaskScanner {
                 boolean finished = phases.finish(phase.phaseId(), phase.version() + 1, result.outcome(), result.payloadJson(), clock.instant());
                 if (finished) {
                     completed++;
+                    terminalReport(task, phase, result);
                     if (phases.allTerminal(phase.taskId())) {
                         TaskFact terminalTask = completeTask(phase.taskId(), result.outcome());
-                        if (terminalTask != null) terminalNotification(terminalTask, phase,
-                                new TaskExecutionGateway.TaskExecutionResult(terminalTask.status(), result.payloadJson(), result.dispatchStarted()));
+                        if (terminalTask != null) {
+                            TaskExecutionGateway.TaskExecutionResult terminalResult =
+                                    new TaskExecutionGateway.TaskExecutionResult(terminalTask.status(), result.payloadJson(), result.dispatchStarted());
+                            terminalNotification(terminalTask, phase, terminalResult);
+                        }
                     }
                 }
             } catch (RuntimeException error) {
@@ -70,10 +82,14 @@ public final class TaskScanner {
                         : "{\"outcome\":\"failed\",\"reason\":\"not_dispatched\"}";
                 if (phases.finish(phase.phaseId(), phase.version() + 1, status, payload, clock.instant())) {
                     if (dispatchStarted) interrupted++;
+                    terminalReport(task, phase, new TaskExecutionGateway.TaskExecutionResult(status, payload, dispatchStarted));
                     if (phases.allTerminal(phase.taskId())) {
                         TaskFact terminalTask = completeTask(phase.taskId(), status);
-                        if (terminalTask != null) terminalNotification(terminalTask, phase,
-                                new TaskExecutionGateway.TaskExecutionResult(terminalTask.status(), payload, dispatchStarted));
+                        if (terminalTask != null) {
+                            TaskExecutionGateway.TaskExecutionResult terminalResult =
+                                    new TaskExecutionGateway.TaskExecutionResult(terminalTask.status(), payload, dispatchStarted);
+                            terminalNotification(terminalTask, phase, terminalResult);
+                        }
                     }
                 }
             }
@@ -87,9 +103,11 @@ public final class TaskScanner {
             if (!phases.allTerminal(phase.taskId())) continue;
             TaskFact task = completeTask(phase.taskId(), "INTERRUPTED");
             if (task != null) {
-                terminalNotification(task, phase,
+                TaskExecutionGateway.TaskExecutionResult terminalResult =
                         new TaskExecutionGateway.TaskExecutionResult(task.status(),
-                                "{\"outcome\":\"unknown\",\"reason\":\"service_restart\"}", true));
+                                "{\"outcome\":\"unknown\",\"reason\":\"service_restart\"}", true);
+                terminalNotification(task, phase, terminalResult);
+                terminalReport(task, phase, terminalResult);
             }
         }
         return recovered.size();
@@ -98,6 +116,21 @@ public final class TaskScanner {
 
     public int recoverInterrupted() { return recover(); }
     public void stopAndDrain() { stopping = true; }
+    private void terminalReport(TaskFact task, TaskPhaseStore.TaskPhase phase,
+                                TaskExecutionGateway.TaskExecutionResult result) {
+        if (!isTerminal(result.outcome())) return;
+        try {
+            reports.produce(new ReportFactProducer.ReportCheckpoint(
+                    phase.taskId(), phase.phaseId(), field(task.payloadJson(), "source", phase.source()),
+                    field(task.payloadJson(), "tenantCode", "unknown"),
+                    field(task.payloadJson(), "ownerKey", "unknown"),
+                    taskObjective(task.payloadJson()),
+                    result.outcome(), phase.dueAt(), clock.instant(), result.payloadJson()));
+        } catch (RuntimeException ignored) {
+            // Report persistence is best effort after terminal facts are durable;
+            // never redispatch a completed checkpoint because artifact storage is unavailable.
+        }
+    }
 
     private TaskFact completeTask(String taskId, String fallbackOutcome) {
         for (int attempt = 0; attempt < 8; attempt++) {
@@ -165,6 +198,27 @@ public final class TaskScanner {
         return "COMPLETED".equals(value) || "PARTIAL".equals(value) || "FAILED".equals(value)
                 || "UNCONFIRMED".equals(value) || "INTERRUPTED".equals(value) || "CANCELLED".equals(value);
     }
+    private static String taskObjective(String json) {
+        try {
+            JsonNode root = MAPPER.readTree(json);
+            String direct = root.path("objective").asText("");
+            if (!direct.isBlank()) return direct;
+            JsonNode phases = root.path("phases");
+            if (phases.isArray()) {
+                for (JsonNode phase : phases) {
+                    String phaseObjective = phase.path("read").path("agent").path("objective").asText("");
+                    if (!phaseObjective.isBlank()) return phaseObjective;
+                    phaseObjective = phase.path("objective").asText("");
+                    if (!phaseObjective.isBlank()) return phaseObjective;
+                }
+            }
+        } catch (Exception ignored) {
+            // Malformed task metadata is already handled fail-closed by the
+            // authorization fields; it must not prevent terminal persistence.
+        }
+        return "";
+    }
+
     private static String field(String json, String key, String fallback) {
         try {
             JsonNode value = MAPPER.readTree(json).path(key);

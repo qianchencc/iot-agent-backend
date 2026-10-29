@@ -15,7 +15,9 @@ import ltd.qianc.iotagent.iot.DeviceCapabilityRequest;
 import ltd.qianc.iotagent.iot.IotAdapter;
 import ltd.qianc.iotagent.iot.IotSource;
 import ltd.qianc.iotagent.iot.RequestIdentity;
+import ltd.qianc.iotagent.conversation.ReportGenerationPort;
 import ltd.qianc.iotagent.task.TaskFacade;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -31,14 +33,29 @@ public final class AgentToolBridgeController {
     private final ActionDraftFacade actions;
     private final TaskFacade tasks;
     private final ObjectMapper mapper;
+    private final ReportGenerationPort reports;
 
     public AgentToolBridgeController(ConversationFacade conversations, IotAdapter iot,
             ActionDraftFacade actions, TaskFacade tasks, ObjectMapper mapper) {
+        this(conversations, iot, actions, tasks, mapper, (ReportGenerationPort) null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public AgentToolBridgeController(ConversationFacade conversations, IotAdapter iot,
+            ActionDraftFacade actions, TaskFacade tasks, ObjectMapper mapper,
+            ObjectProvider<ReportGenerationPort> reportProvider) {
+        this(conversations, iot, actions, tasks, mapper, reportProvider.getIfAvailable());
+    }
+
+    public AgentToolBridgeController(ConversationFacade conversations, IotAdapter iot,
+            ActionDraftFacade actions, TaskFacade tasks, ObjectMapper mapper,
+            ReportGenerationPort reports) {
         this.conversations = conversations;
         this.iot = iot;
         this.actions = actions;
         this.tasks = tasks;
         this.mapper = mapper;
+        this.reports = reports;
     }
 
     @PostMapping
@@ -56,8 +73,22 @@ public final class AgentToolBridgeController {
             case "inspect_device_capabilities" -> inspectCapabilities(principal, source(arguments), arguments);
             case "propose_action_draft" -> proposeAction(principal, conversationId, turnId, arguments);
             case "propose_task" -> proposeTask(principal, conversationId, turnId, arguments);
+            case "create_report", "create_energy_report", "generate_report" -> generateReport(principal, conversationId, turnId, arguments);
             default -> throw new BusinessException("AGENT_TOOL_UNAVAILABLE", "工具未接入", 404);
         };
+    }
+
+    private Map<String, Object> generateReport(PrincipalInfo principal, String conversationId,
+            String turnId, Map<String, Object> args) {
+        if (reports == null) throw new BusinessException("AGENT_TOOL_UNAVAILABLE", "报告工具未接入", 404);
+        IotSource source = source(args);
+        if (source != IotSource.COMPANY) throw new BusinessException("REPORT_SOURCE_UNSUPPORTED", "报告只支持 Company 来源");
+        Object value = args.get("report");
+        Map<String, Object> content = value instanceof Map<?, ?> ? map(value) : args;
+        ReportGenerationPort.GeneratedReport result = reports.generate(
+                new RequestIdentity(principal.authorization(), principal.tenantCode(), IotSource.COMPANY, principal.ownerKey()),
+                conversationId, turnId, text(args, "idempotencyKey", turnId), content);
+        return Map.of("reportId", result.reportId(), "reused", result.reused(), "report", result.report());
     }
 
     private Map<String, Object> findCandidates(PrincipalInfo principal, IotSource source, Map<String, Object> args) {

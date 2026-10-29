@@ -2,9 +2,9 @@
 
 **What to build:** Java 后端在不触碰云端生产后端的前提下完成 Runtime 外部契约、业务事实、只读 shadow、备份恢复和回滚证据，达到可被人工审核的单向切换准备状态。
 
-**Blocked by:** 05: Office Authorized Device Scope 与只读工具；06: Company Observation、Report、Video 只读闭环；07: Action Draft、控制安全与 Readback；08: Task、Plan、Notification 与 Durable Scheduler；09: Admin、模型配置与运维边界；11–16: Phase 2 Runtime behavior migration slices
+**Blocked by:** 05: Office Authorized Device Scope 与只读工具；06: Company Observation、Report、Video 只读闭环；07: Action Draft、控制安全与 Readback；08: Task、Plan、Notification 与 Durable Scheduler；09: Admin、模型配置与运维边界；11–16: Phase 2 Runtime behavior migration slices；18: Independent Node Pi Agent Sidecar；19: Task Plan Runtime Parity；20: Report Conversation Flow；21: Behavioral Parity/Migration/Shadow Evidence；22: Sidecar Event/Tool/Process Parity
 
-**Status:** blocked-by-parity-gaps (local Java backend, fixtures, health and evidence exist; no production deployment or cutover performed)
+**Status:** open-behavioral-parity-and-evidence-gate
 
 - [ ] Runtime 与 Java 的 66 paths / 69 operations、Header、source、错误体和 NDJSON schema 通过真实 parity gate。
 - [ ] Conversation、Draft、Task、Plan、Phase、Notification、Report、Audit 和配置事实完成 Runtime → MySQL 映射，保留 identity、sequence、revision 和 terminal state。

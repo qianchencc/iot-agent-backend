@@ -3,6 +3,7 @@ package ltd.qianc.iotagent.task;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Duration;
+import java.time.LocalDate;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -101,17 +102,32 @@ public final class TaskFacade {
             throw new BusinessException("INVALID_CHANGE", "任务修改操作无效", 400);
         }
         String id = targetId(target);
-        boolean plan = "task_plan".equals(target.path("type").asText()) || "plan".equals(target.path("type").asText());
-        if (target.has("occurrence") || target.has("occurrenceDate") || target.has("date")) {
-            throw new BusinessException("TASK_OCCURRENCE_UNSUPPORTED", "当前存储未提供 occurrence 身份，拒绝修改本次发生", 409);
+        TaskRecurrence.OccurrenceReference occurrence = occurrenceTarget(target);
+        boolean plan = "task_plan".equals(target.path("type").asText()) || "plan".equals(target.path("type").asText())
+                || occurrence != null;
+        if ((target.has("occurrence") || target.has("occurrenceDate") || target.has("date")) && occurrence == null) {
+            throw new BusinessException("TASK_OCCURRENCE_UNSUPPORTED", "本次发生身份无效，拒绝修改本次发生", 409);
         }
-        if (plan && "skip".equals(operation)) {
+        if (occurrence != null && !Set.of("edit", "skip").contains(operation)) {
+            throw new BusinessException("TASK_OCCURRENCE_UNSUPPORTED", "本次发生仅支持修改或跳过", 409);
+        }
+        if (plan && "skip".equals(operation) && occurrence == null) {
             throw new BusinessException("TASK_OCCURRENCE_REQUIRED", "跳过计划必须明确 occurrence 身份", 409);
         }
-        JsonNode before = plan ? planForProposal(principal, normalizedSource, id) : taskForProposal(principal, normalizedSource, id);
-        long targetVersion = plan ? plans.find(id).orElseThrow(() -> notFound("PLAN_NOT_FOUND", "计划不存在")).version()
+        String planId = occurrence == null ? id : occurrence.planId();
+        JsonNode before = occurrence != null ? occurrenceForProposal(principal, normalizedSource, occurrence)
+                : plan ? planForProposal(principal, normalizedSource, planId) : taskForProposal(principal, normalizedSource, id);
+        long targetVersion = plan ? plans.find(planId).orElseThrow(() -> notFound("PLAN_NOT_FOUND", "计划不存在")).version()
                 : tasks.find(id).orElseThrow(() -> notFound("TASK_NOT_FOUND", "任务不存在")).version();
         JsonNode after = changedPayload(before, request, operation);
+        if ("edit".equals(operation)) {
+            validatePlanStructure(after, before.toString());
+            if (plan && occurrence == null && before.has("repeat") && !after.has("repeat")) {
+                throw new BusinessException("INVALID_CHANGE", "周期计划必须保留重复规则", 400);
+            }
+            validateFutureChange(before, after, operation);
+            validateDurableHistory(before, after);
+        }
         validateDeviceReferences(before, after);
         String key = scoped(principal, idempotencyKey);
         Optional<TaskProposalFact> prior = proposals.findByIdempotencyKey(key);
@@ -160,24 +176,44 @@ public final class TaskFacade {
         if (!PENDING.equals(proposal.status())) throw conflict("CHANGE_NOT_PENDING", "修改提案已结束");
         if (proposal.version() != expectedVersion) throw conflict("VERSION_CONFLICT", "任务已变化，请重新提出修改");
         JsonNode target = readJson(proposal.targetJson());
-        assertCurrentCatalog(principal, proposal.source(), proposal.afterJson());
+        assertCurrentCatalog(principal, proposal.source(), proposal.afterJson(),
+                "resume".equals(proposal.operation()));
+        if ("edit".equals(proposal.operation())) {
+            validatePlanStructure(readJson(proposal.afterJson()), proposal.beforeJson());
+            validateFutureChange(readJson(proposal.beforeJson()), readJson(proposal.afterJson()), proposal.operation());
+            validateDurableHistory(readJson(proposal.beforeJson()), readJson(proposal.afterJson()));
+        }
         validateDeviceReferences(readJson(proposal.beforeJson()), readJson(proposal.afterJson()));
-        validateDurableHistory(readJson(proposal.beforeJson()), readJson(proposal.afterJson()));
         String id = targetId(target);
-        boolean plan = "task_plan".equals(target.path("type").asText()) || "plan".equals(target.path("type").asText());
+        TaskRecurrence.OccurrenceReference occurrence = occurrenceTarget(target);
+        boolean plan = "task_plan".equals(target.path("type").asText()) || "plan".equals(target.path("type").asText())
+                || occurrence != null;
+        String planId = occurrence == null ? id : occurrence.planId();
         if (plan) {
-            TaskPlanFact current = plan(principal, id);
+            TaskPlanFact current = plan(principal, planId);
             assertSource(current.payloadJson(), proposal.source());
             if (current.version() != proposal.version()) throw conflict("VERSION_CONFLICT", "计划已变化，请重新提出修改");
+            if (occurrence != null) {
+                String override = "skip".equals(proposal.operation()) ? null : safePayload(proposal.afterJson()).toString();
+                TaskPlanOccurrence changed;
+                try {
+                    changed = plans.overrideOccurrenceIfVersion(planId, occurrence.date(), current.version(), override, clock.instant())
+                            .orElseThrow(() -> conflict("VERSION_CONFLICT", "本次发生已变化或已开始，请刷新后重试"));
+                } catch (UnsupportedOperationException unavailable) {
+                    throw new BusinessException("TASK_OCCURRENCE_UNSUPPORTED", "当前存储未提供本次发生修改能力", 409);
+                }
+                markConfirmed(proposal);
+                return managementResult(proposal, null, changed.planId());
+            }
             String nextStatus = switch (proposal.operation()) {
                 case "pause" -> "PAUSED";
                 case "resume" -> "ENABLED";
                 case "delete" -> "DELETED";
                 default -> current.status();
             };
-            TaskPlanFact updated = plans.updateIfVersion(new TaskPlanFact(id, current.version() + 1, nextStatus,
+            TaskPlanFact updated = plans.updateIfVersion(new TaskPlanFact(planId, current.version() + 1, nextStatus,
                     safePayload(proposal.afterJson()).toString(), current.idempotencyKey()), current.version())
-                    .orElseThrow(() -> conflict("VERSION_CONFLICT", "计划已变化，请重新提出修改"));
+                    .orElseThrow(() -> conflict("VERSION_CONFLICT", "计划已变化，请刷新后重试"));
             markConfirmed(proposal);
             return managementResult(proposal, null, updated.planId());
         }
@@ -350,6 +386,11 @@ public final class TaskFacade {
     }
 
     public TaskPlanFact updatePlan(PrincipalInfo principal, String planId, long expectedVersion, String status, String payloadJson) {
+        return updatePlan(principal, planId, expectedVersion, status, payloadJson, false);
+    }
+
+    public TaskPlanFact updatePlan(PrincipalInfo principal, String planId, long expectedVersion, String status,
+                                   String payloadJson, boolean confirmed) {
         TaskPlanFact current = plan(principal, planId);
         if (current.version() != expectedVersion) throw conflict("VERSION_CONFLICT", "计划已变化，请刷新后重试");
         String requested = status == null ? "" : status.trim();
@@ -363,15 +404,89 @@ public final class TaskFacade {
         if (!(next.equals("ENABLED") || next.equals("PAUSED") || next.equals("DELETED"))) {
             throw new BusinessException("INVALID_PLAN_STATUS", "计划状态无效");
         }
+        if ("ENABLED".equals(next) && !"PAUSED".equals(current.status()) && !"ENABLED".equals(current.status())) {
+            throw new BusinessException("PLAN_FORBIDDEN", "当前计划不能重新启用", 403);
+        }
+        if ("PAUSED".equals(next) && !"ENABLED".equals(current.status())) {
+            throw new BusinessException("PLAN_FORBIDDEN", "当前计划不能停用", 403);
+        }
+        if ("ENABLED".equals(next) && !"ENABLED".equals(current.status())) {
+            if (!confirmed) throw new BusinessException("RESUME_CONFIRMATION_REQUIRED", "重新启用周期计划需要确认当前范围和控制绑定", 400);
+            assertCurrentCatalog(principal, source(safePayload(current.payloadJson()).path("source").asText("office")),
+                    current.payloadJson(), true);
+            validatePlanStructure(safePayload(current.payloadJson()), current.payloadJson());
+        }
         JsonNode nextPayload = payloadJson == null ? safePayload(current.payloadJson()) : safePayload(payloadJson);
         if (!nextPayload.isObject()) throw new BusinessException("INVALID_TASK_PAYLOAD", "计划内容无效", 400);
         ((com.fasterxml.jackson.databind.node.ObjectNode) nextPayload)
                 .put("tenantCode", principal.tenantCode())
                 .put("ownerKey", ownerKey(principal))
                 .put("source", source(safePayload(current.payloadJson()).path("source").asText("office")));
+        if ("edit".equalsIgnoreCase(requested)) validatePlanStructure(nextPayload, current.payloadJson());
         return plans.updateIfVersion(new TaskPlanFact(planId, expectedVersion + 1, next,
                 nextPayload.toString(), current.idempotencyKey()), expectedVersion)
                 .orElseThrow(() -> conflict("VERSION_CONFLICT", "计划已变化，请刷新后重试"));
+    }
+
+    /**
+     * Runtime-compatible direct plan cancellation. Occurrence cancellation is
+     * an override/skip fact; all cancellation uses the store's transactional
+     * plan/phase CAS and never rewrites terminal history.
+     */
+    public Map<String, Object> cancelPlan(PrincipalInfo principal, String requestedSource, String planId,
+                                          long expectedVersion, String scope, LocalDate date) {
+        checkPrincipal(principal);
+        String normalizedSource = source(requestedSource);
+        require(planId, "planId");
+        if (!"occurrence".equals(scope) && !"all".equals(scope)) {
+            throw new BusinessException("INVALID_CANCELLATION", "请选择有效取消范围并刷新计划", 400);
+        }
+        if ("occurrence".equals(scope) && date == null) {
+            throw new BusinessException("INVALID_CANCELLATION", "请选择有效取消范围并刷新计划", 400);
+        }
+        TaskPlanFact current = plan(principal, planId);
+        assertCurrentCatalog(principal, normalizedSource, current.payloadJson(), true);
+        if ("all".equals(scope) && "DELETED".equals(current.status()) && current.version() == expectedVersion + 1) {
+            return cancellationResult(current, scope, date);
+        }
+        if ("occurrence".equals(scope) && current.version() == expectedVersion + 1) {
+            try {
+                TaskPlanOccurrence existing = plans.findOccurrence(planId, date).orElse(null);
+                if (existing != null && existing.skipped() && existing.planVersion() == current.version()) {
+                    return cancellationResult(current, scope, date);
+                }
+            } catch (UnsupportedOperationException unavailable) {
+                throw new BusinessException("TASK_OCCURRENCE_UNSUPPORTED", "当前存储未提供本次发生取消能力", 503);
+            }
+        }
+        if (current.version() != expectedVersion) throw conflict("VERSION_CONFLICT", "安排已变化，请刷新后重试");
+        TaskPlanFact changed;
+        if ("occurrence".equals(scope)) {
+            try {
+                plans.overrideOccurrenceIfVersion(planId, date, expectedVersion, null, clock.instant())
+                        .orElseThrow(() -> conflict("VERSION_CONFLICT", "安排已变化，请刷新后重试"));
+            } catch (UnsupportedOperationException unavailable) {
+                throw new BusinessException("TASK_OCCURRENCE_UNSUPPORTED", "当前存储未提供本次发生取消能力", 503);
+            }
+            changed = plans.find(planId).orElseThrow(() -> notFound("PLAN_NOT_FOUND", "计划不存在"));
+        } else {
+            try {
+                changed = plans.cancelAllIfVersion(planId, expectedVersion, clock.instant())
+                        .orElseThrow(() -> conflict("VERSION_CONFLICT", "安排已变化，请刷新后重试"));
+            } catch (UnsupportedOperationException unavailable) {
+                throw new BusinessException("TASK_PLAN_CANCELLATION_UNAVAILABLE", "当前存储未提供计划取消能力", 503);
+            }
+        }
+        return cancellationResult(changed, scope, date);
+    }
+    private Map<String, Object> cancellationResult(TaskPlanFact plan, String scope, LocalDate date) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("planId", plan.planId());
+        result.put("version", plan.version());
+        result.put("status", plan.status());
+        result.put("scope", scope);
+        if (date != null) result.put("date", date.toString());
+        return result;
     }
 
     public List<Map<String, Object>> notifications(PrincipalInfo principal, String source, int limit, String before) {
@@ -549,6 +664,81 @@ public final class TaskFacade {
         assertSource(plan.payloadJson(), source);
         return safePayload(plan.payloadJson());
     }
+    private TaskRecurrence.OccurrenceReference occurrenceTarget(JsonNode target) {
+        if (!"task".equals(target.path("type").asText())) return null;
+        return TaskRecurrence.parseOccurrenceId(target.path("taskId").asText(""));
+    }
+    private JsonNode occurrenceForProposal(PrincipalInfo principal, String source,
+                                           TaskRecurrence.OccurrenceReference occurrence) {
+        TaskPlanFact plan = plan(principal, occurrence.planId());
+        assertSource(plan.payloadJson(), source);
+        TaskPlanOccurrence existing;
+        try {
+            existing = plans.findOccurrence(occurrence.planId(), occurrence.date()).orElse(null);
+        } catch (UnsupportedOperationException unavailable) {
+            throw new BusinessException("TASK_OCCURRENCE_UNSUPPORTED", "当前存储未提供本次发生修改能力", 409);
+        }
+        if (existing != null && (existing.taskId() != null || existing.skipped()
+                || Set.of("CLAIMED", "MATERIALIZED").contains(existing.status()))) {
+            throw new BusinessException("TASK_OCCURRENCE_UNSUPPORTED", "本次发生已经落库，不能再修改", 409);
+        }
+        JsonNode original = safePayload(plan.payloadJson());
+        Instant anchor = anchor(original);
+        TaskRecurrence.RepeatRule repeat = repeatRule(original.path("repeat"), TaskRecurrence.localDate(anchor));
+        if (occurrence.date().isBefore(TaskRecurrence.localDate(anchor)) || !TaskRecurrence.matches(repeat, occurrence.date())) {
+            throw notFound("TASK_OCCURRENCE_NOT_FOUND", "本次发生不存在");
+        }
+        JsonNode effective = existing != null && existing.payloadJson() != null
+                ? safePayload(existing.payloadJson()) : shiftedOccurrence(original, occurrence.date(), TaskRecurrence.localDate(anchor));
+        if (!effectiveAt(effective).isAfter(clock.instant())) {
+            throw new BusinessException("TASK_OCCURRENCE_UNSUPPORTED", "本次发生已经开始，不能再修改", 409);
+        }
+        return effective;
+    }
+    private Instant anchor(JsonNode payload) {
+        String value = payload.path("interval").path("startsAt").asText("");
+        if (value.isBlank()) value = payload.path("phases").path(0).path("at").asText("");
+        try { return Instant.parse(value); } catch (RuntimeException error) { throw new BusinessException("INVALID_CHANGE", "周期时间无效", 400); }
+    }
+    private Instant effectiveAt(JsonNode payload) { return anchor(payload); }
+    private TaskRecurrence.RepeatRule repeatRule(JsonNode value, java.time.LocalDate anchorDate) {
+        String frequency = value.path("frequency").asText("");
+        Set<Integer> weekdays = Set.of();
+        if (value.has("weekdays")) {
+            if (!value.get("weekdays").isArray()) throw new BusinessException("INVALID_CHANGE", "重复规则无效", 400);
+            var parsed = new ArrayList<Integer>();
+            for (JsonNode item : value.get("weekdays")) parsed.add(item.isIntegralNumber() ? item.intValue() : -1);
+            weekdays = TaskRecurrence.weekdays(parsed);
+        }
+        Integer day = value.has("dayOfMonth") ? value.path("dayOfMonth").asInt(-1) : null;
+        java.time.LocalDate until = value.has("until") ? java.time.LocalDate.parse(value.path("until").asText()) : null;
+        if (until != null && until.isBefore(anchorDate)) throw new BusinessException("INVALID_CHANGE", "截止日无效", 400);
+        return new TaskRecurrence.RepeatRule(frequency, weekdays, day, until);
+    }
+    private JsonNode shiftedOccurrence(JsonNode original, java.time.LocalDate date, java.time.LocalDate anchorDate) {
+        JsonNode copy = original.deepCopy();
+        if (!copy.isObject()) throw new BusinessException("INVALID_CHANGE", "周期任务内容无效", 400);
+        var root = (com.fasterxml.jackson.databind.node.ObjectNode) copy;
+        long days = java.time.temporal.ChronoUnit.DAYS.between(anchorDate, date);
+        JsonNode interval = root.path("interval");
+        if (interval.isObject()) {
+            ((com.fasterxml.jackson.databind.node.ObjectNode) interval).put("startsAt",
+                    shiftOccurrenceAt(interval.path("startsAt").asText(""), days));
+            ((com.fasterxml.jackson.databind.node.ObjectNode) interval).put("endsAt",
+                    shiftOccurrenceAt(interval.path("endsAt").asText(""), days));
+        }
+        if (!root.path("phases").isArray()) throw new BusinessException("INVALID_CHANGE", "周期任务阶段无效", 400);
+        for (JsonNode phase : root.path("phases")) if (phase.isObject()) {
+            ((com.fasterxml.jackson.databind.node.ObjectNode) phase).put("at",
+                    shiftOccurrenceAt(phase.path("at").asText(""), days));
+        }
+        root.put("occurrenceDate", date.toString());
+        return root;
+    }
+    private String shiftOccurrenceAt(String value, long days) {
+        try { return Instant.parse(value).plus(java.time.Duration.ofDays(days)).toString(); }
+        catch (RuntimeException error) { throw new BusinessException("INVALID_CHANGE", "周期时间无效", 400); }
+    }
     private void assertSource(String payload, String expected) {
         String actual = source(safePayload(payload).path("source").asText("office"));
         if (!actual.equals(source(expected))) throw notFound("TASK_NOT_FOUND", "任务不存在");
@@ -580,7 +770,14 @@ public final class TaskFacade {
         }
     }
     private void assertCurrentCatalog(PrincipalInfo principal, String source, String payloadJson) {
-        if (iot == null) return;
+        assertCurrentCatalog(principal, source, payloadJson, false);
+    }
+
+    private void assertCurrentCatalog(PrincipalInfo principal, String source, String payloadJson, boolean required) {
+        if (iot == null) {
+            if (required) throw new BusinessException("TASK_DEVICE_AUTHORIZATION_UNAVAILABLE", "当前设备授权范围暂不可用", 503);
+            return;
+        }
         IotSource requested;
         try {
             requested = IotSource.parse(source);
@@ -597,14 +794,60 @@ public final class TaskFacade {
         } catch (RuntimeException failure) {
             throw new BusinessException("TASK_DEVICE_AUTHORIZATION_UNAVAILABLE", "当前设备授权范围暂不可用", 503);
         }
-        if (scope == null || scope.source() != requested) {
+        if (scope == null || scope.source() != requested || scope.devices() == null) {
             throw new BusinessException("TASK_DEVICE_AUTHORIZATION_UNAVAILABLE", "当前设备授权范围暂不可用", 503);
         }
-        for (String id : deviceReferences(safePayload(payloadJson))) {
-            if (scope.device(id).isEmpty()) {
+        JsonNode payload = safePayload(payloadJson);
+        String expectedCatalog = text(payload, "catalogFingerprint", "catalog_fingerprint", "deviceCatalogFingerprint");
+        String expectedBinding = text(payload, "bindingFingerprint", "binding_fingerprint", "deviceBindingFingerprint");
+        if ((expectedCatalog != null && !expectedCatalog.equals(scope.catalogFingerprint()))
+                || (expectedBinding != null && !expectedBinding.equals(scope.bindingFingerprint()))) {
+            throw new BusinessException("TASK_DEVICE_AUTHORIZATION_UNAVAILABLE", "任务设备授权目录已变化，请重新确认", 403);
+        }
+        for (String id : deviceReferences(payload)) {
+            AuthorizedDevice device = scope.device(id).orElse(null);
+            if (device == null) {
                 throw new BusinessException("TASK_DEVICE_AUTHORIZATION_UNAVAILABLE", "任务目标已不在当前授权范围", 403);
             }
+            JsonNode action = actionForDevice(payload, id);
+            if (action != null && (device.observationOnly()
+                    || !device.kind().equalsIgnoreCase(action.path("kind").asText()))) {
+                throw new BusinessException("TASK_DEVICE_AUTHORIZATION_UNAVAILABLE", "任务控制绑定已变化，请重新确认", 403);
+            }
+            if (action != null && !bindingMatches(action, device)) {
+                throw new BusinessException("TASK_DEVICE_AUTHORIZATION_UNAVAILABLE", "任务控制绑定已变化，请重新确认", 403);
+            }
         }
+    }
+    private boolean bindingMatches(JsonNode action, AuthorizedDevice device) {
+        String expected = text(action, "bindingFingerprint", "binding_fingerprint", "deviceBindingFingerprint");
+        if (expected != null && !expected.equals(device.bindingFingerprint())) return false;
+        return matchesOptional(action, "controlRef", device.controlRef())
+                && matchesOptional(action, "officeDeviceRef", device.officeDeviceRef())
+                && matchesOptional(action, "hubDeviceId", device.hubDeviceId())
+                && matchesOptional(action, "smartAreaCode", device.smartAreaCode());
+    }
+    private boolean matchesOptional(JsonNode value, String field, String actual) {
+        if (!value.has(field)) return true;
+        String expected = value.path(field).isNull() ? null : value.path(field).asText(null);
+        return Objects.equals(expected, actual);
+    }
+    private String text(JsonNode value, String... names) {
+        for (String name : names) {
+            JsonNode item = value.get(name);
+            if (item != null && item.isTextual() && !item.asText().isBlank()) return item.asText();
+        }
+        return null;
+    }
+    private JsonNode actionForDevice(JsonNode payload, String deviceId) {
+        if (!payload.path("phases").isArray()) return null;
+        for (JsonNode phase : payload.path("phases")) {
+            if (!phase.path("actions").isArray()) continue;
+            for (JsonNode action : phase.path("actions")) {
+                if (deviceId.equals(action.path("deviceId").asText(""))) return action;
+            }
+        }
+        return null;
     }
     private Set<String> deviceReferences(JsonNode payload) {
         java.util.LinkedHashSet<String> ids = new java.util.LinkedHashSet<>();
@@ -619,6 +862,50 @@ public final class TaskFacade {
         }
         return ids;
     }
+    private void validatePlanStructure(JsonNode payload, String beforeJson) {
+        if (!payload.isObject() || !payload.path("phases").isArray() || payload.path("phases").isEmpty()) {
+            throw new BusinessException("INVALID_CHANGE", "任务阶段无效", 400);
+        }
+        Instant previous = null;
+        for (JsonNode phase : payload.path("phases")) {
+            if (!phase.isObject() || !phase.path("at").isTextual() || !phase.path("actions").isArray()) {
+                throw new BusinessException("INVALID_CHANGE", "任务阶段结构无效", 400);
+            }
+            Instant at;
+            try { at = Instant.parse(phase.path("at").asText()); }
+            catch (RuntimeException error) { throw new BusinessException("INVALID_CHANGE", "任务阶段时间无效", 400); }
+            if (previous != null && !at.isAfter(previous)) {
+                throw new BusinessException("INVALID_CHANGE", "任务阶段时间必须严格递增", 400);
+            }
+            previous = at;
+        }
+        JsonNode interval = payload.path("interval");
+        if (interval.isMissingNode() || interval.isNull()) {
+            if (payload.has("repeat")) {
+                try { repeatRule(payload.path("repeat"), TaskRecurrence.localDate(Instant.parse(payload.path("phases").get(0).path("at").asText()))); }
+                catch (RuntimeException error) { throw new BusinessException("INVALID_CHANGE", "重复规则无效", 400); }
+            }
+            return;
+        }
+        try {
+            Instant starts = Instant.parse(interval.path("startsAt").asText());
+            Instant ends = Instant.parse(interval.path("endsAt").asText());
+            if (!ends.isAfter(starts)) throw new IllegalArgumentException();
+            for (JsonNode phase : payload.path("phases")) {
+                Instant at = Instant.parse(phase.path("at").asText());
+                if (at.isBefore(starts) || at.isAfter(ends)) throw new IllegalArgumentException();
+            }
+            if (payload.has("repeat")) repeatRule(payload.path("repeat"), TaskRecurrence.localDate(starts));
+        } catch (BusinessException failure) {
+            throw failure;
+        } catch (RuntimeException error) {
+            throw new BusinessException("INVALID_CHANGE", "任务时间区间或重复规则无效", 400);
+        }
+        if (payload.has("repeat") && !payload.path("repeat").isObject()) {
+            throw new BusinessException("INVALID_CHANGE", "重复规则无效", 400);
+        }
+    }
+
     private void validateDurableHistory(JsonNode before, JsonNode after) {
         if (phases == null || !before.path("phases").isArray() || !after.path("phases").isArray()) return;
         for (JsonNode phase : before.path("phases")) {
@@ -636,17 +923,55 @@ public final class TaskFacade {
         }
     }
     private void validateFutureChange(JsonNode before, JsonNode after, String operation) {
-        if (!before.path("phases").isArray() || !after.path("phases").isArray()) return;
-        for (JsonNode phase : before.path("phases")) {
-            String status = phase.path("status").asText("").toUpperCase();
-            if (!Set.of("COMPLETED", "PARTIAL", "FAILED", "UNCONFIRMED", "INTERRUPTED", "EXECUTING").contains(status)) continue;
-            String id = phase.path("phaseId").asText("");
-            JsonNode replacement = null;
-            for (JsonNode candidate : after.path("phases")) {
-                if (!id.isBlank() && id.equals(candidate.path("phaseId").asText(""))) { replacement = candidate; break; }
-                if (id.isBlank() && phase.path("at").asText("").equals(candidate.path("at").asText(""))) { replacement = candidate; break; }
+        if (!after.path("phases").isArray()) return;
+        Instant now = clock.instant();
+        JsonNode beforePhases = before.path("phases");
+        for (int index = 0; index < after.path("phases").size(); index++) {
+            JsonNode candidate = after.path("phases").get(index);
+            JsonNode previous = null;
+            String id = candidate.path("phaseId").asText("");
+            if (!id.isBlank() && beforePhases.isArray()) {
+                for (JsonNode phase : beforePhases) {
+                    if (id.equals(phase.path("phaseId").asText(""))) { previous = phase; break; }
+                }
+            } else if (beforePhases.isArray() && index < beforePhases.size()) {
+                previous = beforePhases.get(index);
             }
-            if (replacement == null || !replacement.equals(phase)) throw conflict("HISTORY_IMMUTABLE", "已执行阶段不可修改");
+            if (previous == null || !candidate.equals(previous)) {
+                try {
+                    if (!candidate.path("at").isTextual() || !Instant.parse(candidate.path("at").asText()).isAfter(now)) {
+                        throw new BusinessException("TASK_CHANGE_NOT_FUTURE", "修改后的任务阶段必须在未来", 409);
+                    }
+                } catch (BusinessException failure) {
+                    throw failure;
+                } catch (RuntimeException error) {
+                    throw new BusinessException("INVALID_CHANGE", "任务阶段时间无效", 400);
+                }
+            }
+        }
+        if (!before.path("interval").equals(after.path("interval")) && after.path("interval").isObject()) {
+            try {
+                if (!Instant.parse(after.path("interval").path("startsAt").asText()).isAfter(now)) {
+                    throw new BusinessException("TASK_CHANGE_NOT_FUTURE", "修改后的任务区间必须在未来", 409);
+                }
+            } catch (BusinessException failure) {
+                throw failure;
+            } catch (RuntimeException error) {
+                throw new BusinessException("INVALID_CHANGE", "任务时间区间无效", 400);
+            }
+        }
+        if (beforePhases.isArray()) {
+            for (JsonNode phase : beforePhases) {
+                String status = phase.path("status").asText("").toUpperCase();
+                if (!Set.of("COMPLETED", "PARTIAL", "FAILED", "UNCONFIRMED", "INTERRUPTED", "EXECUTING").contains(status)) continue;
+                String id = phase.path("phaseId").asText("");
+                JsonNode replacement = null;
+                for (JsonNode candidate : after.path("phases")) {
+                    if (!id.isBlank() && id.equals(candidate.path("phaseId").asText(""))) { replacement = candidate; break; }
+                    if (id.isBlank() && phase.path("at").asText("").equals(candidate.path("at").asText(""))) { replacement = candidate; break; }
+                }
+                if (replacement == null || !replacement.equals(phase)) throw conflict("HISTORY_IMMUTABLE", "已执行阶段不可修改");
+            }
         }
     }
     private String materializePreservingPhaseIds(String afterJson, String beforeJson) {

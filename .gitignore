@@ -9,3 +9,8 @@ var/
 # web/admin (Vite + Vue)
 web/admin/node_modules/
 web/admin/dist/
+
+# independent Node sidecar
+agent-sidecar/node_modules/
+agent-sidecar/dist/
+agent-sidecar/var/

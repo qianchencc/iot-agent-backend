@@ -53,7 +53,7 @@ public final class NodePiSessionOperations implements PiSessionOperations {
         try {
             var response = client.post().uri(path)
                     .header(HttpHeaders.CONTENT_TYPE, "application/json")
-                    .header("X-Agent-Bridge-Token", bridgeToken)
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + bridgeToken)
                     .bodyValue(body)
                     .exchangeToMono(result -> result.bodyToMono(Map.class)
                             .defaultIfEmpty(Map.of())

@@ -11,6 +11,7 @@ public final class FailClosedTaskPlanStore implements TaskPlanStore {
     @Override public Optional<TaskPlanFact> find(String planId) { throw unavailable(); }
     @Override public Optional<TaskPlanFact> findByIdempotencyKey(String idempotencyKey) { throw unavailable(); }
     @Override public Optional<TaskPlanFact> updateIfVersion(TaskPlanFact replacement, long expectedVersion) { throw unavailable(); }
+    @Override public Optional<TaskPlanFact> cancelAllIfVersion(String planId, long expectedVersion, java.time.Instant now) { throw unavailable(); }
     @Override public boolean claimOccurrence(String planId, String occurrenceDate, long expectedVersion) { throw unavailable(); }
     private IllegalStateException unavailable() { return new IllegalStateException(reason); }
 }

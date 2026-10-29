@@ -1,10 +1,10 @@
 # 09: Admin、模型配置与运维边界
 
-**What to build:** 管理员可以使用兼容的 Admin API 管理模型、提示词、预算、观测和配置版本；Java、Node、MySQL、Redis 和 Pi Session 具备可诊断、可备份、可恢复但不默认远程 apply 的运维边界。
+**What to build:** 管理员可以使用兼容的 Admin API 管理模型、提示词、预算、观测和配置版本；独立 Node sidecar、Java、MySQL、Redis 和 Pi Session 具备可诊断、可备份、可恢复但不默认远程 apply 的运维边界。
 
 **Blocked by:** 03: MySQL / Redis 业务事实基础设施；04: Conversation 与 Pi Agent 生产闭环
 
-**Status:** implemented-locally (MySQL encrypted config revisions, safe health checks, durable admin session and real model probe pass)
+**Status:** implemented-local-process-verified
 
 - [x] Admin login、session、logout、CSRF 和密码策略保持 Runtime 兼容。
 - [x] 模型、prompt、Agent 预算、观测配置、版本读取、恢复和应用接口保持兼容。
@@ -17,6 +17,4 @@
 
 ## Comments
 
-- 2026-10-29：MySQL-enabled startup created/loaded encrypted `admin_configuration_revisions`; `/healthz` returned safe `java/nodeBridge/mysql/redis/piSession` statuses without URLs or secrets. With a generated local `CONFIG_SECRET_KEY` and local admin password, login/session/config returned 200 (revision 1) and `/api/admin/test-model` returned 200 against the real configured model; response did not contain the API key.
-- 2026-10-29：`/api/admin/test-model` now requires Runtime-compatible `{changes:{...}}`, merges candidates with saved encrypted settings, and returns the exact success/failure contract without exposing secrets. Saving/applying configuration remains local and fail-closed; the running Node sidecar reads environment configuration and is not hot-reloaded by Admin.
-- 当前 Admin 边界、加密文件存储和 fail-closed apply shell 已存在；本票补齐事实存储、模型配置 parity 和运维证据。
+- 2026-10-30：独立 `agent-sidecar` 已通过 Node 22 clean install/build/test；本地 Java backend 与 sidecar 的真实模型问候和 Pi Session 运维 contract 已通过。Admin apply 仍是受 supervisor token 保护的 handoff acknowledgement；不在本地伪造生产重启。

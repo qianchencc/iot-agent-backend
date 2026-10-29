@@ -2,8 +2,11 @@ package ltd.qianc.iotagent.task.internal.controller;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.DateTimeException;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -112,28 +115,53 @@ public final class TaskController {
 
     @GetMapping("/tasks")
     public Map<String, Object> tasks(@RequestParam(defaultValue = "office") String source,
-                                     @RequestParam String from, @RequestParam String to) {
-        return Map.of("tasks", projection().list(PrincipalContext.getPrincipalInfo(), source, instant(from), instant(to)));
+                                     @RequestParam(required = false) String from, @RequestParam(required = false) String to) {
+        DateRange range = dateTimeRange(from, to);
+        return Map.of("tasks", projection().list(PrincipalContext.getPrincipalInfo(), source, range.from(), range.to()));
     }
     @GetMapping("/regions/{regionId}/timeline")
-    public Map<String, Object> regionTimeline(@PathVariable String regionId, @RequestParam String from, @RequestParam String to,
+    public Map<String, Object> regionTimeline(@PathVariable String regionId,
+                                              @RequestParam(required = false) String date,
+                                              @RequestParam(required = false) String from, @RequestParam(required = false) String to,
                                               @RequestParam(defaultValue = "office") String source) {
-        return Map.of("tasks", projection().regionTimeline(PrincipalContext.getPrincipalInfo(), source, regionId, instant(from), instant(to)));
+        LocalDate day = date != null ? localDate(date, "请选择有效日期") : localDateBoundary(from, "请选择有效日期");
+        Instant start = day.atStartOfDay(ZoneId.of("Asia/Shanghai")).toInstant();
+        return Map.of("date", day.toString(), "tasks", projection().regionTimeline(PrincipalContext.getPrincipalInfo(), source, regionId,
+                start, start.plus(Duration.ofDays(1))));
     }
     @GetMapping("/regions/{regionId}/calendar")
     public Map<String, Object> regionCalendar(@PathVariable String regionId, @RequestParam String from, @RequestParam String to,
                                               @RequestParam(defaultValue = "office") String source) {
-        return Map.of("days", projection().regionCalendar(PrincipalContext.getPrincipalInfo(), source, regionId, instant(from), instant(to)));
+        LocalDate fromDate = localDateBoundary(from, "请选择有效日期范围"), toDate = localDateBoundary(to, "请选择有效日期范围");
+        if (toDate.isBefore(fromDate) || toDate.toEpochDay() - fromDate.toEpochDay() > 62) {
+            throw new BusinessException("INVALID_DATE_RANGE", "请选择有效日期范围", 400);
+        }
+        Instant start = fromDate.atStartOfDay(ZoneId.of("Asia/Shanghai")).toInstant();
+        Instant end = toDate.plusDays(1).atStartOfDay(ZoneId.of("Asia/Shanghai")).toInstant();
+        return Map.of("from", fromDate.toString(), "to", toDate.toString(), "days",
+                projection().regionCalendar(PrincipalContext.getPrincipalInfo(), source, regionId, start, end));
     }
     @GetMapping("/devices/{deviceId}/timeline")
-    public Map<String, Object> deviceTimeline(@PathVariable String deviceId, @RequestParam String from, @RequestParam String to,
+    public Map<String, Object> deviceTimeline(@PathVariable String deviceId,
+                                              @RequestParam(required = false) String date,
+                                              @RequestParam(required = false) String from, @RequestParam(required = false) String to,
                                               @RequestParam(defaultValue = "office") String source) {
-        return Map.of("events", projection().deviceTimeline(PrincipalContext.getPrincipalInfo(), source, deviceId, instant(from), instant(to)));
+        LocalDate day = date != null ? localDate(date, "请选择有效日期") : localDateBoundary(from, "请选择有效日期");
+        Instant start = day.atStartOfDay(ZoneId.of("Asia/Shanghai")).toInstant();
+        return Map.of("date", day.toString(), "events", projection().deviceTimeline(PrincipalContext.getPrincipalInfo(), source, deviceId,
+                start, start.plus(Duration.ofDays(1))));
     }
     @GetMapping("/devices/{deviceId}/calendar")
     public Map<String, Object> deviceCalendar(@PathVariable String deviceId, @RequestParam String from, @RequestParam String to,
                                               @RequestParam(defaultValue = "office") String source) {
-        return Map.of("days", projection().deviceCalendar(PrincipalContext.getPrincipalInfo(), source, deviceId, instant(from), instant(to)));
+        LocalDate fromDate = localDateBoundary(from, "请选择有效日期范围"), toDate = localDateBoundary(to, "请选择有效日期范围");
+        if (toDate.isBefore(fromDate) || toDate.toEpochDay() - fromDate.toEpochDay() > 62) {
+            throw new BusinessException("INVALID_DATE_RANGE", "请选择有效日期范围", 400);
+        }
+        Instant start = fromDate.atStartOfDay(ZoneId.of("Asia/Shanghai")).toInstant();
+        Instant end = toDate.plusDays(1).atStartOfDay(ZoneId.of("Asia/Shanghai")).toInstant();
+        return Map.of("from", fromDate.toString(), "to", toDate.toString(), "days",
+                projection().deviceCalendar(PrincipalContext.getPrincipalInfo(), source, deviceId, start, end));
     }
     @GetMapping("/tasks/{id}")
     public Map<String, Object> task(@PathVariable String id) { return facade.view(facade.current(PrincipalContext.getPrincipalInfo(), id)); }
@@ -205,27 +233,72 @@ public final class TaskController {
     @GetMapping("/task-plans/{id}")
     public Map<String, Object> plan(@PathVariable String id) { return facade.planView(facade.plan(PrincipalContext.getPrincipalInfo(), id)); }
     @PostMapping("/task-plans/{id}/status")
-    public Map<String, Object> planStatus(@PathVariable String id, @RequestBody Map<String, Object> body) {
+    public Map<String, Object> planStatus(@PathVariable String id, @RequestParam(defaultValue = "office") String source,
+                                          @RequestBody Map<String, Object> body) {
+        TaskPlanFact current = facade.plan(PrincipalContext.getPrincipalInfo(), id);
+        assertPlanSource(current, source);
         String status = body.get("status") instanceof String ? text(body, "status", "") : text(body, "operation", "");
+        boolean confirmed = Boolean.TRUE.equals(body.get("confirmed"));
         return facade.planView(facade.updatePlan(PrincipalContext.getPrincipalInfo(), id, version(body),
-                status, body.get("payload") == null ? null : json(body.get("payload"))));
+                status, body.get("payload") == null ? null : json(body.get("payload")), confirmed));
     }
     @GetMapping("/task-plans")
     public Map<String, Object> plans(@RequestParam(defaultValue = "office") String source) {
         return Map.of("plans", facade.plans(PrincipalContext.getPrincipalInfo(), source));
     }
+    private void assertPlanSource(TaskPlanFact plan, String source) {
+        try {
+            String actual = mapper.readTree(plan.payloadJson()).path("source").asText("office");
+            if (!actual.equals(source)) throw new BusinessException("PLAN_NOT_FOUND", "计划不存在", 404);
+        } catch (BusinessException failure) {
+            throw failure;
+        } catch (Exception error) {
+            throw new BusinessException("PLAN_NOT_FOUND", "计划不存在", 404);
+        }
+    }
     @PostMapping("/task-plans/{id}/cancel")
-    public Map<String, Object> cancelPlan(@PathVariable String id, @RequestBody Map<String, Object> body) {
-        return facade.planView(facade.updatePlan(PrincipalContext.getPrincipalInfo(), id, version(body), "DELETED", null));
+    public Map<String, Object> cancelPlan(@PathVariable String id, @RequestParam(defaultValue = "office") String source,
+                                          @RequestBody Map<String, Object> body) {
+        String scope = text(body, "scope", "");
+        LocalDate date = "occurrence".equals(scope) && body.get("date") instanceof String value
+                ? localDate(value, "请选择有效取消日期", "INVALID_CANCELLATION") : null;
+        return facade.cancelPlan(PrincipalContext.getPrincipalInfo(), source, id, version(body), scope, date);
     }
 
     private ltd.qianc.iotagent.task.TaskProjectionStore projection() {
         if (projections == null) throw new IllegalStateException("任务时间轴与日历存储未配置");
         return projections;
     }
-    private static java.time.Instant instant(String value) {
-        try { return java.time.Instant.parse(value); }
-        catch (RuntimeException error) { throw new IllegalArgumentException("请选择有效时间范围"); }
+    private static DateRange dateTimeRange(String from, String to) {
+        Instant start = instant(from), end = instant(to);
+        if (!end.isAfter(start) || Duration.between(start, end).compareTo(Duration.ofDays(62)) > 0) {
+            throw new BusinessException("INVALID_DATE_RANGE", "请选择62天以内的时间范围", 400);
+        }
+        return new DateRange(start, end);
+    }
+    private static Instant instant(String value) {
+        try { return Instant.parse(value); }
+        catch (RuntimeException error) { throw new BusinessException("INVALID_DATE_RANGE", "请选择有效时间范围", 400); }
+    }
+    private static LocalDate localDate(String value, String message) {
+        return localDate(value, message, "INVALID_DATE");
+    }
+    private static LocalDate localDate(String value, String message, String code) {
+        if (value == null || value.isBlank()) throw new BusinessException(code, message, 400);
+        try {
+            LocalDate parsed = LocalDate.parse(value);
+            if (!parsed.toString().equals(value)) throw new DateTimeException("non-canonical");
+            return parsed;
+        } catch (DateTimeException error) {
+            throw new BusinessException(code, message, 400);
+        }
+    }
+    private static LocalDate localDateBoundary(String value, String message) {
+        if (value != null && value.contains("T")) {
+            try { return Instant.parse(value).atZone(ZoneId.of("Asia/Shanghai")).toLocalDate(); }
+            catch (RuntimeException ignored) { }
+        }
+        return localDate(value, message);
     }
     private String json(Object value) {
         if (value == null) return "{}";
@@ -237,7 +310,9 @@ public final class TaskController {
     }
     private static long version(Map<String, Object> body) {
         Object value = body == null ? null : body.get("version");
-        if (!(value instanceof Number number) || number.longValue() < 1) throw new IllegalArgumentException("version is required");
+        if (!(value instanceof Number number) || number.longValue() < 1) {
+            throw new BusinessException("INVALID_VERSION", "请刷新后重试", 400);
+        }
         return number.longValue();
     }
     private static long versionOrDefault(Map<String, Object> body) {
@@ -260,4 +335,5 @@ public final class TaskController {
         try { return IotSource.parse(value == null ? "office" : value); }
         catch (RuntimeException error) { throw new BusinessException("INVALID_AGENT_SOURCE", "Agent 来源无效", 400); }
     }
+    private record DateRange(Instant from, Instant to) { }
 }

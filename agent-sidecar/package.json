@@ -1,0 +1,27 @@
+{
+  "name": "@iot/agent-sidecar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0 <23"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/server.js",
+    "test": "tsx --test test/**/*.test.ts",
+    "test:process": "npm run build && node test/process-contract.mjs"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.84.4",
+    "@earendil-works/pi-ai": "0.84.4",
+    "@earendil-works/pi-session-backend-sqlite-node": "0.84.4",
+    "fastify": "5.12.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "tsx": "4.23.13",
+    "typescript": "5.9.3"
+  }
+}
