@@ -36,16 +36,21 @@ public class IotAdapterConfiguration {
             @Value("${iot.gateway.office-ac-association-path:/micro-api/api/office/acAreaDevice/page}") String acAssociationPath,
             @Value("${iot.gateway.office-lighting-association-path:/micro-api/api/office/lightingAreaDevice/page}") String lightingAssociationPath,
             @Value("${iot.gateway.office-access-association-path:/micro-api/api/office/accessAreaDevice/page}") String accessAssociationPath,
-            @Value("${iot.gateway.company-observation-path:/micro-api/api/iot-center/device/page}") String companyObservationPath,
+            @Value("${iot.gateway.company-environment-path:/micro-api/api/iot-center/device/page}") String companyEnvironmentPath,
+            @Value("${iot.gateway.company-energy-path:/micro-api/api/energy/equipment/page}") String companyEnergyPath,
+            @Value("${iot.gateway.company-safety-path:/micro-api/api/perception/device/page}") String companySafetyPath,
+            @Value("${iot.gateway.company-safety-detail-path:/micro-api/api/iot-center/device}") String companySafetyDetailPath,
             @Value("${iot.gateway.company-smart-base-path:/micro-api/api/office/app/device}") String companySmartBasePath,
             @Value("${iot.gateway.company-ac-area-path:/micro-api/api/office/app/device/ac/myAreaList}") String companyAcAreaPath,
             @Value("${iot.gateway.company-ac-device-path:/micro-api/api/office/app/device/ac/devicePage}") String companyAcDevicePath,
             @Value("${iot.gateway.company-ac-binding-path:/micro-api/api/iot-center/device/page}") String companyAcBindingPath,
-            @Value("${iot.gateway.call-timeout-ms:10000}") long timeoutMs) {
+            @Value("${iot.gateway.call-timeout-ms:30000}") long timeoutMs) {
         if (officePath == null || officePath.isBlank()) {
             return IotAdapterFactory.failClosed("物联 Office 授权设备范围路径未配置");
         }
-        if ((companyObservationPath == null || companyObservationPath.isBlank())
+        if ((companyEnvironmentPath == null || companyEnvironmentPath.isBlank())
+                || (companyEnergyPath == null || companyEnergyPath.isBlank())
+                || (companySafetyPath == null || companySafetyPath.isBlank())
                 || (companySmartBasePath == null || companySmartBasePath.isBlank())
                 || (companyAcAreaPath == null || companyAcAreaPath.isBlank())
                 || (companyAcDevicePath == null || companyAcDevicePath.isBlank())
@@ -58,7 +63,8 @@ public class IotAdapterConfiguration {
                     new IotGatewayRoutes(officePath, companyPath, membershipPath,
                             IotGatewayRoutes.runtimeOfficeSources(acPath, lightingPath, accessPath, videoPath,
                                     acAssociationPath, lightingAssociationPath, accessAssociationPath),
-                            companyObservationPath, companySmartBasePath, companyAcAreaPath, companyAcDevicePath, companyAcBindingPath),
+                            companyEnvironmentPath, companyEnergyPath, companySafetyPath, companySafetyDetailPath,
+                            companySmartBasePath, companyAcAreaPath, companyAcDevicePath, companyAcBindingPath),
                     Duration.ofMillis(timeoutMs),
                     IotCallPolicy.passThrough());
         } catch (RuntimeException invalidConfiguration) {

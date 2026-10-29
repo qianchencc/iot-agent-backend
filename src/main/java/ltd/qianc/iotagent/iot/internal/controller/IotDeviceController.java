@@ -29,7 +29,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 @RequestMapping("/api/agent")
 public final class IotDeviceController {
-    private static final Duration ADAPTER_TIMEOUT = Duration.ofSeconds(30);
+    private static final Duration ADAPTER_TIMEOUT = Duration.ofSeconds(120);
     private final IotAdapter adapter;
 
     public IotDeviceController(IotAdapter adapter) {

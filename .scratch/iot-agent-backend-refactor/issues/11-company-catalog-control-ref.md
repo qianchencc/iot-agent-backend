@@ -16,6 +16,6 @@
 ## Comments
 
 - Runtime 已提供完整上游路径、payload、分页和测试夹具；本票不等待客户补充协议。
-- 2026-10-30：Company catalog now traverses Runtime-derived observation model-code pages, smart lighting/access/monitor area trees, AC area/device pages and AC provider bindings. `IotAdapterContractTest` passed with an in-process fixture; local ego-lite read-only smoke returned HTTP 200 with one environment device and public device views contained only `id/name/kind/location`.
+- 2026-10-29：Company catalog now traverses Runtime-derived observation model-code pages, smart lighting/access/monitor area trees, AC area/device pages and AC provider bindings. `IotAdapterContractTest` and the full Maven suite passed; local ego-lite read-only smoke against the customer gateway returned HTTP 200 with 47 devices (`environment`/`energy`/`safety`), while public device views contained only `id/name/kind/location`.
 - 本票是 Phase 2 第一条 ready ticket，完成后解除 Dashboard/Region、Video 和真实控制 adapter 的代码依赖。
 - 禁止对客户生产上游发送控制；本票只实现目录和绑定读取。

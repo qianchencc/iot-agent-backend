@@ -10,27 +10,32 @@ public record IotGatewayRoutes(
         String companyScopePath,
         String officeMembershipPath,
         List<OfficeDeviceSource> officeDeviceSources,
-        String companyObservationPath,
+        String companyEnvironmentPath,
+        String companyEnergyPath,
+        String companySafetyPath,
+        String companySafetyDetailPath,
         String companySmartBasePath,
         String companyAcAreaPath,
         String companyAcDevicePath,
         String companyAcBindingPath) {
 
     public IotGatewayRoutes(String officeScopePath, String companyScopePath) {
-        this(officeScopePath, companyScopePath, null, List.of(), null, null, null, null, null);
+        this(officeScopePath, companyScopePath, null, List.of(), null, null, null, null, null, null, null, null);
     }
 
     public IotGatewayRoutes(String officeScopePath, String companyScopePath, String membershipPath,
                             List<OfficeDeviceSource> sources) {
-        this(officeScopePath, companyScopePath, membershipPath, sources, null, null, null, null, null);
+        this(officeScopePath, companyScopePath, membershipPath, sources, null, null, null, null, null, null, null, null);
     }
-
     public IotGatewayRoutes {
         officeScopePath = requirePath(officeScopePath, "officeScopePath");
         companyScopePath = optionalPath(companyScopePath, "companyScopePath");
         officeMembershipPath = optionalPath(officeMembershipPath, "officeMembershipPath");
         officeDeviceSources = List.copyOf(officeDeviceSources == null ? List.of() : officeDeviceSources);
-        companyObservationPath = optionalPath(companyObservationPath, "companyObservationPath");
+        companyEnvironmentPath = optionalPath(companyEnvironmentPath, "companyEnvironmentPath");
+        companyEnergyPath = optionalPath(companyEnergyPath, "companyEnergyPath");
+        companySafetyPath = optionalPath(companySafetyPath, "companySafetyPath");
+        companySafetyDetailPath = optionalPath(companySafetyDetailPath, "companySafetyDetailPath");
         companySmartBasePath = optionalPath(companySmartBasePath, "companySmartBasePath");
         companyAcAreaPath = optionalPath(companyAcAreaPath, "companyAcAreaPath");
         companyAcDevicePath = optionalPath(companyAcDevicePath, "companyAcDevicePath");
@@ -43,7 +48,8 @@ public record IotGatewayRoutes(
     }
     public boolean hasOfficeDirectoryRoutes() { return officeMembershipPath != null && !officeDeviceSources.isEmpty(); }
     public boolean hasCompanyCatalogRoutes() {
-        return companyObservationPath != null && companySmartBasePath != null && companyAcAreaPath != null
+        return companyEnvironmentPath != null && companyEnergyPath != null && companySafetyPath != null
+                && companySmartBasePath != null && companyAcAreaPath != null
                 && companyAcDevicePath != null && companyAcBindingPath != null;
     }
     public static IotGatewayRoutes officeDirectory(String officeScopePath, String companyScopePath,
@@ -51,9 +57,11 @@ public record IotGatewayRoutes(
         return new IotGatewayRoutes(officeScopePath, companyScopePath, membershipPath, sources);
     }
     public static IotGatewayRoutes runtimeCompany(String officeScopePath, String companyScopePath,
-                                                   String observation, String smartBase, String acArea,
+                                                   String environment, String energy, String safety,
+                                                   String safetyDetail, String smartBase, String acArea,
                                                    String acDevice, String acBinding) {
-        return new IotGatewayRoutes(officeScopePath, companyScopePath, null, List.of(), observation, smartBase, acArea, acDevice, acBinding);
+        return new IotGatewayRoutes(officeScopePath, companyScopePath, null, List.of(), environment, energy,
+                safety, safetyDetail, smartBase, acArea, acDevice, acBinding);
     }
     public static List<OfficeDeviceSource> runtimeOfficeSources(String acMyOffice, String lightingMyOffice,
             String accessMyOffice, String videoMyOffice, String acAssociation, String lightingAssociation,

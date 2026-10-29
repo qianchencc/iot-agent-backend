@@ -114,34 +114,39 @@ class IotAdapterContractTest {
     }
 
     @Test
-    void companyCatalogTraversesRuntimeSourcesAndKeepsBindingsInternal() {
+    void companyCatalogUsesRuntimeShapesAndMergesAcLocations() {
         AtomicReference<java.util.List<String>> requests = new AtomicReference<>(new java.util.ArrayList<>());
+        java.util.concurrent.atomic.AtomicBoolean validBinding = new java.util.concurrent.atomic.AtomicBoolean(true);
         ExchangeFunction fixture = candidate -> {
             var url = candidate.url();
             requests.get().add(url.getPath() + "?" + url.getQuery());
+            String query = url.getQuery() == null ? "" : url.getQuery();
             String path = url.getPath();
-            String parent = url.getQuery() == null ? null : java.util.Arrays.stream(url.getQuery().split("&"))
-                    .filter(value -> value.startsWith("parentId=")).findFirst()
-                    .map(value -> java.net.URLDecoder.decode(value.substring("parentId=".length()), java.nio.charset.StandardCharsets.UTF_8))
-                    .orElse(null);
             if (path.endsWith("/myAreaList")) {
-                if (parent == null || parent.isBlank()) {
-                    return Mono.just(json("{\"code\":200,\"content\":[{\"id\":\"root\",\"fullCode\":\"root\",\"name\":\"Root\"}]}"));
-                }
-                return Mono.just(json("{\"code\":204,\"content\":null}"));
+                if (query.contains("parentId")) return Mono.just(json("[]"));
+                return Mono.just(json("[{\"id\":\"leaf-1\",\"fullCode\":\"leaf-1\",\"name\":\"一层\"},{\"id\":\"leaf-2\",\"fullCode\":\"leaf-2\",\"name\":\"二层\"}]"));
             }
             if (path.endsWith("/devicePage")) {
                 if (path.contains("/lighting/")) return Mono.just(json("[{\"id\":\"light-1\",\"hubDeviceId\":\"hub-light\",\"name\":\"灯\",\"installAddress\":\"A\"}]"));
-                if (path.contains("/ac/")) return Mono.just(json("[{\"id\":\"ac-1\",\"hubDeviceId\":\"hub-ac\",\"name\":\"空调\",\"installAddress\":\"B\"}]"));
-                return Mono.just(json("{\"code\":204,\"content\":null}"));
+                if (path.contains("/ac/") && query.contains("leaf-1")) return Mono.just(json("[{\"id\":\"ac-1\",\"hubDeviceId\":\"hub-ac\",\"name\":\"空调\",\"installAddress\":\"B\"}]"));
+                if (path.contains("/ac/") && query.contains("leaf-2")) return Mono.just(json("[{\"id\":\"ac-duplicate\",\"hubDeviceId\":\"hub-ac\",\"name\":\"空调\",\"installAddress\":\"B\"}]"));
+                return Mono.just(json("[]"));
+            }
+            if (path.endsWith("/iot-center/device/page") && query.contains("modelCode=YQ-ENV-SENSOR")) {
+                return Mono.just(json("{\"code\":200,\"content\":{\"content\":[{\"id\":\"env-1\",\"code\":\"ENV-1\",\"name\":\"环境传感器\",\"installAddress\":\"C\",\"actionList\":[]}],\"last\":true}}"));
+            }
+            if (path.endsWith("/energy/equipment/page")) {
+                return Mono.just(json("{\"code\":200,\"content\":{\"content\":[{\"id\":\"energy-1\",\"equipmentName\":\"总电表\",\"areaName\":\"配电房\",\"feeSchemeName\":\"峰谷方案\",\"energyType\":\"electricity\"}],\"last\":true}}"));
+            }
+            if (path.endsWith("/perception/device/page") && query.contains("type=FIRE")) {
+                return Mono.just(json("{\"code\":200,\"content\":{\"content\":[{\"id\":\"safety-1\",\"hubDeviceId\":\"hub-safety\",\"type\":\"FIRE\",\"deviceName\":\"烟感\",\"installAddress\":\"D\",\"subtype\":\"smoke\",\"currentDevice\":{\"name\":\"烟感\",\"location\":\"D\"}},{\"id\":\"safety-detail\",\"hubDeviceId\":\"hub-detail\",\"type\":\"FIRE\"}],\"last\":true}}"));
+            }
+            if (path.endsWith("/iot-center/device/hub-detail")) {
+                return Mono.just(json("{\"code\":200,\"content\":{\"id\":\"hub-detail\",\"name\":\"核验烟感\",\"installAddress\":\"E\"}}"));
             }
             if (path.endsWith("/iot-center/device/page")) {
-                String query = url.getQuery() == null ? "" : url.getQuery();
-                if (query.contains("YQ_AIR_CONDITION")) {
-                    return Mono.just(json("{\"code\":200,\"content\":{\"content\":[{\"id\":\"hub-ac\",\"modelCode\":\"YQ_AIR_CONDITION\",\"actionList\":[{\"id\":\"ac-control\",\"actionType\":\"airCondition\"},{\"id\":\"ac-detail\",\"actionType\":\"acDetail\"}]}],\"last\":true}}"));
-                }
-                String kind = query.contains("YQ-ENV-SENSOR") ? "environment" : query.contains("YQ-ENERGY-EQUIPMENT") ? "energy" : "safety";
-                return Mono.just(json("{\"code\":200,\"content\":{\"content\":[{\"id\":\"" + kind + "-1\",\"name\":\"" + kind + "\",\"installAddress\":\"C\"}],\"last\":true}}"));
+                String code = validBinding.get() ? "\"code\":\"provider-ac\"," : "";
+                return Mono.just(json("{\"code\":200,\"content\":{\"content\":[{\"id\":\"hub-ac\",\"modelCode\":\"YQ_AIR_CONDITION\"," + code + "\"actionList\":[{\"id\":\"ac-control\",\"actionType\":\"airCondition\"},{\"id\":\"ac-detail\",\"actionType\":\"acDetail\"}]}],\"last\":true}}"));
             }
             return Mono.just(json("{\"code\":204,\"content\":null}"));
         };
@@ -149,6 +154,9 @@ class IotAdapterContractTest {
                 WebClient.builder().exchangeFunction(fixture).build(),
                 IotGatewayRoutes.runtimeCompany("/office-scope", null,
                         "/micro-api/api/iot-center/device/page",
+                        "/micro-api/api/energy/equipment/page",
+                        "/micro-api/api/perception/device/page",
+                        "/micro-api/api/iot-center/device",
                         "/micro-api/api/office/app/device",
                         "/micro-api/api/office/app/device/ac/myAreaList",
                         "/micro-api/api/office/app/device/ac/devicePage",
@@ -158,16 +166,62 @@ class IotAdapterContractTest {
 
         AuthorizedDeviceScope scope = adapter.loadAuthorizedDeviceScope(
                         new RequestIdentity("Bearer company-token", "TENANT-1", IotSource.COMPANY))
-                .block(Duration.ofSeconds(1));
+                .block(Duration.ofSeconds(2));
 
         assertThat(scope).isNotNull();
         assertThat(scope.devices()).extracting(AuthorizedDevice::kind)
                 .contains("environment", "energy", "safety", "lighting", "ac");
-        assertThat(scope.device("light-1").orElseThrow().controlRef()).isEqualTo("light-1");
-        assertThat(scope.device("hub-ac")).as("devices=%s", scope.devices()).isPresent();
-        assertThat(scope.device("hub-ac").orElseThrow().controlRef()).isEqualTo("ac-control");
-        assertThat(requests.get()).anyMatch(value -> value.contains("myAreaList"));
-        assertThat(requests.get()).anyMatch(value -> value.contains("modelCode=YQ_AIR_CONDITION"));
+        assertThat(scope.device("energy-1").orElseThrow().name()).isEqualTo("总电表");
+        assertThat(scope.device("safety-1").orElseThrow().hubDeviceId()).isEqualTo("hub-safety");
+        assertThat(scope.device("safety-detail").orElseThrow().name()).isEqualTo("核验烟感");
+        assertThat(scope.device("energy-1").orElseThrow().metadata())
+                .containsEntry("feeSchemeName", "峰谷方案")
+                .containsEntry("energyType", "electricity");
+        assertThat(scope.device("hub-ac").orElseThrow().metadata()).containsEntry("companyAcActionId", "ac-control");
+        assertThat(scope.device("hub-ac").orElseThrow().locationPaths()).containsExactly(
+                java.util.List.of("一层"), java.util.List.of("二层"));
+        assertThat(requests.get()).anyMatch(value -> value.contains("modelCode=YQ-ENV-SENSOR"));
+        assertThat(requests.get()).anyMatch(value -> value.contains("/energy/equipment/page"));
+        assertThat(requests.get()).anyMatch(value -> value.contains("/perception/device/page") && value.contains("type=FIRE"));
+        validBinding.set(false);
+        AuthorizedDeviceScope missingBinding = adapter.loadAuthorizedDeviceScope(
+                        new RequestIdentity("Bearer company-token", "TENANT-1", IotSource.COMPANY))
+                .block(Duration.ofSeconds(2));
+        assertThat(missingBinding.device("hub-ac").orElseThrow().observationOnly()).isTrue();
+        assertThat(missingBinding.device("hub-ac").orElseThrow().controlRef()).isNull();
+    }
+
+    @Test
+    void acBindingPaginationWithoutLastAndFullPagesFailsClosedAfterTenPages() {
+        String rows = java.util.stream.IntStream.range(0, 100)
+                .mapToObj(index -> "{\"id\":\"binding-" + index + "\"}")
+                .collect(java.util.stream.Collectors.joining(","));
+        String fullPage = "{\"code\":200,\"content\":{\"content\":[" + rows + "]}}";
+        ExchangeFunction fixture = candidate -> {
+            String path = candidate.url().getPath();
+            String query = candidate.url().getQuery() == null ? "" : candidate.url().getQuery();
+            if (path.endsWith("/myAreaList")) return Mono.just(json("[]"));
+            if (path.endsWith("/iot-center/device/page") && query.contains("modelCode=YQ_AIR_CONDITION")) return Mono.just(json(fullPage));
+            return Mono.just(json("{\"code\":204,\"content\":null}"));
+        };
+        IotAdapter adapter = IotAdapterFactory.webClient(
+                WebClient.builder().exchangeFunction(fixture).build(),
+                IotGatewayRoutes.runtimeCompany("/office-scope", null,
+                        "/micro-api/api/iot-center/device/page",
+                        "/micro-api/api/energy/equipment/page",
+                        "/micro-api/api/perception/device/page",
+                        null,
+                        "/micro-api/api/office/app/device",
+                        "/micro-api/api/office/app/device/ac/myAreaList",
+                        "/micro-api/api/office/app/device/ac/devicePage",
+                        "/micro-api/api/iot-center/device/page"),
+                Duration.ofSeconds(1),
+                IotCallPolicy.passThrough());
+
+        StepVerifier.create(adapter.loadAuthorizedDeviceScope(
+                        new RequestIdentity("Bearer company-token", "TENANT-1", IotSource.COMPANY)))
+                .expectError(UpstreamUnavailableException.class)
+                .verify(Duration.ofSeconds(2));
     }
 
     private static ClientResponse json(String body) {
