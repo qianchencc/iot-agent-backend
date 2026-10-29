@@ -325,12 +325,12 @@ public final class WebClientObservationAdapter implements ObservationAdapter {
                 values.put("sort", List.of("createdAt,desc", "id,desc", "deviceCode,desc"));
             }
             case ENERGY_HISTORY -> {
-                copyAllowed(values, parameters, "equipmentId");
+                copyAllowed(values, parameters, "equipmentId", "size");
                 String from = parameters.get("from"), to = parameters.get("to");
                 if (from != null) values.put("startTime", List.of(localDateTime(from)));
                 if (to != null) values.put("endTime", List.of(localDateTime(to)));
                 values.put("page", List.of(parameters.getOrDefault("page", "0")));
-                values.put("size", List.of("20"));
+                values.put("size", List.of(parameters.getOrDefault("size", "20")));
                 values.put("sort", List.of("readTime,desc", "id,desc"));
             }
             case SAFETY_EVENTS, SAFETY_EVENT -> {

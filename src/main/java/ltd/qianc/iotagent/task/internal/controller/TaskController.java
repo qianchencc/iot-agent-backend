@@ -55,33 +55,50 @@ public final class TaskController {
         return facade.proposalView(proposal);
     }
     @GetMapping("/task-proposals/{id}")
-    public Map<String, Object> proposal(@PathVariable String id) { return facade.proposalView(facade.proposal(PrincipalContext.getPrincipalInfo(), id)); }
+    public Map<String, Object> proposal(@PathVariable String id, @RequestParam(required = false) String source) {
+        var principal = PrincipalContext.getPrincipalInfo();
+        return facade.proposalView(source == null ? facade.proposal(principal, id) : facade.proposal(principal, id, source));
+    }
     @PostMapping("/task-proposals/{id}/confirm")
-    public Map<String, Object> confirm(@PathVariable String id, @RequestBody(required = false) Map<String, Object> body) {
-        return facade.view(facade.confirm(PrincipalContext.getPrincipalInfo(), id, version(body)));
+    public Map<String, Object> confirm(@PathVariable String id, @RequestParam(required = false) String source,
+                                       @RequestBody(required = false) Map<String, Object> body) {
+        var principal = PrincipalContext.getPrincipalInfo();
+        return facade.view(source == null ? facade.confirm(principal, id, version(body))
+                : facade.confirm(principal, id, version(body), source));
     }
     @PostMapping("/task-proposals/{id}/discard")
-    public Map<String, Object> discard(@PathVariable String id, @RequestBody(required = false) Map<String, Object> body) {
-        return facade.proposalView(facade.discard(PrincipalContext.getPrincipalInfo(), id, version(body)));
+    public Map<String, Object> discard(@PathVariable String id, @RequestParam(required = false) String source,
+                                       @RequestBody(required = false) Map<String, Object> body) {
+        var principal = PrincipalContext.getPrincipalInfo();
+        return facade.proposalView(source == null ? facade.discard(principal, id, version(body))
+                : facade.discard(principal, id, version(body), source));
     }
     /** Runtime alias for clients that identify the pending proposal as a task. */
     @PostMapping("/tasks/{id}/confirm")
-    public Map<String, Object> confirmTask(@PathVariable String id, @RequestBody(required = false) Map<String, Object> body) {
-        return facade.view(facade.confirm(PrincipalContext.getPrincipalInfo(), id, version(body)));
+    public Map<String, Object> confirmTask(@PathVariable String id, @RequestParam(required = false) String source,
+                                           @RequestBody(required = false) Map<String, Object> body) {
+        var principal = PrincipalContext.getPrincipalInfo();
+        return facade.view(source == null ? facade.confirm(principal, id, version(body))
+                : facade.confirm(principal, id, version(body), source));
     }
     /** Runtime alias for clients that identify the pending proposal as a task. */
     @PostMapping("/tasks/{id}/discard")
-    public Map<String, Object> discardTask(@PathVariable String id, @RequestBody(required = false) Map<String, Object> body) {
-        return facade.proposalView(facade.discard(PrincipalContext.getPrincipalInfo(), id, version(body)));
+    public Map<String, Object> discardTask(@PathVariable String id, @RequestParam(required = false) String source,
+                                           @RequestBody(required = false) Map<String, Object> body) {
+        var principal = PrincipalContext.getPrincipalInfo();
+        return facade.proposalView(source == null ? facade.discard(principal, id, version(body))
+                : facade.discard(principal, id, version(body), source));
     }
 
     @GetMapping("/task-changes/{id}")
-    public Map<String, Object> taskChange(@PathVariable String id) {
-        return facade.proposalView(facade.proposal(PrincipalContext.getPrincipalInfo(), id));
+    public Map<String, Object> taskChange(@PathVariable String id, @RequestParam(required = false) String source) {
+        var principal = PrincipalContext.getPrincipalInfo();
+        return facade.proposalView(source == null ? facade.proposal(principal, id) : facade.proposal(principal, id, source));
     }
     @GetMapping("/task-cancellations/{id}")
-    public Map<String, Object> taskCancellation(@PathVariable String id) {
-        return facade.proposalView(facade.proposal(PrincipalContext.getPrincipalInfo(), id));
+    public Map<String, Object> taskCancellation(@PathVariable String id, @RequestParam(required = false) String source) {
+        var principal = PrincipalContext.getPrincipalInfo();
+        return facade.proposalView(source == null ? facade.proposal(principal, id) : facade.proposal(principal, id, source));
     }
     @PostMapping("/task-changes")
     public Map<String, Object> proposeTaskChange(@RequestBody Map<String, Object> body) {
@@ -90,12 +107,19 @@ public final class TaskController {
         return facade.proposalView(proposal);
     }
     @PostMapping("/task-changes/{id}/confirm")
-    public Map<String, Object> confirmTaskChange(@PathVariable String id, @RequestBody(required = false) Map<String, Object> body) {
-        return facade.confirmChange(PrincipalContext.getPrincipalInfo(), id, versionOrDefault(body));
+    public Map<String, Object> confirmTaskChange(@PathVariable String id, @RequestParam(required = false) String source,
+                                                 @RequestBody(required = false) Map<String, Object> body) {
+        var principal = PrincipalContext.getPrincipalInfo();
+        return source == null ? facade.confirmChange(principal, id, versionOrDefault(body))
+                : facade.confirmChange(principal, id, versionOrDefault(body), source);
     }
     @PostMapping("/task-changes/{id}/discard")
-    public Map<String, Object> discardTaskChange(@PathVariable String id, @RequestBody(required = false) Map<String, Object> body) {
-        return facade.proposalView(facade.discardChange(PrincipalContext.getPrincipalInfo(), id, versionOrDefault(body)));
+    public Map<String, Object> discardTaskChange(@PathVariable String id, @RequestParam(required = false) String source,
+                                                 @RequestBody(required = false) Map<String, Object> body) {
+        var principal = PrincipalContext.getPrincipalInfo();
+        TaskProposalFact discarded = source == null ? facade.discardChange(principal, id, versionOrDefault(body))
+                : facade.discardChange(principal, id, versionOrDefault(body), source);
+        return facade.proposalView(discarded);
     }
     @PostMapping("/task-cancellations")
     public Map<String, Object> proposeTaskCancellation(@RequestBody Map<String, Object> body) {
@@ -104,12 +128,19 @@ public final class TaskController {
         return facade.proposalView(proposal);
     }
     @PostMapping("/task-cancellations/{id}/confirm")
-    public Map<String, Object> confirmTaskCancellation(@PathVariable String id, @RequestBody(required = false) Map<String, Object> body) {
-        return facade.confirmCancellation(PrincipalContext.getPrincipalInfo(), id, versionOrDefault(body));
+    public Map<String, Object> confirmTaskCancellation(@PathVariable String id, @RequestParam(required = false) String source,
+                                                       @RequestBody(required = false) Map<String, Object> body) {
+        var principal = PrincipalContext.getPrincipalInfo();
+        return source == null ? facade.confirmCancellation(principal, id, versionOrDefault(body))
+                : facade.confirmCancellation(principal, id, versionOrDefault(body), source);
     }
     @PostMapping("/task-cancellations/{id}/discard")
-    public Map<String, Object> discardTaskCancellation(@PathVariable String id, @RequestBody(required = false) Map<String, Object> body) {
-        return facade.proposalView(facade.discardCancellation(PrincipalContext.getPrincipalInfo(), id, versionOrDefault(body)));
+    public Map<String, Object> discardTaskCancellation(@PathVariable String id, @RequestParam(required = false) String source,
+                                                       @RequestBody(required = false) Map<String, Object> body) {
+        var principal = PrincipalContext.getPrincipalInfo();
+        TaskProposalFact discarded = source == null ? facade.discardCancellation(principal, id, versionOrDefault(body))
+                : facade.discardCancellation(principal, id, versionOrDefault(body), source);
+        return facade.proposalView(discarded);
     }
 
 
@@ -164,7 +195,10 @@ public final class TaskController {
                 projection().deviceCalendar(PrincipalContext.getPrincipalInfo(), source, deviceId, start, end));
     }
     @GetMapping("/tasks/{id}")
-    public Map<String, Object> task(@PathVariable String id) { return facade.view(facade.current(PrincipalContext.getPrincipalInfo(), id)); }
+    public Map<String, Object> task(@PathVariable String id, @RequestParam(required = false) String source) {
+        var principal = PrincipalContext.getPrincipalInfo();
+        return facade.view(source == null ? facade.current(principal, id) : facade.current(principal, id, source));
+    }
     @GetMapping("/tasks/{id}/lighting-states")
     public Map<String, Object> lightingStates(@PathVariable String id,
                                                @RequestParam(defaultValue = "office") String source) {
@@ -204,8 +238,11 @@ public final class TaskController {
         return facade.view(facade.update(PrincipalContext.getPrincipalInfo(), id, version(body), json(body.get("payload"))));
     }
     @PostMapping("/tasks/{id}/cancel")
-    public Map<String, Object> cancel(@PathVariable String id, @RequestBody(required = false) Map<String, Object> body) {
-        return facade.view(facade.cancel(PrincipalContext.getPrincipalInfo(), id, version(body)));
+    public Map<String, Object> cancel(@PathVariable String id, @RequestParam(required = false) String source,
+                                      @RequestBody(required = false) Map<String, Object> body) {
+        var principal = PrincipalContext.getPrincipalInfo();
+        return facade.view(source == null ? facade.cancel(principal, id, version(body))
+                : facade.cancel(principal, id, version(body), source));
     }
 
     @GetMapping("/notifications")
@@ -231,30 +268,21 @@ public final class TaskController {
         return facade.planView(plan);
     }
     @GetMapping("/task-plans/{id}")
-    public Map<String, Object> plan(@PathVariable String id) { return facade.planView(facade.plan(PrincipalContext.getPrincipalInfo(), id)); }
+    public Map<String, Object> plan(@PathVariable String id, @RequestParam(required = false) String source) {
+        var principal = PrincipalContext.getPrincipalInfo();
+        return facade.planView(source == null ? facade.plan(principal, id) : facade.plan(principal, id, source));
+    }
     @PostMapping("/task-plans/{id}/status")
     public Map<String, Object> planStatus(@PathVariable String id, @RequestParam(defaultValue = "office") String source,
                                           @RequestBody Map<String, Object> body) {
-        TaskPlanFact current = facade.plan(PrincipalContext.getPrincipalInfo(), id);
-        assertPlanSource(current, source);
         String status = body.get("status") instanceof String ? text(body, "status", "") : text(body, "operation", "");
         boolean confirmed = Boolean.TRUE.equals(body.get("confirmed"));
         return facade.planView(facade.updatePlan(PrincipalContext.getPrincipalInfo(), id, version(body),
-                status, body.get("payload") == null ? null : json(body.get("payload")), confirmed));
+                status, body.get("payload") == null ? null : json(body.get("payload")), confirmed, source));
     }
     @GetMapping("/task-plans")
     public Map<String, Object> plans(@RequestParam(defaultValue = "office") String source) {
         return Map.of("plans", facade.plans(PrincipalContext.getPrincipalInfo(), source));
-    }
-    private void assertPlanSource(TaskPlanFact plan, String source) {
-        try {
-            String actual = mapper.readTree(plan.payloadJson()).path("source").asText("office");
-            if (!actual.equals(source)) throw new BusinessException("PLAN_NOT_FOUND", "计划不存在", 404);
-        } catch (BusinessException failure) {
-            throw failure;
-        } catch (Exception error) {
-            throw new BusinessException("PLAN_NOT_FOUND", "计划不存在", 404);
-        }
     }
     @PostMapping("/task-plans/{id}/cancel")
     public Map<String, Object> cancelPlan(@PathVariable String id, @RequestParam(defaultValue = "office") String source,

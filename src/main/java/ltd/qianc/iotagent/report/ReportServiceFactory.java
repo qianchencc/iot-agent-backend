@@ -9,6 +9,11 @@ public final class ReportServiceFactory {
     private ReportServiceFactory() { }
 
     public static ReportService local(ReportFactStore store, ObjectMapper mapper, IotAdapter iot) {
-        return new DefaultReportService(store, mapper, iot);
+        return local(store, mapper, iot, ReportRendererFactory.pdf(), ReportRendererFactory.xlsx());
+    }
+
+    public static ReportService local(ReportFactStore store, ObjectMapper mapper, IotAdapter iot,
+            ReportRenderer pdfRenderer, ReportRenderer xlsxRenderer) {
+        return new DefaultReportService(store, mapper, iot, pdfRenderer, xlsxRenderer);
     }
 }

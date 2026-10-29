@@ -43,33 +43,35 @@ export const TOOL_CAPABILITY_MATRIX: readonly ToolCapability[] = [
   { name: "inspect_device_capabilities", category: "observation", status: "java", event: "observation.reported" },
   { name: "read_device_readback", category: "readback", status: "java", javaToolName: "read_device_states", event: "observation.reported" },
   { name: "readback_device_states", category: "readback", status: "java", javaToolName: "read_device_states", event: "observation.reported" },
-  { name: "get_device_details", category: "readback", status: "unavailable", event: "observation.reported" },
-  { name: "query_alerts", category: "observation", status: "unavailable", event: "observation.reported" },
-  { name: "query_environment_history", category: "observation", status: "unavailable", event: "observation.reported" },
-  { name: "query_energy_history", category: "observation", status: "unavailable", event: "observation.reported" },
+  { name: "get_device_details", category: "readback", status: "java", event: "observation.reported" },
+  { name: "query_alerts", category: "observation", status: "java", event: "observation.reported" },
+  { name: "query_environment_history", category: "observation", status: "java", event: "observation.reported" },
+  { name: "query_energy_history", category: "observation", status: "java", event: "observation.reported" },
   { name: "prepare_video_playback", category: "readback", status: "unavailable", event: "observation.reported" },
-  { name: "review_safety_event", category: "observation", status: "unavailable", event: "observation.reported" },
-  { name: "summarize_energy", category: "report", status: "unavailable", event: "report.generated" },
-  { name: "compare_energy", category: "report", status: "unavailable", event: "report.generated" },
+  { name: "review_safety_event", category: "observation", status: "java", event: "observation.reported" },
+  { name: "summarize_energy", category: "report", status: "java", event: "report.generated" },
+  { name: "compare_energy", category: "report", status: "java", event: "report.generated" },
   { name: "create_energy_report", category: "report", status: "java", event: "report.generated" },
   { name: "create_report", category: "report", status: "java", javaToolName: "create_energy_report", event: "report.generated" },
   { name: "generate_report", category: "report", status: "java", javaToolName: "create_energy_report", event: "report.generated" },
   { name: "propose_action_draft", category: "action", status: "java", event: "action.proposed" },
-  { name: "propose_lighting_draft", category: "action", status: "unavailable", event: "action.proposed" },
-  { name: "confirm_action", category: "confirmation", status: "unavailable", event: "action.resolved" },
-  { name: "resolve_action", category: "resolution", status: "unavailable", event: "action.resolved" },
-  { name: "read_action_draft", category: "readback", status: "unavailable", event: "action.resolved" },
+  { name: "propose_lighting_draft", category: "action", status: "java", javaToolName: "propose_action_draft", event: "action.proposed" },
+  { name: "confirm_action", category: "confirmation", status: "java", event: "action.resolved" },
+  { name: "resolve_action", category: "resolution", status: "java", event: "action.resolved" },
+  { name: "read_action_draft", category: "readback", status: "java", event: "action.resolved" },
+  { name: "read_action_device_states", category: "readback", status: "java", event: "action.resolved" },
+  { name: "read_action_summary", category: "readback", status: "java", event: "action.resolved" },
   { name: "propose_task", category: "task", status: "java", event: "task.proposed" },
-  { name: "propose_task_change", category: "task", status: "unavailable", event: "task.change.proposed" },
-  { name: "propose_task_cancellation", category: "task", status: "unavailable", event: "task.cancellation.proposed" },
+  { name: "propose_task_change", category: "task", status: "java", event: "task.change.proposed" },
+  { name: "propose_task_cancellation", category: "task", status: "java", event: "task.cancellation.proposed" },
   { name: "propose_company_night_closure", category: "task", status: "unavailable", event: "task.proposed" },
   { name: "continue_company_night_closure", category: "task", status: "unavailable", event: "task.proposed" },
-  { name: "list_tasks", category: "readback", status: "unavailable", event: "task.resolved" },
-  { name: "list_task_plans", category: "readback", status: "unavailable", event: "task.resolved" },
-  { name: "get_task", category: "readback", status: "unavailable", event: "task.resolved" },
-  { name: "confirm_task", category: "confirmation", status: "unavailable", event: "task.confirmation" },
-  { name: "confirm_task_change", category: "confirmation", status: "unavailable", event: "task.change.resolved" },
-  { name: "confirm_task_cancellation", category: "confirmation", status: "unavailable", event: "task.cancellation.resolved" },
+  { name: "list_tasks", category: "readback", status: "java", event: "task.resolved" },
+  { name: "list_task_plans", category: "readback", status: "java", event: "task.resolved" },
+  { name: "get_task", category: "readback", status: "java", event: "task.resolved" },
+  { name: "confirm_task", category: "confirmation", status: "java", event: "task.confirmation" },
+  { name: "confirm_task_change", category: "confirmation", status: "java", event: "task.change.resolved" },
+  { name: "confirm_task_cancellation", category: "confirmation", status: "java", event: "task.cancellation.resolved" },
   { name: "resolve_task", category: "resolution", status: "unavailable", event: "task.resolved" },
   { name: "resolve_task_change", category: "resolution", status: "unavailable", event: "task.change.resolved" },
   { name: "resolve_task_cancellation", category: "resolution", status: "unavailable", event: "task.cancellation.resolved" },
@@ -253,8 +255,12 @@ export class AgentRunner {
         }),
         signal: controller.signal,
       });
-      if (!response.ok) throw new Error(`Java business tool returned HTTP ${response.status}`);
-      return await response.json();
+      const result = await response.json().catch(() => null);
+      if (!response.ok) {
+        if (result && typeof result === "object" && "code" in result) return result;
+        throw new Error(`Java business tool returned HTTP ${response.status}`);
+      }
+      return result;
     } finally {
       clearTimeout(timer);
       signal.removeEventListener("abort", onAbort);

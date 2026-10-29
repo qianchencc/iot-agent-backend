@@ -84,12 +84,30 @@ describe("private sidecar HTTP contract", () => {
 it("publishes an explicit fail-closed capability matrix", () => {
   const byName = new Map(TOOL_CAPABILITY_MATRIX.map(capability => [capability.name, capability]));
   assert.equal(byName.get("read_device_states")?.status, "java");
+  assert.equal(byName.get("get_device_details")?.status, "java");
+  assert.equal(byName.get("query_alerts")?.status, "java");
+  assert.equal(byName.get("query_environment_history")?.status, "java");
+  assert.equal(byName.get("query_energy_history")?.status, "java");
+  assert.equal(byName.get("summarize_energy")?.status, "java");
+  assert.equal(byName.get("compare_energy")?.status, "java");
   assert.equal(byName.get("create_energy_report")?.event, "report.generated");
   assert.equal(byName.get("propose_action_draft")?.event, "action.proposed");
+  assert.equal(byName.get("confirm_action")?.status, "java");
+  assert.equal(byName.get("read_action_draft")?.status, "java");
+  assert.equal(byName.get("read_action_device_states")?.status, "java");
+  assert.equal(byName.get("read_action_summary")?.status, "java");
   assert.equal(byName.get("propose_task")?.event, "task.proposed");
-  assert.equal(byName.get("propose_task_change")?.status, "unavailable");
-  assert.equal(byName.get("propose_task_cancellation")?.status, "unavailable");
-  assert.equal(byName.get("confirm_task")?.status, "unavailable");
+  assert.equal(byName.get("propose_task_change")?.status, "java");
+  assert.equal(byName.get("propose_task_cancellation")?.status, "java");
+  assert.equal(byName.get("confirm_task")?.status, "java");
+  assert.equal(byName.get("confirm_task_change")?.status, "java");
+  assert.equal(byName.get("confirm_task_cancellation")?.status, "java");
+  assert.equal(byName.get("list_tasks")?.status, "java");
+  assert.equal(byName.get("list_task_plans")?.status, "java");
+  assert.equal(byName.get("get_task")?.status, "java");
+  assert.equal(byName.get("prepare_video_playback")?.status, "unavailable");
+  assert.equal(byName.get("propose_company_night_closure")?.status, "unavailable");
+  assert.equal(byName.get("continue_company_night_closure")?.status, "unavailable");
   assert.equal(byName.get("readback_device_states")?.javaToolName, "read_device_states");
   assert.ok(TOOL_CAPABILITY_MATRIX.every(capability => capability.event));
 });
@@ -259,7 +277,7 @@ it("forwards a pi-agent tool call to the authenticated Java bridge", async () =>
 });
 
 it("returns structured unavailable results without calling Java", async () => {
-  const model = await openToolModel("query_alerts");
+  const model = await openToolModel("prepare_video_playback");
   const java = await openFakeJavaTool();
   const current = await config({ modelBaseUrl: model.url, javaToolsUrl: java.url });
   const app = buildApp(current);

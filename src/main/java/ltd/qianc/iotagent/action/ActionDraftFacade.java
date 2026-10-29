@@ -313,18 +313,35 @@ public final class ActionDraftFacade {
     /** Read durable post-dispatch evidence; an empty list means no readback was recorded. */
     public Map<String, Object> deviceStates(PrincipalInfo principal, String draftId) {
         ActionDraftFact draft = current(principal, draftId);
-        List<Map<String, Object>> states = new ArrayList<>();
+        List<Map<String, Object>> stateList = new ArrayList<>();
+        Map<String, Object> deviceStates = new LinkedHashMap<>();
+        Map<String, String> deviceByAction = actionDevices(draft);
         if (readbackStore != null) {
             for (ActionReadbackFact fact : readbackStore.findByDraft(draft.draftId())) {
                 Map<String, Object> state = new LinkedHashMap<>();
                 state.put("actionId", fact.actionId());
                 state.put("outcome", fact.outcome());
                 state.put("observedAt", fact.observedAt());
-                state.put("observedState", parseObject(fact.observedStateJson()));
-                states.add(state);
+                Object observedState = parseObject(fact.observedStateJson());
+                state.put("observedState", observedState);
+                stateList.add(state);
+                String deviceId = deviceByAction.get(fact.actionId());
+                if (deviceId != null && !deviceId.isBlank()) deviceStates.put(deviceId, observedState);
             }
         }
-        return Map.of("draftId", draft.draftId(), "states", states);
+        // `states` is the original durable fact list. `deviceStates` is the
+        // additive projection consumed by the mini-program's device cards.
+        return Map.of("draftId", draft.draftId(), "states", stateList, "deviceStates", deviceStates);
+    }
+
+    private Map<String, String> actionDevices(ActionDraftFact draft) {
+        Map<String, String> result = new LinkedHashMap<>();
+        for (JsonNode action : array(payload(draft), "actions")) {
+            String actionId = action.path("id").asText("");
+            String deviceId = action.path("deviceId").asText("");
+            if (!actionId.isBlank() && !deviceId.isBlank()) result.put(actionId, deviceId);
+        }
+        return result;
     }
 
     /** Summary is derived from durable receipt/readback facts, never fabricated by the Java service. */

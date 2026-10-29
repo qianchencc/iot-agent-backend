@@ -12,6 +12,8 @@ import ltd.qianc.iotagent.iot.ObservationAdapterFactory;
 import ltd.qianc.iotagent.iot.ObservationGatewayRoutes;
 import ltd.qianc.iotagent.iot.ObservationOperation;
 import ltd.qianc.iotagent.region.RegionSeenStore;
+import ltd.qianc.iotagent.iot.CompanyEnergyObservationComposer;
+import ltd.qianc.iotagent.iot.CompanyEnergyObservationComposerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -51,12 +53,32 @@ public class ObservationAdapterConfiguration {
             configured.put(ObservationOperation.ENERGY_HISTORY,
                     route(environment, ObservationOperation.ENERGY_HISTORY,
                             "/micro-api/api/energy/electricData/page"));
+            configured.put(ObservationOperation.DASHBOARD,
+                    route(environment, ObservationOperation.DASHBOARD, null));
             configured.put(ObservationOperation.SAFETY_EVENTS,
                     route(environment, ObservationOperation.SAFETY_EVENTS,
                             "/micro-api/api/perception/fire/{ledger}/alarm/page"));
             configured.put(ObservationOperation.SAFETY_EVENT,
                     route(environment, ObservationOperation.SAFETY_EVENT,
                             "/micro-api/api/perception/fire/{ledger}/alarm/page"));
+            configured.put(ObservationOperation.SAFETY_EVENT_CAMERAS,
+                    route(environment, ObservationOperation.SAFETY_EVENT_CAMERAS, null));
+            configured.put(ObservationOperation.ENERGY_COMPARISON,
+                    route(environment, ObservationOperation.ENERGY_COMPARISON, null));
+            configured.put(ObservationOperation.ENERGY_REPORT,
+                    route(environment, ObservationOperation.ENERGY_REPORT, null));
+            configured.put(ObservationOperation.COMPANY_ENERGY_DAILY,
+                    route(environment, ObservationOperation.COMPANY_ENERGY_DAILY, null));
+            configured.put(ObservationOperation.COMPANY_ENERGY_REPORT,
+                    route(environment, ObservationOperation.COMPANY_ENERGY_REPORT, null));
+            configured.put(ObservationOperation.COMPANY_METER_REPORT,
+                    route(environment, ObservationOperation.COMPANY_METER_REPORT, null));
+            configured.put(ObservationOperation.VIDEO_STREAM,
+                    route(environment, ObservationOperation.VIDEO_STREAM, null));
+            configured.put(ObservationOperation.REPORT,
+                    route(environment, ObservationOperation.REPORT, null));
+            configured.put(ObservationOperation.REPORT_DOWNLOAD,
+                    route(environment, ObservationOperation.REPORT_DOWNLOAD, null));
             configured.put(ObservationOperation.REGION_LIST,
                     route(environment, ObservationOperation.REGION_LIST,
                             "/micro-api/api/office/office/member/my/office"));
@@ -73,8 +95,11 @@ public class ObservationAdapterConfiguration {
         }
         AutomationSummaryReader automationReader = automation.getIfAvailable(
                 () -> identity -> Mono.error(new IllegalStateException("任务摘要读取适配器未配置")));
+        Clock clock = Clock.systemUTC();
+        CompanyEnergyObservationComposer energyComposer =
+                CompanyEnergyObservationComposerFactory.composed(delegate, iot, clock);
         return ObservationAdapterFactory.composed(
-                delegate, iot, automationReader, regionSeen.getIfAvailable(), Clock.systemUTC());
+                delegate, iot, automationReader, regionSeen.getIfAvailable(), energyComposer, clock);
     }
 
     private static String route(Environment environment, ObservationOperation operation, String fallback) {

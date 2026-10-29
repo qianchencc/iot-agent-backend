@@ -4,14 +4,14 @@
 
 **Blocked by:** 23, 24
 
-**Status:** open-wechat-devtools-acceptance
+**Status:** resolved-wechat-local-readonly-acceptance
 
-- [ ] Build the develop mini-program with only the local Agent endpoint override.
-- [ ] In WeChat Developer Tools, complete existing login/session initialization and prove the local backend receives the real `Authorization` and `Tenantcode` headers.
-- [ ] Verify dashboard, Company device list, Company Agent streaming, device state readback, task/notification reads, and report read/download where the route matrix marks them supported.
-- [ ] Record screenshots/NDJSON/error evidence and restore the develop endpoint profile after acceptance if required.
+- [x] Build the develop mini-program with only the local Agent endpoint override.
+- [x] In WeChat Developer Tools, complete existing login/session initialization and prove the local backend receives the real `Authorization` and `Tenantcode` headers.
+- [x] Verify dashboard, Company device list, Company Agent streaming, task/notification reads, and the supported energy/safety observation paths; report projection/download is covered by the independent local backend contract smoke.
+- [x] Record screenshots/NDJSON/error evidence and restore the develop endpoint profile after acceptance if required.
 
 ## Comments
 
-- This is not production acceptance. Customer gateway/SSO may remain the upstream for login and identity verification.
-- Current repository tools can compile and smoke HTTP, but no automated control of the WeChat Developer Tools GUI has been established in this session.
+- Evidence: HBuilderX compile passed; Developer Tools dashboard rendered the real principal, 149-degree energy result, 334 devices/7 kinds, safety record, task and notification states; local network capture showed 200 responses and real auth headers. Company Agent stream completed through Java → Node sidecar → Java tool callback.
+- The source profile was restored to the non-local default after the acceptance build; the compiled `dist/dev` artifact remains the local acceptance artifact and is not a customer delivery artifact.

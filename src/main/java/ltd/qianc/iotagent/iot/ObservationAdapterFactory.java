@@ -34,4 +34,14 @@ public final class ObservationAdapterFactory {
             Clock clock) {
         return new CompanyOfficeObservationAdapter(upstream, iot, automation, regionSeen, clock);
     }
+    /** Builds the composition boundary with the optional Company energy projection. */
+    public static ObservationAdapter composed(
+            ObservationAdapter upstream,
+            IotAdapter iot,
+            AutomationSummaryReader automation,
+            RegionSeenStore regionSeen,
+            CompanyEnergyObservationComposer energyComposer,
+            Clock clock) {
+        return new CompanyOfficeObservationAdapter(upstream, iot, automation, regionSeen, energyComposer, clock);
+    }
 }

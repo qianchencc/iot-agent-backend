@@ -18,11 +18,14 @@ import ltd.qianc.iotagent.report.ReportFact;
 import ltd.qianc.iotagent.report.ReportFactStore;
 import ltd.qianc.iotagent.report.ReportFormatException;
 import ltd.qianc.iotagent.report.ReportNotFoundException;
+import ltd.qianc.iotagent.report.ReportRenderer;
+import ltd.qianc.iotagent.report.ReportRendererFactory;
 import ltd.qianc.iotagent.report.ReportService;
 import ltd.qianc.iotagent.report.ReportUnavailableException;
 import org.springframework.stereotype.Service;
 
 /** Company report authorization, durable fact projection, and rendering seam. */
+@Service
 @org.springframework.boot.autoconfigure.condition.ConditionalOnBean(ReportFactStore.class)
 public final class DefaultReportService implements ReportService {
     private static final Duration SCOPE_TIMEOUT = Duration.ofSeconds(30);
@@ -31,11 +34,20 @@ public final class DefaultReportService implements ReportService {
     private final ReportFactStore store;
     private final ObjectMapper mapper;
     private final IotAdapter iot;
+    private final ReportRenderer pdfRenderer;
+    private final ReportRenderer xlsxRenderer;
 
     public DefaultReportService(ReportFactStore store, ObjectMapper mapper, IotAdapter iot) {
+        this(store, mapper, iot, ReportRendererFactory.pdf(), ReportRendererFactory.xlsx());
+    }
+
+    public DefaultReportService(ReportFactStore store, ObjectMapper mapper, IotAdapter iot,
+            ReportRenderer pdfRenderer, ReportRenderer xlsxRenderer) {
         this.store = store;
         this.mapper = mapper;
         this.iot = iot;
+        this.pdfRenderer = pdfRenderer;
+        this.xlsxRenderer = xlsxRenderer;
     }
 
     @Override
@@ -93,13 +105,9 @@ public final class DefaultReportService implements ReportService {
     public ReportDownload download(String reportId, String format, RequestIdentity identity) {
         if (!"pdf".equals(format) && !"xlsx".equals(format)) throw new ReportFormatException();
         Map<String, Object> report = read(reportId, identity);
-        String title = safeFilename(text(report, "title", "report-" + reportId));
+        ReportRenderer renderer = "xlsx".equals(format) ? xlsxRenderer : pdfRenderer;
         try {
-            if ("xlsx".equals(format)) {
-                return new ReportDownload("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", title + ".xlsx",
-                        ReportXlsxRenderer.render(report));
-            }
-            return new ReportDownload("application/pdf", title + ".pdf", ReportPdfRenderer.render(report));
+            return renderer.render(report);
         } catch (RuntimeException failure) {
             throw new ReportUnavailableException("REPORT_" + format.toUpperCase(Locale.ROOT) + "_UNAVAILABLE", "报告导出暂不可用");
         }
@@ -143,8 +151,4 @@ public final class DefaultReportService implements ReportService {
         return value == null ? fallback : String.valueOf(value);
     }
 
-    private static String safeFilename(String value) {
-        String result = value.replaceAll("[\\\\/:*?\"<>|\\r\\n]+", "_").trim();
-        return result.isBlank() ? "report" : result;
-    }
 }

@@ -7,10 +7,10 @@ import java.util.List;
 import java.util.Map;
 
 /** Small dependency-free PDF projection of saved report facts; never recalculates measurements. */
-final class ReportPdfRenderer {
+public final class ReportPdfRenderer {
     private ReportPdfRenderer() { }
 
-    static byte[] render(Map<String, Object> report) {
+    public static byte[] render(Map<String, Object> report) {
         List<String> lines = new ArrayList<>();
         lines.add(text(report.get("title"), "报告"));
         lines.add("状态：" + text(report.get("status"), "unknown"));

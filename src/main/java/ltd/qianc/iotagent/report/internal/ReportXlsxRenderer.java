@@ -9,10 +9,10 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 /** Dependency-free OOXML workbook projection; values are copied from saved fields only. */
-final class ReportXlsxRenderer {
+public final class ReportXlsxRenderer {
     private ReportXlsxRenderer() { }
 
-    static byte[] render(Map<String, Object> report) {
+    public static byte[] render(Map<String, Object> report) {
         List<String[]> rows = new ArrayList<>();
         rows.add(new String[]{"报告", text(report.get("title"), "报告")});
         rows.add(new String[]{"状态", text(report.get("status"), "")});

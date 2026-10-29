@@ -170,7 +170,13 @@ public final class TaskFacade {
     }
 
     public Map<String, Object> confirmChange(PrincipalInfo principal, String proposalId, long expectedVersion) {
-        TaskProposalFact proposal = managementProposal(principal, proposalId, "CHANGE");
+        return confirmChange(principal, proposalId, expectedVersion, "office");
+    }
+
+    public Map<String, Object> confirmChange(PrincipalInfo principal, String proposalId, long expectedVersion,
+                                             String requestedSource) {
+        String normalizedSource = source(requestedSource);
+        TaskProposalFact proposal = managementProposal(principal, proposalId, "CHANGE", normalizedSource);
         if (CONFIRMED.equals(proposal.status())) return managementResult(proposal);
         resolveExpiry(proposal);
         if (!PENDING.equals(proposal.status())) throw conflict("CHANGE_NOT_PENDING", "修改提案已结束");
@@ -190,8 +196,7 @@ public final class TaskFacade {
                 || occurrence != null;
         String planId = occurrence == null ? id : occurrence.planId();
         if (plan) {
-            TaskPlanFact current = plan(principal, planId);
-            assertSource(current.payloadJson(), proposal.source());
+            TaskPlanFact current = plan(principal, planId, normalizedSource);
             if (current.version() != proposal.version()) throw conflict("VERSION_CONFLICT", "计划已变化，请重新提出修改");
             if (occurrence != null) {
                 String override = "skip".equals(proposal.operation()) ? null : safePayload(proposal.afterJson()).toString();
@@ -213,12 +218,11 @@ public final class TaskFacade {
             };
             TaskPlanFact updated = plans.updateIfVersion(new TaskPlanFact(planId, current.version() + 1, nextStatus,
                     safePayload(proposal.afterJson()).toString(), current.idempotencyKey()), current.version())
-                    .orElseThrow(() -> conflict("VERSION_CONFLICT", "计划已变化，请刷新后重试"));
+                    .orElseThrow(() -> conflict("VERSION_CONFLICT", "计划已变化，请重新提出修改"));
             markConfirmed(proposal);
             return managementResult(proposal, null, updated.planId());
         }
-        TaskFact current = current(principal, id);
-        assertSource(current.payloadJson(), proposal.source());
+        TaskFact current = current(principal, id, normalizedSource);
         if (current.version() != proposal.version()) throw conflict("VERSION_CONFLICT", "任务已变化，请重新提出修改");
         if (terminalTask(current.status())) throw conflict("TASK_NOT_EDITABLE", "已结束任务不可修改");
         String status = switch (proposal.operation()) {
@@ -237,37 +241,61 @@ public final class TaskFacade {
     }
 
     public TaskProposalFact discardChange(PrincipalInfo principal, String proposalId, long expectedVersion) {
-        return resolveManagement(principal, proposalId, expectedVersion, "CHANGE");
+        return discardChange(principal, proposalId, expectedVersion, "office");
+    }
+
+    public TaskProposalFact discardChange(PrincipalInfo principal, String proposalId, long expectedVersion,
+                                          String requestedSource) {
+        return resolveManagement(principal, proposalId, expectedVersion, "CHANGE", source(requestedSource));
     }
 
     public Map<String, Object> confirmCancellation(PrincipalInfo principal, String proposalId, long expectedVersion) {
-        TaskProposalFact proposal = managementProposal(principal, proposalId, "CANCELLATION");
+        return confirmCancellation(principal, proposalId, expectedVersion, "office");
+    }
+
+    public Map<String, Object> confirmCancellation(PrincipalInfo principal, String proposalId, long expectedVersion,
+                                                   String requestedSource) {
+        String normalizedSource = source(requestedSource);
+        TaskProposalFact proposal = managementProposal(principal, proposalId, "CANCELLATION", normalizedSource);
         if (CONFIRMED.equals(proposal.status())) return managementResult(proposal);
         resolveExpiry(proposal);
         if (!PENDING.equals(proposal.status())) throw conflict("CANCELLATION_NOT_PENDING", "取消提案已结束");
         if (proposal.version() != expectedVersion) throw conflict("VERSION_CONFLICT", "任务已变化，请重新提出取消");
         JsonNode target = readJson(proposal.targetJson());
-        TaskFact current = current(principal, targetId(target));
-        assertSource(current.payloadJson(), proposal.source());
+        TaskFact current = current(principal, targetId(target), normalizedSource);
         assertCurrentCatalog(principal, proposal.source(), current.payloadJson());
         if (current.version() != proposal.version()) throw conflict("VERSION_CONFLICT", "任务已变化，请重新提出取消");
-        TaskFact cancelled = cancel(principal, current.taskId(), current.version());
+        TaskFact cancelled = cancel(principal, current.taskId(), current.version(), normalizedSource);
         markConfirmed(proposal);
         return managementResult(proposal, cancelled.taskId(), null);
     }
 
     public TaskProposalFact discardCancellation(PrincipalInfo principal, String proposalId, long expectedVersion) {
-        return resolveManagement(principal, proposalId, expectedVersion, "CANCELLATION");
+        return discardCancellation(principal, proposalId, expectedVersion, "office");
+    }
+
+    public TaskProposalFact discardCancellation(PrincipalInfo principal, String proposalId, long expectedVersion,
+                                                 String requestedSource) {
+        return resolveManagement(principal, proposalId, expectedVersion, "CANCELLATION", source(requestedSource));
     }
 
     public TaskProposalFact proposal(PrincipalInfo principal, String proposalId) {
+        return proposal(principal, proposalId, "office");
+    }
+
+    public TaskProposalFact proposal(PrincipalInfo principal, String proposalId, String requestedSource) {
+        String normalizedSource = source(requestedSource);
         TaskProposalFact proposal = proposals.find(proposalId).orElseThrow(() -> notFound("TASK_PROPOSAL_NOT_FOUND", "任务提案不存在"));
-        if (!proposalOwned(proposal, principal, proposal.source())) throw notFound("TASK_PROPOSAL_NOT_FOUND", "任务提案不存在");
+        if (!proposalOwned(proposal, principal, normalizedSource)) throw notFound("TASK_PROPOSAL_NOT_FOUND", "任务提案不存在");
         return proposal;
     }
 
     public TaskFact confirm(PrincipalInfo principal, String proposalId, long expectedVersion) {
-        TaskProposalFact proposal = proposal(principal, proposalId);
+        return confirm(principal, proposalId, expectedVersion, "office");
+    }
+
+    public TaskFact confirm(PrincipalInfo principal, String proposalId, long expectedVersion, String requestedSource) {
+        TaskProposalFact proposal = proposal(principal, proposalId, requestedSource);
         if (CONFIRMED.equals(proposal.status())) {
             TaskFact existing = taskForProposal(principal, proposalId);
             scheduleIfDue(existing);
@@ -289,7 +317,11 @@ public final class TaskFacade {
     }
 
     public TaskProposalFact discard(PrincipalInfo principal, String proposalId, long expectedVersion) {
-        TaskProposalFact proposal = proposal(principal, proposalId);
+        return discard(principal, proposalId, expectedVersion, "office");
+    }
+
+    public TaskProposalFact discard(PrincipalInfo principal, String proposalId, long expectedVersion, String requestedSource) {
+        TaskProposalFact proposal = proposal(principal, proposalId, requestedSource);
         if (CANCELLED.equals(proposal.status())) return proposal;
         if (!PENDING.equals(proposal.status())) throw conflict("TASK_PROPOSAL_NOT_PENDING", "任务提案已结束");
         resolveExpiry(proposal);
@@ -299,10 +331,18 @@ public final class TaskFacade {
     }
 
     public TaskFact current(PrincipalInfo principal, String taskId) {
+        return current(principal, taskId, "office");
+    }
+
+    public TaskFact current(PrincipalInfo principal, String taskId, String requestedSource) {
+        checkPrincipal(principal);
+        String normalizedSource = source(requestedSource);
         TaskFact task = tasks.find(taskId).orElseThrow(() -> notFound("TASK_NOT_FOUND", "任务不存在"));
         if (!owns(task.payloadJson(), principal)) throw notFound("TASK_NOT_FOUND", "任务不存在");
+        assertSource(task.payloadJson(), normalizedSource);
         return task;
     }
+
     /**
      * Returns the durable lighting device identities for a task. The controller
      * rechecks those identities against the current gateway scope before reading
@@ -310,10 +350,8 @@ public final class TaskFacade {
      */
     public List<String> lightingDeviceIds(PrincipalInfo principal, String taskId, String requestedSource) {
         checkPrincipal(principal);
-        TaskFact task = current(principal, taskId);
+        TaskFact task = current(principal, taskId, requestedSource);
         JsonNode payload = safePayload(task.payloadJson());
-        String taskSource = source(payload.path("source").asText("office"));
-        if (!taskSource.equals(source(requestedSource))) throw notFound("TASK_NOT_FOUND", "任务不存在");
         JsonNode phases = payload.path("phases");
         if (!phases.isArray()) {
             throw new BusinessException("TASK_LIGHTING_STATES_UNAVAILABLE", "任务缺少可读取的照明设备事实", 503);
@@ -354,9 +392,12 @@ public final class TaskFacade {
         scheduleIfDue(updated);
         return updated;
     }
-
     public TaskFact cancel(PrincipalInfo principal, String taskId, long expectedVersion) {
-        TaskFact current = current(principal, taskId);
+        return cancel(principal, taskId, expectedVersion, "office");
+    }
+
+    public TaskFact cancel(PrincipalInfo principal, String taskId, long expectedVersion, String requestedSource) {
+        TaskFact current = current(principal, taskId, requestedSource);
         if (CANCELLED.equals(current.status())) return current;
         if (terminalTask(current.status())) throw conflict("TASK_ALREADY_FINISHED", "任务已结束");
         if (current.version() != expectedVersion) throw conflict("VERSION_CONFLICT", "任务状态已变化，请刷新后再试");
@@ -378,20 +419,35 @@ public final class TaskFacade {
                 .put("source", source(source)).put("tenantCode", principal.tenantCode()).put("ownerKey", ownerKey(principal));
         return plans.save(new TaskPlanFact(UUID.randomUUID().toString(), 1, "ENABLED", payload.toString(), key));
     }
-
     public TaskPlanFact plan(PrincipalInfo principal, String planId) {
+        return plan(principal, planId, "office");
+    }
+
+    public TaskPlanFact plan(PrincipalInfo principal, String planId, String requestedSource) {
+        String normalizedSource = source(requestedSource);
         TaskPlanFact plan = plans.find(planId).orElseThrow(() -> notFound("PLAN_NOT_FOUND", "计划不存在"));
         if (!owns(plan.payloadJson(), principal)) throw notFound("PLAN_NOT_FOUND", "计划不存在");
+        try {
+            assertSource(plan.payloadJson(), normalizedSource);
+        } catch (BusinessException mismatch) {
+            throw notFound("PLAN_NOT_FOUND", "计划不存在");
+        }
         return plan;
     }
 
     public TaskPlanFact updatePlan(PrincipalInfo principal, String planId, long expectedVersion, String status, String payloadJson) {
-        return updatePlan(principal, planId, expectedVersion, status, payloadJson, false);
+        return updatePlan(principal, planId, expectedVersion, status, payloadJson, false, "office");
     }
 
     public TaskPlanFact updatePlan(PrincipalInfo principal, String planId, long expectedVersion, String status,
                                    String payloadJson, boolean confirmed) {
-        TaskPlanFact current = plan(principal, planId);
+        return updatePlan(principal, planId, expectedVersion, status, payloadJson, confirmed, "office");
+    }
+
+    public TaskPlanFact updatePlan(PrincipalInfo principal, String planId, long expectedVersion, String status,
+                                   String payloadJson, boolean confirmed, String requestedSource) {
+        String normalizedSource = source(requestedSource);
+        TaskPlanFact current = plan(principal, planId, normalizedSource);
         if (current.version() != expectedVersion) throw conflict("VERSION_CONFLICT", "计划已变化，请刷新后重试");
         String requested = status == null ? "" : status.trim();
         String next = switch (requested.toLowerCase()) {
@@ -444,7 +500,7 @@ public final class TaskFacade {
         if ("occurrence".equals(scope) && date == null) {
             throw new BusinessException("INVALID_CANCELLATION", "请选择有效取消范围并刷新计划", 400);
         }
-        TaskPlanFact current = plan(principal, planId);
+        TaskPlanFact current = plan(principal, planId, normalizedSource);
         assertCurrentCatalog(principal, normalizedSource, current.payloadJson(), true);
         if ("all".equals(scope) && "DELETED".equals(current.status()) && current.version() == expectedVersion + 1) {
             return cancellationResult(current, scope, date);
@@ -597,16 +653,28 @@ public final class TaskFacade {
             try { scheduler.cancel(task.taskId(), task.taskId()); } catch (RuntimeException ignored) { }
         }
     }
+
     private TaskProposalFact managementProposal(PrincipalInfo principal, String id, String kind) {
+        return managementProposal(principal, id, kind, "office");
+    }
+
+    private TaskProposalFact managementProposal(PrincipalInfo principal, String id, String kind, String requestedSource) {
+        String normalizedSource = source(requestedSource);
         TaskProposalFact proposal = proposals.find(id).orElseThrow(() -> notFound(kind.equals("CHANGE")
                 ? "TASK_CHANGE_NOT_FOUND" : "TASK_CANCELLATION_NOT_FOUND", "任务提案不存在"));
-        if (!kind.equals(proposal.kind()) || !proposalOwned(proposal, principal, proposal.source())) {
+        if (!kind.equals(proposal.kind()) || !proposalOwned(proposal, principal, normalizedSource)) {
             throw notFound(kind.equals("CHANGE") ? "TASK_CHANGE_NOT_FOUND" : "TASK_CANCELLATION_NOT_FOUND", "任务提案不存在");
         }
         return proposal;
     }
+
     private TaskProposalFact resolveManagement(PrincipalInfo principal, String id, long expectedVersion, String kind) {
-        TaskProposalFact proposal = managementProposal(principal, id, kind);
+        return resolveManagement(principal, id, expectedVersion, kind, "office");
+    }
+
+    private TaskProposalFact resolveManagement(PrincipalInfo principal, String id, long expectedVersion, String kind,
+                                               String requestedSource) {
+        TaskProposalFact proposal = managementProposal(principal, id, kind, requestedSource);
         if (CANCELLED.equals(proposal.status())) return proposal;
         resolveExpiry(proposal);
         if (!PENDING.equals(proposal.status()) || proposal.version() != expectedVersion) {

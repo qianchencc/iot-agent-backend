@@ -4,14 +4,14 @@
 
 **Blocked by:** 18, 22
 
-**Status:** open-local-cutover-preparation
+**Status:** resolved-local-cutover-and-devtools-transport
 
-- [ ] Define a non-production `develop.local` endpoint profile with `agentBaseUrl=http://127.0.0.1:3205/api`; do not change trial/release endpoints.
-- [ ] Verify headers from the mini-program (`Authorization`, `Tenantcode`, source query/body) match the Java backend boundary.
-- [ ] Verify WeChat Developer Tools can reach the local HTTP endpoint with legal-domain validation disabled; no production endpoint or cloud deployment is changed.
-- [ ] Keep the change reversible and isolated from customer delivery output.
+- [x] Define a non-production `develop.local` endpoint profile with `agentBaseUrl=http://127.0.0.1:3205/api`; do not change trial/release endpoints.
+- [x] Verify headers from the mini-program (`Authorization`, `Tenantcode`, source query/body) match the Java backend boundary.
+- [x] Verify WeChat Developer Tools can reach the local HTTP endpoint with legal-domain validation disabled; no production endpoint or cloud deployment is changed.
+- [x] Keep the change reversible and isolated from customer delivery output.
 
 ## Comments
 
-- Current `mp/config/settings.js` develop profile still points to `https://mp-agent.qianc.ltd/api`; this ticket has not changed the frontend.
-- Desktop Developer Tools/local HTTP is a development-only acceptance path. Real-device HTTPS and production release remain separate gates.
+- `mp/config/settings.js` was temporarily switched to `develop.local` for the acceptance build; source is restored to the safe non-local default after evidence capture. Trial/release profiles were not changed.
+- WeChat Developer Tools delivered real `Authorization` and `Tenantcode` headers to `127.0.0.1:3205`; gateway/SSO remained customer upstreams. Real-device HTTPS and production release remain separate gates.

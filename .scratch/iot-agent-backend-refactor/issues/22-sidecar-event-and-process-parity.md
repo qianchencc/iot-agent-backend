@@ -4,7 +4,7 @@
 
 **Blocked by:** 04: Conversation 与 Pi Agent 生产闭环；18: Independent Node Pi Agent Sidecar
 
-**Status:** implemented-independent-process-contract; runtime-business-union-open
+**Status:** implemented-independent-process-contract; runtime-business-union-external-gates
 
 - [x] Sidecar exposes an explicit observation/readback, report, action-draft, task proposal/change/cancellation, confirmation, resolution, and readback-alias matrix. Java-backed tools preserve the existing calls; absent Java capabilities return structured `AGENT_TOOL_UNAVAILABLE` without claiming business success.
 - [x] Public NDJSON maps observation, report, action proposal/resolution, task proposal/resolution, confirmation-awaiting, failure, and abort events while retaining one sequenced terminal event per run.
@@ -16,5 +16,5 @@
 
 ## Comments
 
-- 2026-10-30：Sidecar now exports a deterministic capability matrix and maps the public event union. Existing Java-backed observation/report/action/task proposal calls remain unchanged; unsupported task management, confirmation, resolution, history, and detail/readback seams fail closed with `AGENT_TOOL_UNAVAILABLE`. In-process and separately launched process tests cover auth/redaction, callback forwarding, timeout/cancellation, disconnect, duplicate-run rejection, restart/recovery, SQLite close/reopen recovery, unsupported capability mapping, and proposal terminal mapping.
-- Residual full-runtime union gaps: Java does not yet expose task change/cancellation, task/action confirmation/resolution, alert/history/detail readback, or broad report seams. No production cloud was touched.
+- 2026-10-30：Sidecar capability negotiation now maps every locally supported Java seam: device candidate/detail/readback aliases, observation history and safety review, energy summarize/compare/report, action draft read/confirm/resolve plus durable state/summary readback, task list/plan/detail, and task change/cancellation proposal plus confirmation. Context, source, tenant, authorization, and terminal confirmation state remain bridge-owned.
+- 2026-10-30：Residual external-only gates are explicit and fail-closed: video playback/customer production video payloads (`prepare_video_playback`), company night closure (`propose_company_night_closure`, `continue_company_night_closure`), and task resolution tools without a corresponding Java facade (`resolve_task`, `resolve_task_change`, `resolve_task_cancellation`) remain `AGENT_TOOL_UNAVAILABLE`. Observation and energy capabilities also remain unavailable when their configured customer gateway route/adapter is absent; no route is invented.

@@ -120,6 +120,31 @@ class TaskManagementContractTest {
                 .hasMessageContaining("确认当前范围");
     }
 
+    @Test
+    void sourceMismatchHidesTaskAndPlanAcrossOfficeAndCompanyRoutes() {
+        TaskPlanStore plans = org.mockito.Mockito.mock(TaskPlanStore.class);
+        TaskProposalStore proposals = org.mockito.Mockito.mock(TaskProposalStore.class);
+        TaskFactStore tasks = org.mockito.Mockito.mock(TaskFactStore.class);
+        TaskFacade facade = facade(plans, proposals, tasks);
+        String owner = PRINCIPAL.ownerKey();
+        TaskFact companyTask = new TaskFact("company-task", 1, "SCHEDULED",
+                "{\"source\":\"company\",\"tenantCode\":\"LOCAL\",\"ownerKey\":\"" + owner + "\"}", "task-key");
+        when(tasks.find("company-task")).thenReturn(Optional.of(companyTask));
+        when(plans.find("company-plan")).thenReturn(Optional.of(new TaskPlanFact("company-plan", 1, "ENABLED",
+                "{\"source\":\"company\",\"tenantCode\":\"LOCAL\",\"ownerKey\":\"" + owner + "\"}", "plan-key")));
+
+        assertThatThrownBy(() -> facade.current(PRINCIPAL, "company-task", "office"))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("任务不存在");
+        assertThatThrownBy(() -> facade.cancel(PRINCIPAL, "company-task", 1, "office"))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("任务不存在");
+        assertThatThrownBy(() -> facade.plan(PRINCIPAL, "company-plan", "office"))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("计划不存在");
+        assertThatThrownBy(() -> facade.cancelPlan(PRINCIPAL, "office", "company-plan", 1, "all", null))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("计划不存在");
+        verify(tasks, never()).updateIfVersion(any(), anyLong());
+        verify(plans, never()).cancelAllIfVersion(anyString(), anyLong(), any());
+    }
+
     private static TaskFacade facade(TaskPlanStore plans, TaskProposalStore proposals, TaskFactStore tasks) {
         return new TaskFacade(new ObjectMapper(), tasks, proposals, plans,
                 org.mockito.Mockito.mock(TaskNotificationStore.class), org.mockito.Mockito.mock(TaskScheduler.class),

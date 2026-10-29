@@ -4,10 +4,10 @@
 
 **Blocked by:** 03: MySQL / Redis 业务事实基础设施；04: Conversation 与 Pi Agent 生产闭环；07: Action Draft、控制安全与 Readback
 
-**Status:** implemented-core-open-plan-parity
+**Status:** resolved-local-task-plan-notification-loop; production-execution-gate-open
 
 - [x] Task proposal、confirmation、discard、detail、timeline、calendar 和 notification payload 与 Runtime 兼容。
-- [ ] Task modification/cancellation proposal core exists; scoped plan cancellation, resume confirmation, complete occurrence validation, and Runtime query shapes remain in ticket 19.
+- [x] Task modification/cancellation proposal, scoped plan cancellation, resume confirmation, complete occurrence validation, and Runtime query shapes are covered by ticket 19.
 - [x] Task、Plan、Phase、Notification 和 audit 事实全部落 MySQL。
 - [x] Asia/Shanghai recurrence data model、phase version CAS、durable claim/lease、scanner recovery 和终态幂等成立。
 - [x] Scheduler recurrence occurrence materialization and repeat-date claiming are implemented in a bounded MySQL transaction.
@@ -19,4 +19,4 @@
 
 ## Comments
 
-- Durable one-shot/recurring facts, scanner recovery, notification projection, occurrence identity, and core change/cancellation CAS exist locally. Ticket 19 closes Runtime-specific scoped cancellation, resume authorization, future-phase validation, and public query parity. Production execution remains fail-closed.
+- Durable one-shot/recurring facts, scanner recovery, notification projection, occurrence identity, and change/cancellation CAS plus Runtime-specific scoped cancellation/resume validation exist locally. Production execution remains fail-closed; no customer scanner or notification was run.

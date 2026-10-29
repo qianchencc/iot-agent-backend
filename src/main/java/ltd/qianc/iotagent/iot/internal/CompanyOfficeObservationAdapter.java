@@ -14,6 +14,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import ltd.qianc.iotagent.iot.AuthorizedDevice;
 import ltd.qianc.iotagent.iot.AutomationSummaryReader;
+import ltd.qianc.iotagent.iot.CompanyEnergyObservationComposer;
 import ltd.qianc.iotagent.error.BusinessException;
 import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
 import ltd.qianc.iotagent.iot.DeviceStateReadResult;
@@ -47,6 +48,7 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
     private final IotAdapter iot;
     private final AutomationSummaryReader automation;
     private final RegionSeenStore regionSeen;
+    private final CompanyEnergyObservationComposer energyComposer;
     private final Clock clock;
     private final ConcurrentMap<String, CacheEntry> dashboardCache = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Mono<ObservationResponse>> dashboardJobs = new ConcurrentHashMap<>();
@@ -57,10 +59,21 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
             AutomationSummaryReader automation,
             RegionSeenStore regionSeen,
             Clock clock) {
+        this(upstream, iot, automation, regionSeen, null, clock);
+    }
+
+    public CompanyOfficeObservationAdapter(
+            ObservationAdapter upstream,
+            IotAdapter iot,
+            AutomationSummaryReader automation,
+            RegionSeenStore regionSeen,
+            CompanyEnergyObservationComposer energyComposer,
+            Clock clock) {
         this.upstream = Objects.requireNonNull(upstream, "upstream");
         this.iot = Objects.requireNonNull(iot, "iot");
         this.automation = Objects.requireNonNull(automation, "automation");
         this.regionSeen = regionSeen;
+        this.energyComposer = energyComposer;
         this.clock = Objects.requireNonNull(clock, "clock");
     }
 
@@ -73,6 +86,8 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
             case REGION_DEVICES -> regionDevices(request);
             case REGION_STATES -> regionStates(request);
             case REGION_SEEN -> regionSeen(request);
+            case COMPANY_ENERGY_DAILY, COMPANY_METER_REPORT ->
+                    energyComposer == null ? upstream.read(request) : energyComposer.read(request);
             default -> upstream.read(request);
         };
     }
@@ -256,9 +271,14 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
             List<Map<String, Object>> regions = new ArrayList<>();
             for (Map<String, Object> region : context.regions) {
                 Map<String, Object> view = new LinkedHashMap<>();
-                view.put("id", region.get("id"));
+                String regionId = (String) region.get("id");
+                view.put("id", regionId);
                 view.put("name", region.get("name"));
-                if (regionSeen != null) view.put("attention", false);
+                if (regionSeen != null) {
+                    boolean seen = regionSeen.seenAt(
+                            request.identity().tenantCode(), request.identity().ownerKey(), regionId).isPresent();
+                    view.put("attention", !seen);
+                }
                 regions.add(view);
             }
             return ObservationResponse.available(Map.of("regions", regions));

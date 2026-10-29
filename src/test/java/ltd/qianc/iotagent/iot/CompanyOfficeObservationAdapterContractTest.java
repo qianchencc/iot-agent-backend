@@ -78,6 +78,39 @@ class CompanyOfficeObservationAdapterContractTest {
     }
 
     @Test
+    void regionListComputesAttentionFromSeenStoreWithoutFalseSuccess() {
+        MemorySeenStore seen = new MemorySeenStore();
+        seen.markSeen("TENANT", "office-a", "office-a", Instant.parse("2026-01-01T00:00:00Z"));
+        ObservationAdapter upstream = request -> Mono.just(ObservationResponse.available(Map.of(
+                "regions", List.of(
+                        Map.of("id", "office-a", "name", "已读区域"),
+                        Map.of("id", "office-b", "name", "未读区域")))));
+        ObservationAdapter adapter = ObservationAdapterFactory.composed(
+                upstream, iot(OFFICE, List.of()), identity -> Mono.just(Map.of()),
+                seen, Clock.systemUTC());
+
+        List<?> regions = (List<?>) adapter.read(new ObservationRequest(
+                OFFICE, ObservationOperation.REGION_LIST, Map.of())).block().payload().get("regions");
+
+        assertThat(((Map<?, ?>) regions.get(0)).get("attention")).isEqualTo(false);
+        assertThat(((Map<?, ?>) regions.get(1)).get("attention")).isEqualTo(true);
+    }
+
+    @Test
+    void regionListOmitsAttentionWhenSeenStoreIsUnavailable() {
+        ObservationAdapter upstream = request -> Mono.just(ObservationResponse.available(Map.of(
+                "regions", List.of(Map.of("id", "office-a", "name", "区域")))));
+        ObservationAdapter adapter = ObservationAdapterFactory.composed(
+                upstream, iot(OFFICE, List.of()), identity -> Mono.just(Map.of()),
+                null, Clock.systemUTC());
+
+        Map<?, ?> region = (Map<?, ?>) ((List<?>) adapter.read(new ObservationRequest(
+                OFFICE, ObservationOperation.REGION_LIST, Map.of())).block().payload().get("regions")).get(0);
+
+        assertThat(region.containsKey("attention")).isFalse();
+    }
+
+    @Test
     void regionDevicesRejectRegionOutsideCurrentOfficeIdentity() {
         ObservationAdapter upstream = request -> Mono.just(ObservationResponse.available(Map.of(
                 "regions", List.of(Map.of("id", "region-a", "name", "一号楼")))));
@@ -121,10 +154,14 @@ class CompanyOfficeObservationAdapterContractTest {
 
     private static final class MemorySeenStore implements RegionSeenStore {
         private String markedRegion;
+        private Instant seenAt;
 
         @Override public void markSeen(String tenantCode, String ownerKey, String regionId, Instant at) {
             markedRegion = regionId;
+            seenAt = at;
         }
-        @Override public Optional<Instant> seenAt(String tenantCode, String ownerKey, String regionId) { return Optional.empty(); }
+        @Override public Optional<Instant> seenAt(String tenantCode, String ownerKey, String regionId) {
+            return "office-a".equals(regionId) && seenAt != null ? Optional.of(seenAt) : Optional.empty();
+        }
     }
 }

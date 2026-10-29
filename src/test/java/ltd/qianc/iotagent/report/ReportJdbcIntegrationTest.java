@@ -1,0 +1,91 @@
+package ltd.qianc.iotagent.report;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import ltd.qianc.iotagent.conversation.ReportGenerationPort;
+import ltd.qianc.iotagent.iot.AuthorizedDevice;
+import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
+import ltd.qianc.iotagent.iot.IotAdapter;
+import ltd.qianc.iotagent.iot.IotSource;
+import ltd.qianc.iotagent.iot.RequestIdentity;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import reactor.core.publisher.Mono;
+
+/** Optional local MySQL evidence for durable report facts and idempotency across service reconstruction. */
+@SpringBootTest(properties = {
+        "agent.storage.mysql.enabled=true",
+        "agent.storage.redis.enabled=false",
+        "iot.identity.verify=false"
+})
+@EnabledIfEnvironmentVariable(named = "AGENT_MYSQL_URL", matches = ".+")
+class ReportJdbcIntegrationTest {
+    private final RequestIdentity identity = new RequestIdentity("Bearer report-jdbc", "REPORT_JDBC_TEST",
+            IotSource.COMPANY, "owner-report-jdbc");
+
+    @Autowired
+    private ReportFactStore facts;
+
+    @Autowired
+    private ObjectMapper mapper;
+
+    @Test
+    void mysqlFactSurvivesServiceReconstructionAndDuplicateRequestsRemainOriginal() {
+        IotAdapter scope = new FixtureScope();
+        String conversation = "conversation-" + UUID.randomUUID();
+        String turn = "turn-" + UUID.randomUUID();
+        String request = "request-" + UUID.randomUUID();
+
+        ReportGenerationPort.GeneratedReport first = ReportGenerationServiceFactory.local(facts, mapper, scope)
+                .generate(identity, conversation, turn, request, content("completed"));
+        assertThat(facts.find(first.reportId())).isPresent();
+
+        ReportGenerationPort.GeneratedReport afterRestart = ReportGenerationServiceFactory.local(facts, mapper, scope)
+                .generate(identity, conversation, turn, request, content("failed"));
+        assertThat(afterRestart.reused()).isTrue();
+        assertThat(afterRestart.report()).containsEntry("status", "completed");
+        assertThat(facts.find(first.reportId()).orElseThrow().payloadJson())
+                .isEqualTo(facts.find(afterRestart.reportId()).orElseThrow().payloadJson());
+    }
+
+    private static Map<String, Object> content(String status) {
+        Map<String, Object> meter = Map.of("id", "meter-jdbc");
+        Map<String, Object> nested = new LinkedHashMap<>();
+        nested.put("authorizationMeterIds", List.of("meter-jdbc"));
+        nested.put("meters", new ArrayList<>(List.of(meter)));
+        Map<String, Object> block = new LinkedHashMap<>();
+        block.put("type", "meter_report");
+        block.put("report", nested);
+        Map<String, Object> report = new LinkedHashMap<>();
+        report.put("title", "JDBC report");
+        report.put("status", status);
+        report.put("blocks", new ArrayList<>(List.of(block)));
+        return report;
+    }
+
+    private static final class FixtureScope implements IotAdapter {
+        @Override
+        public Mono<AuthorizedDeviceScope> loadAuthorizedDeviceScope(RequestIdentity request) {
+            return Mono.just(new AuthorizedDeviceScope() {
+                @Override
+                public RequestIdentity identity() { return request; }
+
+                @Override
+                public IotSource source() { return IotSource.COMPANY; }
+
+                @Override
+                public List<AuthorizedDevice> devices() {
+                    return List.of(new AuthorizedDevice("meter-jdbc", "energy", "JDBC meter", "Building", false));
+                }
+            });
+        }
+    }
+}
