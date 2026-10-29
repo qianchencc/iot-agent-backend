@@ -4,13 +4,13 @@
 
 **Blocked by:** 11: Company 多源设备目录与 Control Reference；12: Dashboard 与 Region 本地组合；13: Task Change 与 Cancellation Durable Domain；14: Report Artifact 与 PDF/XLSX；15: Video Live 与 Playback；16: Admin Apply 与 Pi Session 运维边界
 
-**Status:** blocked-by-phase-2-slices
+**Status:** blocked-by-residual-parity
 
-- [ ] 66 paths / 69 operations 的请求、Header、source、状态码、错误体和 NDJSON 行为 gate 通过。
+- [x] 66 paths / 69 operations 的请求、Header、source、状态码、错误体和 NDJSON 行为 gate 通过。
 - [ ] Conversation、Draft、Task、Plan、Phase、Notification、Report、Audit 和 Admin facts 完成 Runtime → MySQL 映射并支持恢复。
-- [ ] Pi Session backup/restore/integrity/capacity evidence 可复核。
-- [ ] 只读 shadow 可对照，不允许 control/scanner/notification 双跑、双写或影子执行。
-- [ ] 生产默认 fail-closed，所有生产写入和切换仍需独立审批。
+- [x] Pi Session backup/restore/integrity/capacity evidence 可复核。
+- [x] 只读 shadow 可对照，不允许 control/scanner/notification 双跑、双写或影子执行。
+- [x] 生产默认 fail-closed，所有生产写入和切换仍需独立审批。
 - [ ] 形成切换窗口、监控、停止条件、回滚和生产权限清单；本票不执行云端部署或切换。
 
 ## Comments
