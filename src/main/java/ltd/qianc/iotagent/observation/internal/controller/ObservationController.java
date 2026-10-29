@@ -2,7 +2,9 @@ package ltd.qianc.iotagent.observation.internal.controller;
 
 import jakarta.servlet.http.HttpServletRequest;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -11,6 +13,7 @@ import java.util.Set;
 import ltd.qianc.iotagent.error.BusinessException;
 import ltd.qianc.iotagent.auth.PrincipalInfo;
 import ltd.qianc.iotagent.auth.PrincipalContext;
+import ltd.qianc.iotagent.iot.IotAdapter;
 import ltd.qianc.iotagent.iot.IotSource;
 import ltd.qianc.iotagent.iot.ObservationAdapter;
 import ltd.qianc.iotagent.iot.ObservationOperation;
@@ -19,7 +22,9 @@ import ltd.qianc.iotagent.iot.ObservationResponse;
 import ltd.qianc.iotagent.iot.ObservationStatus;
 import ltd.qianc.iotagent.iot.ObservationUnavailableException;
 import ltd.qianc.iotagent.iot.RequestIdentity;
-import ltd.qianc.iotagent.iot.ReportDownload;
+import ltd.qianc.iotagent.iot.VideoPlaybackWindow;
+import ltd.qianc.iotagent.iot.VideoStream;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
@@ -38,9 +43,16 @@ import org.springframework.web.bind.annotation.RestController;
 public final class ObservationController {
     private static final Duration ADAPTER_TIMEOUT = Duration.ofSeconds(30);
     private final ObservationAdapter adapter;
+    private final IotAdapter iotAdapter;
 
     public ObservationController(ObservationAdapter adapter) {
+        this(adapter, null);
+    }
+
+    @Autowired
+    public ObservationController(ObservationAdapter adapter, IotAdapter iotAdapter) {
         this.adapter = adapter;
+        this.iotAdapter = iotAdapter;
     }
 
     @GetMapping("/dashboard")
@@ -166,52 +178,62 @@ public final class ObservationController {
 
     @GetMapping("/devices/{id}/video-stream")
     public ResponseEntity<?> videoStream(HttpServletRequest request, @PathVariable String id) {
-        String source = request.getParameter("source");
         String mode = valueOr(request, "mode", "live");
-        if (!mode.equals("live") && !mode.equals("playback")) return error(400, "INVALID_VIDEO_WINDOW", "请明确录像模式");
-        if (source == null && mode.equals("live")) source = "office";
-        if (source == null || !List.of("office", "company").contains(source)) {
+        ResponseEntity<?> duplicate = rejectDuplicates(request, "INVALID_VIDEO_WINDOW", "查询参数不可重复",
+                "source", "mode", "beginTime", "endTime");
+        if (duplicate != null) return duplicate;
+        String source = request.getParameter("source");
+        if (!mode.equals("live") && !mode.equals("playback")) {
+            return error(400, "INVALID_VIDEO_WINDOW", "请明确录像模式");
+        }
+        if (mode.equals("live")) {
+            if (source == null) source = "office";
+            if (request.getParameter("beginTime") != null || request.getParameter("endTime") != null) {
+                return error(400, "INVALID_VIDEO_WINDOW", "直播模式不可带录像时间窗口");
+            }
+        } else {
+            if (source == null || request.getParameter("beginTime") == null || request.getParameter("endTime") == null
+                    || !validPlaybackWindow(request.getParameter("beginTime"), request.getParameter("endTime"))) {
+                return error(400, "INVALID_VIDEO_WINDOW", "录像窗口须带时区，结束晚于开始，单次最多三天");
+            }
+        }
+        if (!List.of("office", "company").contains(source)) {
             return error(404, "VIDEO_SOURCE_UNAVAILABLE", "视频来源不可用");
         }
-        ResponseEntity<?> duplicate = rejectDuplicates(request, "INVALID_VIDEO_WINDOW", "查询参数不可重复", "source", "mode", "beginTime", "endTime");
-        if (duplicate != null) return duplicate;
-        if (mode.equals("playback") && (request.getParameter("beginTime") == null || request.getParameter("endTime") == null)) {
-            return error(400, "INVALID_VIDEO_WINDOW", "录像窗口须带时区，结束晚于开始，单次最多三天");
-        }
-        if (mode.equals("playback") && !validPlaybackWindow(request.getParameter("beginTime"), request.getParameter("endTime"))) {
-            return error(400, "INVALID_VIDEO_WINDOW", "录像窗口须带时区，结束晚于开始，单次最多三天");
-        }
-
-        return read(request, ObservationOperation.VIDEO_STREAM, Map.of("id", id));
-    }
-
-    @GetMapping("/reports/{id}")
-    public ResponseEntity<?> report(HttpServletRequest request, @PathVariable String id) {
-        ResponseEntity<?> source = requireCompanySource(request, "REPORT_NOT_FOUND", "报告不存在或没有查看权限");
-        if (source != null) return source;
-        return read(request, ObservationOperation.REPORT, Map.of("id", id));
-    }
-
-    @GetMapping("/reports/{id}/download")
-    public ResponseEntity<?> reportDownload(HttpServletRequest request, @PathVariable String id) {
-        ResponseEntity<?> source = requireCompanySource(request, "REPORT_NOT_FOUND", "报告不存在或没有查看权限");
-        if (source != null) return source;
-        String format = valueOr(request, "format", "pdf");
-        if (!format.equals("pdf") && !format.equals("xlsx")) return error(400, "REPORT_FORMAT_UNSUPPORTED", "不支持的导出格式，请选择 PDF 或表格");
-        RequestIdentity identity = identity(request, IotSource.COMPANY);
+        VideoPlaybackWindow playback = mode.equals("playback")
+                ? normalizedPlaybackWindow(request.getParameter("beginTime"), request.getParameter("endTime")) : null;
+        if (iotAdapter == null) return read(request, ObservationOperation.VIDEO_STREAM, Map.of("id", id));
+        IotSource parsedSource = IotSource.parse(source);
+        RequestIdentity identity = identity(request, parsedSource);
         try {
-            ReportDownload result = adapter.download(new ObservationRequest(identity, ObservationOperation.REPORT_DOWNLOAD,
-                    parameters(request, ObservationOperation.REPORT_DOWNLOAD, Map.of("id", id, "format", format)))).block(ADAPTER_TIMEOUT);
-            if (result == null) throw new ObservationUnavailableException("报告下载适配器返回空结果");
-            return ResponseEntity.ok().header(HttpHeaders.CACHE_CONTROL, "no-store")
-                    .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + result.filename() + "\"")
-                    .contentType(MediaType.parseMediaType(result.contentType())).body(result.content());
+            VideoStream stream = playback != null
+                    ? iotAdapter.openVideoPlayback(identity, id, playback).block(ADAPTER_TIMEOUT)
+                    : iotAdapter.openVideoStream(identity, id).block(ADAPTER_TIMEOUT);
+            if (stream == null) {
+                String code = mode.equals("playback") ? "VIDEO_RECORDING_UNAVAILABLE" : "VIDEO_STREAM_UNAVAILABLE";
+                String message = mode.equals("playback")
+                        ? "所选设备或录像窗口未取得可播放流，请调整窗口或稍后重试"
+                        : "视频设备不存在或暂时无法取流";
+                throw new BusinessException(code, message, 404);
+            }
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("deviceId", id);
+            body.put("name", stream.name());
+            body.put("mode", mode);
+            if (playback != null) {
+                body.put("beginTime", playback.beginTime());
+                body.put("endTime", playback.endTime());
+            }
+            body.put("url", stream.url());
+            body.put("fetchedAt", Instant.now().toString());
+            return ResponseEntity.ok().header(HttpHeaders.CACHE_CONTROL, "no-store, private").body(body);
         } catch (BusinessException failure) {
             throw failure;
         } catch (RuntimeException failure) {
-            throw new ObservationUnavailableException("报告下载读取失败");
+            throw new ObservationUnavailableException("视频取流读取失败");
         }
     }
+
 
     private ResponseEntity<?> companyEnergyRead(HttpServletRequest request, ObservationOperation operation) {
         ResponseEntity<?> source = requireCompanySource(request, "ENERGY_SOURCE_UNAVAILABLE", "计量观察仅支持公司来源");
@@ -329,6 +351,15 @@ public final class ObservationController {
         } catch (RuntimeException ignored) {
             return false;
         }
+    }
+
+    private static VideoPlaybackWindow normalizedPlaybackWindow(String begin, String end) {
+        DateTimeFormatter runtimeFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSXXX");
+        return new VideoPlaybackWindow(
+                OffsetDateTime.parse(begin, DateTimeFormatter.ISO_OFFSET_DATE_TIME)
+                        .withOffsetSameInstant(ZoneOffset.ofHours(8)).format(runtimeFormat),
+                OffsetDateTime.parse(end, DateTimeFormatter.ISO_OFFSET_DATE_TIME)
+                        .withOffsetSameInstant(ZoneOffset.ofHours(8)).format(runtimeFormat));
     }
 
     private static Map<String, String> parameters(

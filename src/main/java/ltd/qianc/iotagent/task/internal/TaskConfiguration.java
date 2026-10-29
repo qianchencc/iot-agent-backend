@@ -12,6 +12,14 @@ import ltd.qianc.iotagent.task.TaskProjectionStore;
 import ltd.qianc.iotagent.task.TaskProposalStore;
 import ltd.qianc.iotagent.task.TaskScheduler;
 import ltd.qianc.iotagent.task.TaskScanner;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import ltd.qianc.iotagent.iot.IotAdapter;
+import ltd.qianc.iotagent.auth.PrincipalInfo;
+import ltd.qianc.iotagent.iot.AutomationSummaryReader;
+import ltd.qianc.iotagent.iot.RequestIdentity;
+import reactor.core.publisher.Mono;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Configuration;
@@ -49,13 +57,27 @@ public class TaskConfiguration {
     TaskExecutionGateway taskExecutionGateway() { return new FailClosedTaskExecutionGateway("任务执行适配器未配置"); }
     @Bean @ConditionalOnMissingBean(TaskProjectionStore.class)
     TaskProjectionStore taskProjectionStore() { return new FailClosedTaskProjectionStore("任务时间轴与日历存储未配置"); }
+    @Bean
+    @ConditionalOnMissingBean(AutomationSummaryReader.class)
+    AutomationSummaryReader automationSummaryReader(TaskProjectionStore projections) {
+        return identity -> Mono.fromCallable(() -> {
+            PrincipalInfo principal = new PrincipalInfo(identity.authorization(), identity.tenantCode());
+            List<Map<String, Object>> rows = projections.list(principal, identity.source().wireValue(), null, null);
+            Map<String, Object> summary = new LinkedHashMap<>();
+            summary.put("enabledPlans", null);
+            summary.put("active", rows.stream().filter(row -> "EXECUTING".equalsIgnoreCase(String.valueOf(row.get("status")))).count());
+            summary.put("upcoming", rows.stream().filter(row -> "SCHEDULED".equalsIgnoreCase(String.valueOf(row.get("status")))).limit(3).toList());
+            summary.put("latestResults", rows.stream().filter(row -> row.containsKey("report") || row.containsKey("reportId")).limit(3).toList());
+            return summary;
+        });
+    }
     @Bean @ConditionalOnMissingBean(TaskScheduler.class)
     TaskScheduler taskScheduler() { return new FailClosedTaskScheduler("任务调度器未配置"); }
 
     @Bean
     TaskFacade taskFacade(ObjectMapper mapper, TaskFactStore tasks, TaskProposalStore proposals, TaskPlanStore plans,
-                          TaskNotificationStore notifications, TaskScheduler scheduler) {
-        return new TaskFacade(mapper, tasks, proposals, plans, notifications, scheduler, Clock.systemUTC());
+                          TaskNotificationStore notifications, TaskScheduler scheduler, TaskPhaseStore phases, IotAdapter iot) {
+        return new TaskFacade(mapper, tasks, proposals, plans, notifications, scheduler, phases, iot, Clock.systemUTC());
     }
     @Bean
     TaskScanner taskScanner(TaskPhaseStore phases, TaskFactStore tasks, TaskExecutionGateway gateway,

@@ -72,21 +72,41 @@ public final class TaskController {
         return facade.proposalView(facade.discard(PrincipalContext.getPrincipalInfo(), id, version(body)));
     }
 
+    @GetMapping("/task-changes/{id}")
+    public Map<String, Object> taskChange(@PathVariable String id) {
+        return facade.proposalView(facade.proposal(PrincipalContext.getPrincipalInfo(), id));
+    }
+    @GetMapping("/task-cancellations/{id}")
+    public Map<String, Object> taskCancellation(@PathVariable String id) {
+        return facade.proposalView(facade.proposal(PrincipalContext.getPrincipalInfo(), id));
+    }
+    @PostMapping("/task-changes")
+    public Map<String, Object> proposeTaskChange(@RequestBody Map<String, Object> body) {
+        TaskProposalFact proposal = facade.proposeChange(PrincipalContext.getPrincipalInfo(), text(body, "source", "office"),
+                text(body, "conversationId", ""), text(body, "turnId", ""), json(body), text(body, "idempotencyKey", ""));
+        return facade.proposalView(proposal);
+    }
     @PostMapping("/task-changes/{id}/confirm")
-    public Map<String, Object> confirmTaskChange(@PathVariable String id) {
-        throw unsupportedTaskChange();
+    public Map<String, Object> confirmTaskChange(@PathVariable String id, @RequestBody(required = false) Map<String, Object> body) {
+        return facade.confirmChange(PrincipalContext.getPrincipalInfo(), id, versionOrDefault(body));
     }
     @PostMapping("/task-changes/{id}/discard")
-    public Map<String, Object> discardTaskChange(@PathVariable String id) {
-        throw unsupportedTaskChange();
+    public Map<String, Object> discardTaskChange(@PathVariable String id, @RequestBody(required = false) Map<String, Object> body) {
+        return facade.proposalView(facade.discardChange(PrincipalContext.getPrincipalInfo(), id, versionOrDefault(body)));
+    }
+    @PostMapping("/task-cancellations")
+    public Map<String, Object> proposeTaskCancellation(@RequestBody Map<String, Object> body) {
+        TaskProposalFact proposal = facade.proposeCancellation(PrincipalContext.getPrincipalInfo(), text(body, "source", "office"),
+                text(body, "conversationId", ""), text(body, "turnId", ""), json(body), text(body, "idempotencyKey", ""));
+        return facade.proposalView(proposal);
     }
     @PostMapping("/task-cancellations/{id}/confirm")
-    public Map<String, Object> confirmTaskCancellation(@PathVariable String id) {
-        throw unsupportedTaskCancellation();
+    public Map<String, Object> confirmTaskCancellation(@PathVariable String id, @RequestBody(required = false) Map<String, Object> body) {
+        return facade.confirmCancellation(PrincipalContext.getPrincipalInfo(), id, versionOrDefault(body));
     }
     @PostMapping("/task-cancellations/{id}/discard")
-    public Map<String, Object> discardTaskCancellation(@PathVariable String id) {
-        throw unsupportedTaskCancellation();
+    public Map<String, Object> discardTaskCancellation(@PathVariable String id, @RequestBody(required = false) Map<String, Object> body) {
+        return facade.proposalView(facade.discardCancellation(PrincipalContext.getPrincipalInfo(), id, versionOrDefault(body)));
     }
 
 
@@ -220,6 +240,10 @@ public final class TaskController {
         if (!(value instanceof Number number) || number.longValue() < 1) throw new IllegalArgumentException("version is required");
         return number.longValue();
     }
+    private static long versionOrDefault(Map<String, Object> body) {
+        Object value = body == null ? null : body.get("version");
+        return value instanceof Number number && number.longValue() >= 1 ? number.longValue() : 1L;
+    }
     private static Map<String, Object> stateView(String id, Object raw) {
         Map<String, Object> view = new LinkedHashMap<>();
         view.put("id", id);
@@ -235,11 +259,5 @@ public final class TaskController {
     private static IotSource parseSource(String value) {
         try { return IotSource.parse(value == null ? "office" : value); }
         catch (RuntimeException error) { throw new BusinessException("INVALID_AGENT_SOURCE", "Agent 来源无效", 400); }
-    }
-    private static BusinessException unsupportedTaskChange() {
-        return new BusinessException("TASK_CHANGE_UNAVAILABLE", "任务修改暂未接入，未执行任何变更", 503);
-    }
-    private static BusinessException unsupportedTaskCancellation() {
-        return new BusinessException("TASK_CANCELLATION_UNAVAILABLE", "任务取消提案暂未接入，未执行任何变更", 503);
     }
 }

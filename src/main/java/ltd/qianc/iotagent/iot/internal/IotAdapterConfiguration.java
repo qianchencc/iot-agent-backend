@@ -44,6 +44,7 @@ public class IotAdapterConfiguration {
             @Value("${iot.gateway.company-ac-area-path:/micro-api/api/office/app/device/ac/myAreaList}") String companyAcAreaPath,
             @Value("${iot.gateway.company-ac-device-path:/micro-api/api/office/app/device/ac/devicePage}") String companyAcDevicePath,
             @Value("${iot.gateway.company-ac-binding-path:/micro-api/api/iot-center/device/page}") String companyAcBindingPath,
+            @Value("${iot.gateway.company-monitor-down-path:/micro-api/api/office/app/device/monitor/down}") String companyMonitorDownPath,
             @Value("${iot.gateway.call-timeout-ms:30000}") long timeoutMs) {
         if (officePath == null || officePath.isBlank()) {
             return IotAdapterFactory.failClosed("物联 Office 授权设备范围路径未配置");
@@ -64,7 +65,8 @@ public class IotAdapterConfiguration {
                             IotGatewayRoutes.runtimeOfficeSources(acPath, lightingPath, accessPath, videoPath,
                                     acAssociationPath, lightingAssociationPath, accessAssociationPath),
                             companyEnvironmentPath, companyEnergyPath, companySafetyPath, companySafetyDetailPath,
-                            companySmartBasePath, companyAcAreaPath, companyAcDevicePath, companyAcBindingPath),
+                            companySmartBasePath, companyAcAreaPath, companyAcDevicePath, companyAcBindingPath,
+                            companyMonitorDownPath),
                     Duration.ofMillis(timeoutMs),
                     IotCallPolicy.passThrough());
         } catch (RuntimeException invalidConfiguration) {

@@ -17,7 +17,20 @@ public record IotGatewayRoutes(
         String companySmartBasePath,
         String companyAcAreaPath,
         String companyAcDevicePath,
-        String companyAcBindingPath) {
+        String companyAcBindingPath,
+        String companyMonitorDownPath) {
+
+    /** Compatibility constructor for existing route callers. */
+    public IotGatewayRoutes(String officeScopePath, String companyScopePath, String officeMembershipPath,
+                            List<OfficeDeviceSource> officeDeviceSources, String companyEnvironmentPath,
+                            String companyEnergyPath, String companySafetyPath, String companySafetyDetailPath,
+                            String companySmartBasePath, String companyAcAreaPath, String companyAcDevicePath,
+                            String companyAcBindingPath) {
+        this(officeScopePath, companyScopePath, officeMembershipPath, officeDeviceSources,
+                companyEnvironmentPath, companyEnergyPath, companySafetyPath, companySafetyDetailPath,
+                companySmartBasePath, companyAcAreaPath, companyAcDevicePath, companyAcBindingPath,
+                "/micro-api/api/office/app/device/monitor/down");
+    }
 
     public IotGatewayRoutes(String officeScopePath, String companyScopePath) {
         this(officeScopePath, companyScopePath, null, List.of(), null, null, null, null, null, null, null, null);
@@ -40,6 +53,7 @@ public record IotGatewayRoutes(
         companyAcAreaPath = optionalPath(companyAcAreaPath, "companyAcAreaPath");
         companyAcDevicePath = optionalPath(companyAcDevicePath, "companyAcDevicePath");
         companyAcBindingPath = optionalPath(companyAcBindingPath, "companyAcBindingPath");
+        companyMonitorDownPath = optionalPath(companyMonitorDownPath, "companyMonitorDownPath");
     }
 
     public String path(IotSource source) {

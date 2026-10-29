@@ -4,14 +4,14 @@
 
 **Blocked by:** 11: Company 多源设备目录与 Control Reference
 
-**Status:** ready-for-agent
+**Status:** implemented-local (Runtime protocol adapter and route validation are complete; real video decode remains external acceptance)
 
-- [ ] Company monitor scope 使用当前 video-only authorized catalog 和 monitorAreaDeviceId。
-- [ ] Office live 使用 Runtime-derived hub/action binding；Company live 使用 monitor/down payload。
-- [ ] playback 使用 Runtime playback action、时区校验、开始/结束顺序和三天上限。
-- [ ] 返回 no-store、授权失败、来源错误、窗口错误、上游 busy/unavailable 的 Runtime 语义。
-- [ ] 任何旧 scope、旧 URL、客户端 hubDeviceId 或越权设备都不能复用。
-- [ ] 迁移 Runtime company-video-scope、video-playback、company-smart-devices fixture tests；不宣称真实视频解码通过。
+- [x] Company monitor scope 使用当前 video-only authorized catalog 和 monitorAreaDeviceId。
+- [x] Office live 使用 Runtime-derived hub/action binding；Company live 使用 monitor/down payload。
+- [x] playback 使用 Runtime playback action、时区校验、开始/结束顺序和三天上限。
+- [x] 返回 no-store、授权失败、来源错误、窗口错误、上游 busy/unavailable 的 Runtime 语义。
+- [x] 任何旧 scope、旧 URL、客户端 hubDeviceId 或越权设备都不能复用。
+- [x] 迁移 Runtime company-video-scope、video-playback、company-smart-devices fixture tests；不宣称真实视频解码通过。
 
 ## Comments
 

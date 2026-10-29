@@ -4,14 +4,14 @@
 
 **Blocked by:** 03: MySQL / Redis 业务事实基础设施；04: Conversation 与 Pi Agent 生产闭环；09: Admin、模型配置与运维边界
 
-**Status:** ready-for-agent
+**Status:** implemented-local (Admin apply, fail-closed supervisor handoff, Pi Session local/sidecar seam and SQLite operations are wired)
 
-- [ ] Admin apply 在 active run、execution summary、executing draft 或 task phase 存在时拒绝。
-- [ ] apply 只在受监督进程 handoff 成功后返回成功；未接入 supervisor 时保持明确 fail-closed。
-- [ ] Node sidecar session SQLite 的路径、writer lease recovery、online backup、restore、quick_check 和容量检查可执行。
-- [ ] Java MySQL 业务事实与 Pi Session SQLite 的权威边界明确，不互相冒充。
-- [ ] healthz、备份和恢复检查不返回 secret、token、URL 或内部授权键。
-- [ ] 使用 Runtime admin-apply、session-writer-recovery 和本地部署 procedure 做 contract verification。
+- [x] Admin apply 在 active run、execution summary、executing draft 或 task phase 存在时拒绝。
+- [x] apply 只在受监督进程 handoff 成功后返回成功；未接入 supervisor 时保持明确 fail-closed。
+- [x] Node sidecar session SQLite 的路径、writer lease recovery、online backup、restore、quick_check 和容量检查可执行。
+- [x] Java MySQL 业务事实与 Pi Session SQLite 的权威边界明确，不互相冒充。
+- [x] healthz、备份和恢复检查不返回 secret、token、URL 或内部授权键。
+- [x] 使用 Runtime admin-apply、session-writer-recovery 和本地部署 procedure 做 contract verification。
 
 ## Comments
 

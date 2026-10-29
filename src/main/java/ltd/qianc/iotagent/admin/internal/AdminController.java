@@ -4,6 +4,8 @@ import jakarta.servlet.http.HttpServletRequest;
 import ltd.qianc.iotagent.admin.AdminApplyCoordinator;
 import ltd.qianc.iotagent.admin.AdminConfigurationStore;
 import ltd.qianc.iotagent.admin.AdminPasswordPolicy;
+import ltd.qianc.iotagent.admin.PiSessionOperations;
+import ltd.qianc.iotagent.admin.PiSessionOperationsFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
@@ -30,6 +32,7 @@ public final class AdminController {
     private final String configuredPassword;
     private final Path passwordFile;
     private final boolean secureCookie;
+    private PiSessionOperations piSession = PiSessionOperationsFactory.failClosed("Pi Session sidecar not configured");
     @Value("${server.address:127.0.0.1}")
     private String deploymentHost;
     @Value("${server.port:3200}")
@@ -49,6 +52,11 @@ public final class AdminController {
         this.secureCookie = origin.startsWith("https:");
         this.configuredPassword = configuredPassword;
         this.passwordFile = Path.of(passwordFile);
+    }
+
+    @Autowired(required = false)
+    void setPiSessionOperations(PiSessionOperations operations) {
+        if (operations != null) this.piSession = operations;
     }
 
     @PostMapping("/login")
@@ -112,10 +120,51 @@ public final class AdminController {
 
     @PostMapping("/apply")
     public ResponseEntity<?> apply() {
-        if (!apply.enabled()) return error(409, "CONFIG_APPLY_UNAVAILABLE", "此部署未启用立即生效，请手动重启后端");
-        if (!store.pendingRestart()) return error(409, "CONFIG_NO_PENDING", "当前没有待生效的配置");
         AdminApplyCoordinator.ApplyResult result = apply.apply();
         return ResponseEntity.status(result.status()).body(Map.of("code", result.code(), "message", result.message()));
+    }
+
+    @PostMapping("/pi-session/capacity")
+    public ResponseEntity<?> piSessionCapacity() {
+        return operation(piSession.capacity());
+    }
+
+    @PostMapping({"/pi-session/integrity-check", "/pi-session/check"})
+    public ResponseEntity<?> piSessionIntegrity() {
+        return operation(piSession.integrityCheck());
+    }
+
+    @PostMapping("/pi-session/writer-lease/recover")
+    public ResponseEntity<?> piSessionWriterRecovery() {
+        return operation(piSession.recoverWriterLease());
+    }
+
+    @PostMapping("/pi-session/backup")
+    public ResponseEntity<?> piSessionBackup(@RequestBody(required = false) Map<String, Object> body) {
+        String destination = text(body, "destination");
+        Object force = body == null ? null : body.get("force");
+        if (destination == null || !(force instanceof Boolean)) {
+            return error(400, "PI_SESSION_INVALID", "备份参数无效");
+        }
+        try {
+            return operation(piSession.backup(localPath(destination), (Boolean) force));
+        } catch (IllegalArgumentException invalid) {
+            return error(400, "PI_SESSION_INVALID", "备份路径无效");
+        }
+    }
+
+    @PostMapping("/pi-session/restore")
+    public ResponseEntity<?> piSessionRestore(@RequestBody(required = false) Map<String, Object> body) {
+        String backup = text(body, "backup");
+        Object apply = body == null ? null : body.get("apply");
+        if (backup == null || !(apply instanceof Boolean)) {
+            return error(400, "PI_SESSION_INVALID", "恢复参数无效");
+        }
+        try {
+            return operation(piSession.restore(localPath(backup), (Boolean) apply));
+        } catch (IllegalArgumentException invalid) {
+            return error(400, "PI_SESSION_INVALID", "恢复路径无效");
+        }
     }
 
     @GetMapping("/changes")
@@ -184,6 +233,25 @@ public final class AdminController {
 
     private ResponseEntity<Map<String, Object>> error(int status, String code, String message) {
         return ResponseEntity.status(status).body(Map.of("code", code, "message", message));
+    }
+
+    private ResponseEntity<?> operation(PiSessionOperations.OperationResult result) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("code", result.code());
+        body.put("message", result.message());
+        Map<String, Object> details = new LinkedHashMap<>();
+        for (String key : new String[] {"status", "integrity", "freeBytes", "minimumFreeBytes", "applied", "recoveredLeases"}) {
+            Object value = result.details().get(key);
+            if (value instanceof String || value instanceof Number || value instanceof Boolean) details.put(key, value);
+        }
+        if (!details.isEmpty()) body.put("details", details);
+        return ResponseEntity.status(result.status()).body(body);
+    }
+
+    private static Path localPath(String value) {
+        Path path = Path.of(value).normalize();
+        if (!path.isAbsolute() || value.contains("://")) throw new IllegalArgumentException("path must be local");
+        return path;
     }
 
     private String cookie(String token, int maxAge) {

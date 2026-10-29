@@ -10,6 +10,8 @@ import ltd.qianc.iotagent.audit.AuditEventStore;
 import ltd.qianc.iotagent.conversation.ConversationEventStore;
 import ltd.qianc.iotagent.conversation.ConversationStore;
 import ltd.qianc.iotagent.report.ReportFactStore;
+import ltd.qianc.iotagent.region.RegionSeenStore;
+import ltd.qianc.iotagent.region.internal.JdbcRegionSeenStore;
 import ltd.qianc.iotagent.storage.RedisCoordinationStore;
 import ltd.qianc.iotagent.task.TaskFactStore;
 import ltd.qianc.iotagent.task.TaskNotificationStore;
@@ -133,6 +135,11 @@ public class StorageConfiguration {
     @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
     @ConditionalOnMissingBean(TaskProjectionStore.class)
     JdbcTaskProjectionStore jdbcTaskProjectionStore(JdbcTemplate jdbc, ObjectMapper mapper) { return new JdbcTaskProjectionStore(jdbc, mapper); }
+
+    @Bean
+    @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
+    @ConditionalOnMissingBean(RegionSeenStore.class)
+    JdbcRegionSeenStore jdbcRegionSeenStore(JdbcTemplate jdbc) { return new JdbcRegionSeenStore(jdbc); }
 
     @Bean
     @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")

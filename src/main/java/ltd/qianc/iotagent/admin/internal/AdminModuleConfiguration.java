@@ -5,6 +5,8 @@ import ltd.qianc.iotagent.admin.AdminApplyCoordinator;
 import ltd.qianc.iotagent.admin.AdminConfigurationStore;
 import ltd.qianc.iotagent.admin.AdminPasswordPolicy;
 import ltd.qianc.iotagent.admin.AdminWorkState;
+import ltd.qianc.iotagent.admin.PiSessionOperations;
+import ltd.qianc.iotagent.admin.PiSessionOperationsFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
@@ -14,6 +16,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.web.reactive.function.client.WebClient;
 
 import ltd.qianc.iotagent.admin.AdminConfigurationFactory;
 
@@ -86,6 +89,33 @@ public class AdminModuleConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
+    PiSessionOperations piSessionOperations(ObjectProvider<WebClient.Builder> builders,
+            @Value("${agent.bridge.base-url:}") String bridgeUrl,
+            @Value("${agent.bridge.token:${agent.bridge-token:}}") String bridgeToken,
+            @Value("${pi.session.local.enabled:false}") boolean localEnabled,
+            @Value("${pi.session.database-path:}") String localDatabase,
+            @Value("${pi.session.minimum-free-bytes:1}") long minimumFreeBytes) {
+        if (localEnabled && localDatabase != null && !localDatabase.isBlank()) {
+            try {
+                return PiSessionOperationsFactory.local(Path.of(localDatabase), Math.max(0, minimumFreeBytes));
+            } catch (RuntimeException ignored) {
+                return PiSessionOperationsFactory.failClosed("invalid local Pi Session configuration");
+            }
+        }
+        if (bridgeUrl == null || bridgeUrl.isBlank() || bridgeToken == null || bridgeToken.isBlank()) {
+            return PiSessionOperationsFactory.failClosed("Node sidecar bridge is not configured");
+        }
+        try {
+            WebClient.Builder builder = builders.getIfAvailable(WebClient::builder);
+            if (builder == null) return PiSessionOperationsFactory.failClosed("Node sidecar bridge is unavailable");
+            return PiSessionOperationsFactory.node(builder.baseUrl(bridgeUrl).build(), bridgeToken);
+        } catch (RuntimeException ignored) {
+            return PiSessionOperationsFactory.failClosed("Node sidecar bridge configuration is invalid");
+        }
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
     FilterRegistrationBean<AdminBoundaryFilter> adminBoundaryFilter(ObjectMapper mapper, AdminSessionManager sessions,
             @Value("${admin.origin:${ADMIN_ORIGIN:http://127.0.0.1:3200}}") String origin) {
         FilterRegistrationBean<AdminBoundaryFilter> registration = new FilterRegistrationBean<>(
@@ -106,11 +136,28 @@ public class AdminModuleConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    AdminApplyCoordinator adminApplyCoordinator(AdminConfigurationStore store, AdminWorkState workState) {
-        return () -> {
-            if (!store.pendingRestart()) return new AdminApplyCoordinator.ApplyResult(409, "CONFIG_NO_PENDING", "当前没有待生效的配置");
-            if (workState.busy()) return new AdminApplyCoordinator.ApplyResult(409, "CONFIG_APPLY_BUSY", workState.reason());
-            return new AdminApplyCoordinator.ApplyResult(503, "CONFIG_APPLY_UNAVAILABLE", "此部署未接入受监督的进程应用，请手动重启后端");
+    AdminApplyCoordinator adminApplyCoordinator(AdminConfigurationStore store, AdminWorkState workState,
+            ObjectProvider<WebClient.Builder> builders,
+            @Value("${admin.supervisor.url:}") String supervisorUrl,
+            @Value("${admin.supervisor.token:}") String supervisorToken) {
+        if (supervisorUrl != null && !supervisorUrl.isBlank() && supervisorToken != null && !supervisorToken.isBlank()) {
+            try {
+                WebClient.Builder builder = builders.getIfAvailable(WebClient::builder);
+                if (builder != null) {
+                    return new SupervisedAdminApplyCoordinator(store, workState,
+                            builder.baseUrl(supervisorUrl).build(), supervisorToken);
+                }
+            } catch (RuntimeException ignored) {
+                // Invalid supervisor configuration remains fail-closed.
+            }
+        }
+        return new AdminApplyCoordinator() {
+            @Override
+            public AdminApplyCoordinator.ApplyResult apply() {
+                if (!store.pendingRestart()) return new AdminApplyCoordinator.ApplyResult(409, "CONFIG_NO_PENDING", "当前没有待生效的配置");
+                if (workState.busy()) return new AdminApplyCoordinator.ApplyResult(409, "CONFIG_APPLY_BUSY", "当前有在途工作，请完成后再立即生效");
+                return new AdminApplyCoordinator.ApplyResult(503, "CONFIG_APPLY_UNAVAILABLE", "此部署未接入受监督的进程应用，请手动重启后端");
+            }
         };
     }
 

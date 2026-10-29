@@ -1,9 +1,12 @@
 package ltd.qianc.iotagent.iot;
 
-import java.util.Objects;
-import ltd.qianc.iotagent.iot.internal.FailClosedObservationAdapter;
+import java.time.Clock;
 import java.time.Duration;
+import java.util.Objects;
+import ltd.qianc.iotagent.iot.internal.CompanyOfficeObservationAdapter;
+import ltd.qianc.iotagent.iot.internal.FailClosedObservationAdapter;
 import ltd.qianc.iotagent.iot.internal.WebClientObservationAdapter;
+import ltd.qianc.iotagent.region.RegionSeenStore;
 import org.springframework.web.reactive.function.client.WebClient;
 
 /** Construction entry point for observation adapters; implementations stay internal. */
@@ -20,5 +23,15 @@ public final class ObservationAdapterFactory {
             Duration timeout,
             IotCallPolicy callPolicy) {
         return new WebClientObservationAdapter(webClient, routes, timeout, callPolicy);
+    }
+
+    /** Builds the local Company dashboard and Office region composition boundary. */
+    public static ObservationAdapter composed(
+            ObservationAdapter upstream,
+            IotAdapter iot,
+            AutomationSummaryReader automation,
+            RegionSeenStore regionSeen,
+            Clock clock) {
+        return new CompanyOfficeObservationAdapter(upstream, iot, automation, regionSeen, clock);
     }
 }

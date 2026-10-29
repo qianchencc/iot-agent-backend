@@ -107,6 +107,13 @@ CREATE TABLE IF NOT EXISTS task_proposals (
     status VARCHAR(32) NOT NULL,
     payload_json JSON NOT NULL,
     idempotency_key VARCHAR(256) NOT NULL,
+    kind VARCHAR(32) NOT NULL DEFAULT 'TASK',
+    target_json JSON NULL,
+    before_json JSON NULL,
+    after_json JSON NULL,
+    operation VARCHAR(32) NOT NULL DEFAULT 'create',
+    source VARCHAR(16) NOT NULL DEFAULT 'office',
+    expires_at DATETIME NULL,
     create_time DATETIME NOT NULL,
     update_time DATETIME NOT NULL,
     PRIMARY KEY (id), UNIQUE KEY uk_task_proposal_id (proposal_id),
@@ -175,4 +182,17 @@ CREATE TABLE IF NOT EXISTS task_notifications (
     PRIMARY KEY (id), UNIQUE KEY uk_task_notification_id (notification_id),
     UNIQUE KEY uk_task_notification_recipient (task_id, recipient_key),
     KEY ix_task_notification_inbox (tenant_code, recipient_key, source, ended_at)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS region_seen (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    tenant_code VARCHAR(128) NOT NULL,
+    owner_key CHAR(64) NOT NULL,
+    region_id VARCHAR(128) NOT NULL,
+    seen_at DATETIME NOT NULL,
+    create_time DATETIME NOT NULL,
+    update_time DATETIME NOT NULL,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_region_seen_owner (tenant_code, owner_key, region_id),
+    KEY ix_region_seen_lookup (tenant_code, owner_key, seen_at)
 ) ENGINE=InnoDB;

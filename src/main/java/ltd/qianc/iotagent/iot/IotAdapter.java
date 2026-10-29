@@ -23,4 +23,14 @@ public interface IotAdapter {
             RequestIdentity identity, DeviceCapabilityRequest request) {
         return Mono.error(new UpstreamUnavailableException("物联设备能力适配器未接入"));
     }
+    /** Opens a short-lived live stream from the current authorized video scope. */
+    default Mono<VideoStream> openVideoStream(RequestIdentity identity, String deviceId) {
+        return Mono.error(new UpstreamUnavailableException("物联视频取流适配器未接入"));
+    }
+
+    /** Opens a short-lived playback stream from the current authorized video scope. */
+    default Mono<VideoStream> openVideoPlayback(
+            RequestIdentity identity, String deviceId, VideoPlaybackWindow window) {
+        return Mono.error(new UpstreamUnavailableException("物联录像取流适配器未接入"));
+    }
 }

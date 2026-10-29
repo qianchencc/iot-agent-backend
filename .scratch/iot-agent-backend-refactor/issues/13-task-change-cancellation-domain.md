@@ -4,13 +4,13 @@
 
 **Blocked by:** 08: Task、Plan、Notification 与 Durable Scheduler；11: Company 多源设备目录与 Control Reference
 
-**Status:** ready-for-agent
+**Status:** implemented-local-partial (durable task/change/cancellation lifecycle is wired; occurrence edit/skip remains fail-closed because the current Java plan seam lacks an occurrence override mutation)
 
-- [ ] MySQL 保存 task change、task cancellation proposal、before/after、version、expiry、source、owner 和终态。
-- [ ] confirm/discard 具备 CAS、幂等回放、过期拒绝、授权范围复核和 Runtime 错误语义。
-- [ ] 已执行 phase 不可修改；未来 phase 可按 Runtime 规则更新、重排、跳过或取消。
+- [x] MySQL 保存 task change、task cancellation proposal、before/after、version、expiry、source、owner 和终态。
+- [x] confirm/discard 具备 CAS、幂等回放、过期拒绝、授权范围复核和 Runtime 错误语义。
+- [x] 已执行 phase 不可修改；未来 phase 可按 Runtime 规则更新、重排、跳过或取消。
 - [ ] 周期计划支持 occurrence edit/skip、pause/resume/delete，并保持 occurrence identity、历史报告和通知。
-- [ ] cancel 不会重新派发已终态阶段，重复 cancel 不重复写入或执行。
+- [x] cancel 不会重新派发已终态阶段，重复 cancel 不重复写入或执行。
 - [ ] 使用 Runtime task-reference-management、task-cancellation、task-plan-management fixture 迁移测试。
 
 ## Comments

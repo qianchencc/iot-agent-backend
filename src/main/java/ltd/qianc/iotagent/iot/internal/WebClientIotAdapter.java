@@ -1,6 +1,7 @@
 package ltd.qianc.iotagent.iot.internal;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -26,6 +27,9 @@ import ltd.qianc.iotagent.iot.IotSource;
 import ltd.qianc.iotagent.iot.OfficeDeviceSource;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.iot.UpstreamUnavailableException;
+import ltd.qianc.iotagent.iot.VideoPlaybackWindow;
+import ltd.qianc.iotagent.iot.VideoStream;
+import ltd.qianc.iotagent.iot.VideoStreamBusyException;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.web.reactive.function.client.ClientResponse;
 import org.springframework.web.reactive.function.client.WebClient;
@@ -38,12 +42,12 @@ import reactor.core.publisher.Mono;
  */
 public final class WebClientIotAdapter implements IotAdapter {
 
+    private static final ObjectMapper JSON = new ObjectMapper();
     private final WebClient webClient;
     private final IotGatewayRoutes routes;
     private final Duration callTimeout;
     private final Duration compositionTimeout;
     private final IotCallPolicy callPolicy;
-
     public WebClientIotAdapter(WebClient webClient, IotGatewayRoutes routes, Duration callTimeout, IotCallPolicy callPolicy) {
         this.webClient = Objects.requireNonNull(webClient, "webClient");
         this.routes = Objects.requireNonNull(routes, "routes");
@@ -129,6 +133,28 @@ public final class WebClientIotAdapter implements IotAdapter {
         }));
     }
 
+    @Override
+    public Mono<VideoStream> openVideoStream(RequestIdentity identity, String deviceId) {
+        Objects.requireNonNull(identity, "identity");
+        if (deviceId == null || deviceId.isBlank()) return Mono.empty();
+        Mono<VideoStream> request = identity.source() == IotSource.COMPANY
+                ? loadCompanyVideoScope(identity).flatMap(scope -> companyLive(scope, identity, deviceId))
+                : loadAuthorizedDeviceScope(identity).flatMap(scope -> officeLive(scope, identity, deviceId));
+        return execute("open " + identity.source().wireValue() + " video stream", request);
+    }
+
+    @Override
+    public Mono<VideoStream> openVideoPlayback(
+            RequestIdentity identity, String deviceId, VideoPlaybackWindow window) {
+        Objects.requireNonNull(identity, "identity");
+        Objects.requireNonNull(window, "window");
+        if (deviceId == null || deviceId.isBlank()) return Mono.empty();
+        Mono<VideoStream> request = (identity.source() == IotSource.COMPANY
+                ? loadCompanyVideoScope(identity) : loadAuthorizedDeviceScope(identity))
+                .flatMap(scope -> playback(scope, identity, deviceId, window));
+        return execute("open " + identity.source().wireValue() + " video playback", request);
+    }
+
     private Mono<AuthorizedDeviceScope> loadOfficeScope(RequestIdentity identity) {
         Mono<List<JsonNode>> membership = getJson(routes.officeMembershipPath(), Map.of(), identity)
                 .map(body -> contentArray(body, "读取 Office 成员范围"));
@@ -181,6 +207,11 @@ public final class WebClientIotAdapter implements IotAdapter {
             }
             return (AuthorizedDeviceScope) new AuthorizedDeviceScopeSnapshot(identity, List.copyOf(unique.values()));
         });
+    }
+
+    private Mono<AuthorizedDeviceScope> loadCompanyVideoScope(RequestIdentity identity) {
+        return collectCompanySmart(identity, "monitor")
+                .map(devices -> (AuthorizedDeviceScope) new AuthorizedDeviceScopeSnapshot(identity, devices));
     }
 
     private Mono<List<AuthorizedDevice>> collectCompanySmart(RequestIdentity identity, String family) {
@@ -297,6 +328,110 @@ public final class WebClientIotAdapter implements IotAdapter {
         return null;
     }
 
+    private Mono<VideoStream> officeLive(AuthorizedDeviceScope scope, RequestIdentity identity, String deviceId) {
+        AuthorizedDevice device = scope.device(deviceId).orElse(null);
+        if (device == null || !"video".equalsIgnoreCase(device.kind())) return Mono.empty();
+        String hub = device.hubDeviceId();
+        String code = metadataText(device, "code");
+        if (hub == null || code == null) return Mono.empty();
+        return page("/micro-api/api/iot-center/device/page", Map.of("code", code), identity)
+                .flatMap(rows -> {
+                    String action = rows.isEmpty() ? null : actionId(rows.get(0), "view");
+                    if (action == null) return Mono.empty();
+                    return postVideoAction(identity, hub, action, Map.of(), false, true)
+                            .map(url -> new VideoStream(device.name(), url));
+                });
+    }
+
+    private Mono<VideoStream> companyLive(AuthorizedDeviceScope scope, RequestIdentity identity, String deviceId) {
+        AuthorizedDevice device = scope.device(deviceId).orElse(null);
+        if (device == null || !"video".equalsIgnoreCase(device.kind()) || device.officeDeviceRef() == null
+                || routes.companyMonitorDownPath() == null) return Mono.empty();
+        return postVideoPath(identity, routes.companyMonitorDownPath(),
+                        Map.of("monitorAreaDeviceId", device.officeDeviceRef()), false, false)
+                .map(url -> new VideoStream(device.name(), url));
+    }
+
+    private Mono<VideoStream> playback(
+            AuthorizedDeviceScope scope, RequestIdentity identity, String deviceId, VideoPlaybackWindow window) {
+        AuthorizedDevice device = scope.device(deviceId).orElse(null);
+        if (device == null || !"video".equalsIgnoreCase(device.kind()) || device.hubDeviceId() == null) {
+            return Mono.empty();
+        }
+        String action = "bec190c9819348e08b203a95b7629ad8";
+        String path = "/micro-api/api/iot-center/interactive/{hub}/{action}/down";
+        return postVideoPath(identity, path, Map.of("beginTime", window.beginTime(), "endTime", window.endTime()),
+                        true, true, device.hubDeviceId(), action)
+                .map(url -> new VideoStream(device.name(), url));
+    }
+
+    private Mono<String> postVideoAction(
+            RequestIdentity identity, String hubDeviceId, String actionId, Map<String, Object> payload,
+            boolean playback, boolean failOnError) {
+        String path = "/micro-api/api/iot-center/interactive/{hub}/{action}/down";
+        return postVideoPath(identity, path, payload, playback, failOnError, hubDeviceId, actionId);
+    }
+
+    private Mono<String> postVideoPath(
+            RequestIdentity identity, String path, Map<String, ?> payload,
+            boolean playback, boolean failOnError, String... pathValues) {
+        return webClient.post().uri(builder -> {
+                    var uri = builder.path(path);
+                    return pathValues.length == 0 ? uri.build() : uri.build((Object[]) pathValues);
+                })
+                .headers(headers -> identity.gatewayHeaders().forEach(headers::set))
+                .bodyValue(payload)
+                .exchangeToMono(response -> decodeVideo(response, playback, failOnError))
+                .timeout(callTimeout);
+    }
+
+    private Mono<String> decodeVideo(ClientResponse response, boolean playback, boolean failOnError) {
+        int status = response.statusCode().value();
+        if (status == 401 || status == 403) {
+            return response.releaseBody().then(Mono.error(new GatewayAuthorizationException(status)));
+        }
+        if (!response.statusCode().is2xxSuccessful()) {
+            return response.releaseBody().then(failOnError
+                    ? Mono.error(new UpstreamUnavailableException("视频取流上游请求失败"))
+                    : Mono.empty());
+        }
+        return response.bodyToMono(JsonNode.class)
+                .switchIfEmpty(Mono.empty())
+                .flatMap(body -> {
+                    if (body == null || !body.isObject()) return failOnError
+                            ? Mono.error(new UpstreamUnavailableException("视频取流上游响应格式无效")) : Mono.empty();
+                    int code = body.path("code").asInt(-1);
+                    if (code == 401 || code == 403) return Mono.error(new GatewayAuthorizationException(code));
+                    if (playback && code == 207) return Mono.error(new VideoStreamBusyException());
+                    if (code != 0 && code != 200) return failOnError
+                            ? Mono.error(new UpstreamUnavailableException("视频取流上游返回失败")) : Mono.empty();
+                    JsonNode content = body.get("content");
+                    if (content != null && content.isTextual()) {
+                        try {
+                            content = JSON.readTree(content.asText());
+                        } catch (Exception malformed) {
+                            return failOnError ? Mono.error(new UpstreamUnavailableException("视频取流上游响应格式无效"))
+                                    : Mono.empty();
+                        }
+                    }
+                    String url = text(content, "url");
+                    if (!contentIsResult(content) || url == null || url.isBlank()
+                            || (playback && !(url.startsWith("ws://") || url.startsWith("wss://")))) {
+                        return Mono.empty();
+                    }
+                    return Mono.just(url);
+                });
+    }
+
+    private static boolean contentIsResult(JsonNode content) {
+        return content != null && content.isObject() && content.path("result").asBoolean(false);
+    }
+
+    private static String metadataText(AuthorizedDevice device, String key) {
+        Object value = device.metadata().get(key);
+        return value instanceof String text && !text.isBlank() ? text : null;
+    }
+
     private AuthorizedDevice parseEnvironmentObservation(JsonNode row) {
         String id = text(row, "id"), name = text(row, "name");
         if (id == null || name == null) throw new UpstreamUnavailableException("读取环境设备响应");
@@ -362,11 +497,12 @@ public final class WebClientIotAdapter implements IotAdapter {
 
     private AuthorizedDevice parseSmart(JsonNode row, String family, AreaLeaf leaf) {
         String id = text(row, "id", "officeDeviceRef"), hub = text(row, "hubDeviceId");
-        if (id == null || hub == null) throw new UpstreamUnavailableException("智慧设备缺少控制绑定");
+        String monitorReference = text(row, "monitorAreaDeviceId", "officeDeviceRef", "id");
+        if (id == null || hub == null || monitorReference == null) throw new UpstreamUnavailableException("智慧设备缺少控制绑定");
         String kind = "monitor".equals(family) ? "video" : family;
         String name = text(row, "name", "deviceName");
         return new AuthorizedDevice(id, kind, name == null ? kind : name, text(row, "installAddress", "installAddr"),
-                "video".equals(kind), "video".equals(kind) ? null : id, id, hub, leaf.code(),
+                "video".equals(kind), "video".equals(kind) ? null : id, monitorReference, hub, leaf.code(),
                 List.of(leaf.path()), Map.of());
     }
 
@@ -527,9 +663,12 @@ public final class WebClientIotAdapter implements IotAdapter {
         if (id == null || kind == null || name == null) throw new IllegalArgumentException("device identity is incomplete");
         if (address == null) address = officeName == null ? "" : officeName;
         boolean observationOnly = "video".equalsIgnoreCase(kind) || record.path("observationOnly").asBoolean(false);
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        putMetadata(metadata, "code", text(record, "code"));
+        putMetadata(metadata, "actionList", record.get("actionList"));
         return new AuthorizedDevice(id, kind, name, address, observationOnly,
                 text(record, "controlRef"), text(record, "officeDeviceRef", "id"), text(record, "hubDeviceId"),
-                text(record, "smartAreaCode"), List.of(), Map.of());
+                text(record, "smartAreaCode"), List.of(), metadata);
     }
 
     private DeviceCapabilityInspection.DeviceCapability capability(AuthorizedDevice device) {
