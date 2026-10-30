@@ -3,8 +3,8 @@ import { timingSafeEqual } from "node:crypto";
 import type { SidecarConfig } from "./config.js";
 import { AgentRunner } from "./agent.js";
 import { PiSessionStore } from "./session.js";
+import { createObservability, type Observability } from "./observability.js";
 import { redact, safeError } from "./redaction.js";
-
 interface ActiveRun {
   controller: AbortController;
   timeout: NodeJS.Timeout;
@@ -32,12 +32,14 @@ function invalid(reply: FastifyReply): void {
   reply.code(400).send({ error: "invalid_request" });
 }
 
-export function buildApp(config: SidecarConfig): FastifyInstance {
+export function buildApp(config: SidecarConfig, observability: Observability = createObservability()): FastifyInstance {
   const app = Fastify({ logger: false, bodyLimit: 1_048_576 });
   const sessions = new PiSessionStore(config);
-  const runner = new AgentRunner(config, sessions);
+  const runner = new AgentRunner(config, sessions, observability);
   const active = new Map<string, ActiveRun>();
-
+  app.addHook("onClose", async () => {
+    await observability.shutdown();
+  });
   app.addHook("preHandler", async (request, reply) => {
     const supervisorRequest = request.url === "/internal/admin/apply"
       && typeof request.headers["x-admin-supervisor-token"] === "string";

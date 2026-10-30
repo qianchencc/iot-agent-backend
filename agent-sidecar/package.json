@@ -17,7 +17,18 @@
     "@earendil-works/pi-agent-core": "0.84.4",
     "@earendil-works/pi-ai": "0.84.4",
     "@earendil-works/pi-session-backend-sqlite-node": "0.84.4",
+    "@langfuse/otel": "5.11.1",
+    "@langfuse/tracing": "5.11.1",
+    "@opentelemetry/sdk-node": "0.222.0",
     "fastify": "5.12.1"
+  },
+  "overrides": {
+    "@langfuse/core": "5.11.1",
+    "@opentelemetry/exporter-trace-otlp-http": "0.222.0",
+    "@opentelemetry/otlp-exporter-base": "0.222.0",
+    "@opentelemetry/otlp-transformer": "0.222.0",
+    "@opentelemetry/sdk-trace": "2.11.0",
+    "@opentelemetry/sdk-trace-base": "2.11.0"
   },
   "devDependencies": {
     "@types/node": "^22.19.0",

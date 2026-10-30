@@ -2,6 +2,7 @@ import { Agent, type AgentEvent, type AgentTool, type StreamFn } from "@earendil
 import { Type, type Model, type TSchema } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/api/openai-completions";
 import type { SidecarConfig } from "./config.js";
+import { traceStreamFn, type Observability } from "./observability.js";
 import type { PiSessionStore } from "./session.js";
 
 export interface RunRequest {
@@ -85,17 +86,19 @@ function modelFor(config: SidecarConfig): Model<"openai-completions"> {
     api: "openai-completions",
     provider: "iot-agent-sidecar",
     baseUrl: config.modelBaseUrl,
-    reasoning: false,
+    reasoning: true,
     input: ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: 128_000,
-    maxTokens: 4_096,
-    samplingParams: { instructions: "Use only the supplied business tools when evidence is required." },
+    maxTokens: 16_384,
+    samplingParams: {
+      instructions: "Use IoT tools only when they provide evidence needed for the current request. Answer, ask for needed information, or create a confirmable draft, then stop.",
+    },
     compat: {
-      supportsDeveloperRole: true,
-      supportsReasoningEffort: false,
+      supportsDeveloperRole: false,
+      supportsReasoningEffort: true,
       supportsUsageInStreaming: true,
-      maxTokensField: "max_tokens",
+      maxTokensField: "max_completion_tokens",
     },
   };
 }
@@ -233,7 +236,11 @@ function toolParameters(name: string): TSchema {
 }
 
 export class AgentRunner {
-  constructor(private readonly config: SidecarConfig, private readonly sessions: PiSessionStore) {}
+  constructor(
+    private readonly config: SidecarConfig,
+    private readonly sessions: PiSessionStore,
+    private readonly observability: Observability,
+  ) {}
 
   parseRequest(input: unknown): RunRequest { return validateRequest(input); }
 
@@ -244,24 +251,35 @@ export class AgentRunner {
     });
     await session.appendMessage({ role: "user", content: request.content, timestamp: Date.now() });
     const model = modelFor(this.config);
+    const trace = this.observability.startAgentRun({
+      conversationId: request.conversationId,
+      tenantCode: request.tenantCode,
+      content: request.content,
+    });
+    const observedEmit = (event: PublicEvent) => {
+      trace?.observeEvent(event);
+      emit(event);
+    };
     const state: { confirmation?: Record<string, unknown>; heldAssistantText: string; draftPublished: boolean } =
-        { heldAssistantText: "", draftPublished: false };
-    const tools = this.createTools(request, signal, emit, state);
+      { heldAssistantText: "", draftPublished: false };
+    let agentTurns = 0;
+    const tools = this.createTools(request, signal, observedEmit, state);
     const agent = new Agent({
       initialState: {
         model,
-        systemPrompt: "你是一个受控的物联助手。只基于工具返回的事实回答；涉及控制或任务时只能生成待确认草案。使用中文，简洁且不暴露内部凭据。",
-        thinkingLevel: "off",
+        systemPrompt: "你是一个受控的物联助手。只基于工具返回的事实回答。设备控制必须严格按：find_device_candidates 得到非空候选集 → read_device_states 使用候选集中的真实 candidateSetId/deviceIds → 仅在用户明确要求且设备可控时生成 propose_action_draft 待确认草案；不得发明设备ID、candidateSetId或kind，不得把空候选当作成功。候选为空时先修正检索词或向用户澄清；Company来源没有可控目录时如实说明不可用。检索时scopeText/scopeTerms只放地点条件，deviceText/nameHints只放设备名称或型号，不要把地点拼进设备名称。任何控制都不能在草案阶段直接执行。使用中文，简洁且不暴露内部凭据。",
+        thinkingLevel: this.config.thinkingLevel,
         tools,
       },
-      streamFn: streamSimple as StreamFn,
+      streamFn: traceStreamFn(streamSimple as StreamFn, trace),
       getApiKey: () => this.config.modelApiKey,
-      shouldStopAfterTurn: async () => true,
+      shouldStopAfterTurn: async ({ toolResults }) =>
+        toolResults.length === 0 || Boolean(state.confirmation) || ++agentTurns >= 8,
     });
     const detachAbort = () => agent.abort();
     signal.addEventListener("abort", detachAbort, { once: true });
     const unsubscribe = agent.subscribe(async (event, eventSignal) => {
-      this.publishAgentEvent(request, event, emit, state);
+      this.publishAgentEvent(request, event, emit, state, trace ? observedEvent => trace.observeEvent(observedEvent) : undefined);
       if (eventSignal.aborted) return;
     });
     try {
@@ -276,8 +294,17 @@ export class AgentRunner {
       const answer = messages
         .filter(message => message?.role === "assistant")
         .map(messageText).reverse().find(Boolean) || state.heldAssistantText;
-      if (answer) emit({ type: "message.completed", content: answer, phase: "final" });
-      return state.confirmation ? { terminal: "awaiting_confirmation", confirmation: state.confirmation } : { terminal: "completed" };
+      if (answer) observedEmit({ type: "message.completed", content: answer, phase: "final" });
+      const outcome = state.confirmation
+        ? { terminal: "awaiting_confirmation" as const, confirmation: state.confirmation }
+        : { terminal: "completed" as const };
+      trace?.finish({ result: outcome });
+      void this.observability.flush().catch(() => undefined);
+      return outcome;
+    } catch (error) {
+      trace?.finish({ error });
+      void this.observability.flush().catch(() => undefined);
+      throw error;
     } finally {
       unsubscribe();
       signal.removeEventListener("abort", detachAbort);
@@ -317,7 +344,7 @@ export class AgentRunner {
     const controller = new AbortController();
     const onAbort = () => controller.abort();
     signal.addEventListener("abort", onAbort, { once: true });
-    const timer = setTimeout(() => controller.abort(), 30_000);
+    const timer = setTimeout(() => controller.abort(), this.config.javaToolTimeoutMs);
     try {
       const response = await fetch(this.config.javaToolsUrl, {
         method: "POST",
@@ -340,9 +367,28 @@ export class AgentRunner {
       const result = await response.json().catch(() => null);
       if (!response.ok) {
         if (result && typeof result === "object" && "code" in result) return result;
-        throw new Error(`Java business tool returned HTTP ${response.status}`);
+        return {
+          ok: false,
+          status: "unavailable",
+          supported: false,
+          code: "AGENT_TOOL_UNAVAILABLE",
+          toolName,
+          message: `Java business tool returned HTTP ${response.status}`,
+        };
       }
       return result;
+    } catch (error) {
+      if (controller.signal.aborted && !signal.aborted) {
+        return {
+          ok: false,
+          status: "unavailable",
+          supported: false,
+          code: "AGENT_TOOL_TIMEOUT",
+          toolName,
+          message: "Java business tool timed out",
+        };
+      }
+      throw error;
     } finally {
       clearTimeout(timer);
       signal.removeEventListener("abort", onAbort);
@@ -354,7 +400,12 @@ export class AgentRunner {
     event: AgentEvent,
     emit: (event: PublicEvent) => void,
     state: { heldAssistantText: string; draftPublished: boolean },
+    observe?: (event: PublicEvent) => void,
   ): void {
+    const publish = (value: PublicEvent) => {
+      observe?.(value);
+      emit(value);
+    };
     switch (event.type) {
       case "message_update": {
         // Runtime contract: message.delta carries incremental text only. The SDK emits
@@ -366,19 +417,19 @@ export class AgentRunner {
           if (delta) {
             state.heldAssistantText += delta;
             state.draftPublished = true;
-            emit({ type: "message.delta", content: delta, phase: "draft" });
+            publish({ type: "message.delta", content: delta, phase: "draft" });
           }
         }
         break;
       }
       case "tool_execution_start":
-        emit({ type: "tool.started", tool: event.toolName, toolCallId: event.toolCallId, arguments: event.args });
+        publish({ type: "tool.started", tool: event.toolName, toolCallId: event.toolCallId, arguments: event.args });
         break;
       case "tool_execution_update":
-        emit({ type: "tool.progress", tool: event.toolName, toolCallId: event.toolCallId, details: event.partialResult });
+        publish({ type: "tool.progress", tool: event.toolName, toolCallId: event.toolCallId, details: event.partialResult });
         break;
       case "tool_execution_end":
-        emit({ type: "tool.completed", tool: event.toolName, toolCallId: event.toolCallId, status: event.isError ? "failed" : "completed" });
+        publish({ type: "tool.completed", tool: event.toolName, toolCallId: event.toolCallId, status: event.isError ? "failed" : "completed" });
         break;
       case "message_end": {
         // Only assistant messages carry public text; forwarding tool-result/user ends
@@ -387,16 +438,16 @@ export class AgentRunner {
         const hasToolCall = event.message.content.some(block => block.type === "toolCall");
         if (hasToolCall && state.draftPublished) {
           // 草稿随工具调用转为过程证据，前端折叠到处理记录而不是保留正文。
-          emit({ type: "message.reclassified", to: "process", content: state.heldAssistantText });
+          publish({ type: "message.reclassified", to: "process", content: state.heldAssistantText });
         } else if (!hasToolCall && state.heldAssistantText && !state.draftPublished) {
-          emit({ type: "message.delta", content: state.heldAssistantText, phase: "final" });
+          publish({ type: "message.delta", content: state.heldAssistantText, phase: "final" });
         }
         state.heldAssistantText = "";
         state.draftPublished = false;
         break;
       }
       case "agent_end":
-        emit({ type: "run.progress", messageCount: event.messages.length, runId: request.runId });
+        publish({ type: "run.progress", messageCount: event.messages.length, runId: request.runId });
         break;
       default:
         break;

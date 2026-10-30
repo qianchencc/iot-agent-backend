@@ -45,6 +45,7 @@ public class IotAdapterConfiguration {
             @Value("${iot.gateway.company-ac-device-path:/micro-api/api/office/app/device/ac/devicePage}") String companyAcDevicePath,
             @Value("${iot.gateway.company-ac-binding-path:/micro-api/api/iot-center/device/page}") String companyAcBindingPath,
             @Value("${iot.gateway.company-monitor-down-path:/micro-api/api/office/app/device/monitor/down}") String companyMonitorDownPath,
+            @Value("${iot.gateway.proxy:}") String proxy,
             @Value("${iot.gateway.call-timeout-ms:30000}") long timeoutMs) {
         if (officePath == null || officePath.isBlank()) {
             return IotAdapterFactory.failClosed("物联 Office 授权设备范围路径未配置");
@@ -59,8 +60,19 @@ public class IotAdapterConfiguration {
             return IotAdapterFactory.failClosed("物联 Company 授权设备目录路径未配置");
         }
         try {
+            WebClient.Builder gatewayBuilder = builder;
+            if (proxy != null && !proxy.isBlank()) {
+                java.net.URI proxyUri = java.net.URI.create(proxy.trim());
+                if (!"http".equalsIgnoreCase(proxyUri.getScheme()) || proxyUri.getHost() == null || proxyUri.getPort() <= 0) {
+                    throw new IllegalArgumentException("iot.gateway.proxy must be an HTTP proxy URL with host and port");
+                }
+                reactor.netty.http.client.HttpClient httpClient = reactor.netty.http.client.HttpClient.create()
+                        .proxy(spec -> spec.type(reactor.netty.transport.ProxyProvider.Proxy.HTTP)
+                                .host(proxyUri.getHost()).port(proxyUri.getPort()));
+                gatewayBuilder = builder.clientConnector(new org.springframework.http.client.reactive.ReactorClientHttpConnector(httpClient));
+            }
             return IotAdapterFactory.webClient(
-                    builder.baseUrl(baseUrl).build(),
+                    gatewayBuilder.baseUrl(baseUrl).build(),
                     new IotGatewayRoutes(officePath, companyPath, membershipPath,
                             IotGatewayRoutes.runtimeOfficeSources(acPath, lightingPath, accessPath, videoPath,
                                     acAssociationPath, lightingAssociationPath, accessAssociationPath),
