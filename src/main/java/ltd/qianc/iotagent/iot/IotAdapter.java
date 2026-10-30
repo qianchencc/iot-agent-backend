@@ -18,6 +18,18 @@ public interface IotAdapter {
         return Mono.error(new UpstreamUnavailableException("物联设备状态适配器未接入"));
     }
 
+    /**
+     * Runtime-compatible Company observation-state read keyed by device id. The
+     * implementation must resolve each environment sensor through its own
+     * `realTimeData` action with the site shadow as fallback, read the
+     * energy realtime table once for all meters, and return null state for any
+     * device without evidence. It must never invent a history row as state.
+     */
+    default Mono<DeviceStateReadResult> readObservationStates(
+            RequestIdentity identity, List<AuthorizedDevice> devices) {
+        return Mono.error(new UpstreamUnavailableException("物联观察状态适配器未接入"));
+    }
+
     /** Runtime-compatible read-only capability operation. */
     default Mono<DeviceCapabilityInspection> inspectDeviceCapabilities(
             RequestIdentity identity, DeviceCapabilityRequest request) {

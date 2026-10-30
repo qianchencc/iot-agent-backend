@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -112,6 +113,189 @@ public final class WebClientIotAdapter implements IotAdapter {
                     return new DeviceStateReadResult(states, Instant.now().toString());
                 })));
     }
+    @Override
+    public Mono<DeviceStateReadResult> readObservationStates(
+            RequestIdentity identity, List<AuthorizedDevice> devices) {
+        Objects.requireNonNull(identity, "identity");
+        if (identity.source() != IotSource.COMPANY) {
+            return Mono.error(new BusinessException("IOT_SOURCE_UNAVAILABLE", "观察状态仅支持 Company 来源", 404));
+        }
+        List<AuthorizedDevice> requested = (devices == null ? List.<AuthorizedDevice>of() : devices).stream()
+                .filter(device -> device != null
+                        && ("environment".equalsIgnoreCase(device.kind())
+                        || "energy".equalsIgnoreCase(device.kind())))
+                .distinct().toList();
+        List<AuthorizedDevice> energyDevices = requested.stream()
+                .filter(device -> "energy".equalsIgnoreCase(device.kind())).toList();
+        Mono<Map<String, Object>> energy = energyDevices.isEmpty() ? Mono.just(Map.of())
+                : energyStates(identity, energyDevices)
+                        .onErrorResume(error -> error instanceof GatewayAuthorizationException
+                                ? Mono.error(error) : Mono.just(Map.of()));
+        return Flux.fromIterable(requested.stream()
+                        .filter(device -> "environment".equalsIgnoreCase(device.kind())).toList())
+                .concatMap(device -> environmentState(identity, device)
+                        .map(state -> entry(device.id(), state))
+                        .defaultIfEmpty(entry(device.id(), NULL_STATE)))
+                .collectList()
+                .zipWith(energy)
+                .map(tuple -> {
+                    Map<String, Object> states = new LinkedHashMap<>();
+                    for (Map.Entry<String, Object> pair : tuple.getT1()) {
+                        states.put(pair.getKey(), pair.getValue() == NULL_STATE ? null : pair.getValue());
+                    }
+                    states.putAll(tuple.getT2());
+                    for (AuthorizedDevice device : requested) states.putIfAbsent(device.id(), null);
+                    return new DeviceStateReadResult(states, Instant.now().toString());
+                });
+    }
+
+    private static final Object NULL_STATE = new Object();
+
+    private static Map.Entry<String, Object> entry(String key, Object value) {
+        return new java.util.AbstractMap.SimpleImmutableEntry<>(key, value);
+    }
+
+    private Mono<Object> environmentState(RequestIdentity identity, AuthorizedDevice device) {
+        return environmentLive(identity, device)
+                .onErrorResume(error -> environmentShadow(identity))
+                .switchIfEmpty(environmentShadow(identity));
+    }
+
+    private Mono<Object> environmentLive(RequestIdentity identity, AuthorizedDevice device) {
+        String code = metadataText(device, "code");
+        if (device.hubDeviceId() == null || code == null) return Mono.empty();
+        return iotCenterActions(code, identity)
+                .map(actions -> actions.get("realTimeData"))
+                .flatMap(actionId -> actionId == null ? Mono.empty()
+                        : runQueryAction(identity, device.hubDeviceId(), actionId))
+                .flatMap(payload -> {
+                    Map<String, Object> reading = environmentReading(payload, "device");
+                    return reading.isEmpty() ? Mono.empty() : Mono.<Object>just(reading);
+                });
+    }
+
+    private Mono<Map<String, String>> iotCenterActions(String code, RequestIdentity identity) {
+        return page("/micro-api/api/iot-center/device/page", Map.of("code", code), identity)
+                .map(rows -> {
+                    Map<String, String> actions = new LinkedHashMap<>();
+                    if (!rows.isEmpty()) {
+                        JsonNode actionList = rows.get(0).get("actionList");
+                        if (actionList != null && actionList.isArray()) {
+                            for (JsonNode action : actionList) {
+                                String type = text(action, "actionType"), id = text(action, "id");
+                                if (type != null && id != null) actions.put(type, id);
+                            }
+                        }
+                    }
+                    return actions;
+                });
+    }
+
+    private Mono<JsonNode> runQueryAction(RequestIdentity identity, String hubDeviceId, String actionId) {
+        return webClient.post().uri(builder -> builder
+                        .path("/micro-api/api/iot-center/interactive/{hub}/{action}/down")
+                        .build(hubDeviceId, actionId))
+                .headers(headers -> identity.gatewayHeaders().forEach(headers::set))
+                .bodyValue(Map.of())
+                .exchangeToMono(response -> {
+                    int status = response.statusCode().value();
+                    if (status == 401 || status == 403) {
+                        return response.releaseBody().then(Mono.error(new GatewayAuthorizationException(status)));
+                    }
+                    if (!response.statusCode().is2xxSuccessful()) {
+                        return response.releaseBody().then(Mono.error(new UpstreamUnavailableException("读取观察设备数据")));
+                    }
+                    return response.bodyToMono(JsonNode.class)
+                            .switchIfEmpty(Mono.error(new UpstreamUnavailableException("读取观察设备数据")))
+                            .flatMap(body -> {
+                                int code = body.path("code").asInt(-1);
+                                if (code == 401 || code == 403) {
+                                    return Mono.error(new GatewayAuthorizationException(code));
+                                }
+                                if (code != 0 && code != 200) {
+                                    return Mono.error(new UpstreamUnavailableException("读取观察设备数据"));
+                                }
+                                JsonNode content = body.get("content");
+                                if (content != null && content.isTextual()) {
+                                    try { content = JSON.readTree(content.asText()); }
+                                    catch (Exception malformed) {
+                                        return Mono.error(new UpstreamUnavailableException("读取观察设备数据响应"));
+                                    }
+                                }
+                                return Mono.just(content);
+                            });
+                })
+                .timeout(callTimeout);
+    }
+
+    private Mono<Object> environmentShadow(RequestIdentity identity) {
+        return getJson("/micro-api/api/iot-center/home/yq/env/data", Map.of(), identity)
+                .flatMap(body -> {
+                    Map<String, Object> reading = environmentReading(body.get("content"), "shadow");
+                    return reading.isEmpty() ? Mono.empty() : Mono.<Object>just(reading);
+                })
+                .onErrorResume(error -> Mono.empty());
+    }
+
+    private static Map<String, Object> environmentReading(JsonNode source, String origin) {
+        Map<String, Object> reading = new LinkedHashMap<>();
+        reading.put("source", origin);
+        if (source != null && source.isObject()) {
+            for (String key : List.of("temp", "humidity", "pm25", "pm10", "pm101")) {
+                Double value = numberValue(source.get(key));
+                if (value != null) reading.put(key, value);
+            }
+        }
+        return reading.size() > 1 ? reading : Map.of();
+    }
+
+    private static Double numberValue(JsonNode value) {
+        if (value == null || value.isNull()) return null;
+        if (value.isNumber()) return value.asDouble();
+        if (value.isTextual()) {
+            String digits = value.asText().replaceAll("[^0-9+\\-.]", "");
+            if (digits.isBlank()) return null;
+            try { return Double.parseDouble(digits); } catch (NumberFormatException invalid) { return null; }
+        }
+        return null;
+    }
+
+    private Mono<Map<String, Object>> energyStates(RequestIdentity identity, List<AuthorizedDevice> devices) {
+        return page("/micro-api/api/energy/realTimeRead/page", Map.of(), identity)
+                .map(rows -> {
+                    Map<String, Map<String, Object>> latest = new LinkedHashMap<>();
+                    for (JsonNode row : rows) {
+                        String equipmentId = text(row, "equipmentId");
+                        Map<String, Object> reading = energyReading(row);
+                        if (equipmentId != null && reading != null) latest.putIfAbsent(equipmentId, reading);
+                    }
+                    Map<String, Object> states = new LinkedHashMap<>();
+                    for (AuthorizedDevice device : devices) {
+                        states.put(device.id(), latest.get(device.id()));
+                    }
+                    return states;
+                });
+    }
+
+    private static Map<String, Object> energyReading(JsonNode row) {
+        Map<String, Object> reading = new LinkedHashMap<>();
+        String readTime = text(row, "readTime");
+        if (readTime != null) reading.put("readTime", localDateTimeIso(readTime));
+        for (String key : List.of("ia", "ib", "ic", "totalActivePower")) {
+            Double value = numberValue(row.get(key));
+            if (value != null) reading.put(key, value);
+        }
+        return reading.size() > 1 ? reading : null;
+    }
+
+    private static String localDateTimeIso(String raw) {
+        try { return OffsetDateTime.parse(raw).toInstant().toString(); }
+        catch (RuntimeException ignored) {
+            try { return OffsetDateTime.parse(raw.replace(' ', 'T') + "+08:00").toInstant().toString(); }
+            catch (RuntimeException invalid) { return raw; }
+        }
+    }
+
 
     @Override
     public Mono<DeviceCapabilityInspection> inspectDeviceCapabilities(RequestIdentity identity, DeviceCapabilityRequest request) {

@@ -254,6 +254,73 @@ class IotAdapterContractTest {
                 .verify(Duration.ofSeconds(2));
     }
 
+    @Test
+    void observationStatesUseRealtimeActionShadowFallbackAndRealtimeRead() {
+        java.util.List<String> requests = new java.util.ArrayList<>();
+        ExchangeFunction fixture = candidate -> {
+            String path = candidate.url().getPath();
+            requests.add(candidate.method() + " " + path + "?" + (candidate.url().getQuery() == null ? "" : candidate.url().getQuery()));
+            if (path.endsWith("/iot-center/device/page")) {
+                return Mono.just(json("{\"code\":200,\"content\":{\"content\":[{\"id\":\"env-1\",\"code\":\"YQ-ENV-1\",\"actionList\":[{\"id\":\"action-1\",\"actionType\":\"realTimeData\"}]}],\"last\":true}}"));
+            }
+            if (path.contains("/interactive/")) {
+                return Mono.just(json("{\"code\":200,\"content\":\"{\\\"temp\\\":\\\"25\\\",\\\"humidity\\\":\\\"55%\\\"}\"}"));
+            }
+            if (path.endsWith("/energy/realTimeRead/page")) {
+                return Mono.just(json("{\"code\":200,\"content\":{\"content\":[{\"equipmentId\":\"meter-1\",\"readTime\":\"2026-10-30 04:00:00\",\"ia\":1.5,\"ib\":2.0,\"ic\":2.5}],\"last\":true}}"));
+            }
+            if (path.endsWith("/home/yq/env/data")) {
+                return Mono.just(json("{\"code\":200,\"content\":{\"temp\":\"25.6\",\"humidity\":\"55.1\"}}"));
+            }
+            return Mono.just(json("{\"code\":204,\"content\":null}"));
+        };
+        IotAdapter adapter = IotAdapterFactory.webClient(
+                WebClient.builder().exchangeFunction(fixture).build(),
+                new IotGatewayRoutes("/office-scope", "/company-scope"),
+                Duration.ofSeconds(1), IotCallPolicy.passThrough());
+        AuthorizedDevice env = new AuthorizedDevice("env-1", "environment", "环境监测", "一层", true,
+                null, "env-1", "hub-env-1", null, java.util.List.of(), java.util.List.of(), java.util.Map.of("code", "YQ-ENV-1"));
+        AuthorizedDevice meter = new AuthorizedDevice("meter-1", "energy", "总电表", "配电房", true);
+
+        DeviceStateReadResult result = adapter.readObservationStates(
+                new RequestIdentity("Bearer company-token", "TENANT-1", IotSource.COMPANY),
+                java.util.List.of(env, meter)).block(Duration.ofSeconds(2));
+
+        assertThat(result.states().get("env-1").toString()).contains("25").contains("device");
+        assertThat(result.states().get("meter-1").toString()).contains("1.5").contains("2026-10-29T20:00");
+        assertThat(requests).anyMatch(value -> value.startsWith("POST") && value.contains("/interactive/hub-env-1/action-1/down"));
+        assertThat(requests).noneMatch(value -> value.contains("home/yq/env/data"));
+    }
+
+    @Test
+    void observationStatesFallBackToEnvironmentShadowWhenActionReadFails() {
+        ExchangeFunction fixture = candidate -> {
+            String path = candidate.url().getPath();
+            if (path.endsWith("/iot-center/device/page")) {
+                return Mono.just(json("{\"code\":200,\"content\":{\"content\":[{\"id\":\"env-1\",\"code\":\"YQ-ENV-1\",\"actionList\":[{\"id\":\"action-1\",\"actionType\":\"realTimeData\"}]}],\"last\":true}}"));
+            }
+            if (path.contains("/interactive/")) {
+                return Mono.just(ClientResponse.create(HttpStatus.INTERNAL_SERVER_ERROR).build());
+            }
+            if (path.endsWith("/home/yq/env/data")) {
+                return Mono.just(json("{\"code\":200,\"content\":{\"temp\":\"25.6\",\"humidity\":\"55.1\"}}"));
+            }
+            return Mono.just(json("{\"code\":204,\"content\":null}"));
+        };
+        IotAdapter adapter = IotAdapterFactory.webClient(
+                WebClient.builder().exchangeFunction(fixture).build(),
+                new IotGatewayRoutes("/office-scope", "/company-scope"),
+                Duration.ofSeconds(1), IotCallPolicy.passThrough());
+        AuthorizedDevice env = new AuthorizedDevice("env-1", "environment", "环境监测", "一层", true,
+                null, "env-1", "hub-env-1", null, java.util.List.of(), java.util.List.of(), java.util.Map.of("code", "YQ-ENV-1"));
+
+        DeviceStateReadResult result = adapter.readObservationStates(
+                new RequestIdentity("Bearer company-token", "TENANT-1", IotSource.COMPANY),
+                java.util.List.of(env)).block(Duration.ofSeconds(2));
+
+        assertThat(result.states().get("env-1").toString()).contains("25.6").contains("shadow");
+    }
+
     private static ClientResponse json(String body) {
         return ClientResponse.create(HttpStatus.OK)
                 .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)

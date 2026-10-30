@@ -23,24 +23,44 @@ class CompanyOfficeObservationAdapterContractTest {
     @Test
     void dashboardComposesCompanyCatalogWithoutCallingSingleDashboardEndpoint() {
         AtomicReference<ObservationOperation> operation = new AtomicReference<>();
+        AtomicReference<List<AuthorizedDevice>> observed = new AtomicReference<>();
         ObservationAdapter upstream = request -> {
             operation.set(request.operation());
-            if (request.operation() == ObservationOperation.ENVIRONMENT_HISTORY) {
-                return Mono.just(ObservationResponse.available(Map.of("items", List.of(
-                        Map.of("deviceId", "env-1", "reading", Map.of("temp", 26))))));
-            }
             throw new AssertionError("unexpected operation " + request.operation());
         };
+        IotAdapter iot = new IotAdapter() {
+            @Override
+            public Mono<AuthorizedDeviceScope> loadAuthorizedDeviceScope(RequestIdentity identity) {
+                assertThat(identity.source()).isEqualTo(COMPANY.source());
+                return Mono.just(new AuthorizedDeviceScope() {
+                    @Override public RequestIdentity identity() { return COMPANY; }
+                    @Override public IotSource source() { return IotSource.COMPANY; }
+                    @Override public List<AuthorizedDevice> devices() { return List.of(ENV); }
+                });
+            }
+
+            @Override
+            public Mono<DeviceStateReadResult> readObservationStates(
+                    RequestIdentity identity, List<AuthorizedDevice> devices) {
+                observed.set(List.copyOf(devices));
+                return Mono.just(new DeviceStateReadResult(
+                        Map.of("env-1", Map.of("temp", 26, "source", "device")),
+                        Instant.now().toString()));
+            }
+        };
         ObservationAdapter adapter = ObservationAdapterFactory.composed(
-                upstream, iot(COMPANY, List.of(ENV)), identity -> Mono.just(Map.of()), null,
+                upstream, iot, identity -> Mono.just(Map.of()), null,
                 Clock.fixed(Instant.parse("2026-01-01T00:00:00Z"), ZoneOffset.UTC));
         ObservationResponse response = adapter.read(new ObservationRequest(COMPANY, ObservationOperation.DASHBOARD, Map.of("section", "environment"))).block();
         Map<String, Object> result = response.payload();
 
         assertThat(result.get("source")).isEqualTo("company");
         assertThat(result.get("alerts")).isNull();
-        assertThat(operation.get()).isEqualTo(ObservationOperation.ENVIRONMENT_HISTORY);
+        assertThat(operation.get()).isNull();
+        assertThat(observed.get()).containsExactly(ENV);
         assertThat(result.toString()).doesNotContain("hubDeviceId");
+        Object environment = result.get("environment");
+        assertThat(environment.toString()).contains("26");
     }
 
     @Test

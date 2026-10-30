@@ -147,10 +147,10 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
         boolean includeAutomation = section == null || section.equals("summary") || section.equals("automation");
 
         Mono<AreaRead> environmentRead = includeEnvironment
-                ? readArea(identity, ObservationOperation.ENVIRONMENT_HISTORY, environment, "environment", "部分环境设备没有可用读数")
+                ? readObservationArea(identity, environment, "environment", "部分环境设备没有可用读数")
                 : Mono.just(AreaRead.empty());
         Mono<AreaRead> energyRead = includeEnergy
-                ? readArea(identity, ObservationOperation.ENERGY_HISTORY, energy, "energy", "部分电表没有返回最新读数")
+                ? readObservationArea(identity, energy, "energy", "部分电表没有返回最新读数")
                 : Mono.just(AreaRead.empty());
         Mono<AlertRead> alerts = includeAlerts
                 ? readAlerts(identity, safety)
@@ -200,31 +200,30 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
         return ObservationResponse.available(payload);
     }
 
-    private Mono<AreaRead> readArea(
+    private Mono<AreaRead> readObservationArea(
             RequestIdentity identity,
-            ObservationOperation operation,
             List<AuthorizedDevice> devices,
             String area,
             String unavailableMessage) {
         if (devices.isEmpty()) return Mono.just(AreaRead.empty());
-        ObservationRequest request = new ObservationRequest(identity, operation, Map.of());
-        return upstream.read(request)
-                .map(response -> areaResponse(response, devices, area, unavailableMessage))
+        return iot.readObservationStates(identity, devices)
+                .map(read -> observationAreaRead(read, devices, area, unavailableMessage))
                 .onErrorResume(error -> Mono.just(AreaRead.failed(area, unavailableMessage)));
     }
 
-    private AreaRead areaResponse(
-            ObservationResponse response,
+    private AreaRead observationAreaRead(
+            DeviceStateReadResult read,
             List<AuthorizedDevice> devices,
             String area,
             String unavailableMessage) {
-        Map<String, Object> values = extractReadings(response.payload(), devices);
+        Map<String, Object> values = new LinkedHashMap<>();
         List<Map<String, Object>> errors = new ArrayList<>();
-        if (response.status() != ObservationStatus.AVAILABLE) {
-            errors.add(error(area, unavailableMessage));
-        } else if (values.size() < devices.size()) {
-            errors.add(error(area, unavailableMessage));
+        for (AuthorizedDevice device : devices) {
+            Object state = read.states().get(device.id());
+            if (state == null) continue;
+            values.put(device.id(), publicValue(state));
         }
+        if (values.size() < devices.size()) errors.add(error(area, unavailableMessage));
         return new AreaRead(values, errors);
     }
 
@@ -393,22 +392,6 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
             result.add(row);
         }
         return result;
-    }
-
-    private static Map<String, Object> extractReadings(Map<String, Object> payload, List<AuthorizedDevice> devices) {
-        Map<String, Object> values = new LinkedHashMap<>();
-        Map<String, Map<String, Object>> rows = new LinkedHashMap<>();
-        for (Map<String, Object> row : extractRows(payload)) {
-            String id = text(row, "deviceId", "equipmentId", "meterId", "id");
-            if (id != null) rows.putIfAbsent(id, row);
-        }
-        for (AuthorizedDevice device : devices) {
-            Map<String, Object> row = rows.get(device.id());
-            if (row == null) continue;
-            Object reading = row.containsKey("reading") ? publicValue(row.get("reading")) : publicValue(row);
-            values.put(device.id(), reading);
-        }
-        return values;
     }
 
     private static List<Map<String, Object>> extractRows(Map<String, Object> payload) {
