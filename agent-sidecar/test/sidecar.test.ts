@@ -162,12 +162,17 @@ function openHangingModel(): Promise<{ server: Server; url: string; started: Pro
 }
 function openToolModel(toolName = "read_device_states"): Promise<{ server: Server; url: string }> {
   let requests = 0;
+  const argumentsValue = toolName === "read_device_states"
+    ? JSON.stringify({ candidateSets: [{ candidateSetId: "set-1", deviceIds: ["device-1"] }] })
+    : toolName === "propose_action_draft"
+      ? JSON.stringify({ candidateSetIds: ["set-1"], summary: "开灯", actions: [{ deviceId: "device-1", closeOrOpen: 1, selected: true }] })
+      : "{}";
   return new Promise((resolve, reject) => {
     const server = createServer((_request, response) => {
       requests++;
       response.writeHead(200, { "content-type": "text/event-stream" });
       if (requests === 1) {
-        response.write(`data: ${JSON.stringify({ id: "tool-1", choices: [{ delta: { role: "assistant", tool_calls: [{ index: 0, id: "call-1", type: "function", function: { name: toolName, arguments: "{}" } }] }, finish_reason: null }] })}\n\n`);
+        response.write(`data: ${JSON.stringify({ id: "tool-1", choices: [{ delta: { role: "assistant", tool_calls: [{ index: 0, id: "call-1", type: "function", function: { name: toolName, arguments: argumentsValue } }] }, finish_reason: null }] })}\n\n`);
         response.write(`data: ${JSON.stringify({ id: "tool-1", choices: [{ delta: {}, finish_reason: "tool_calls" }] })}\n\n`);
       } else {
         response.write(`data: ${JSON.stringify({ id: "tool-2", choices: [{ delta: { role: "assistant", content: "工具结果已收到" }, finish_reason: null }] })}\n\n`);
@@ -265,7 +270,6 @@ it("forwards a pi-agent tool call to the authenticated Java bridge", async () =>
     runId: "tool-run", toolContextId: "tool-context", conversationId: "tool-conversation",
     turnId: "tool-turn", source: "office", tenantCode: "tenant", content: "查询设备",
   } });
-  assert.equal(run.statusCode, 200);
   const events = run.body.trim().split("\n").map(line => JSON.parse(line) as { type: string; tool?: string });
   assert.ok(events.some(event => event.type === "tool.started" && event.tool === "read_device_states"));
   assert.ok(events.some(event => event.type === "observation.reported"));

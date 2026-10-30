@@ -1,5 +1,5 @@
 import { Agent, type AgentEvent, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
-import { Type, type Model } from "@earendil-works/pi-ai";
+import { Type, type Model, type TSchema } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/api/openai-completions";
 import type { SidecarConfig } from "./config.js";
 import type { PiSessionStore } from "./session.js";
@@ -154,6 +154,84 @@ function isPendingConfirmation(value: unknown): boolean {
   return status === "PENDING_CONFIRMATION" || status === "AWAITING_CONFIRMATION" || status === "AWAITING_CONFIRM";
 }
 
+const DEVICE_KIND = Type.Union([
+  Type.Literal("lighting"), Type.Literal("ac"), Type.Literal("access"), Type.Literal("video"),
+  Type.Literal("environment"), Type.Literal("energy"), Type.Literal("safety"), Type.Literal("unknown"),
+]);
+
+const CANDIDATE_SET = Type.Object({
+  candidateSetId: Type.String({ minLength: 1 }),
+  deviceIds: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 50 }),
+}, { additionalProperties: false });
+
+const CONTROL_ACTION = Type.Object({
+  deviceId: Type.String({ minLength: 1 }),
+  closeOrOpen: Type.Optional(Type.Union([Type.Literal(0), Type.Literal(1)])),
+  controlType: Type.Optional(Type.Literal(2)),
+  ac: Type.Optional(Type.Object({
+    power: Type.Optional(Type.Union([Type.Literal("on"), Type.Literal("off")])),
+    temperature: Type.Optional(Type.Number({ minimum: 16, maximum: 30 })),
+    mode: Type.Optional(Type.Union([Type.Literal("cool"), Type.Literal("heat"), Type.Literal("dry"), Type.Literal("fan")])),
+    fanSpeed: Type.Optional(Type.Union([Type.Literal("low"), Type.Literal("high")])),
+  }, { additionalProperties: false })),
+  selected: Type.Boolean(),
+}, { additionalProperties: false });
+
+function toolParameters(name: string): TSchema {
+  switch (name) {
+    case "find_device_candidates":
+      return Type.Object({
+        kind: DEVICE_KIND,
+        scopeText: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })),
+        deviceText: Type.Optional(Type.String({ minLength: 1, maxLength: 80 })),
+        scopeTerms: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 8 })),
+        nameHints: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 8 })),
+      }, { additionalProperties: false });
+    case "get_device_details":
+      return Type.Object({
+        candidateSetId: Type.String({ minLength: 1 }),
+        deviceIds: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 50 }),
+      }, { additionalProperties: false });
+    case "read_device_states":
+    case "inspect_device_capabilities":
+      return Type.Object({ candidateSets: Type.Array(CANDIDATE_SET, { minItems: 1, maxItems: 10 }) },
+        { additionalProperties: false });
+    case "propose_action_draft":
+      return Type.Object({
+        candidateSetIds: Type.Array(Type.String({ minLength: 1 }), { maxItems: 10 }),
+        summary: Type.String({ minLength: 1 }),
+        question: Type.Optional(Type.String({ minLength: 1 })),
+        excludedDeviceIds: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 50 })),
+        actions: Type.Array(CONTROL_ACTION, { minItems: 1, maxItems: 50 }),
+      }, { additionalProperties: false });
+    case "confirm_action":
+      return Type.Object({
+        draftId: Type.String({ minLength: 1 }),
+        expectedRevision: Type.Optional(Type.Number({ minimum: 1 })),
+        revision: Type.Optional(Type.Number({ minimum: 1 })),
+      }, { additionalProperties: false });
+    case "resolve_action":
+      return Type.Object({ draftId: Type.String({ minLength: 1 }) }, { additionalProperties: false });
+    case "query_alerts":
+      return Type.Object({
+        types: Type.Optional(Type.Array(Type.Union([Type.Literal("smoke"), Type.Literal("water"), Type.Literal("gas")]), { minItems: 1, maxItems: 3 })),
+        days: Type.Optional(Type.Number({ minimum: 1, maximum: 365 })),
+        from: Type.Optional(Type.String()),
+        to: Type.Optional(Type.String()),
+        unreportedOnly: Type.Optional(Type.Boolean()),
+      }, { additionalProperties: false });
+    case "review_safety_event":
+      return Type.Object({
+        eventId: Type.String({ minLength: 1 }),
+        deviceId: Type.String({ minLength: 1 }),
+        ledger: Type.Union([Type.Literal("gas"), Type.Literal("smoke"), Type.Literal("flooding")]),
+        cameraDeviceId: Type.Optional(Type.String({ minLength: 1 })),
+      }, { additionalProperties: false });
+    default:
+      return Type.Object({}, { additionalProperties: true });
+  }
+}
+
 export class AgentRunner {
   constructor(private readonly config: SidecarConfig, private readonly sessions: PiSessionStore) {}
 
@@ -166,7 +244,8 @@ export class AgentRunner {
     });
     await session.appendMessage({ role: "user", content: request.content, timestamp: Date.now() });
     const model = modelFor(this.config);
-    const state: { confirmation?: Record<string, unknown> } = {};
+    const state: { confirmation?: Record<string, unknown>; heldAssistantText: string; draftPublished: boolean } =
+        { heldAssistantText: "", draftPublished: false };
     const tools = this.createTools(request, signal, emit, state);
     const agent = new Agent({
       initialState: {
@@ -182,7 +261,7 @@ export class AgentRunner {
     const detachAbort = () => agent.abort();
     signal.addEventListener("abort", detachAbort, { once: true });
     const unsubscribe = agent.subscribe(async (event, eventSignal) => {
-      this.publishAgentEvent(request, event, emit);
+      this.publishAgentEvent(request, event, emit, state);
       if (eventSignal.aborted) return;
     });
     try {
@@ -193,7 +272,10 @@ export class AgentRunner {
         if (!serialized) continue;
         await session.appendMessage(JSON.parse(serialized));
       }
-      const answer = messages.map(messageText).reverse().find(Boolean);
+      // Runtime契约：终稿只取助手消息；用户消息文本回显会让前端把输入当答复。
+      const answer = messages
+        .filter(message => message?.role === "assistant")
+        .map(messageText).reverse().find(Boolean) || state.heldAssistantText;
       if (answer) emit({ type: "message.completed", content: answer, phase: "final" });
       return state.confirmation ? { terminal: "awaiting_confirmation", confirmation: state.confirmation } : { terminal: "completed" };
     } finally {
@@ -214,7 +296,7 @@ export class AgentRunner {
       description: capability.status === "java"
         ? `调用 Java 业务工具 ${capability.javaToolName ?? capability.name} 获取授权范围内事实或生成待确认草案。`
         : `能力 ${capability.name} 当前不可用；必须如实返回 AGENT_TOOL_UNAVAILABLE，不得伪造业务成功。`,
-      parameters: Type.Object({}, { additionalProperties: true }),
+      parameters: toolParameters(capability.name),
       execute: async (toolCallId: string, argumentsValue: unknown, toolSignal?: AbortSignal) => {
         const argumentsObject = argumentsValue && typeof argumentsValue === "object" && !Array.isArray(argumentsValue)
           ? argumentsValue as Record<string, unknown>
@@ -267,11 +349,26 @@ export class AgentRunner {
     }
   }
 
-  private publishAgentEvent(request: RunRequest, event: AgentEvent, emit: (event: PublicEvent) => void): void {
+  private publishAgentEvent(
+    request: RunRequest,
+    event: AgentEvent,
+    emit: (event: PublicEvent) => void,
+    state: { heldAssistantText: string; draftPublished: boolean },
+  ): void {
     switch (event.type) {
       case "message_update": {
-        const content = messageText(event.message);
-        if (content) emit({ type: "message.delta", content, phase: "draft" });
+        // Runtime contract: message.delta carries incremental text only. The SDK emits
+        // message_update with assistantMessageEvent partials for every assistant event;
+        // forwarding messageText(partial) replays the cumulative snapshot and the client
+        // appends it, which renders quadratic garbage. Emit only the text_delta slice.
+        if (event.assistantMessageEvent?.type === "text_delta") {
+          const delta = event.assistantMessageEvent.delta;
+          if (delta) {
+            state.heldAssistantText += delta;
+            state.draftPublished = true;
+            emit({ type: "message.delta", content: delta, phase: "draft" });
+          }
+        }
         break;
       }
       case "tool_execution_start":
@@ -284,8 +381,18 @@ export class AgentRunner {
         emit({ type: "tool.completed", tool: event.toolName, toolCallId: event.toolCallId, status: event.isError ? "failed" : "completed" });
         break;
       case "message_end": {
-        const content = messageText(event.message);
-        if (content) emit({ type: "message.delta", content, phase: "draft" });
+        // Only assistant messages carry public text; forwarding tool-result/user ends
+        // echoes the caller's input back as a draft delta.
+        if (event.message.role !== "assistant") break;
+        const hasToolCall = event.message.content.some(block => block.type === "toolCall");
+        if (hasToolCall && state.draftPublished) {
+          // 草稿随工具调用转为过程证据，前端折叠到处理记录而不是保留正文。
+          emit({ type: "message.reclassified", to: "process", content: state.heldAssistantText });
+        } else if (!hasToolCall && state.heldAssistantText && !state.draftPublished) {
+          emit({ type: "message.delta", content: state.heldAssistantText, phase: "final" });
+        }
+        state.heldAssistantText = "";
+        state.draftPublished = false;
         break;
       }
       case "agent_end":

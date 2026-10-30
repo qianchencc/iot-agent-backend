@@ -361,7 +361,36 @@ public final class AgentToolBridgeController {
     }
 
     private Map<String, Object> readStates(PrincipalInfo principal, IotSource source, Map<String, Object> args) {
-        return mapper.convertValue(iot.readDeviceStates(identity(principal, source), strings(args.get("deviceIds"))).block(TIMEOUT), Map.class);
+        List<String> deviceIds = deviceIds(args);
+        RequestIdentity requestIdentity = identity(principal, source);
+        Object result;
+        if (source == IotSource.COMPANY) {
+            var scope = iot.loadAuthorizedDeviceScope(requestIdentity).block(TIMEOUT);
+            if (scope == null) throw new BusinessException("IOT_SCOPE_UNAVAILABLE", "设备授权范围暂不可用", 503);
+            List<ltd.qianc.iotagent.iot.AuthorizedDevice> devices = deviceIds.stream()
+                    .map(id -> scope.device(id).orElseThrow(() -> new BusinessException(
+                            "INVALID_DEVICE_REFERENCE", "设备引用无效")))
+                    .toList();
+            result = iot.readObservationStates(requestIdentity, devices).block(TIMEOUT);
+        } else {
+            result = iot.readDeviceStates(requestIdentity, deviceIds).block(TIMEOUT);
+        }
+        return mapper.convertValue(result, Map.class);
+    }
+
+    private static List<String> deviceIds(Map<String, Object> args) {
+        List<String> direct = strings(args.get("deviceIds"));
+        if (!direct.isEmpty()) return direct;
+        List<String> result = new ArrayList<>();
+        for (Object value : list(args.get("candidateSets"))) {
+            Map<String, Object> item = map(value);
+            result.addAll(strings(item.get("deviceIds")));
+        }
+        if (result.isEmpty()) throw new BusinessException("INVALID_DEVICE_REFERENCE", "设备引用无效");
+        if (result.stream().distinct().count() != result.size()) {
+            throw new BusinessException("INVALID_DEVICE_REFERENCE", "设备引用无效");
+        }
+        return result;
     }
 
     private Map<String, Object> inspectCapabilities(PrincipalInfo principal, IotSource source, Map<String, Object> args) {
@@ -375,17 +404,44 @@ public final class AgentToolBridgeController {
 
     private Map<String, Object> proposeAction(PrincipalInfo principal, String conversationId, String turnId, Map<String, Object> args) {
         try {
+            Object rawPayload = args.get("payload");
+            Map<String, Object> payload = rawPayload instanceof Map<?, ?> ? map(rawPayload) : new LinkedHashMap<>(args);
+            payload.put("actions", normalizeActionEntries(payload.get("actions")));
             return actions.view(actions.propose(principal, text(args, "source", "office"), conversationId, turnId,
-                    mapper.writeValueAsString(map(args.get("payload"))), text(args, "idempotencyKey", "")));
+                    mapper.writeValueAsString(payload), text(args, "idempotencyKey", turnId)));
         } catch (JsonProcessingException error) {
             throw new BusinessException("INVALID_ACTION_DRAFT", "草案内容无效");
         }
     }
 
+    private static List<Map<String, Object>> normalizeActionEntries(Object value) {
+        List<Map<String, Object>> normalized = new ArrayList<>();
+        for (Object item : list(value)) {
+            Map<String, Object> action = new LinkedHashMap<>(map(item));
+            if (!action.containsKey("kind") || !action.containsKey("command")) {
+                Object ac = action.get("ac");
+                if (ac instanceof Map<?, ?>) {
+                    action.put("kind", "ac");
+                    action.put("command", map(ac));
+                } else if (action.get("closeOrOpen") instanceof Number power) {
+                    action.put("kind", "lighting");
+                    action.put("command", Map.of("power", power.intValue() == 1 ? "on" : "off"));
+                } else if (action.get("controlType") instanceof Number controlType) {
+                    action.put("kind", "access");
+                    action.put("command", Map.of("controlType", controlType.intValue()));
+                }
+            }
+            normalized.add(action);
+        }
+        return normalized;
+    }
+
     private Map<String, Object> proposeTask(PrincipalInfo principal, String conversationId, String turnId, Map<String, Object> args) {
         try {
+            Object rawPayload = args.get("payload");
+            Map<String, Object> payload = rawPayload instanceof Map<?, ?> ? map(rawPayload) : args;
             return tasks.proposalView(tasks.propose(principal, text(args, "source", "office"), conversationId, turnId,
-                    mapper.writeValueAsString(map(args.get("payload"))), text(args, "idempotencyKey", "")));
+                    mapper.writeValueAsString(payload), text(args, "idempotencyKey", "")));
         } catch (JsonProcessingException error) {
             throw new BusinessException("INVALID_TASK_PAYLOAD", "任务内容无效");
         }

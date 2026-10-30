@@ -68,6 +68,26 @@ class AgentToolBridgeContractTest {
     }
 
     @Test
+    void readDeviceStatesAcceptsRuntimeCandidateSetShape() {
+        ConversationFacade conversations = mock(ConversationFacade.class);
+        IotAdapter iot = mock(IotAdapter.class);
+        when(conversations.toolPrincipal("tool-1", "conversation-1", "turn-1")).thenReturn(principal);
+        when(iot.readDeviceStates(any(), org.mockito.ArgumentMatchers.eq(List.of("device-1"))))
+                .thenReturn(Mono.just(new ltd.qianc.iotagent.iot.DeviceStateReadResult(
+                        Map.of("device-1", Map.of("power", "on")), "2026-10-30T00:00:00Z")));
+        AgentToolBridge bridge = AgentToolBridgeFactory.local(conversations, iot,
+                mock(ActionDraftFacade.class), mock(TaskFacade.class), mapper, null);
+
+        Map<String, Object> result = bridge.execute(Map.of("toolContextId", "tool-1", "conversationId", "conversation-1",
+                "turnId", "turn-1", "toolName", "read_device_states",
+                "arguments", Map.of("source", "office", "candidateSets",
+                        List.of(Map.of("candidateSetId", "set-1", "deviceIds", List.of("device-1"))))));
+
+        assertThat(result).containsEntry("observedAt", "2026-10-30T00:00:00Z");
+        assertThat(result.get("states")).isEqualTo(Map.of("device-1", Map.of("power", "on")));
+    }
+
+    @Test
     void publicFactoryFailsClosedForProductionVideoPayloads() {
         ConversationFacade conversations = mock(ConversationFacade.class);
         when(conversations.toolPrincipal("tool-1", "conversation-1", "turn-1")).thenReturn(principal);
