@@ -38,7 +38,6 @@ iot:
     office-ac-association-path: ${IOT_GATEWAY_OFFICE_AC_ASSOCIATION_PATH:/micro-api/api/office/acAreaDevice/page}
     office-lighting-association-path: ${IOT_GATEWAY_OFFICE_LIGHTING_ASSOCIATION_PATH:/micro-api/api/office/lightingAreaDevice/page}
     office-access-association-path: ${IOT_GATEWAY_OFFICE_ACCESS_ASSOCIATION_PATH:/micro-api/api/office/accessAreaDevice/page}
-    proxy: ${IOT_GATEWAY_PROXY:}
     call-timeout-ms: ${IOT_GATEWAY_CALL_TIMEOUT_MS:30000}
     company-energy-path: ${IOT_GATEWAY_COMPANY_ENERGY_PATH:/micro-api/api/energy/equipment/page}
     company-safety-path: ${IOT_GATEWAY_COMPANY_SAFETY_PATH:/micro-api/api/perception/device/page}

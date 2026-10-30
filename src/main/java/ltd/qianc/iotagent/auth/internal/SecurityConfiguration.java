@@ -23,25 +23,13 @@ public class SecurityConfiguration {
     AccountPrincipalVerifier accountPrincipalVerifier(
             WebClient.Builder builder,
             @Value("${iot.gateway.base-url:}") String baseUrl,
-            @Value("${iot.gateway.proxy:}") String proxy,
             @Value("${iot.identity.verify-timeout-ms:10000}") long timeoutMs) {
         if (baseUrl == null || baseUrl.isBlank()) {
             return new FailClosedAccountPrincipalVerifier("物联身份核验上游未配置");
         }
         try {
-            WebClient.Builder identityBuilder = builder;
-            if (proxy != null && !proxy.isBlank()) {
-                java.net.URI proxyUri = java.net.URI.create(proxy.trim());
-                if (!"http".equalsIgnoreCase(proxyUri.getScheme()) || proxyUri.getHost() == null || proxyUri.getPort() <= 0) {
-                    throw new IllegalArgumentException("iot.gateway.proxy must be an HTTP proxy URL with host and port");
-                }
-                reactor.netty.http.client.HttpClient httpClient = reactor.netty.http.client.HttpClient.create()
-                        .proxy(spec -> spec.type(reactor.netty.transport.ProxyProvider.Proxy.HTTP)
-                                .host(proxyUri.getHost()).port(proxyUri.getPort()));
-                identityBuilder = builder.clientConnector(new org.springframework.http.client.reactive.ReactorClientHttpConnector(httpClient));
-            }
             return new WebClientAccountPrincipalVerifier(
-                    identityBuilder.build(), baseUrl, Duration.ofMillis(timeoutMs));
+                    builder.build(), baseUrl, Duration.ofMillis(timeoutMs));
         } catch (RuntimeException invalidConfiguration) {
             return new FailClosedAccountPrincipalVerifier("物联身份核验配置无效");
         }
