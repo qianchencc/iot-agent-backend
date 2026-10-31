@@ -18,6 +18,7 @@ import ltd.qianc.iotagent.action.ActionDraftStatus;
 import ltd.qianc.iotagent.iot.AuthorizedDevice;
 import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
 import ltd.qianc.iotagent.iot.DeviceStateReadResult;
+import ltd.qianc.iotagent.iot.GatewayAuthorizationException;
 import ltd.qianc.iotagent.iot.IotAdapter;
 import ltd.qianc.iotagent.iot.IotSource;
 import ltd.qianc.iotagent.iot.RequestIdentity;
@@ -67,6 +68,7 @@ public final class WebClientActionCommandGateway implements ActionCommandGateway
                 receipt.set("response", response == null ? mapper.createObjectNode() : response);
                 if (acceptedResult) accepted.add(action); else rejected++;
             } catch (RuntimeException error) {
+                if (error instanceof GatewayAuthorizationException authorization) throw authorization;
                 if (error instanceof ActionDispatchException dispatchError) throw dispatchError;
                 throw new ActionDispatchException("设备指令下发结果未知", error, true);
             }
@@ -133,13 +135,20 @@ public final class WebClientActionCommandGateway implements ActionCommandGateway
 
     private reactor.core.publisher.Mono<JsonNode> decode(ClientResponse response) {
         int status = response.statusCode().value();
-        if (status == 401 || status == 403) return response.releaseBody().then(reactor.core.publisher.Mono.error(new IllegalStateException("上游拒绝控制权限")));
+        if (status == 401 || status == 403) return response.releaseBody().then(reactor.core.publisher.Mono.error(new GatewayAuthorizationException(status)));
         if (!response.statusCode().is2xxSuccessful()) return response.releaseBody().then(reactor.core.publisher.Mono.error(new IllegalStateException("上游控制请求失败")));
         return response.bodyToMono(JsonNode.class).switchIfEmpty(reactor.core.publisher.Mono.error(new IllegalStateException("上游控制响应为空")))
                 .flatMap(body -> {
                     int code = body.path("code").asInt(-1);
-                    if (code == 401 || code == 403) return reactor.core.publisher.Mono.error(new IllegalStateException("上游拒绝控制权限"));
+                    if (code == 401 || code == 403) return reactor.core.publisher.Mono.error(new GatewayAuthorizationException(code));
                     if (code != 0 && code != 200) return reactor.core.publisher.Mono.error(new IllegalStateException("上游控制返回失败"));
+                    JsonNode content = body.get("content");
+                    if (content != null && content.isTextual()) {
+                        try { content = mapper.readTree(content.asText()); } catch (Exception ignored) { content = null; }
+                    }
+                    int nested = content == null ? 0 : content.path("code").asInt(0);
+                    if (nested == 401 || nested == 403) return reactor.core.publisher.Mono.error(new GatewayAuthorizationException(nested));
+                    if (nested != 0 && nested != 200) return reactor.core.publisher.Mono.error(new IllegalStateException("上游控制返回失败"));
                     return reactor.core.publisher.Mono.just(body);
                 });
     }

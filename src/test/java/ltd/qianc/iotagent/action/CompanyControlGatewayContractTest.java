@@ -8,6 +8,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import ltd.qianc.iotagent.iot.AuthorizedDevice;
 import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
 import ltd.qianc.iotagent.iot.DeviceStateReadResult;
+import ltd.qianc.iotagent.iot.GatewayAuthorizationException;
 import ltd.qianc.iotagent.iot.IotAdapter;
 import ltd.qianc.iotagent.iot.IotSource;
 import ltd.qianc.iotagent.iot.RequestIdentity;
@@ -87,6 +88,20 @@ class CompanyControlGatewayContractTest {
                 .isInstanceOf(IllegalArgumentException.class);
         assertThat(request.get()).isNull();
     }
+    @Test
+    void upstreamAuthorizationFailureRemainsTyped() {
+        IotAdapter iot = mock(IotAdapter.class);
+        ActionCommandGateway gateway = gateway(candidate -> Mono.just(ClientResponse.create(HttpStatus.FORBIDDEN).build()), iot);
+        AuthorizedDevice light = new AuthorizedDevice("light-1", "lighting", "大厅照明", "一层", false,
+                "light-control-1", "light-1", "hub-light", "1-2-3", List.of(), List.of(), Map.of());
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> gateway.dispatch(IDENTITY, scope(light),
+                "[{\"id\":\"action-1\",\"deviceId\":\"light-1\",\"kind\":\"lighting\",\"command\":{\"closeOrOpen\":0}}]"))
+                .isInstanceOf(GatewayAuthorizationException.class)
+                .extracting(error -> ((GatewayAuthorizationException) error).upstreamStatus())
+                .isEqualTo(403);
+    }
+
 
     private static AuthorizedDeviceScope scope(AuthorizedDevice... devices) {
         return new AuthorizedDeviceScope() {
