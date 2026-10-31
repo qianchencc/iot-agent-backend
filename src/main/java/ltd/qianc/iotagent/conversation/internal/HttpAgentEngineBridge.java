@@ -177,7 +177,6 @@ public final class HttpAgentEngineBridge implements AgentEngineBridge {
                             result.complete(null);
                         } catch (Exception error) {
                             result.completeExceptionally(timedOut.get() ? timeout() : unavailable());
-                        } finally {
                             watchdog.cancel(false);
                         }
                     }, executor);

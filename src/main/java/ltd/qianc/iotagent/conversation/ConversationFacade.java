@@ -75,12 +75,12 @@ public final class ConversationFacade {
  private void emit(Run r,String type,Map<String,Object> f){
   if("heartbeat".equals(type)){sendHeartbeat(r);return;}
   if(TERMINALS.contains(type)){finish(r,type,f);return;}
-  synchronized(r){if(r.terminal.get())return;ObjectNode n=node(r,type,f);append(r,n);send(r,n);}
+  synchronized(events){ObjectNode n=node(r,type,f);long next=events.read(r.conversationId).stream().filter(e->r.turnId.equals(e.turnId())).mapToLong(ConversationEventFact::sequence).max().orElse(0)+1;r.sequence=Math.max(r.sequence,next);n.put("sequence",r.sequence);append(r,n);send(r,n);}
  }
  private void finish(Run r,String type,Map<String,Object> f){
   synchronized(r){
    if(!r.terminal.compareAndSet(false,true))return;
-   try{ObjectNode n=node(r,type,f);append(r,n);send(r,n);}catch(RuntimeException ignored){}
+   try{synchronized(events){ObjectNode n=node(r,type,f);long next=events.read(r.conversationId).stream().filter(e->r.turnId.equals(e.turnId())).mapToLong(ConversationEventFact::sequence).max().orElse(0)+1;r.sequence=Math.max(r.sequence,next);n.put("sequence",r.sequence);append(r,n);send(r,n);}}catch(RuntimeException ignored){}
    finally{if(r.heartbeat!=null)r.heartbeat.cancel(false);try{r.out.complete();}catch(Exception ignored){}active.remove(r.conversationId,r);toolContexts.put(r.conversationId,r);if(scheduler!=null){scheduler.schedule(()->toolContexts.remove(r.conversationId,r),60,TimeUnit.SECONDS);scheduler.schedule(()->toolContextsById.remove(r.toolContextId,r),60,TimeUnit.SECONDS);}}
   }
  }

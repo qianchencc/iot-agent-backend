@@ -88,6 +88,30 @@ class AgentToolBridgeContractTest {
     }
 
     @Test
+    void proposeActionPreservesExplicitKindWhenNormalizingFlatFields() throws Exception {
+        ConversationFacade conversations = mock(ConversationFacade.class);
+        ActionDraftFacade actions = mock(ActionDraftFacade.class);
+        when(conversations.toolPrincipal("tool-1", "conversation-1", "turn-1")).thenReturn(principal);
+        java.util.concurrent.atomic.AtomicReference<String> payload = new java.util.concurrent.atomic.AtomicReference<>();
+        when(actions.propose(any(), any(), any(), any(), any(), any())).thenAnswer(invocation -> {
+            payload.set(invocation.getArgument(4));
+            return new ltd.qianc.iotagent.action.ActionDraftFact("draft-1", 1, "PENDING_CONFIRMATION", payload.get(), "turn-1");
+        });
+        when(actions.view(any())).thenReturn(Map.of("draftId", "draft-1", "status", "PENDING_CONFIRMATION"));
+        AgentToolBridge bridge = AgentToolBridgeFactory.local(conversations, mock(IotAdapter.class),
+                actions, mock(TaskFacade.class), mapper, null);
+
+        bridge.execute(Map.of("toolContextId", "tool-1", "conversationId", "conversation-1",
+                "turnId", "turn-1", "toolName", "propose_action_draft",
+                "arguments", Map.of("source", "office", "candidateSetIds", List.of("set-1"),
+                        "actions", List.of(Map.of("deviceId", "device-1", "kind", "lighting",
+                                "closeOrOpen", 1, "selected", true)))));
+
+        assertThat(mapper.readTree(payload.get()).at("/actions/0/kind").asText()).isEqualTo("lighting");
+        assertThat(mapper.readTree(payload.get()).at("/actions/0/command/power").asText()).isEqualTo("on");
+    }
+
+    @Test
     void publicFactoryFailsClosedForProductionVideoPayloads() {
         ConversationFacade conversations = mock(ConversationFacade.class);
         when(conversations.toolPrincipal("tool-1", "conversation-1", "turn-1")).thenReturn(principal);

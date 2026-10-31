@@ -39,6 +39,22 @@ class ConversationFacadeContractTest {
     }
 
     @Test
+    void actionEventsDoNotCollideWithBridgeEventSequence() {
+        MemoryConversationStore conversations = new MemoryConversationStore();
+        MemoryEventStore events = new MemoryEventStore();
+        RecordingBridge bridge = new RecordingBridge(false, () -> events.append(new ConversationEventFact(
+                "conversation-1", "turn-1", 2L, "action.proposed", "{}", "action-event-1")));
+        ConversationFacade facade = new ConversationFacade(new ObjectMapper(), conversations, events, bridge, Runnable::run);
+        String id = (String) facade.create(PRINCIPAL, "office").get("id");
+
+        facade.message(PRINCIPAL, id, "生成控制草案", "idem-action-sequence");
+
+        assertThat(events.values).extracting(ConversationEventFact::sequence).containsExactly(1L, 2L, 3L, 4L);
+        assertThat(events.values).extracting(ConversationEventFact::type)
+                .containsExactly("run.started", "action.proposed", "message.delta", "run.completed");
+    }
+
+    @Test
     void explicitCancelEmitsAbortedAndCallsEngineCancelWithoutDisconnectCancellation() {
         MemoryConversationStore conversations = new MemoryConversationStore();
         MemoryEventStore events = new MemoryEventStore();
@@ -70,18 +86,25 @@ class ConversationFacadeContractTest {
 
     private static final class RecordingBridge implements AgentEngineBridge {
         private final boolean holdOpen;
+        private final Runnable beforeMessage;
         private final AtomicInteger startCount = new AtomicInteger();
         private final AtomicReference<AgentRunRequest> request = new AtomicReference<>();
         private final AtomicReference<String> cancelledRunId = new AtomicReference<>();
 
         private RecordingBridge(boolean holdOpen) {
+            this(holdOpen, () -> {});
+        }
+
+        private RecordingBridge(boolean holdOpen, Runnable beforeMessage) {
             this.holdOpen = holdOpen;
+            this.beforeMessage = beforeMessage;
         }
 
         @Override
         public CompletionStage<Void> start(AgentRunRequest request, Consumer<AgentEngineEvent> events) {
             startCount.incrementAndGet();
             this.request.set(request);
+            beforeMessage.run();
             events.accept(new AgentEngineEvent(request.runId(), request.conversationId(), request.turnId(),
                     "message.delta", Map.of("sequence", 99, "content", "状态")));
             if (holdOpen) return new CompletableFuture<>();

@@ -169,14 +169,21 @@ const CANDIDATE_SET = Type.Object({
 
 const CONTROL_ACTION = Type.Object({
   deviceId: Type.String({ minLength: 1 }),
-  closeOrOpen: Type.Optional(Type.Union([Type.Literal(0), Type.Literal(1)])),
-  controlType: Type.Optional(Type.Literal(2)),
+  kind: Type.Union([
+    Type.Literal("lighting", { description: "照明；必须使用 closeOrOpen" }),
+    Type.Literal("ac", { description: "空调；必须使用 ac" }),
+    Type.Literal("access", { description: "门禁；必须使用 controlType=2" }),
+  ]),
+  closeOrOpen: Type.Optional(Type.Union([Type.Literal(0), Type.Literal(1)], {
+    description: "仅照明：0关闭、1打开；不可与 controlType 或 ac 混用",
+  })),
+  controlType: Type.Optional(Type.Literal(2, { description: "仅门禁：一次开门；照明不可使用" })),
   ac: Type.Optional(Type.Object({
     power: Type.Optional(Type.Union([Type.Literal("on"), Type.Literal("off")])),
     temperature: Type.Optional(Type.Number({ minimum: 16, maximum: 30 })),
     mode: Type.Optional(Type.Union([Type.Literal("cool"), Type.Literal("heat"), Type.Literal("dry"), Type.Literal("fan")])),
     fanSpeed: Type.Optional(Type.Union([Type.Literal("low"), Type.Literal("high")])),
-  }, { additionalProperties: false })),
+  }, { additionalProperties: false, description: "仅空调；只传用户要求改变的参数" })),
   selected: Type.Boolean(),
 }, { additionalProperties: false });
 
@@ -267,7 +274,7 @@ export class AgentRunner {
     const agent = new Agent({
       initialState: {
         model,
-        systemPrompt: "你是一个受控的物联助手。只基于工具返回的事实回答。设备控制必须严格按：find_device_candidates 得到非空候选集 → read_device_states 使用候选集中的真实 candidateSetId/deviceIds → 仅在用户明确要求且设备可控时生成 propose_action_draft 待确认草案；不得发明设备ID、candidateSetId或kind，不得把空候选当作成功。候选为空时先修正检索词或向用户澄清；Company来源没有可控目录时如实说明不可用。检索时scopeText/scopeTerms只放地点条件，deviceText/nameHints只放设备名称或型号，不要把地点拼进设备名称。任何控制都不能在草案阶段直接执行。使用中文，简洁且不暴露内部凭据。",
+        systemPrompt: "你是一个受控的物联助手。只基于工具返回的事实回答。设备控制必须严格按：find_device_candidates 得到非空候选集 → read_device_states 使用候选集中的真实 candidateSetId/deviceIds → 仅在用户明确要求且设备可控时生成 propose_action_draft 待确认草案；不得发明设备ID、candidateSetId或kind，不得把空候选当作成功。控制动作每项必须显式填写 kind：lighting 只能使用 closeOrOpen，ac 只能使用 ac，access 只能使用 controlType=2，禁止混用；候选为空时先修正检索词或向用户澄清；Company来源没有可控目录时如实说明不可用。检索时scopeText/scopeTerms只放地点条件，deviceText/nameHints只放设备名称或型号，不要把地点拼进设备名称。任何控制都不能在草案阶段直接执行。使用中文，简洁且不暴露内部凭据。",
         thinkingLevel: this.config.thinkingLevel,
         tools,
       },
@@ -329,7 +336,8 @@ export class AgentRunner {
           ? argumentsValue as Record<string, unknown>
           : {};
         const result = capability.status === "java"
-          ? await this.callJavaTool(request, capability.javaToolName ?? capability.name, argumentsObject, toolCallId, toolSignal ?? signal)
+          ? await this.callJavaTool(request, capability.javaToolName ?? capability.name,
+              { ...argumentsObject, source: request.source }, toolCallId, toolSignal ?? signal)
           : unsupportedResult(capability);
         emit({ type: capability.event, tool: capability.name, details: result });
         if (capability.status === "java" && isPendingConfirmation(result)) {
@@ -388,7 +396,14 @@ export class AgentRunner {
           message: "Java business tool timed out",
         };
       }
-      throw error;
+      return {
+        ok: false,
+        status: "unavailable",
+        supported: false,
+        code: "AGENT_TOOL_UNAVAILABLE",
+        toolName,
+        message: "Java business tool unavailable",
+      };
     } finally {
       clearTimeout(timer);
       signal.removeEventListener("abort", onAbort);

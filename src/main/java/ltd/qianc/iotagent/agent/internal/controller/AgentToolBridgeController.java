@@ -103,8 +103,10 @@ public final class AgentToolBridgeController {
             case "query_alerts" -> queryAlerts(principal, source(arguments), arguments);
             case "query_environment_history" -> observation(principal, source(arguments), ObservationOperation.ENVIRONMENT_HISTORY, arguments);
             case "query_energy_history" -> observation(principal, source(arguments), ObservationOperation.ENERGY_HISTORY, arguments);
-            case "summarize_energy" -> observation(principal, source(arguments), ObservationOperation.ENERGY_REPORT, arguments);
-            case "compare_energy" -> observation(principal, source(arguments), ObservationOperation.ENERGY_COMPARISON, arguments);
+            case "summarize_energy" -> observation(principal, source(arguments),
+                    source(arguments) == IotSource.COMPANY ? ObservationOperation.COMPANY_ENERGY_DAILY : ObservationOperation.ENERGY_REPORT, arguments);
+            case "compare_energy" -> observation(principal, source(arguments),
+                    source(arguments) == IotSource.COMPANY ? ObservationOperation.COMPANY_ENERGY_REPORT : ObservationOperation.ENERGY_COMPARISON, arguments);
             case "review_safety_event" -> observation(principal, source(arguments),
                     arguments.containsKey("cameraDeviceId") ? ObservationOperation.SAFETY_EVENT_CAMERAS : ObservationOperation.SAFETY_EVENT,
                     arguments);
@@ -407,8 +409,9 @@ public final class AgentToolBridgeController {
             Object rawPayload = args.get("payload");
             Map<String, Object> payload = rawPayload instanceof Map<?, ?> ? map(rawPayload) : new LinkedHashMap<>(args);
             payload.put("actions", normalizeActionEntries(payload.get("actions")));
-            return actions.view(actions.propose(principal, text(args, "source", "office"), conversationId, turnId,
+            Map<String, Object> result = actions.view(actions.propose(principal, text(args, "source", "office"), conversationId, turnId,
                     mapper.writeValueAsString(payload), text(args, "idempotencyKey", turnId)));
+            return result;
         } catch (JsonProcessingException error) {
             throw new BusinessException("INVALID_ACTION_DRAFT", "草案内容无效");
         }
@@ -419,8 +422,15 @@ public final class AgentToolBridgeController {
         for (Object item : list(value)) {
             Map<String, Object> action = new LinkedHashMap<>(map(item));
             if (!action.containsKey("kind") || !action.containsKey("command")) {
+                String kind = action.get("kind") instanceof String valueKind ? valueKind : "";
                 Object ac = action.get("ac");
-                if (ac instanceof Map<?, ?>) {
+                if ("ac".equals(kind) && ac instanceof Map<?, ?>) {
+                    action.put("command", map(ac));
+                } else if ("lighting".equals(kind) && action.get("closeOrOpen") instanceof Number power) {
+                    action.put("command", Map.of("power", power.intValue() == 1 ? "on" : "off"));
+                } else if ("access".equals(kind) && action.get("controlType") instanceof Number controlType) {
+                    action.put("command", Map.of("controlType", controlType.intValue()));
+                } else if (ac instanceof Map<?, ?>) {
                     action.put("kind", "ac");
                     action.put("command", map(ac));
                 } else if (action.get("closeOrOpen") instanceof Number power) {

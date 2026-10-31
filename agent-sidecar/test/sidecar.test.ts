@@ -165,7 +165,7 @@ function openToolModel(toolName = "read_device_states"): Promise<{ server: Serve
   const argumentsValue = toolName === "read_device_states"
     ? JSON.stringify({ candidateSets: [{ candidateSetId: "set-1", deviceIds: ["device-1"] }] })
     : toolName === "propose_action_draft"
-      ? JSON.stringify({ candidateSetIds: ["set-1"], summary: "开灯", actions: [{ deviceId: "device-1", closeOrOpen: 1, selected: true }] })
+      ? JSON.stringify({ candidateSetIds: ["set-1"], summary: "开灯", actions: [{ deviceId: "device-1", kind: "lighting", closeOrOpen: 1, selected: true }] })
       : "{}";
   return new Promise((resolve, reject) => {
     const server = createServer((_request, response) => {
@@ -276,6 +276,7 @@ it("forwards a pi-agent tool call to the authenticated Java bridge", async () =>
   assert.ok(events.some(event => event.type === "run.completed"));
   assert.equal(java.calls.length, 1);
   assert.equal(java.calls[0]?.toolName, "read_device_states");
+  assert.equal((java.calls[0]?.arguments as Record<string, unknown>)?.source, "office");
   assert.equal(java.calls[0]?.toolContextId, "tool-context");
   await app.close();
 });

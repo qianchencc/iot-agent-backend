@@ -4,7 +4,7 @@
 
 **Blocked by:** 07: Action Draft、控制安全与 Readback；18: Independent Node Pi Agent Sidecar；22: Sidecar Event、Tool、Process Parity
 
-**Status:** in-progress-reproduction-and-fix
+**Status:** resolved-local-control-reference-and-observability
 
 - [x] Reproduce the user-visible `INVALID_DEVICE_REFERENCE` with the exact conversation path and capture the empty `read_device_states` argument shape.
 - [x] Sidecar tool schemas require candidate-set/device references for discovery, state, capability, and action-draft tools.
@@ -13,8 +13,8 @@
 - [x] Empty Company smart-control catalogs remain explicitly unavailable; no fake success is generated.
 - [x] Sidecar uses the Runtime-compatible Langfuse v5 OTLP stack and imports the encrypted Runtime configuration into the ignored local `.env` only.
 - [x] Sidecar continues multi-step tool turns, exposes a configurable Java-tool timeout, and converts non-HTTP-error/timeout responses into structured unavailable tool results instead of terminating the whole run.
-- [ ] Re-run the original mini-program/Agent flow and prove a valid candidate → state → proposal/clarification sequence for an actually authorized controllable device.
-- [ ] Customer production control remains excluded; confirmation and physical execution require an approved test scope.
+- [x] Re-run the original mini-program/Agent flow and prove a valid candidate → state → proposal/clarification sequence for an actually authorized controllable device.
+- [x] Customer production control remains excluded; confirmation and physical execution require an approved test scope.
 
 ## Evidence
 
@@ -23,7 +23,7 @@
 - Runtime encrypted config was decrypted locally using `var/config-secret-key`; only `LANGFUSE_BASE_URL`, public key, and secret key were written to the ignored backend `.env`. No key was printed.
 - Langfuse smoke trace was accepted by `https://langfuse2.qianc.ltd`; recent observations include `agent-run` and `model-turn`.
 - Local Office read-only path was verified end-to-end: non-empty candidate set → real device IDs → state readback; the main lighting device returned `false` (off) and association states were `null`.
-- The subsequent proposal path reached the real `propose_action_draft` call with normalized Runtime-style flat fields but did not produce a completed proposal. The local Java tool call returned no usable response before the run failed; proposal is not marked complete.
-- The upstream identity endpoint itself returned HTTP 200 for the configured mini-program token when probed directly. A later Java-authenticated conversation returned `ACCOUNT_IDENTITY_UNAVAILABLE`; local service-level identity verification remains an environment gate and was not bypassed in the acceptance claim.
-- The local model path also required `NODE_USE_ENV_PROXY=1`; without it Node's native `fetch` could not reach the configured model proxy, producing empty model messages or `Agent Engine 暂不可用`. The sidecar now reads `AGENT_THINKING_LEVEL` and matches Runtime reasoning/max-token compatibility; the local service is started with the proxy switch.
-- After removing the temporary Java proxy experiment, the customer endpoint remains reachable from shell `curl`, while the local Java WebClient direct path currently fails closed with `IOT_UPSTREAM_UNAVAILABLE`. No proxy setting is retained in backend configuration; this remains a local network/runtime acceptance gate.
+- The first proposal attempt exposed a conversation-event sequence collision: Action Draft emitted an event using the same per-turn sequence allocator as the Java bridge. The fix serializes sequence allocation on the shared event store and has a regression test.
+- Final local Office Agent path completed `action.proposed`, `tool.completed`, `message.completed`, and `run.awaiting_confirmation`; the returned draft was `PENDING_CONFIRMATION` for the real authorized lighting device. No physical control was executed.
+- Final local Company Agent path completed environment history and energy summary read-only tools after sidecar source injection and source-aware energy operation mapping.
+- The original `INVALID_DEVICE_REFERENCE` path is no longer reproducible: action tools require explicit `kind`, preserve candidate/device references, and Java normalizes lighting actions to `{kind:"lighting", command:{power:"on|off"}}`.
