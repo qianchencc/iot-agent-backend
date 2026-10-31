@@ -28,6 +28,7 @@ import ltd.qianc.iotagent.iot.IotSource;
 import ltd.qianc.iotagent.iot.OfficeDeviceSource;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.iot.UpstreamUnavailableException;
+import ltd.qianc.iotagent.iot.VideoPlaybackPreparation;
 import ltd.qianc.iotagent.iot.VideoPlaybackWindow;
 import ltd.qianc.iotagent.iot.VideoStream;
 import ltd.qianc.iotagent.iot.VideoStreamBusyException;
@@ -189,9 +190,28 @@ public final class WebClientIotAdapter implements IotAdapter {
         return webClient.post().uri("/micro-api/api/iot-center/interactive/{hub}/{action}/down", device.hubDeviceId(), action)
                 .headers(headers -> identity.gatewayHeaders().forEach(headers::set))
                 .bodyValue(Map.of())
-                .exchangeToMono(response -> response.bodyToMono(JsonNode.class)
-                        .switchIfEmpty(Mono.error(new UpstreamUnavailableException("读取空调回读响应")))
-                        .map(body -> companyAcState(body.get("content"))))
+                .exchangeToMono(response -> {
+                    int status = response.statusCode().value();
+                    if (status == 401 || status == 403) {
+                        return response.releaseBody().then(Mono.error(new GatewayAuthorizationException(status)));
+                    }
+                    if (!response.statusCode().is2xxSuccessful()) {
+                        return response.releaseBody().then(Mono.error(new UpstreamUnavailableException("读取空调回读响应")));
+                    }
+                    return response.bodyToMono(JsonNode.class)
+                            .switchIfEmpty(Mono.error(new UpstreamUnavailableException("读取空调回读响应")))
+                            .flatMap(body -> {
+                                int code = body.path("code").asInt(0);
+                                if (code == 401 || code == 403) return Mono.error(new GatewayAuthorizationException(code));
+                                JsonNode content = body.get("content");
+                                if (content != null && content.isTextual()) {
+                                    try { content = JSON.readTree(content.asText()); } catch (Exception ignored) { content = null; }
+                                }
+                                int nested = content == null ? 0 : content.path("code").asInt(0);
+                                if (nested == 401 || nested == 403) return Mono.error(new GatewayAuthorizationException(nested));
+                                return Mono.just(companyAcState(content));
+                            });
+                })
                 .timeout(callTimeout)
                 .onErrorResume(error -> error instanceof GatewayAuthorizationException
                         ? Mono.error(error) : Mono.just((Object) null));
@@ -387,6 +407,23 @@ public final class WebClientIotAdapter implements IotAdapter {
         return identity.source() == IotSource.COMPANY
                 ? execute("load authorized Company video scope", loadCompanyVideoScope(identity))
                 : loadAuthorizedDeviceScope(identity);
+    }
+
+    @Override
+    public Mono<VideoPlaybackPreparation> prepareVideoPlayback(
+            RequestIdentity identity, String deviceId, VideoPlaybackWindow window) {
+        Objects.requireNonNull(identity, "identity");
+        Objects.requireNonNull(window, "window");
+        Mono<AuthorizedDeviceScope> scope = identity.source() == IotSource.COMPANY
+                ? loadCompanyVideoScope(identity) : loadAuthorizedDeviceScope(identity);
+        return execute("prepare " + identity.source().wireValue() + " video playback", scope.flatMap(current -> {
+            AuthorizedDevice device = current.device(deviceId).orElse(null);
+            if (device == null || !"video".equalsIgnoreCase(device.kind()) || !device.observationOnly()) {
+                return Mono.error(new BusinessException("VIDEO_RECORDING_UNAVAILABLE", "所选设备不在当前视频授权范围内", 404));
+            }
+            return Mono.just(new VideoPlaybackPreparation(identity.source().wireValue(), device.id(), device.name(),
+                    device.installAddress(), window.beginTime(), window.endTime()));
+        }));
     }
 
     @Override

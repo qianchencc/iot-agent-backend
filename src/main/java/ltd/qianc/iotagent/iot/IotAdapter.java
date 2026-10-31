@@ -49,4 +49,9 @@ public interface IotAdapter {
             RequestIdentity identity, String deviceId, VideoPlaybackWindow window) {
         return Mono.error(new UpstreamUnavailableException("物联录像取流适配器未接入"));
     }
+    /** Validates the current video scope and prepares a playback card without fetching a URL. */
+    default Mono<VideoPlaybackPreparation> prepareVideoPlayback(
+            RequestIdentity identity, String deviceId, VideoPlaybackWindow window) {
+        return Mono.error(new UpstreamUnavailableException("物联视频准备适配器未接入"));
+    }
 }

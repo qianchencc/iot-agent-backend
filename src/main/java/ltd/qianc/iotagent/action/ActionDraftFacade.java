@@ -265,6 +265,9 @@ public final class ActionDraftFacade {
             emit(done, "action.resolved");
             audit(done, "ACTION_DRAFT_" + result.status().name());
             return done;
+        } catch (GatewayAuthorizationException error) {
+            rollback(executing);
+            throw error;
         } catch (ActionDispatchException error) {
             if (!error.dispatchStarted()) {
                 rollback(executing);

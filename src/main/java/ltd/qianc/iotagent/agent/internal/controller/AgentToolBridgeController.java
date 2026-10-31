@@ -16,8 +16,6 @@ import ltd.qianc.iotagent.auth.PrincipalInfo;
 import ltd.qianc.iotagent.conversation.ConversationFacade;
 import ltd.qianc.iotagent.conversation.ReportGenerationPort;
 import ltd.qianc.iotagent.error.BusinessException;
-import ltd.qianc.iotagent.iot.AuthorizedDevice;
-import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
 import ltd.qianc.iotagent.iot.DeviceCandidateQuery;
 import ltd.qianc.iotagent.iot.DeviceCapabilityRequest;
 import ltd.qianc.iotagent.iot.IotAdapter;
@@ -157,19 +155,19 @@ public final class AgentToolBridgeController {
         if (!finish.isAfter(start) || Duration.between(start.toInstant(), finish.toInstant()).toMillis() > 3 * 86_400_000L) {
             throw new BusinessException("INVALID_VIDEO_WINDOW", "录像窗口须带时区，结束晚于开始，单次最多三天", 400);
         }
-        AuthorizedDeviceScope scope = iot.loadAuthorizedVideoScope(identity(principal, source)).block(TIMEOUT);
-        AuthorizedDevice device = scope == null ? null : scope.device(deviceId).orElse(null);
-        if (device == null || !"video".equalsIgnoreCase(device.kind()) || !device.observationOnly()) {
-            throw new BusinessException("VIDEO_RECORDING_UNAVAILABLE", "所选设备不在当前视频授权范围内", 404);
-        }
         DateTimeFormatter format = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSXXX");
+        var prepared = iot.prepareVideoPlayback(identity(principal, source), deviceId,
+                new ltd.qianc.iotagent.iot.VideoPlaybackWindow(
+                        start.withOffsetSameInstant(ZoneOffset.ofHours(8)).format(format),
+                        finish.withOffsetSameInstant(ZoneOffset.ofHours(8)).format(format))).block(TIMEOUT);
+        if (prepared == null) throw new BusinessException("VIDEO_RECORDING_UNAVAILABLE", "所选设备或录像窗口不可用", 404);
         Map<String, Object> report = new LinkedHashMap<>();
-        report.put("source", source.wireValue());
-        report.put("deviceId", device.id());
-        report.put("name", device.name());
-        report.put("location", device.installAddress());
-        report.put("beginTime", start.withOffsetSameInstant(ZoneOffset.ofHours(8)).format(format));
-        report.put("endTime", finish.withOffsetSameInstant(ZoneOffset.ofHours(8)).format(format));
+        report.put("source", prepared.source());
+        report.put("deviceId", prepared.deviceId());
+        report.put("name", prepared.name());
+        report.put("location", prepared.location());
+        report.put("beginTime", prepared.beginTime());
+        report.put("endTime", prepared.endTime());
         return Map.of("videoPlayback", report);
     }
 

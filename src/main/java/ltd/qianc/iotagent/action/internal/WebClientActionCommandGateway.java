@@ -113,7 +113,7 @@ public final class WebClientActionCommandGateway implements ActionCommandGateway
             body.put("controlType", command.path("controlType").asInt());
         } else if ("ac".equals(kind)) {
             if (identity.source() == IotSource.COMPANY && device.metadata().get("companyAcActionId") instanceof String actionId) {
-                return post("/micro-api/api/iot-center/interactive/" + encode(device.hubDeviceId()) + "/" + encode(actionId) + "/down",
+                return post(identity, "/micro-api/api/iot-center/interactive/" + encode(device.hubDeviceId()) + "/" + encode(actionId) + "/down",
                         companyAcBody(command));
             }
             path = acPath;
@@ -126,12 +126,14 @@ public final class WebClientActionCommandGateway implements ActionCommandGateway
         } else {
             throw new IllegalArgumentException("设备类型不可控");
         }
-        return post(path, body);
+        return post(identity, path, body);
+    }
+    private JsonNode post(RequestIdentity identity, String path, Map<String, ?> body) {
+        return client.post().uri(path)
+                .headers(headers -> identity.gatewayHeaders().forEach(headers::set))
+                .bodyValue(body).exchangeToMono(this::decode).block(timeout);
     }
 
-    private JsonNode post(String path, Map<String, ?> body) {
-        return client.post().uri(path).bodyValue(body).exchangeToMono(this::decode).block(timeout);
-    }
 
     private reactor.core.publisher.Mono<JsonNode> decode(ClientResponse response) {
         int status = response.statusCode().value();
