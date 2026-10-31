@@ -37,4 +37,4 @@ done
 - [x] Company Agent conversation creates, reads, streams NDJSON to `run.completed`, and preserves the same customer auth headers; final environment and energy read-only tools completed.
 - [x] Office candidate → state readback → action draft path is verified without executing physical control; final event is `run.awaiting_confirmation` with `PENDING_CONFIRMATION`.
 - [x] No production cloud Runtime or customer gateway deployment is changed.
-- [ ] After all tickets close, run the single requested two-axis review.
+- [x] After all tickets close, run the single requested two-axis review.
