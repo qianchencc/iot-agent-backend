@@ -14,8 +14,12 @@ import ltd.qianc.iotagent.action.ActionDraftFacade;
 import ltd.qianc.iotagent.auth.PrincipalInfo;
 import ltd.qianc.iotagent.conversation.ConversationFacade;
 import ltd.qianc.iotagent.error.BusinessException;
+import ltd.qianc.iotagent.iot.AuthorizedDevice;
+import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
 import ltd.qianc.iotagent.iot.DeviceCandidateQuery;
+import ltd.qianc.iotagent.iot.DeviceStateReadResult;
 import ltd.qianc.iotagent.iot.IotAdapter;
+import ltd.qianc.iotagent.iot.IotSource;
 import ltd.qianc.iotagent.iot.ObservationAdapter;
 import ltd.qianc.iotagent.iot.ObservationRequest;
 import ltd.qianc.iotagent.iot.ObservationResponse;
@@ -165,15 +169,29 @@ class AgentToolBridgeContractTest {
     }
 
     @Test
-    void publicFactoryFailsClosedForProductionVideoPayloads() {
+    void prepareVideoPlaybackUsesFreshCompanyVideoScopeAndNormalizesWindow() {
         ConversationFacade conversations = mock(ConversationFacade.class);
+        IotAdapter iot = mock(IotAdapter.class);
         when(conversations.toolPrincipal("tool-1", "conversation-1", "turn-1")).thenReturn(principal);
-        AgentToolBridge bridge = AgentToolBridgeFactory.local(conversations, mock(IotAdapter.class),
+        AuthorizedDevice camera = new AuthorizedDevice("camera-1", "video", "大堂摄像头", "一层大堂", true,
+                null, "monitor-1", "hub-monitor", "leaf-1", List.of(), List.of(), Map.of());
+        AuthorizedDeviceScope scope = new AuthorizedDeviceScope() {
+            @Override public ltd.qianc.iotagent.iot.RequestIdentity identity() {
+                return new ltd.qianc.iotagent.iot.RequestIdentity(principal.authorization(), principal.tenantCode(), IotSource.COMPANY);
+            }
+            @Override public IotSource source() { return IotSource.COMPANY; }
+            @Override public List<AuthorizedDevice> devices() { return List.of(camera); }
+        };
+        when(iot.loadAuthorizedVideoScope(any())).thenReturn(Mono.just(scope));
+        AgentToolBridge bridge = AgentToolBridgeFactory.local(conversations, iot,
                 mock(ActionDraftFacade.class), mock(TaskFacade.class), mapper, null);
 
-        assertThatThrownBy(() -> bridge.execute(Map.of("toolContextId", "tool-1", "conversationId", "conversation-1",
-                "turnId", "turn-1", "toolName", "prepare_video_playback", "arguments", Map.of("source", "company"))))
-                .isInstanceOfSatisfying(BusinessException.class,
-                        error -> assertThat(error.code()).isEqualTo("AGENT_TOOL_UNAVAILABLE"));
+        Map<String, Object> result = bridge.execute(Map.of("toolContextId", "tool-1", "conversationId", "conversation-1",
+                "turnId", "turn-1", "toolName", "prepare_video_playback", "arguments", Map.of(
+                        "source", "company", "deviceId", "camera-1",
+                        "beginTime", "2026-10-16T02:57:00Z", "endTime", "2026-10-16T03:27:00Z")));
+
+        assertThat(result).containsKey("videoPlayback");
+        assertThat(result.get("videoPlayback").toString()).contains("2026-10-16T10:57:00.000+08:00");
     }
 }

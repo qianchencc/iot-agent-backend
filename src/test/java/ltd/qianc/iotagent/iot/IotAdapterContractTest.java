@@ -1,6 +1,7 @@
 package ltd.qianc.iotagent.iot;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
@@ -319,6 +320,36 @@ class IotAdapterContractTest {
                 java.util.List.of(env)).block(Duration.ofSeconds(2));
 
         assertThat(result.states().get("env-1").toString()).contains("25.6").contains("shadow");
+    }
+
+    @Test
+    void companyControlReadbackUsesMonitorAndLightingLeafScope() {
+        ExchangeFunction fixture = candidate -> {
+            String path = candidate.url().getPath();
+            String query = candidate.url().getQuery() == null ? "" : candidate.url().getQuery();
+            if (path.endsWith("/lighting/myAreaList") && !query.contains("parentId")) {
+                return Mono.just(json("[{\"id\":\"lighting-root\",\"fullCode\":\"L-1\",\"name\":\"一层\"}]"));
+            }
+            if (path.endsWith("/lighting/myAreaList")) return Mono.just(json("[]"));
+            if (path.endsWith("/lighting/devicePage")) {
+                return Mono.just(json("[{\"id\":\"light-1\",\"hubDeviceId\":\"hub-light\",\"name\":\"大厅灯\",\"switchStatus\":true}]"));
+            }
+            return Mono.just(json("{\"code\":204,\"content\":null}"));
+        };
+        IotAdapter adapter = IotAdapterFactory.webClient(
+                WebClient.builder().exchangeFunction(fixture).build(),
+                IotGatewayRoutes.runtimeCompany("/office-scope", null,
+                        "/micro-api/api/iot-center/device/page", "/micro-api/api/energy/equipment/page",
+                        "/micro-api/api/perception/device/page", "/micro-api/api/iot-center/device",
+                        "/micro-api/api/office/app/device", "/micro-api/api/office/app/device/ac/myAreaList",
+                        "/micro-api/api/office/app/device/ac/devicePage", "/micro-api/api/iot-center/device/page"),
+                Duration.ofSeconds(1), IotCallPolicy.passThrough());
+
+        DeviceStateReadResult result = adapter.readDeviceStates(
+                new RequestIdentity("Bearer company-user", "TENANT-1", IotSource.COMPANY), List.of("light-1"))
+                .block(Duration.ofSeconds(2));
+
+        assertThat(result.states()).containsEntry("light-1", true);
     }
 
     private static ClientResponse json(String body) {

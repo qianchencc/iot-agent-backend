@@ -48,7 +48,7 @@ export const TOOL_CAPABILITY_MATRIX: readonly ToolCapability[] = [
   { name: "query_alerts", category: "observation", status: "java", event: "observation.reported" },
   { name: "query_environment_history", category: "observation", status: "java", event: "observation.reported" },
   { name: "query_energy_history", category: "observation", status: "java", event: "observation.reported" },
-  { name: "prepare_video_playback", category: "readback", status: "unavailable", event: "observation.reported" },
+  { name: "prepare_video_playback", category: "readback", status: "java", event: "observation.reported" },
   { name: "review_safety_event", category: "observation", status: "java", event: "observation.reported" },
   { name: "summarize_energy", category: "report", status: "java", event: "report.generated" },
   { name: "compare_energy", category: "report", status: "java", event: "report.generated" },
@@ -245,6 +245,12 @@ function toolParameters(name: string): TSchema {
         from: Type.Optional(Type.String()),
         to: Type.Optional(Type.String()),
         unreportedOnly: Type.Optional(Type.Boolean()),
+      }, { additionalProperties: false });
+    case "prepare_video_playback":
+      return Type.Object({
+        deviceId: Type.String({ minLength: 1 }),
+        beginTime: Type.String({ minLength: 1 }),
+        endTime: Type.String({ minLength: 1 }),
       }, { additionalProperties: false });
     case "review_safety_event":
       return Type.Object({

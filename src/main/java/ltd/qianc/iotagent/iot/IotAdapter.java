@@ -7,6 +7,10 @@ import reactor.core.publisher.Mono;
 public interface IotAdapter {
 
     Mono<AuthorizedDeviceScope> loadAuthorizedDeviceScope(RequestIdentity identity);
+    /** Video authorization is a separate Company monitor grant, not the full device catalog. */
+    default Mono<AuthorizedDeviceScope> loadAuthorizedVideoScope(RequestIdentity identity) {
+        return loadAuthorizedDeviceScope(identity);
+    }
 
     /** Runtime-compatible Office candidate discovery, always intersected with server scope. */
     default Mono<DeviceCandidateSet> findDeviceCandidates(RequestIdentity identity, DeviceCandidateQuery query) {

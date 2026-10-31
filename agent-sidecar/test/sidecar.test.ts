@@ -81,7 +81,7 @@ describe("private sidecar HTTP contract", () => {
   });
 });
 
-it("publishes an explicit fail-closed capability matrix", () => {
+it("publishes an explicit capability matrix", () => {
   const byName = new Map(TOOL_CAPABILITY_MATRIX.map(capability => [capability.name, capability]));
   assert.equal(byName.get("read_device_states")?.status, "java");
   assert.equal(byName.get("get_device_details")?.status, "java");
@@ -105,7 +105,7 @@ it("publishes an explicit fail-closed capability matrix", () => {
   assert.equal(byName.get("list_tasks")?.status, "java");
   assert.equal(byName.get("list_task_plans")?.status, "java");
   assert.equal(byName.get("get_task")?.status, "java");
-  assert.equal(byName.get("prepare_video_playback")?.status, "unavailable");
+  assert.equal(byName.get("prepare_video_playback")?.status, "java");
   assert.equal(byName.get("propose_company_night_closure")?.status, "unavailable");
   assert.equal(byName.get("continue_company_night_closure")?.status, "unavailable");
   assert.equal(byName.get("readback_device_states")?.javaToolName, "read_device_states");
@@ -166,7 +166,9 @@ function openToolModel(toolName = "read_device_states"): Promise<{ server: Serve
     ? JSON.stringify({ candidateSets: [{ candidateSetId: "set-1", deviceIds: ["device-1"] }] })
     : toolName === "propose_action_draft"
       ? JSON.stringify({ candidateSetIds: ["set-1"], summary: "开灯", actions: [{ deviceId: "device-1", kind: "lighting", closeOrOpen: 1, selected: true }] })
-      : "{}";
+      : toolName === "prepare_video_playback"
+        ? JSON.stringify({ deviceId: "camera-1", beginTime: "2026-10-16T10:57:00+08:00", endTime: "2026-10-16T11:27:00+08:00" })
+        : "{}";
   return new Promise((resolve, reject) => {
     const server = createServer((_request, response) => {
       requests++;
@@ -281,19 +283,23 @@ it("forwards a pi-agent tool call to the authenticated Java bridge", async () =>
   await app.close();
 });
 
-it("returns structured unavailable results without calling Java", async () => {
+it("forwards video playback preparation to Java without issuing the stream", async () => {
   const model = await openToolModel("prepare_video_playback");
-  const java = await openFakeJavaTool();
+  const java = await openFakeJavaTool({ videoPlayback: {
+    source: "company", deviceId: "camera-1", name: "大堂摄像头",
+    location: "一层大堂", beginTime: "2026-10-16T10:57:00.000+08:00", endTime: "2026-10-16T11:27:00.000+08:00",
+  } });
   const current = await config({ modelBaseUrl: model.url, javaToolsUrl: java.url });
   const app = buildApp(current);
   const run = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: {
-    runId: "unsupported-run", toolContextId: "ctx", conversationId: "unsupported-conversation",
-    turnId: "t1", source: "office", tenantCode: "tenant", content: "查告警",
+    runId: "video-run", toolContextId: "ctx", conversationId: "video-conversation",
+    turnId: "t1", source: "company", tenantCode: "tenant", content: "回放大堂摄像头",
   } });
-  const events = run.body.trim().split("\n").map(line => JSON.parse(line) as { type: string; details?: Record<string, unknown> });
-  const reported = events.find(event => event.type === "observation.reported");
-  assert.equal(reported?.details?.code, "AGENT_TOOL_UNAVAILABLE");
-  assert.equal(java.calls.length, 0);
+  const events = run.body.trim().split("\n").map(line => JSON.parse(line) as { type: string });
+  assert.ok(events.some(event => event.type === "observation.reported"));
+  assert.equal(java.calls.length, 1);
+  assert.equal(java.calls[0]?.toolName, "prepare_video_playback");
+  assert.equal((java.calls[0]?.arguments as Record<string, unknown>)?.source, "company");
   assert.ok(events.some(event => event.type === "run.completed"));
   await app.close();
 });

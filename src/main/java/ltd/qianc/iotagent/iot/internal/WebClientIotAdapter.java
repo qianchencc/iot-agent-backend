@@ -94,10 +94,11 @@ public final class WebClientIotAdapter implements IotAdapter {
     public Mono<DeviceStateReadResult> readDeviceStates(RequestIdentity identity, List<String> deviceIds) {
         Objects.requireNonNull(identity, "identity");
         List<String> ids = deviceIds == null ? List.of() : List.copyOf(deviceIds);
-        if (identity.source() != IotSource.OFFICE) return Mono.error(new BusinessException("IOT_SOURCE_UNAVAILABLE", "设备状态仅支持 Office 来源", 404));
         if (ids.isEmpty() || ids.stream().anyMatch(id -> id == null || id.isBlank()) || ids.size() != ids.stream().distinct().count()) {
             return Mono.error(new BusinessException("INVALID_DEVICE_REFERENCE", "设备引用无效"));
         }
+        if (identity.source() == IotSource.COMPANY) return readCompanyDeviceStates(identity, ids);
+        if (identity.source() != IotSource.OFFICE) return Mono.error(new BusinessException("IOT_SOURCE_UNAVAILABLE", "设备状态仅支持 Office 来源", 404));
         return execute("read authorized Office device states", loadAuthorizedDeviceScope(identity)
                 .flatMap(scope -> readOfficeRecords(identity).map(records -> {
                     Map<String, JsonNode> recordsById = new LinkedHashMap<>();
@@ -147,6 +148,68 @@ public final class WebClientIotAdapter implements IotAdapter {
                     for (AuthorizedDevice device : requested) states.putIfAbsent(device.id(), null);
                     return new DeviceStateReadResult(states, Instant.now().toString());
                 });
+    }
+
+    private Mono<DeviceStateReadResult> readCompanyDeviceStates(RequestIdentity identity, List<String> ids) {
+        return execute("read authorized Company device states", loadCompanyScope(identity)
+                .flatMapMany(scope -> Flux.fromIterable(ids)
+                        .concatMap(id -> {
+                            AuthorizedDevice device = scope.device(id)
+                                    .orElseThrow(() -> new BusinessException("DEVICE_OUTSIDE_SCOPE", "设备不在当前授权范围内", 403));
+                            if ("lighting".equals(device.kind()) || "video".equals(device.kind())) {
+                                String family = "video".equals(device.kind()) ? "monitor" : device.kind();
+                                return page(routes.companySmartBasePath() + "/" + family + "/devicePage",
+                                                Map.of("areaFullCode", device.smartAreaCode()), identity)
+                                        .map(rows -> entry(id, companySmartState(device, rows)));
+                            }
+                            if ("ac".equals(device.kind())) {
+                                return companyAcState(identity, device).map(state -> entry(id, state));
+                            }
+                            return Mono.just(entry(id, (Object) null));
+                        }))
+                .collectMap(Map.Entry::getKey, Map.Entry::getValue, LinkedHashMap::new)
+                .map(states -> new DeviceStateReadResult(states, Instant.now().toString())));
+    }
+
+    private static Object companySmartState(AuthorizedDevice device, List<JsonNode> rows) {
+        for (JsonNode row : rows) {
+            if (!device.officeDeviceRef().equals(text(row, "id", "officeDeviceRef"))) continue;
+            if ("lighting".equals(device.kind())) {
+                return row.has("switchStatus") && !row.get("switchStatus").isNull() ? row.get("switchStatus").asBoolean() : null;
+            }
+            String status = text(row, "netStatus");
+            return "ON_LINE".equalsIgnoreCase(status) ? Boolean.TRUE : "OFF_LINE".equalsIgnoreCase(status) ? Boolean.FALSE : null;
+        }
+        return null;
+    }
+
+    private Mono<Object> companyAcState(RequestIdentity identity, AuthorizedDevice device) {
+        String action = metadataText(device, "companyAcDetailActionId");
+        if (device.hubDeviceId() == null || action == null) return Mono.justOrEmpty((Object) null);
+        return webClient.post().uri("/micro-api/api/iot-center/interactive/{hub}/{action}/down", device.hubDeviceId(), action)
+                .headers(headers -> identity.gatewayHeaders().forEach(headers::set))
+                .bodyValue(Map.of())
+                .exchangeToMono(response -> response.bodyToMono(JsonNode.class)
+                        .switchIfEmpty(Mono.error(new UpstreamUnavailableException("读取空调回读响应")))
+                        .map(body -> companyAcState(body.get("content"))))
+                .timeout(callTimeout)
+                .onErrorResume(error -> error instanceof GatewayAuthorizationException
+                        ? Mono.error(error) : Mono.just((Object) null));
+    }
+
+    private static Object companyAcState(JsonNode content) {
+        if (content == null) return null;
+        if (content.isTextual()) {
+            try { content = JSON.readTree(content.asText()); } catch (Exception ignored) { return null; }
+        }
+        JsonNode data = content.path("data");
+        if (!data.isObject()) return null;
+        Map<String, Object> state = new LinkedHashMap<>();
+        if (data.path("O").has("val")) state.put("power", data.path("O").path("val").asInt() == 1 ? "on" : "off");
+        if (data.path("tT").has("val")) state.put("temperature", data.path("tT").path("val").asDouble() / 10.0);
+        if (data.path("MODE").has("val")) state.put("mode", Map.of(2, "fan", 3, "cool", 4, "heat", 5, "dry", 7, "auto").get(data.path("MODE").path("val").asInt()));
+        if (data.path("F").has("val")) state.put("fanSpeed", Map.of(15, "low", 75, "high", 101, "auto").get(data.path("F").path("val").asInt()));
+        return state.isEmpty() ? null : state;
     }
 
     private static final Object NULL_STATE = new Object();
@@ -319,6 +382,14 @@ public final class WebClientIotAdapter implements IotAdapter {
     }
 
     @Override
+    public Mono<AuthorizedDeviceScope> loadAuthorizedVideoScope(RequestIdentity identity) {
+        Objects.requireNonNull(identity, "identity");
+        return identity.source() == IotSource.COMPANY
+                ? execute("load authorized Company video scope", loadCompanyVideoScope(identity))
+                : loadAuthorizedDeviceScope(identity);
+    }
+
+    @Override
     public Mono<VideoStream> openVideoStream(RequestIdentity identity, String deviceId) {
         Objects.requireNonNull(identity, "identity");
         if (deviceId == null || deviceId.isBlank()) return Mono.empty();
@@ -476,6 +547,7 @@ public final class WebClientIotAdapter implements IotAdapter {
                         boolean validBinding = providerCode != null && airCondition != null && acDetail != null;
                         Map<String, Object> metadata = new LinkedHashMap<>(device.metadata());
                         putMetadata(metadata, "companyAcActionId", validBinding ? airCondition : null);
+                        putMetadata(metadata, "companyAcDetailActionId", validBinding ? acDetail : null);
                         return new AuthorizedDevice(device.id(), device.kind(), device.name(), device.installAddress(),
                                 !validBinding, validBinding ? providerCode : null, device.officeDeviceRef(),
                                 device.hubDeviceId(), device.smartAreaCode(), device.locationPaths(), device.officeIds(), metadata);

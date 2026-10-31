@@ -29,6 +29,22 @@ public class ActionDraftConfiguration {
     }
 
     @Bean
+    @ConditionalOnProperty(name = "iot.gateway.base-url")
+    @ConditionalOnMissingBean(ActionCommandGateway.class)
+    ActionCommandGateway webClientActionCommandGateway(
+            ObjectMapper mapper,
+            org.springframework.web.reactive.function.client.WebClient.Builder builder,
+            ltd.qianc.iotagent.iot.IotAdapter iot,
+            @Value("${iot.gateway.base-url}") String baseUrl,
+            @Value("${iot.gateway.call-timeout-ms:30000}") long timeoutMs,
+            @Value("${iot.gateway.company-lighting-down-path:/micro-api/api/office/app/device/lighting/down}") String lightingPath,
+            @Value("${iot.gateway.company-access-down-path:/micro-api/api/office/app/device/access/down}") String accessPath,
+            @Value("${iot.gateway.company-ac-down-path:/micro-api/api/office/app/device/ac/down}") String acPath) {
+        return new WebClientActionCommandGateway(mapper, builder.baseUrl(baseUrl).build(), iot,
+                Duration.ofMillis(Math.max(1, timeoutMs)), lightingPath, accessPath, acPath);
+    }
+
+    @Bean
     @ConditionalOnProperty(name = "agent.control.mode", havingValue = "fixture")
     ActionCommandGateway fixtureActionCommandGateway(
             ObjectMapper mapper,

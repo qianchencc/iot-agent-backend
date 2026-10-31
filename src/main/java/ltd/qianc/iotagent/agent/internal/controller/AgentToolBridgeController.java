@@ -2,8 +2,11 @@ package ltd.qianc.iotagent.agent.internal.controller;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.time.Duration;
 import java.time.Instant;
+import java.time.Duration;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -11,7 +14,10 @@ import java.util.Map;
 import ltd.qianc.iotagent.action.ActionDraftFacade;
 import ltd.qianc.iotagent.auth.PrincipalInfo;
 import ltd.qianc.iotagent.conversation.ConversationFacade;
+import ltd.qianc.iotagent.conversation.ReportGenerationPort;
 import ltd.qianc.iotagent.error.BusinessException;
+import ltd.qianc.iotagent.iot.AuthorizedDevice;
+import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
 import ltd.qianc.iotagent.iot.DeviceCandidateQuery;
 import ltd.qianc.iotagent.iot.DeviceCapabilityRequest;
 import ltd.qianc.iotagent.iot.IotAdapter;
@@ -22,7 +28,7 @@ import ltd.qianc.iotagent.iot.ObservationRequest;
 import ltd.qianc.iotagent.iot.ObservationResponse;
 import ltd.qianc.iotagent.iot.ObservationStatus;
 import ltd.qianc.iotagent.iot.RequestIdentity;
-import ltd.qianc.iotagent.conversation.ReportGenerationPort;
+import ltd.qianc.iotagent.iot.VideoPlaybackWindow;
 import ltd.qianc.iotagent.task.TaskFacade;
 import ltd.qianc.iotagent.task.TaskProjectionStore;
 import org.springframework.beans.factory.ObjectProvider;
@@ -97,8 +103,8 @@ public final class AgentToolBridgeController {
         Map<String, Object> arguments = map(body.get("arguments"));
         return switch (toolName) {
             case "find_device_candidates" -> findCandidates(principal, source(arguments), arguments);
-            case "get_device_details" -> findCandidates(principal, source(arguments), detailQuery(arguments));
             case "read_device_states", "read_device_readback", "readback_device_states" -> readStates(principal, source(arguments), arguments);
+            case "prepare_video_playback" -> prepareVideoPlayback(principal, source(arguments), arguments);
             case "inspect_device_capabilities" -> inspectCapabilities(principal, source(arguments), arguments);
             case "query_alerts" -> queryAlerts(principal, source(arguments), arguments);
             case "query_environment_history" -> observation(principal, source(arguments), ObservationOperation.ENVIRONMENT_HISTORY, arguments);
@@ -144,6 +150,37 @@ public final class AgentToolBridgeController {
                 conversationId, turnId, text(args, "idempotencyKey", turnId), content);
         return Map.of("reportId", result.reportId(), "reused", result.reused(), "report", result.report());
     }
+    private Map<String, Object> prepareVideoPlayback(PrincipalInfo principal, IotSource source, Map<String, Object> args) {
+        String deviceId = text(args, "deviceId", "");
+        OffsetDateTime start = parseVideoTime(text(args, "beginTime", ""));
+        OffsetDateTime finish = parseVideoTime(text(args, "endTime", ""));
+        if (!finish.isAfter(start) || Duration.between(start.toInstant(), finish.toInstant()).toMillis() > 3 * 86_400_000L) {
+            throw new BusinessException("INVALID_VIDEO_WINDOW", "录像窗口须带时区，结束晚于开始，单次最多三天", 400);
+        }
+        AuthorizedDeviceScope scope = iot.loadAuthorizedVideoScope(identity(principal, source)).block(TIMEOUT);
+        AuthorizedDevice device = scope == null ? null : scope.device(deviceId).orElse(null);
+        if (device == null || !"video".equalsIgnoreCase(device.kind()) || !device.observationOnly()) {
+            throw new BusinessException("VIDEO_RECORDING_UNAVAILABLE", "所选设备不在当前视频授权范围内", 404);
+        }
+        DateTimeFormatter format = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSXXX");
+        Map<String, Object> report = new LinkedHashMap<>();
+        report.put("source", source.wireValue());
+        report.put("deviceId", device.id());
+        report.put("name", device.name());
+        report.put("location", device.installAddress());
+        report.put("beginTime", start.withOffsetSameInstant(ZoneOffset.ofHours(8)).format(format));
+        report.put("endTime", finish.withOffsetSameInstant(ZoneOffset.ofHours(8)).format(format));
+        return Map.of("videoPlayback", report);
+    }
+
+    private static OffsetDateTime parseVideoTime(String value) {
+        try {
+            return OffsetDateTime.parse(value, DateTimeFormatter.ISO_OFFSET_DATE_TIME);
+        } catch (RuntimeException error) {
+            throw new BusinessException("INVALID_VIDEO_WINDOW", "录像窗口须带时区，结束晚于开始，单次最多三天", 400);
+        }
+    }
+
     private Map<String, Object> queryAlerts(PrincipalInfo principal, IotSource source,
             Map<String, Object> args) {
         List<String> types = strings(args.get("types"));
