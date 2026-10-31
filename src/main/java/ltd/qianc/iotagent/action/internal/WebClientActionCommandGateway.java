@@ -69,8 +69,9 @@ public final class WebClientActionCommandGateway implements ActionCommandGateway
                 if (acceptedResult) accepted.add(action); else rejected++;
             } catch (RuntimeException error) {
                 if (error instanceof GatewayAuthorizationException authorization) throw authorization;
-                if (error instanceof ActionDispatchException dispatchError) throw dispatchError;
-                throw new ActionDispatchException("设备指令下发结果未知", error, true);
+                receipt.put("outcome", ActionReceiptOutcome.UNKNOWN.name());
+                receipt.put("error", error.getMessage() == null ? "设备指令结果未知" : error.getMessage());
+                rejected++;
             }
             receipts.add(receipt);
         }
@@ -112,22 +113,53 @@ public final class WebClientActionCommandGateway implements ActionCommandGateway
             body.put("accessAreaDeviceId", requireBinding(device));
             body.put("controlType", command.path("controlType").asInt());
         } else if ("ac".equals(kind)) {
-            if (identity.source() == IotSource.COMPANY && device.metadata().get("companyAcActionId") instanceof String actionId) {
-                return post(identity, "/micro-api/api/iot-center/interactive/" + encode(device.hubDeviceId()) + "/" + encode(actionId) + "/down",
-                        companyAcBody(command));
-            }
-            path = acPath;
-            body.put("acAreaDeviceId", requireBinding(device));
-            String field = command.has("temperature") ? "temperature" : command.has("mode") ? "mode"
-                    : command.has("fanSpeed") ? "fanSpeed" : "power";
-            String value = command.path(field).asText("off");
-            body.put("acDeviceParamTemplate", acTemplate(field, value));
-            if ("temperature".equals(field)) body.put("temperature", Math.round(command.path(field).asDouble() * 10));
+            return dispatchAc(identity, device, command);
         } else {
             throw new IllegalArgumentException("设备类型不可控");
         }
         return post(identity, path, body);
+
     }
+    
+    private JsonNode dispatchAc(RequestIdentity identity, AuthorizedDevice device, ObjectNode command) {
+        ArrayNode fields = mapper.createArrayNode();
+        for (String field : List.of("power", "mode", "temperature", "fanSpeed")) {
+            if (!command.has(field)) continue;
+            try {
+                JsonNode response;
+                if (identity.source() == IotSource.COMPANY && device.metadata().get("companyAcActionId") instanceof String actionId) {
+                    response = post(identity, "/micro-api/api/iot-center/interactive/" + encode(device.hubDeviceId()) + "/" + encode(actionId) + "/down",
+                            companyAcBody(command, field));
+                } else {
+                    Map<String, Object> body = new LinkedHashMap<>();
+                    body.put("acAreaDeviceId", requireBinding(device));
+                    body.put("acDeviceParamTemplate", acTemplate(field, command.path(field).asText("off")));
+                    if ("temperature".equals(field)) body.put("temperature", Math.round(command.path(field).asDouble() * 10));
+                    response = post(identity, acPath, body);
+                }
+                ObjectNode fieldResult = mapper.createObjectNode();
+                fieldResult.put("field", field);
+                fieldResult.put("outcome", accepted(response) ? "accepted" : "rejected");
+                fieldResult.set("response", response);
+                fields.add(fieldResult);
+            } catch (GatewayAuthorizationException error) {
+                throw error;
+            } catch (RuntimeException error) {
+                ObjectNode fieldResult = mapper.createObjectNode();
+                fieldResult.put("field", field);
+                fieldResult.put("outcome", "unknown");
+                fieldResult.put("error", error.getMessage() == null ? "设备指令结果未知" : error.getMessage());
+                fields.add(fieldResult);
+            }
+        }
+        ObjectNode result = mapper.createObjectNode();
+        boolean allAccepted = fields.size() > 0;
+        for (JsonNode field : fields) allAccepted &= "accepted".equals(field.path("outcome").asText());
+        result.put("code", allAccepted ? 0 : 1);
+        result.set("fields", fields);
+        return result;
+    }
+
     private JsonNode post(RequestIdentity identity, String path, Map<String, ?> body) {
         return client.post().uri(path)
                 .headers(headers -> identity.gatewayHeaders().forEach(headers::set))
@@ -158,39 +190,64 @@ public final class WebClientActionCommandGateway implements ActionCommandGateway
     private ArrayNode readbacks(RequestIdentity identity, List<JsonNode> actions) {
         ArrayNode result = mapper.createArrayNode();
         if (actions.isEmpty()) return result;
-        List<String> ids = actions.stream().map(action -> action.path("deviceId").asText("")).filter(id -> !id.isBlank()).distinct().toList();
+        List<String> ids = actions.stream().map(action -> action.path("deviceId").asText(""))
+                .filter(id -> !id.isBlank()).distinct().toList();
         try {
             DeviceStateReadResult states = iot.readDeviceStates(identity, ids).block(timeout);
-            if (states == null) return result;
+            if (states == null) return unknownReadbacks(actions);
             for (JsonNode action : actions) {
                 String deviceId = action.path("deviceId").asText("");
+                Object state = states.states().get(deviceId);
                 ObjectNode readback = mapper.createObjectNode();
                 readback.put("actionId", action.path("id").asText(""));
-                Object state = states.states().get(deviceId);
-                readback.put("outcome", state == null ? "unconfirmed" : "confirmed");
+                boolean confirmed = "ac".equals(action.path("kind").asText(""))
+                        && state != null && commandSatisfied(action.path("command"), state);
+                readback.put("outcome", confirmed ? "confirmed" : "unconfirmed");
                 readback.set("observedState", mapper.valueToTree(state == null ? Map.of() : state));
                 readback.put("observedAt", states.observedAt());
                 result.add(readback);
             }
         } catch (RuntimeException ignored) {
-            // The write was accepted; preserve an explicit unknown readback.
-            for (JsonNode action : actions) {
-                ObjectNode readback = mapper.createObjectNode();
-                readback.put("actionId", action.path("id").asText(""));
-                readback.put("outcome", "unconfirmed");
-                readback.set("observedState", mapper.createObjectNode());
-                result.add(readback);
-            }
+            return unknownReadbacks(actions);
         }
         return result;
     }
 
+    private ArrayNode unknownReadbacks(List<JsonNode> actions) {
+        ArrayNode result = mapper.createArrayNode();
+        for (JsonNode action : actions) {
+            ObjectNode readback = mapper.createObjectNode();
+            readback.put("actionId", action.path("id").asText(""));
+            readback.put("outcome", "unconfirmed");
+            readback.set("observedState", mapper.createObjectNode());
+            result.add(readback);
+        }
+        return result;
+    }
+
+    private boolean commandSatisfied(JsonNode command, Object state) {
+        JsonNode observed = mapper.valueToTree(state);
+        if (command.has("power") && !command.path("power").asText().equals(observed.path("power").asText())) return false;
+        if (command.has("mode") && !command.path("mode").asText().equals(observed.path("mode").asText())) return false;
+        if (command.has("fanSpeed") && !command.path("fanSpeed").asText().equals(observed.path("fanSpeed").asText())) return false;
+        if (command.has("temperature") && Math.abs(command.path("temperature").asDouble() - observed.path("temperature").asDouble(Double.NaN)) > 0.01) return false;
+        return command.fieldNames().hasNext();
+    }
+
     private static boolean accepted(JsonNode body) {
-        JsonNode content = body == null ? null : body.get("content");
+        if (body == null) return false;
+        JsonNode fields = body.get("fields");
+        if (fields != null && fields.isArray()) {
+            for (JsonNode field : fields) {
+                if (!"accepted".equals(field.path("outcome").asText())) return false;
+            }
+            return !fields.isEmpty();
+        }
+        JsonNode content = body.get("content");
         if (content != null && content.isTextual()) {
             try { content = new ObjectMapper().readTree(content.asText()); } catch (Exception ignored) { return false; }
         }
-        return body != null && (body.path("code").asInt(-1) == 0 || body.path("code").asInt(-1) == 200)
+        return (body.path("code").asInt(-1) == 0 || body.path("code").asInt(-1) == 200)
                 && (content == null || !content.isObject() || content.path("code").asInt(0) == 0);
     }
 
@@ -207,8 +264,7 @@ public final class WebClientActionCommandGateway implements ActionCommandGateway
         return device.controlRef();
     }
 
-    private static Map<String, Object> companyAcBody(JsonNode command) {
-        String field = command.has("power") ? "power" : command.has("temperature") ? "temperature" : command.has("mode") ? "mode" : "fanSpeed";
+    private static Map<String, Object> companyAcBody(JsonNode command, String field) {
         String value = command.path(field).asText("");
         int val = switch (field) {
             case "power" -> "on".equals(value) ? 1 : 0;

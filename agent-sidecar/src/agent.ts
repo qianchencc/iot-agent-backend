@@ -405,7 +405,18 @@ export class AgentRunner {
           ? await this.callJavaTool(request, capability.javaToolName ?? capability.name,
               bridgeArguments, toolCallId, toolSignal ?? signal)
           : unsupportedResult(capability);
-        emit({ type: capability.event, tool: capability.name, details: result });
+        const eventDetails = capability.name === "prepare_video_playback"
+          && result && typeof result === "object" && !Array.isArray(result)
+          && "videoPlayback" in result
+          ? {
+            ...(result as Record<string, unknown>),
+            blocks: [{
+              type: "video_playback",
+              report: (result as Record<string, unknown>).videoPlayback,
+            }],
+          }
+          : result;
+        emit({ type: capability.event, tool: capability.name, details: eventDetails });
         if (capability.status === "java" && isPendingConfirmation(result)) {
           state.confirmation = { tool: capability.name, details: result };
         }

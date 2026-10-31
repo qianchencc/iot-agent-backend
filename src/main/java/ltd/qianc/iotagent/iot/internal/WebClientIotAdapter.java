@@ -153,23 +153,40 @@ public final class WebClientIotAdapter implements IotAdapter {
 
     private Mono<DeviceStateReadResult> readCompanyDeviceStates(RequestIdentity identity, List<String> ids) {
         return execute("read authorized Company device states", loadCompanyScope(identity)
-                .flatMapMany(scope -> Flux.fromIterable(ids)
-                        .concatMap(id -> {
-                            AuthorizedDevice device = scope.device(id)
-                                    .orElseThrow(() -> new BusinessException("DEVICE_OUTSIDE_SCOPE", "设备不在当前授权范围内", 403));
-                            if ("lighting".equals(device.kind()) || "video".equals(device.kind())) {
-                                String family = "video".equals(device.kind()) ? "monitor" : device.kind();
-                                return page(routes.companySmartBasePath() + "/" + family + "/devicePage",
-                                                Map.of("areaFullCode", device.smartAreaCode()), identity)
-                                        .map(rows -> entry(id, companySmartState(device, rows)));
-                            }
-                            if ("ac".equals(device.kind())) {
-                                return companyAcState(identity, device).map(state -> entry(id, state));
-                            }
-                            return Mono.just(entry(id, (Object) null));
-                        }))
-                .collectMap(Map.Entry::getKey, Map.Entry::getValue, LinkedHashMap::new)
-                .map(states -> new DeviceStateReadResult(states, Instant.now().toString())));
+                .flatMap(scope -> {
+                    List<AuthorizedDevice> requested = ids.stream()
+                            .map(id -> scope.device(id).orElseThrow(() -> new BusinessException(
+                                    "DEVICE_OUTSIDE_SCOPE", "设备不在当前授权范围内", 403)))
+                            .toList();
+                    List<AuthorizedDevice> observed = requested.stream()
+                            .filter(device -> "environment".equalsIgnoreCase(device.kind())
+                                    || "energy".equalsIgnoreCase(device.kind()))
+                            .toList();
+                    Mono<Map<String, Object>> observationStates = observed.isEmpty()
+                            ? Mono.just(Map.of())
+                            : readObservationStates(identity, observed).map(DeviceStateReadResult::states);
+                    Mono<Map<String, Object>> smartStates = Flux.fromIterable(requested.stream()
+                                    .filter(device -> !observed.contains(device)).toList())
+                            .concatMap(device -> {
+                                if ("lighting".equals(device.kind()) || "video".equals(device.kind())) {
+                                    String family = "video".equals(device.kind()) ? "monitor" : device.kind();
+                                    return page(routes.companySmartBasePath() + "/" + family + "/devicePage",
+                                                    Map.of("areaFullCode", device.smartAreaCode()), identity)
+                                            .map(rows -> entry(device.id(), companySmartState(device, rows)));
+                                }
+                                if ("ac".equals(device.kind())) {
+                                    return companyAcState(identity, device).map(state -> entry(device.id(), state));
+                                }
+                                return Mono.just(entry(device.id(), (Object) null));
+                            })
+                            .collectMap(Map.Entry::getKey, Map.Entry::getValue, LinkedHashMap::new);
+                    return Mono.zip(observationStates, smartStates).map(tuple -> {
+                        Map<String, Object> states = new LinkedHashMap<>(tuple.getT1());
+                        states.putAll(tuple.getT2());
+                        for (AuthorizedDevice device : requested) states.putIfAbsent(device.id(), null);
+                        return new DeviceStateReadResult(states, Instant.now().toString());
+                    });
+                }));
     }
 
     private static Object companySmartState(AuthorizedDevice device, List<JsonNode> rows) {

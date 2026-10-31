@@ -101,10 +101,11 @@ public final class AgentToolBridgeController {
         Map<String, Object> arguments = map(body.get("arguments"));
         return switch (toolName) {
             case "find_device_candidates" -> findCandidates(principal, source(arguments), arguments);
+            case "get_device_details" -> findCandidates(principal, source(arguments), detailQuery(arguments));
             case "read_device_states", "read_device_readback", "readback_device_states" -> readStates(principal, source(arguments), arguments);
             case "prepare_video_playback" -> prepareVideoPlayback(principal, source(arguments), arguments);
             case "inspect_device_capabilities" -> inspectCapabilities(principal, source(arguments), arguments);
-            case "query_alerts" -> queryAlerts(principal, source(arguments), arguments);
+            case "query_alerts" -> observation(principal, source(arguments), ObservationOperation.SAFETY_EVENTS, arguments);
             case "query_environment_history" -> observation(principal, source(arguments), ObservationOperation.ENVIRONMENT_HISTORY, arguments);
             case "query_energy_history" -> observation(principal, source(arguments), ObservationOperation.ENERGY_HISTORY, arguments);
             case "summarize_energy" -> observation(principal, source(arguments),
@@ -463,17 +464,7 @@ public final class AgentToolBridgeController {
         List<String> deviceIds = deviceIds(args);
         RequestIdentity requestIdentity = identity(principal, source);
         Object result;
-        if (source == IotSource.COMPANY) {
-            var scope = iot.loadAuthorizedDeviceScope(requestIdentity).block(TIMEOUT);
-            if (scope == null) throw new BusinessException("IOT_SCOPE_UNAVAILABLE", "设备授权范围暂不可用", 503);
-            List<ltd.qianc.iotagent.iot.AuthorizedDevice> devices = deviceIds.stream()
-                    .map(id -> scope.device(id).orElseThrow(() -> new BusinessException(
-                            "INVALID_DEVICE_REFERENCE", "设备引用无效")))
-                    .toList();
-            result = iot.readObservationStates(requestIdentity, devices).block(TIMEOUT);
-        } else {
-            result = iot.readDeviceStates(requestIdentity, deviceIds).block(TIMEOUT);
-        }
+        result = iot.readDeviceStates(requestIdentity, deviceIds).block(TIMEOUT);
         return mapper.convertValue(result, Map.class);
     }
 

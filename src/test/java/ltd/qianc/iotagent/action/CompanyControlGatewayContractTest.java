@@ -48,7 +48,7 @@ class CompanyControlGatewayContractTest {
         assertThat(result.status()).isEqualTo(ActionDraftStatus.ACCEPTED);
         assertThat(request.get().url().getPath()).isEqualTo("/micro-api/api/office/app/device/lighting/down");
         assertThat(request.get().body()).isNotNull();
-        assertThat(result.resultJson()).contains("confirmed");
+        assertThat(result.resultJson()).contains("unconfirmed");
     }
 
     @Test

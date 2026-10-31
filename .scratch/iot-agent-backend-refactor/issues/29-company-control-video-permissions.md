@@ -21,3 +21,5 @@
 - Company 视频准备工具已经接入 Node sidecar → Java bridge；准备卡不取流，点击播放仍走 `/api/agent/devices/{id}/video-stream`，Company 只读取 monitor 专用授权目录。
 - 本机真实身份请求返回 HTTP 200、47 个 Company 设备：energy 43、environment 1、safety 3；当前上游没有返回 lighting/access/monitor 记录，因此不能伪造 Company 控制设备或视频地址。不存在摄像头取流返回确定性 `VIDEO_STREAM_UNAVAILABLE`。
 - 控制协议、越权阻断、Company lighting readback、视频窗口与视频上游错误均有回归测试；本次截图保存在 `docs/evidence/company-backend-acceptance.png`。
+
+- 最终修复：控制请求逐次转发当前身份的 `Authorization`/`Tenantcode`；Company AC 的多个字段逐字段下发；只把命令满足的 AC 状态标为 confirmed，照明/门禁保持 unconfirmed；单设备失败保留 receipt 并继续其他设备。Company `read_device_states` 统一覆盖观察设备与控制叶子设备，视频准备事件输出可渲染的 `video_playback` block；恢复 `get_device_details` bridge。
