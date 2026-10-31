@@ -75,7 +75,7 @@ public final class ConversationFacade {
  private void emit(Run r,String type,Map<String,Object> f){
   if("heartbeat".equals(type)){sendHeartbeat(r);return;}
   if(TERMINALS.contains(type)){finish(r,type,f);return;}
-  synchronized(events){ObjectNode n=node(r,type,f);long next=events.read(r.conversationId).stream().filter(e->r.turnId.equals(e.turnId())).mapToLong(ConversationEventFact::sequence).max().orElse(0)+1;r.sequence=Math.max(r.sequence,next);n.put("sequence",r.sequence);append(r,n);send(r,n);}
+  synchronized(r){if(r.terminal.get())return;synchronized(events){ObjectNode n=node(r,type,f);long next=events.read(r.conversationId).stream().filter(e->r.turnId.equals(e.turnId())).mapToLong(ConversationEventFact::sequence).max().orElse(0)+1;r.sequence=Math.max(r.sequence,next);n.put("sequence",r.sequence);append(r,n);send(r,n);}}
  }
  private void finish(Run r,String type,Map<String,Object> f){
   synchronized(r){

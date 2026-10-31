@@ -36,7 +36,7 @@ import org.springframework.beans.factory.annotation.Value;
  */
 public final class HttpAgentEngineBridge implements AgentEngineBridge {
 
-    private static final String[] PUBLIC_PREFIXES = {"run.", "message.", "tool.", "action.", "task.", "observation."};
+    private static final String[] PUBLIC_PREFIXES = {"run.", "message.", "tool.", "action.", "task.", "observation.", "report."};
 
     private final ObjectMapper objectMapper;
     private final URI baseUri;
@@ -177,6 +177,7 @@ public final class HttpAgentEngineBridge implements AgentEngineBridge {
                             result.complete(null);
                         } catch (Exception error) {
                             result.completeExceptionally(timedOut.get() ? timeout() : unavailable());
+                        } finally {
                             watchdog.cancel(false);
                         }
                     }, executor);

@@ -104,9 +104,11 @@ public final class AgentToolBridgeController {
             case "query_environment_history" -> observation(principal, source(arguments), ObservationOperation.ENVIRONMENT_HISTORY, arguments);
             case "query_energy_history" -> observation(principal, source(arguments), ObservationOperation.ENERGY_HISTORY, arguments);
             case "summarize_energy" -> observation(principal, source(arguments),
-                    source(arguments) == IotSource.COMPANY ? ObservationOperation.COMPANY_ENERGY_DAILY : ObservationOperation.ENERGY_REPORT, arguments);
+                    source(arguments) == IotSource.COMPANY ? ObservationOperation.COMPANY_METER_REPORT : ObservationOperation.ENERGY_REPORT,
+                    arguments);
             case "compare_energy" -> observation(principal, source(arguments),
-                    source(arguments) == IotSource.COMPANY ? ObservationOperation.COMPANY_ENERGY_REPORT : ObservationOperation.ENERGY_COMPARISON, arguments);
+                    source(arguments) == IotSource.COMPANY ? ObservationOperation.COMPANY_METER_REPORT : ObservationOperation.ENERGY_COMPARISON,
+                    arguments);
             case "review_safety_event" -> observation(principal, source(arguments),
                     arguments.containsKey("cameraDeviceId") ? ObservationOperation.SAFETY_EVENT_CAMERAS : ObservationOperation.SAFETY_EVENT,
                     arguments);
@@ -303,7 +305,40 @@ public final class AgentToolBridgeController {
                 && types.size() == 1 && types.get(0) instanceof String type && !type.isBlank()) {
             normalized.put("type", type);
         }
+        if (operation == ObservationOperation.COMPANY_METER_REPORT) {
+            normalizeMeterScope(normalized);
+            if (args.get("baseline") instanceof Map<?, ?> baseline) {
+                Map<String, Object> values = map(baseline);
+                if (values.get("from") instanceof String from) normalized.put("baseFrom", from);
+                if (values.get("to") instanceof String to) normalized.put("baseTo", to);
+            }
+            normalizeMeterInstant(normalized, "from");
+            normalizeMeterInstant(normalized, "to");
+            normalizeMeterInstant(normalized, "baseFrom");
+            normalizeMeterInstant(normalized, "baseTo");
+            normalized.put("kind", args.containsKey("axis") ? "comparison" : "statistics");
+        }
         return normalized;
+    }
+
+    private static void normalizeMeterInstant(Map<String, Object> normalized, String key) {
+        Object value = normalized.get(key);
+        if (value instanceof String text && text.matches("\\d{4}-\\d{2}-\\d{2}")) {
+            normalized.put(key, text + "T00:00:00+08:00");
+        }
+    }
+
+    private static void normalizeMeterScope(Map<String, Object> normalized) {
+        if (!(normalized.get("scope") instanceof Map<?, ?> rawScope)) return;
+        Map<String, Object> scope = map(rawScope);
+        Object level = scope.get("level");
+        if (level != null) normalized.put("scopeLevel", level);
+        Object floor = scope.get("floor");
+        if (floor != null) normalized.put("floor", floor);
+        Object meterId = scope.get("meterId");
+        if (meterId != null) normalized.put("meterId", meterId);
+        Object meterIds = scope.get("meterIds");
+        if (meterIds != null) normalized.put("meterIds", meterIds);
     }
 
     private Map<String, String> parameterMap(Map<String, Object> args) {

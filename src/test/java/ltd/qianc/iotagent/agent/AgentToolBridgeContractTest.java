@@ -43,6 +43,32 @@ class AgentToolBridgeContractTest {
         assertThat(result).containsKey("records");
         verify(observations).read(any(ObservationRequest.class));
     }
+    @Test
+    void companyEnergyToolsUseMeterReportWithRuntimeScopeAndWindow() {
+        ConversationFacade conversations = mock(ConversationFacade.class);
+        ObservationAdapter observations = mock(ObservationAdapter.class);
+        when(conversations.toolPrincipal("tool-1", "conversation-1", "turn-1")).thenReturn(principal);
+        java.util.concurrent.atomic.AtomicReference<ObservationRequest> request = new java.util.concurrent.atomic.AtomicReference<>();
+        when(observations.read(any(ObservationRequest.class))).thenAnswer(invocation -> {
+            request.set(invocation.getArgument(0));
+            return Mono.just(ObservationResponse.available(Map.of("total", Map.of("value", 1))));
+        });
+        AgentToolBridge bridge = AgentToolBridgeFactory.local(conversations, mock(IotAdapter.class), observations,
+                mock(TaskProjectionStore.class), mock(ActionDraftFacade.class), mock(TaskFacade.class), mapper, null);
+
+        bridge.execute(Map.of("toolContextId", "tool-1", "conversationId", "conversation-1",
+                "turnId", "turn-1", "toolName", "summarize_energy", "arguments", Map.of(
+                        "source", "company", "scope", Map.of("level", "floor", "floor", "26楼"),
+                        "from", "2026-10-01T00:00:00+08:00", "to", "2026-10-02T00:00:00+08:00")));
+
+        assertThat(request.get().operation()).isEqualTo(ltd.qianc.iotagent.iot.ObservationOperation.COMPANY_METER_REPORT);
+        assertThat(request.get().parameters()).containsEntry("scopeLevel", "floor")
+                .containsEntry("floor", "26楼")
+                .containsEntry("kind", "statistics")
+                .containsEntry("from", "2026-10-01T00:00:00+08:00")
+                .containsEntry("to", "2026-10-02T00:00:00+08:00");
+    }
+
 
     @Test
     void safetyToolArgumentsPreserveRuntimeEventIdentityAndTypeFilters() {

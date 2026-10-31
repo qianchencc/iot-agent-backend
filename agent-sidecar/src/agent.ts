@@ -186,6 +186,12 @@ const CONTROL_ACTION = Type.Object({
   }, { additionalProperties: false, description: "仅空调；只传用户要求改变的参数" })),
   selected: Type.Boolean(),
 }, { additionalProperties: false });
+const METER_SCOPE = Type.Object({
+  level: Type.Union([Type.Literal("all"), Type.Literal("floor"), Type.Literal("location"), Type.Literal("selection")]),
+  floor: Type.Optional(Type.String()),
+  meterId: Type.Optional(Type.String()),
+  meterIds: Type.Optional(Type.Array(Type.String(), { minItems: 1, maxItems: 100 })),
+}, { additionalProperties: false });
 
 function toolParameters(name: string): TSchema {
   switch (name) {
@@ -236,6 +242,23 @@ function toolParameters(name: string): TSchema {
         deviceId: Type.String({ minLength: 1 }),
         ledger: Type.Union([Type.Literal("gas"), Type.Literal("smoke"), Type.Literal("flooding")]),
         cameraDeviceId: Type.Optional(Type.String({ minLength: 1 })),
+      }, { additionalProperties: false });
+    case "summarize_energy":
+      return Type.Object({
+        scope: METER_SCOPE,
+        from: Type.String(),
+        to: Type.String(),
+        grain: Type.Optional(Type.Union([Type.Literal("hour"), Type.Literal("day"), Type.Literal("week"), Type.Literal("month")])),
+        dailyWindow: Type.Optional(Type.Object({ from: Type.Literal("20:00"), to: Type.Literal("08:00") })),
+      }, { additionalProperties: false });
+    case "compare_energy":
+      return Type.Object({
+        axis: Type.Union([Type.Literal("time"), Type.Literal("region")]),
+        scope: METER_SCOPE,
+        other: Type.Optional(METER_SCOPE),
+        from: Type.String(),
+        to: Type.String(),
+        baseline: Type.Optional(Type.Object({ from: Type.String(), to: Type.String() })),
       }, { additionalProperties: false });
     default:
       return Type.Object({}, { additionalProperties: true });
