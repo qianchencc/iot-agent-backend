@@ -192,6 +192,16 @@ const METER_SCOPE = Type.Object({
   meterId: Type.Optional(Type.String()),
   meterIds: Type.Optional(Type.Array(Type.String(), { minItems: 1, maxItems: 100 })),
 }, { additionalProperties: false });
+const TASK_ACTION = Type.Object({
+  deviceId: Type.String({ minLength: 1 }),
+  closeOrOpen: Type.Optional(Type.Union([Type.Literal(0), Type.Literal(1)])),
+  ac: Type.Optional(Type.Object({
+    power: Type.Optional(Type.Union([Type.Literal("on"), Type.Literal("off")])),
+    temperature: Type.Optional(Type.Number({ minimum: 16, maximum: 30 })),
+    mode: Type.Optional(Type.Union([Type.Literal("cool"), Type.Literal("heat"), Type.Literal("dry"), Type.Literal("fan")])),
+    fanSpeed: Type.Optional(Type.Union([Type.Literal("low"), Type.Literal("high")])),
+  }, { additionalProperties: false })),
+}, { additionalProperties: false });
 
 function toolParameters(name: string): TSchema {
   switch (name) {
@@ -242,6 +252,27 @@ function toolParameters(name: string): TSchema {
         deviceId: Type.String({ minLength: 1 }),
         ledger: Type.Union([Type.Literal("gas"), Type.Literal("smoke"), Type.Literal("flooding")]),
         cameraDeviceId: Type.Optional(Type.String({ minLength: 1 })),
+      }, { additionalProperties: false });
+    case "propose_task":
+      return Type.Object({
+        label: Type.String({ minLength: 1, maxLength: 80 }),
+        title: Type.Optional(Type.String({ minLength: 1, maxLength: 20 })),
+        candidateSetIds: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 10 }),
+        interval: Type.Optional(Type.Object({
+          startsAt: Type.String(),
+          endsAt: Type.String(),
+        }, { additionalProperties: false })),
+        repeat: Type.Optional(Type.Object({
+          frequency: Type.Union([Type.Literal("daily"), Type.Literal("weekdays"), Type.Literal("weekly"), Type.Literal("monthly")]),
+          weekdays: Type.Optional(Type.Array(Type.Integer({ minimum: 1, maximum: 7 }), { minItems: 1, maxItems: 7 })),
+          dayOfMonth: Type.Optional(Type.Integer({ minimum: 1, maximum: 31 })),
+          until: Type.Optional(Type.String()),
+        }, { additionalProperties: false })),
+        phases: Type.Array(Type.Object({
+          at: Type.String(),
+          actions: Type.Array(TASK_ACTION, { maxItems: 50 }),
+          read: Type.Optional(Type.Object({}, { additionalProperties: true })),
+        }, { additionalProperties: false }), { minItems: 1 }),
       }, { additionalProperties: false });
     case "summarize_energy":
       return Type.Object({
@@ -297,7 +328,7 @@ export class AgentRunner {
     const agent = new Agent({
       initialState: {
         model,
-        systemPrompt: "你是一个受控的物联助手。只基于工具返回的事实回答。设备控制必须严格按：find_device_candidates 得到非空候选集 → read_device_states 使用候选集中的真实 candidateSetId/deviceIds → 仅在用户明确要求且设备可控时生成 propose_action_draft 待确认草案；不得发明设备ID、candidateSetId或kind，不得把空候选当作成功。控制动作每项必须显式填写 kind：lighting 只能使用 closeOrOpen，ac 只能使用 ac，access 只能使用 controlType=2，禁止混用；候选为空时先修正检索词或向用户澄清；Company来源没有可控目录时如实说明不可用。检索时scopeText/scopeTerms只放地点条件，deviceText/nameHints只放设备名称或型号，不要把地点拼进设备名称。任何控制都不能在草案阶段直接执行。使用中文，简洁且不暴露内部凭据。",
+        systemPrompt: `你是一个受控的物联助手。只基于工具返回的事实回答。设备控制必须严格按：find_device_candidates 得到非空候选集 → read_device_states 使用候选集中的真实 candidateSetId/deviceIds → 仅在用户明确要求且设备可控时生成 propose_action_draft 待确认草案；不得发明设备ID、candidateSetId或kind，不得把空候选当作成功。控制动作每项必须显式填写 kind：lighting 只能使用 closeOrOpen，ac 只能使用 ac，access 只能使用 controlType=2，禁止混用；候选为空时先修正检索词或向用户澄清；Company来源没有可控目录时如实说明不可用。检索时scopeText/scopeTerms只放地点条件，deviceText/nameHints只放设备名称或型号，不要把地点拼进设备名称。任何控制都不能在草案阶段直接执行。${request.focusRegionId ? `本轮办公室当前关注区域由服务端传入，focusRegionId=${request.focusRegionId}；用户说“当前位置”或“当前区域”时，必须按该区域检索，不得把这些词作为字面地点查询。` : ""}使用中文，简洁且不暴露内部凭据。`,
         thinkingLevel: this.config.thinkingLevel,
         tools,
       },
@@ -358,9 +389,15 @@ export class AgentRunner {
         const argumentsObject = argumentsValue && typeof argumentsValue === "object" && !Array.isArray(argumentsValue)
           ? argumentsValue as Record<string, unknown>
           : {};
+        const bridgeArguments: Record<string, unknown> = { ...argumentsObject, source: request.source };
+        const javaToolName = capability.javaToolName ?? capability.name;
+        if (javaToolName.startsWith("propose_") && !bridgeArguments.idempotencyKey) {
+          bridgeArguments.idempotencyKey = `${request.turnId}:${toolCallId}`;
+        }
+        if (request.focusRegionId && !bridgeArguments.focusRegionId) bridgeArguments.focusRegionId = request.focusRegionId;
         const result = capability.status === "java"
           ? await this.callJavaTool(request, capability.javaToolName ?? capability.name,
-              { ...argumentsObject, source: request.source }, toolCallId, toolSignal ?? signal)
+              bridgeArguments, toolCallId, toolSignal ?? signal)
           : unsupportedResult(capability);
         emit({ type: capability.event, tool: capability.name, details: result });
         if (capability.status === "java" && isPendingConfirmation(result)) {

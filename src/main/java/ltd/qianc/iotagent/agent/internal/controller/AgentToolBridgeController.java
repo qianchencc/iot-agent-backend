@@ -392,9 +392,36 @@ public final class AgentToolBridgeController {
     }
 
     private Map<String, Object> findCandidates(PrincipalInfo principal, IotSource source, Map<String, Object> args) {
-        DeviceCandidateQuery query = new DeviceCandidateQuery(text(args, "kind", "unknown"), strings(args.get("deviceIds")),
-                nullableText(args, "scopeText"), strings(args.get("scopeTerms")), strings(args.get("nameHints")), nullableText(args, "deviceText"));
+        String scopeText = nullableText(args, "scopeText");
+        List<String> deviceIds = strings(args.get("deviceIds"));
+        List<String> scopeTerms = strings(args.get("scopeTerms"));
+        if (source == IotSource.OFFICE && currentScope(scopeText) && !text(args, "focusRegionId", "").isBlank()) {
+            if (observations == null) throw new BusinessException("REGION_UNAVAILABLE", "当前区域暂不可用", 503);
+            ObservationResponse region = observations.read(new ObservationRequest(identity(principal, source),
+                    ObservationOperation.REGION_DEVICES, Map.of("regionId", text(args, "focusRegionId", "")))).block(TIMEOUT);
+            deviceIds = regionDeviceIds(region);
+            if (deviceIds.isEmpty()) deviceIds = List.of("__empty_focus_region__");
+            scopeText = null;
+            scopeTerms = List.of();
+        }
+        DeviceCandidateQuery query = new DeviceCandidateQuery(text(args, "kind", "unknown"), deviceIds,
+                scopeText, scopeTerms, strings(args.get("nameHints")), nullableText(args, "deviceText"));
         return mapper.convertValue(iot.findDeviceCandidates(identity(principal, source), query).block(TIMEOUT), Map.class);
+    }
+    private static boolean currentScope(String scopeText) {
+        return scopeText == null || scopeText.isBlank() || "当前位置".equals(scopeText) || "当前区域".equals(scopeText)
+                || "当前关注区域".equals(scopeText) || "办公室".equals(scopeText) || scopeText.startsWith("focusRegionId:");
+    }
+
+    private static List<String> regionDeviceIds(ObservationResponse response) {
+        if (response == null || response.payload() == null) return List.of();
+        return list(response.payload().get("devices")).stream()
+                .map(AgentToolBridgeController::map)
+                .map(row -> row.get("id"))
+                .filter(String.class::isInstance)
+                .map(String.class::cast)
+                .filter(value -> !value.isBlank())
+                .toList();
     }
 
     private Map<String, Object> readStates(PrincipalInfo principal, IotSource source, Map<String, Object> args) {

@@ -14,6 +14,7 @@ import ltd.qianc.iotagent.action.ActionDraftFacade;
 import ltd.qianc.iotagent.auth.PrincipalInfo;
 import ltd.qianc.iotagent.conversation.ConversationFacade;
 import ltd.qianc.iotagent.error.BusinessException;
+import ltd.qianc.iotagent.iot.DeviceCandidateQuery;
 import ltd.qianc.iotagent.iot.IotAdapter;
 import ltd.qianc.iotagent.iot.ObservationAdapter;
 import ltd.qianc.iotagent.iot.ObservationRequest;
@@ -43,6 +44,32 @@ class AgentToolBridgeContractTest {
         assertThat(result).containsKey("records");
         verify(observations).read(any(ObservationRequest.class));
     }
+    @Test
+    void currentOfficeRegionResolvesBeforeCandidateSearch() {
+        ConversationFacade conversations = mock(ConversationFacade.class);
+        IotAdapter iot = mock(IotAdapter.class);
+        ObservationAdapter observations = mock(ObservationAdapter.class);
+        when(conversations.toolPrincipal("tool-1", "conversation-1", "turn-1")).thenReturn(principal);
+        when(observations.read(any(ObservationRequest.class))).thenReturn(Mono.just(
+                ObservationResponse.available(Map.of("devices", List.of(Map.of("id", "device-1"))))));
+        java.util.concurrent.atomic.AtomicReference<DeviceCandidateQuery> query = new java.util.concurrent.atomic.AtomicReference<>();
+        when(iot.findDeviceCandidates(any(), any())).thenAnswer(invocation -> {
+            query.set(invocation.getArgument(1));
+            return Mono.just(new ltd.qianc.iotagent.iot.DeviceCandidateSet(
+                    "set-1", query.get(), List.of(), true, 0));
+        });
+        AgentToolBridge bridge = AgentToolBridgeFactory.local(conversations, iot, observations,
+                mock(TaskProjectionStore.class), mock(ActionDraftFacade.class), mock(TaskFacade.class), mapper, null);
+
+        bridge.execute(Map.of("toolContextId", "tool-1", "conversationId", "conversation-1",
+                "turnId", "turn-1", "toolName", "find_device_candidates", "arguments", Map.of(
+                        "source", "office", "focusRegionId", "region-1",
+                        "scopeText", "当前位置", "kind", "lighting", "deviceText", "灯")));
+
+        assertThat(query.get().deviceIds()).containsExactly("device-1");
+        assertThat(query.get().scopeText()).isNull();
+    }
+
     @Test
     void companyEnergyToolsUseMeterReportWithRuntimeScopeAndWindow() {
         ConversationFacade conversations = mock(ConversationFacade.class);

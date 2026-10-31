@@ -310,6 +310,7 @@ it("maps pending action proposals to awaiting-confirmation terminal events", asy
   const events = run.body.trim().split("\n").map(line => JSON.parse(line) as { type: string });
   assert.ok(events.some(event => event.type === "action.proposed"));
   assert.ok(events.some(event => event.type === "run.awaiting_confirmation"));
+  assert.equal(typeof (java.calls[0]?.arguments as Record<string, unknown>)?.idempotencyKey, "string");
   assert.equal(events.some(event => event.type === "run.completed"), false);
   await app.close();
 });
