@@ -231,6 +231,19 @@ class TaskManagementContractTest {
         verify(reports).find("report-1");
     }
 
+    @Test
+    void enabledPlanProjectsNextOccurrenceForRuntimeClients() {
+        TaskPlanStore plans = org.mockito.Mockito.mock(TaskPlanStore.class);
+        TaskProposalStore proposals = org.mockito.Mockito.mock(TaskProposalStore.class);
+        TaskFactStore tasks = org.mockito.Mockito.mock(TaskFactStore.class);
+        TaskFacade facade = facade(plans, proposals, tasks);
+
+        Map<String, Object> view = facade.planView(plan("plan-next"));
+
+        assertThat(view).containsEntry("nextOccurrenceId", "occurrence:plan-next:2026-10-09")
+                .containsEntry("nextCheckpointAt", "2026-10-09T10:00:00Z");
+    }
+
     private static TaskFacade facade(TaskPlanStore plans, TaskProposalStore proposals, TaskFactStore tasks) {
         return new TaskFacade(new ObjectMapper(), tasks, proposals, plans,
                 org.mockito.Mockito.mock(TaskNotificationStore.class), org.mockito.Mockito.mock(TaskScheduler.class),

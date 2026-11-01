@@ -724,7 +724,17 @@ public final class TaskFacade {
     public Map<String, Object> planView(TaskPlanFact plan) {
         Map<String, Object> view = new LinkedHashMap<>();
         view.put("planId", plan.planId()); view.put("version", plan.version()); view.put("status", plan.status());
-        view.put("payload", mapper.convertValue(publicPayload(safePayload(plan.payloadJson())), Object.class));
+        JsonNode payload = safePayload(plan.payloadJson());
+        view.put("payload", mapper.convertValue(publicPayload(payload), Object.class));
+        if ("ENABLED".equalsIgnoreCase(plan.status()) && payload.path("repeat").isObject()) {
+            Instant anchor = anchor(payload);
+            TaskRecurrence.RepeatRule repeat = repeatRule(payload.path("repeat"), TaskRecurrence.localDate(anchor));
+            java.time.LocalDate next = TaskRecurrence.next(repeat, anchor, clock.instant());
+            if (next != null) {
+                view.put("nextOccurrenceId", TaskRecurrence.occurrenceId(plan.planId(), next));
+                view.put("nextCheckpointAt", TaskRecurrence.occurrenceAt(anchor, next).toString());
+            }
+        }
         return view;
     }
 
