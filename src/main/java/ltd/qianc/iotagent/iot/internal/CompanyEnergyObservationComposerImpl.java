@@ -51,9 +51,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
     /** Meter fan-out is bounded so a large catalog cannot saturate the customer gateway. */
     private static final int METER_CONCURRENCY = 6;
     /** Wall-clock budget for one composed energy read; exhaustion is reported as truncation. */
-    private static final long DEFAULT_READ_BUDGET_MS = 12_000L;
-    /** Whole-company stream density: 43 meters at two samples a day is ~86 rows/day; keep headroom. */
-    private static final double STREAM_ROWS_PER_DAY = 120.0;
+    private static final long DEFAULT_READ_BUDGET_MS = 120_000L;
     /** Concurrent stream page fetches; the pages are independent and the window caps the count. */
     private static final int STREAM_PAGE_CONCURRENCY = 6;
     private static final int MAX_DAYS = 90;
@@ -428,6 +426,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         }).count();
         coverage.put("requestedMeters", meters.size()); coverage.put("completedMeters", complete);
         coverage.put("validMeters", valid); coverage.put("failedMeters", meters.size() - complete);
+        coverage.put("truncated", reads.stream().anyMatch(read -> read.truncated));
         coverage.put("status", complete == meters.size() && valid == meters.size() ? "ready" : "partial");
         coverage.put("remainingMeterIds", meterRows.stream().filter(row -> !"ready".equals(row.get("status")))
                 .map(row -> String.valueOf(((Map<?, ?>) row.get("meter")).get("id"))).toList());
@@ -625,7 +624,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
                 return Mono.error(new ObservationUnavailableException("计量对比时间窗口无效"));
             }
         }
-        Instant readFrom = from.minusSeconds(TWELVE_HOURS_SECONDS);
+        Instant readFrom = (comparison && baseFrom.isBefore(from) ? baseFrom : from).minusSeconds(TWELVE_HOURS_SECONDS);
         Instant readTo = comparison ? (baseTo.isAfter(to) ? baseTo : to) : to;
         Instant finalBaseFrom = baseFrom, finalBaseTo = baseTo;
         return readAll(request.identity(), selected, readFrom, readTo)
@@ -645,46 +644,69 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
     }
 
     /**
-     * Company-wide daily statistics read the unified sample stream: one paginated feed of
-     * every meter, newest first (see CONTEXT.md 统一采样流). Per-meter filtered reads would
-     * cost one paged scan per meter, and the upstream time window is unreliable, so the page
-     * count is derived from the window and the pages are fetched concurrently.
+     * Every page contains all meters. Fetch bounded batches until an actual timestamp crosses
+     * the requested start (or the feed ends); sample density is never a correctness assumption.
      */
     private Mono<List<MeterRead>> readCompanyStream(
             RequestIdentity identity, List<AuthorizedDevice> meters, Instant from) {
-        long days = Math.max(1, ChronoUnit.DAYS.between(from, clock.instant()) + 1);
-        int needed = (int) Math.ceil(days * STREAM_ROWS_PER_DAY / 500.0) + 1;
-        int pages = Math.max(2, Math.min(maxPages, needed));
-        long deadlineAt = deadline();
-        return Flux.range(0, pages)
-                .flatMap(page -> fetchStreamPage(identity, page, deadlineAt)
-                        .onErrorResume(error -> Mono.just(List.<Map<String, Object>>of())),
-                        STREAM_PAGE_CONCURRENCY)
-                .collectList()
-                .map(chunks -> buildMeterReads(meters, chunks, from, pages >= maxPages));
+        return readStreamBatch(identity, from, deadline(), 0, new ArrayList<>(), false)
+                .map(scan -> buildMeterReads(meters, scan.chunks(), from, scan.truncated()));
     }
 
-    private Mono<List<Map<String, Object>>> fetchStreamPage(
-            RequestIdentity identity, int page, long deadlineAt) {
-        if (System.currentTimeMillis() >= deadlineAt) return Mono.just(List.of());
-        Map<String, String> params = new LinkedHashMap<>();
-        params.put("page", Integer.toString(page));
-        params.put("size", "500");
+    private Mono<StreamScan> readStreamBatch(
+            RequestIdentity identity, Instant from, long deadlineAt, int page,
+            List<List<Map<String, Object>>> chunks, boolean partial) {
+        if (page >= maxPages || System.currentTimeMillis() >= deadlineAt) {
+            return Mono.just(new StreamScan(chunks, true));
+        }
+        int count = Math.min(STREAM_PAGE_CONCURRENCY, maxPages - page);
+        return Flux.range(page, count)
+                .flatMapSequential(index -> fetchStreamPage(identity, index), STREAM_PAGE_CONCURRENCY)
+                .collectList()
+                .flatMap(batch -> {
+                    boolean reachedStart = false;
+                    boolean ended = false;
+                    boolean incomplete = partial;
+                    for (StreamPage result : batch) {
+                        chunks.add(result.samples());
+                        incomplete |= result.partial();
+                        ended |= result.last();
+                        for (Map<String, Object> sample : result.samples()) {
+                            Instant time = instantOrNull(text(sample.get("readTime")));
+                            if (time == null) {
+                                return Mono.error(new ObservationUnavailableException("计量样本时间格式无效"));
+                            }
+                            reachedStart |= time.isBefore(from);
+                        }
+                    }
+                    if (reachedStart || ended) return Mono.just(new StreamScan(chunks, incomplete));
+                    return readStreamBatch(identity, from, deadlineAt, page + count, chunks, incomplete);
+                });
+    }
+
+    private Mono<StreamPage> fetchStreamPage(RequestIdentity identity, int page) {
+        Map<String, String> params = Map.of("page", Integer.toString(page), "size", "500");
         return rawHistory.read(new ObservationRequest(identity, ObservationOperation.ENERGY_HISTORY, params))
                 .flatMap(response -> {
-                    if (response.status() == ObservationStatus.UNAVAILABLE) {
-                        return Mono.error(new ObservationUnavailableException("计量样本流上游不可用"));
+                    if (response.status() == ObservationStatus.EMPTY) {
+                        return Mono.just(new StreamPage(List.of(), true, false));
                     }
                     if (response.status() != ObservationStatus.AVAILABLE
-                            && response.status() != ObservationStatus.EMPTY
                             && response.status() != ObservationStatus.PARTIAL) {
-                        return Mono.error(new ObservationUnavailableException("计量样本流返回不可用结果"));
+                        return Mono.error(new ObservationUnavailableException("计量样本流上游不可用"));
                     }
-                    return Mono.just(streamSamples(response.payload()));
+                    List<Map<String, Object>> samples = streamSamples(response.payload());
+                    boolean continuationOnly = response.payload().get("nextPage") != null
+                            && response.failures().stream().allMatch(failure -> "HISTORY_PARTIAL".equals(failure.code()));
+                    return Mono.just(new StreamPage(samples, isLast(response.payload()),
+                            response.status() == ObservationStatus.PARTIAL && !continuationOnly));
                 })
                 .onErrorMap(error -> error instanceof BusinessException
                         ? error : new ObservationUnavailableException("计量样本流读取失败"));
     }
+
+    private record StreamPage(List<Map<String, Object>> samples, boolean last, boolean partial) { }
+    private record StreamScan(List<List<Map<String, Object>>> chunks, boolean truncated) { }
 
     private List<MeterRead> buildMeterReads(
             List<AuthorizedDevice> meters, List<List<Map<String, Object>>> chunks, Instant from, boolean truncated) {
@@ -771,7 +793,11 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         long deadlineAt = deadline();
         return Flux.fromIterable(meters)
                 .flatMap(meter -> readMeter(identity, meter, from, to, deadlineAt)
-                        .onErrorResume(error -> Mono.just(new MeterRead(meter, List.of(), true))), METER_CONCURRENCY)
+                        .onErrorResume(error -> {
+                            if (error instanceof BusinessException business
+                                    && (business.httpStatus() == 401 || business.httpStatus() == 403)) return Mono.error(error);
+                            return Mono.just(new MeterRead(meter, List.of(), true));
+                        }), METER_CONCURRENCY)
                 .collectList();
     }
 
@@ -788,15 +814,13 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
     private Mono<PageRead> readPage(
             RequestIdentity identity, AuthorizedDevice meter, Instant from, Instant to,
             int page, List<Sample> collected, boolean truncated, int rowCount, long deadlineAt) {
-        // A bounded wall-clock budget keeps one expensive meter from turning the whole
-        // page into an upstream timeout; exhausted budget is reported as truncation.
+        // This is background work, not a frontend deadline. Keep the sorted raw
+        // boundary row: filtering it in the adapter would force an archive-wide scan.
         if (page >= maxPages || rowCount >= maxRows || System.currentTimeMillis() >= deadlineAt) {
             return Mono.just(new PageRead(collected, true));
         }
         Map<String, String> params = new LinkedHashMap<>();
         params.put("equipmentId", meter.id());
-        params.put("from", format(from));
-        params.put("to", format(to));
         params.put("page", Integer.toString(page));
         params.put("size", "500");
         return rawHistory.read(new ObservationRequest(identity, ObservationOperation.ENERGY_HISTORY, params))
@@ -809,11 +833,18 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
                             && response.status() != ObservationStatus.PARTIAL) {
                         return Mono.error(new ObservationUnavailableException("计量历史上游返回不可用结果"));
                     }
-                    boolean pagePartial = response.status() == ObservationStatus.PARTIAL;
+                    boolean continuationOnly = response.payload().get("nextPage") != null
+                            && response.failures().stream().allMatch(failure -> "HISTORY_PARTIAL".equals(failure.code()));
+                    boolean pagePartial = response.status() == ObservationStatus.PARTIAL && !continuationOnly;
                     List<Sample> pageRows = response.status() == ObservationStatus.EMPTY
                             ? List.of() : parseRows(response.payload(), meter.id());
-                    int nextCount = rowCount + pageRows.size();
-                    collected.addAll(pageRows);
+                    int nextCount = rowCount;
+                    for (Sample sample : pageRows) {
+                        if (!sample.readTime.isAfter(to)) {
+                            collected.add(sample);
+                            nextCount++;
+                        }
+                    }
                     boolean reachesRequestedStart = pageRows.stream().anyMatch(sample -> !sample.readTime.isAfter(from));
                     boolean last = response.status() == ObservationStatus.EMPTY
                             || isLast(response.payload()) || reachesRequestedStart;

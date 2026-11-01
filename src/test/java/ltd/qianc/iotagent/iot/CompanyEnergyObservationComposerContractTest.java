@@ -182,35 +182,148 @@ class CompanyEnergyObservationComposerContractTest {
     }
 
     @Test
-    void companyDailyReadsPagesByWindowNotByMeterCount() {
-        AtomicInteger calls = new AtomicInteger();
-        List<AuthorizedDevice> meters = List.of(METER,
-                new AuthorizedDevice("meter-2", "energy", "二号表", "27楼", true),
-                new AuthorizedDevice("meter-3", "energy", "三号表", "28楼", true));
+    void failedStreamPageCannotBecomeACompleteDailySnapshot() {
+        CompanyEnergyObservationComposer composer = composer((request, pageNumber) -> pageNumber == 1
+                ? Mono.error(new ObservationUnavailableException("历史页不可用"))
+                : Mono.just(ObservationResponse.available(page(List.of(
+                        row("a", "2026-10-02 08:00:00", 100),
+                        row("b", "2026-10-03 08:00:00", 125)), false))));
+
+        assertThatThrownBy(() -> composer.read(new ObservationRequest(COMPANY,
+                ObservationOperation.COMPANY_ENERGY_DAILY,
+                Map.of("days", "1", "end", "2026-10-03"))).block())
+                .isInstanceOf(ObservationUnavailableException.class);
+    }
+
+    @Test
+    void denseSamplingDoesNotTruncateTheRequestedWindowUsingAPredictedPageCount() {
+        CompanyEnergyObservationComposer composer = composer((request, pageNumber) -> {
+            if (pageNumber < 12) {
+                return Mono.just(ObservationResponse.available(page(List.of(
+                        row("recent-" + pageNumber, "2026-10-08 08:00:00", 200)), false)));
+            }
+            return Mono.just(ObservationResponse.available(page(List.of(
+                    row("start", "2026-10-02 08:00:00", 100),
+                    row("end", "2026-10-03 08:00:00", 125)), true)));
+        });
+
+        Map<String, Object> payload = composer.read(new ObservationRequest(COMPANY,
+                ObservationOperation.COMPANY_ENERGY_DAILY,
+                Map.of("days", "1", "end", "2026-10-03"))).block().payload();
+
+        assertThat(((Map<?, ?>) ((List<?>) payload.get("days")).get(0)).get("usage")).isEqualTo(25.0d);
+        assertThat(payload.get("truncated")).isEqualTo(false);
+    }
+
+    @Test
+    void exhaustedStreamBudgetRemainsPartialInsteadOfACompleteSnapshot() {
         CompanyEnergyObservationComposer composer = CompanyEnergyObservationComposerFactory.composed(
-                raw((request, pageNumber) -> {
-                    calls.incrementAndGet();
-                    int size = Integer.parseInt(request.parameters().getOrDefault("size", "20"));
-                    List<Map<String, Object>> rows = java.util.stream.IntStream.range(0, size)
-                            .mapToObj(index -> {
-                                Map<String, Object> row = new java.util.LinkedHashMap<>();
-                                row.put("id", "r" + pageNumber + "-" + index);
-                                row.put("equipmentId", meters.get(index % meters.size()).id());
-                                row.put("readTime", "2026-10-01 08:00:00");
-                                row.put("epf", 100 + index);
-                                return row;
-                            }).toList();
-                    return Mono.just(ObservationResponse.available(page(rows, false)));
-                }),
-                iot(COMPANY, meters), CLOCK);
+                raw((request, pageNumber) -> Mono.just(ObservationResponse.available(page(List.of(
+                        row("recent-" + pageNumber, "2026-10-08 08:00:00", 200)), false)))),
+                iot(COMPANY, List.of(METER)), CLOCK, 1, 100);
 
         ObservationResponse response = composer.read(new ObservationRequest(COMPANY,
-                ObservationOperation.COMPANY_ENERGY_DAILY, Map.of("days", "30"))).block();
+                ObservationOperation.COMPANY_ENERGY_DAILY,
+                Map.of("days", "1", "end", "2026-10-03"))).block();
 
-        assertThat(response).isNotNull();
-        // Page count follows the window, so adding meters must not add upstream round trips.
-        assertThat(calls.get()).isLessThanOrEqualTo(10);
-        assertThat(((Map<?, ?>) response.payload().get("budget")).get("truncated")).isEqualTo(false);
+        assertThat(response.status()).isEqualTo(ObservationStatus.PARTIAL);
+        assertThat(response.payload().get("truncated")).isEqualTo(true);
+        assertThat(((Map<?, ?>) ((List<?>) response.payload().get("days")).get(0)).get("usage")).isNull();
+    }
+
+    @Test
+    void normalContinuationPagesCompleteAUnifiedMultiMeterDailyResult() {
+        org.springframework.web.reactive.function.client.ExchangeFunction gateway = request ->
+                Mono.just(org.springframework.web.reactive.function.client.ClientResponse
+                        .create(org.springframework.http.HttpStatus.OK)
+                        .header("Content-Type", "application/json")
+                        .body(request.url().getQuery().contains("page=0") ? """
+                                {"code":200,"content":{"last":false,"content":[
+                                  {"id":"a1","equipmentId":"meter-1","readTime":"2026-10-02 08:00:00","epf":100},
+                                  {"id":"a2","equipmentId":"meter-1","readTime":"2026-10-03 08:00:00","epf":125},
+                                  {"id":"b1","equipmentId":"meter-2","readTime":"2026-10-02 08:00:00","epf":200},
+                                  {"id":"b2","equipmentId":"meter-2","readTime":"2026-10-03 08:00:00","epf":240}
+                                ]}}
+                                """ : "{\"code\":200,\"content\":{\"last\":true,\"content\":[]}}")
+                        .build());
+        ObservationAdapter history = ObservationAdapterFactory.webClient(
+                org.springframework.web.reactive.function.client.WebClient.builder().exchangeFunction(gateway).build(),
+                new ObservationGatewayRoutes(Map.of(ObservationOperation.ENERGY_HISTORY, "/history")),
+                java.time.Duration.ofSeconds(1), IotCallPolicy.passThrough());
+        AuthorizedDevice second = new AuthorizedDevice("meter-2", "energy", "二号表", "27楼", true);
+        CompanyEnergyObservationComposer composer = CompanyEnergyObservationComposerFactory.composed(
+                history, iot(COMPANY, List.of(METER, second)), CLOCK);
+
+        ObservationResponse response = composer.read(new ObservationRequest(COMPANY,
+                ObservationOperation.COMPANY_ENERGY_DAILY,
+                Map.of("days", "1", "end", "2026-10-03"))).block();
+
+        assertThat(response.status()).isEqualTo(ObservationStatus.AVAILABLE);
+        assertThat(response.payload().get("truncated")).isEqualTo(false);
+        java.util.List<?> meters = (java.util.List<?>) response.payload().get("meters");
+        java.util.Map<String, Double> usage = new java.util.HashMap<>();
+        for (Object row : meters) {
+            Map<?, ?> meter = (Map<?, ?>) row;
+            Map<?, ?> day = (Map<?, ?>) ((Map<?, ?>) meter.get("daily")).get("2026-10-03");
+            usage.put((String) meter.get("id"), ((Number) day.get("usage")).doubleValue());
+        }
+        assertThat(usage).containsEntry("meter-1", 25.0d).containsEntry("meter-2", 40.0d);
+    }
+
+    @Test
+    void reportAuthorizationRejectionIsNotConvertedIntoMissingMeterData() {
+        CompanyEnergyObservationComposer composer = composer((request, pageNumber) ->
+                Mono.error(new GatewayAuthorizationException(403)));
+
+        assertThatThrownBy(() -> composer.readEnergyReport(new ObservationRequest(COMPANY,
+                ObservationOperation.ENERGY_REPORT, Map.of("kind", "statistics",
+                        "from", "2026-10-02T08:00:00+08:00", "to", "2026-10-03T08:00:00+08:00"))).block())
+                .isInstanceOf(GatewayAuthorizationException.class);
+    }
+
+    @Test
+    void failedMeterReportCannotBePublishedAsACompleteAvailableSnapshot() {
+        CompanyEnergyObservationComposer composer = composer((request, pageNumber) ->
+                Mono.error(new ObservationUnavailableException("读取失败")));
+
+        ObservationResponse response = composer.readEnergyReport(new ObservationRequest(COMPANY,
+                ObservationOperation.ENERGY_REPORT, Map.of("kind", "statistics",
+                        "from", "2026-10-02T08:00:00+08:00", "to", "2026-10-03T08:00:00+08:00"))).block();
+
+        assertThat(response.status()).isEqualTo(ObservationStatus.PARTIAL);
+        assertThat(response.coverageComplete()).isFalse();
+        assertThat(((Map<?, ?>) response.payload().get("coverage")).get("truncated")).isEqualTo(true);
+    }
+
+    @Test
+    void monthlyHistoryKeepsItsBoundaryAndDoesNotRequireUnrelatedOlderPages() {
+        org.springframework.web.reactive.function.client.ExchangeFunction gateway = request -> {
+            if (!request.url().getQuery().contains("page=0")) {
+                return Mono.error(new IllegalStateException("Older unrelated archive is unavailable"));
+            }
+            return Mono.just(org.springframework.web.reactive.function.client.ClientResponse
+                    .create(org.springframework.http.HttpStatus.OK).header("Content-Type", "application/json")
+                    .body("""
+                            {"code":200,"content":{"last":false,"content":[
+                              {"id":"d","equipmentId":"meter-1","readTime":"2026-10-01 08:00:00","epf":160},
+                              {"id":"c","equipmentId":"meter-1","readTime":"2026-09-01 08:00:00","epf":130},
+                              {"id":"b","equipmentId":"meter-1","readTime":"2026-08-01 08:00:00","epf":110},
+                              {"id":"a","equipmentId":"meter-1","readTime":"2026-06-30 18:00:00","epf":100}
+                            ]}}
+                            """).build());
+        };
+        ObservationAdapter history = ObservationAdapterFactory.webClient(
+                org.springframework.web.reactive.function.client.WebClient.builder().exchangeFunction(gateway).build(),
+                new ObservationGatewayRoutes(Map.of(ObservationOperation.ENERGY_HISTORY, "/history")),
+                java.time.Duration.ofSeconds(1), IotCallPolicy.passThrough());
+        var composer = CompanyEnergyObservationComposerFactory.composed(
+                history, iot(COMPANY, List.of(METER)), CLOCK);
+        var response = composer.read(new ObservationRequest(COMPANY, ObservationOperation.COMPANY_ENERGY_REPORT,
+                Map.of("months", "2", "endMonth", "2026-09", "boundaryHour", "8"))).block();
+        assertThat(response.status()).isEqualTo(ObservationStatus.AVAILABLE);
+        assertThat(response.payload().get("truncated")).isEqualTo(false);
+        Map<?, ?> meter = (Map<?, ?>) ((List<?>) response.payload().get("meters")).get(0);
+        assertThat(((Map<?, ?>) ((List<?>) meter.get("periods")).get(1)).get("usage")).isEqualTo(30.0d);
     }
 
     private static CompanyEnergyObservationComposer composer(PageFixture fixture) {

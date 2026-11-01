@@ -19,6 +19,53 @@ class ObservationAdapterContractTest {
     private static final RequestIdentity COMPANY =
             new RequestIdentity("Bearer company", "TENANT-1", IotSource.COMPANY);
 
+
+    @Test
+    void unifiedEnergyFeedRetainsEveryMeterAndUsesTheRequestedPageSize() {
+        ExchangeFunction fixture = request -> Mono.just(ClientResponse.create(HttpStatus.OK)
+                .header("Content-Type", MediaType.APPLICATION_JSON_VALUE)
+                .body("""
+                        {"code":200,"content":{"totalElements":2,"content":[
+                          {"id":"a","equipmentId":"meter-a","readTime":"2026-10-03 08:00:00","epf":100},
+                          {"id":"b","equipmentId":"meter-b","readTime":"2026-10-03 08:00:00","epf":200}
+                        ]}}
+                        """).build());
+        ObservationAdapter adapter = ObservationAdapterFactory.webClient(
+                WebClient.builder().exchangeFunction(fixture).build(),
+                new ObservationGatewayRoutes(Map.of(ObservationOperation.ENERGY_HISTORY, "/history")),
+                Duration.ofSeconds(1), IotCallPolicy.passThrough());
+
+        ObservationResponse response = adapter.read(new ObservationRequest(COMPANY,
+                ObservationOperation.ENERGY_HISTORY, Map.of("size", "500"))).block();
+
+        java.util.List<?> samples = (java.util.List<?>) response.payload().get("samples");
+        assertThat(samples.stream().map(sample -> ((Map<?, ?>) sample).get("equipmentId")).toList())
+                .isEqualTo(java.util.List.of("meter-a", "meter-b"));
+        assertThat(response.payload().get("nextPage")).isNull();
+        assertThat(response.coverageComplete()).isTrue();
+    }
+
+    @Test
+    void energyDefaultSmallPageDoesNotSkipRemainingRowsWhenLastFlagIsAbsent() {
+        String rows = java.util.stream.IntStream.range(0, 20)
+                .mapToObj(index -> "{\"id\":\"" + index
+                        + "\",\"equipmentId\":\"meter-a\",\"readTime\":\"2026-10-03 08:00:00\",\"epf\":100}")
+                .collect(java.util.stream.Collectors.joining(","));
+        ExchangeFunction fixture = request -> Mono.just(ClientResponse.create(HttpStatus.OK)
+                .header("Content-Type", MediaType.APPLICATION_JSON_VALUE)
+                .body("{\"code\":200,\"content\":{\"totalElements\":40,\"content\":[" + rows + "]}}")
+                .build());
+        ObservationAdapter adapter = ObservationAdapterFactory.webClient(
+                WebClient.builder().exchangeFunction(fixture).build(),
+                new ObservationGatewayRoutes(Map.of(ObservationOperation.ENERGY_HISTORY, "/history")),
+                Duration.ofSeconds(1), IotCallPolicy.passThrough());
+
+        ObservationResponse response = adapter.read(new ObservationRequest(COMPANY,
+                ObservationOperation.ENERGY_HISTORY, Map.of())).block();
+
+        assertThat(response.payload().get("nextPage")).isEqualTo(1);
+        assertThat(response.coverageComplete()).isFalse();
+    }
     @Test
     void configuredCompanyEnergyDailyRouteIsSelectedAndPayloadIsMapped() {
         AtomicReference<ClientRequest> request = new AtomicReference<>();
