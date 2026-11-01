@@ -21,6 +21,15 @@
 - [x] mp：本机 backend profile、事件渲染、确认进度已对齐；真实微信开发者工具 GUI 环境仍需安装/提供。
 - [ ] 软件说明书案例逐项完成 backend 真实请求和前端验收证据。
 
+## Latest evidence (2026-11-01)
+
+- Company natural-language read path now returns 43 authorized energy devices for `查询公司授权范围内的电表`; the `公司`/`公司授权范围` terms are treated as whole-scope markers, matching Runtime `companyQueryWithoutWideScope`.
+- The same authenticated local backend + independent sidecar path returns `observation.reported` with 43 candidates and a terminal `run.completed`; no production Runtime was changed.
+- The manual case `26楼运营办公区的灯现在什么状态` remains an honest zero-candidate result because the current authenticated Company upstream returns HTTP 204 for `lighting/myAreaList`, `access/myAreaList`, and `monitor/myAreaList`; this is an upstream authorized-catalog fact, not a backend fallback. The backend must not synthesize a controllable device.
+- Independent task checkpoint report lookup and enabled-plan `nextOccurrenceId`/`nextCheckpointAt` projection are now implemented and covered by regression tests.
+
+- Durable recurring-plan materialization now runs behind `TaskOccurrenceMaterializer`; MySQL/H2 tests prove concurrent/restarted scans do not duplicate, skips stay unmaterialized, overrides preserve plan identity and credentials stay redacted, and `next_date` advances.
+
 ## Acceptance
 
 1. Runtime 相关测试案例在 backend 对应契约测试中有等价覆盖，或明确记录协议不可得的外部前置条件；不可用能力不得伪造成功。

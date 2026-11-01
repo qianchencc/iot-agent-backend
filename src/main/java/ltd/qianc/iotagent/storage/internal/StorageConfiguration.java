@@ -16,6 +16,7 @@ import ltd.qianc.iotagent.storage.RedisCoordinationStore;
 import ltd.qianc.iotagent.task.TaskFactStore;
 import ltd.qianc.iotagent.task.TaskNotificationStore;
 import ltd.qianc.iotagent.task.TaskPhaseStore;
+import ltd.qianc.iotagent.task.TaskOccurrenceMaterializer;
 import ltd.qianc.iotagent.task.TaskPlanStore;
 import ltd.qianc.iotagent.task.TaskProposalStore;
 import ltd.qianc.iotagent.task.TaskProjectionStore;
@@ -127,7 +128,7 @@ public class StorageConfiguration {
 
     @Bean
     @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
-    JdbcTaskRecurrenceLoop jdbcTaskRecurrenceLoop(JdbcTaskRecurrenceMaterializer materializer) {
+    JdbcTaskRecurrenceLoop jdbcTaskRecurrenceLoop(TaskOccurrenceMaterializer materializer) {
         return new JdbcTaskRecurrenceLoop(materializer);
     }
 
