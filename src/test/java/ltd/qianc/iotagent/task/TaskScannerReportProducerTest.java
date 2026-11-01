@@ -26,7 +26,7 @@ class TaskScannerReportProducerTest {
         TaskNotificationStore notifications = new Notifications();
 
         TaskScanner scanner = new TaskScanner(phases, tasks, gateway, notifications,
-                checkpoint -> { received.add(checkpoint); return Optional.empty(); },
+                (checkpoint, identity) -> { received.add(checkpoint); return Optional.empty(); },
                 Clock.fixed(NOW, ZoneOffset.UTC));
 
         scanner.scanOnce();

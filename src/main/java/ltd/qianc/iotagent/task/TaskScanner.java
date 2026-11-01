@@ -9,6 +9,8 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import ltd.qianc.iotagent.iot.IotSource;
+import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.report.ReportFactProducer;
 
 /**
@@ -22,21 +24,34 @@ public final class TaskScanner {
     private final TaskExecutionGateway gateway;
     private final TaskNotificationStore notifications;
     private final ReportFactProducer reports;
+    private final TaskReportComposer reportComposer;
+    private final TaskReportRetryStore reportRetries;
+    private final TaskExecutionIdentityStore executionIdentities;
     private final Clock clock;
     private volatile boolean stopping;
 
     public TaskScanner(TaskPhaseStore phases, TaskFactStore tasks, TaskExecutionGateway gateway,
                        TaskNotificationStore notifications, Clock clock) {
-        this(phases, tasks, gateway, notifications, checkpoint -> java.util.Optional.empty(), clock);
+        this(phases, tasks, gateway, notifications, (checkpoint, identity) -> java.util.Optional.empty(), null, null, null, clock);
     }
 
     public TaskScanner(TaskPhaseStore phases, TaskFactStore tasks, TaskExecutionGateway gateway,
                        TaskNotificationStore notifications, ReportFactProducer reports, Clock clock) {
+        this(phases, tasks, gateway, notifications, reports, null, null, null, clock);
+    }
+
+    public TaskScanner(TaskPhaseStore phases, TaskFactStore tasks, TaskExecutionGateway gateway,
+                       TaskNotificationStore notifications, ReportFactProducer reports,
+                       TaskReportComposer reportComposer, TaskReportRetryStore reportRetries,
+                       TaskExecutionIdentityStore executionIdentities, Clock clock) {
         this.phases = Objects.requireNonNull(phases, "phases");
         this.tasks = Objects.requireNonNull(tasks, "tasks");
         this.gateway = Objects.requireNonNull(gateway, "gateway");
         this.notifications = Objects.requireNonNull(notifications, "notifications");
         this.reports = Objects.requireNonNull(reports, "reports");
+        this.reportComposer = reportComposer;
+        this.reportRetries = reportRetries;
+        this.executionIdentities = executionIdentities;
         this.clock = Objects.requireNonNull(clock, "clock");
     }
 
@@ -57,18 +72,14 @@ public final class TaskScanner {
             }
             try {
                 TaskExecutionGateway.TaskExecutionResult result = gateway.execute(
-                        new TaskExecutionGateway.TaskExecutionRequest(phase.taskId(), phase.phaseId(), phase.source(), phase.payloadJson(), phase.dueAt()));
+                        new TaskExecutionGateway.TaskExecutionRequest(phase.taskId(), phase.phaseId(), phase.source(),
+                                phase.payloadJson(), phase.dueAt(), task.payloadJson()));
                 boolean finished = phases.finish(phase.phaseId(), phase.version() + 1, result.outcome(), result.payloadJson(), clock.instant());
                 if (finished) {
                     completed++;
-                    terminalReport(task, phase, result);
+                    if (reportComposer == null) terminalReport(task, phase, result);
                     if (phases.allTerminal(phase.taskId())) {
-                        TaskFact terminalTask = completeTask(phase.taskId(), result.outcome());
-                        if (terminalTask != null) {
-                            TaskExecutionGateway.TaskExecutionResult terminalResult =
-                                    new TaskExecutionGateway.TaskExecutionResult(terminalTask.status(), result.payloadJson(), result.dispatchStarted());
-                            terminalNotification(terminalTask, phase, terminalResult);
-                        }
+                        finalizeTerminal(phase, task, result.outcome(), result.payloadJson());
                     }
                 }
             } catch (RuntimeException error) {
@@ -82,34 +93,128 @@ public final class TaskScanner {
                         : "{\"outcome\":\"failed\",\"reason\":\"not_dispatched\"}";
                 if (phases.finish(phase.phaseId(), phase.version() + 1, status, payload, clock.instant())) {
                     if (dispatchStarted) interrupted++;
-                    terminalReport(task, phase, new TaskExecutionGateway.TaskExecutionResult(status, payload, dispatchStarted));
+                    if (reportComposer == null) terminalReport(task, phase, new TaskExecutionGateway.TaskExecutionResult(status, payload, dispatchStarted));
                     if (phases.allTerminal(phase.taskId())) {
-                        TaskFact terminalTask = completeTask(phase.taskId(), status);
-                        if (terminalTask != null) {
-                            TaskExecutionGateway.TaskExecutionResult terminalResult =
-                                    new TaskExecutionGateway.TaskExecutionResult(terminalTask.status(), payload, dispatchStarted);
-                            terminalNotification(terminalTask, phase, terminalResult);
-                        }
+                        finalizeTerminal(phase, task, status, payload);
                     }
                 }
             }
         }
+        retryReports();
         return new ScanResult(attempted, claimed, completed, interrupted);
+    }
+
+    private void finalizeTerminal(TaskPhaseStore.TaskPhase phase, TaskFact task, String fallbackOutcome, String resultPayload) {
+        String outcome = aggregateOutcome(phases.outcomes(task.taskId()), fallbackOutcome);
+        String reportError = produceTaskReport(task, outcome);
+        String notificationPayload = resultPayload;
+        if (reportError != null) {
+            outcome = "PARTIAL";
+            notificationPayload = "{\"outcome\":\"PARTIAL\",\"reportError\":" + quote(reportError) + "}";
+        }
+        TaskFact terminalTask = completeTask(task.taskId(), fallbackOutcome, outcome);
+        if (terminalTask == null) return;
+        terminalNotification(terminalTask, phase, new TaskExecutionGateway.TaskExecutionResult(
+                terminalTask.status(), notificationPayload, true));
+    }
+
+    private void retryReports() {
+        if (reportComposer == null || reportRetries == null) return;
+        List<TaskFact> pending;
+        try { pending = reportRetries.pending(4); }
+        catch (RuntimeException unavailable) { return; }
+        for (TaskFact task : pending) {
+            try {
+                if (!phases.allTerminal(task.taskId())) continue;
+                String error = produceTaskReport(task, task.status());
+                if (error != null) continue;
+                String recipient = field(task.payloadJson(), "ownerKey", "");
+                String recoveredStatus = task.status();
+                try {
+                    String aggregate = aggregateOutcome(phases.outcomes(task.taskId()), task.status());
+                    if ("PARTIAL".equals(task.status()) && "COMPLETED".equals(aggregate)) {
+                        var updated = tasks.updateIfVersion(new TaskFact(task.taskId(), task.version() + 1,
+                                aggregate, task.payloadJson(), task.idempotencyKey()), task.version());
+                        if (updated.isPresent()) recoveredStatus = updated.get().status();
+                    }
+                } catch (RuntimeException ignored) {
+                    recoveredStatus = task.status();
+                }
+                if (!recipient.isBlank()) {
+                    try {
+                        notifications.refresh(task.taskId(), recipient, recoveredStatus,
+                                "{\"outcome\":" + quote(recoveredStatus) + ",\"reportRecovered\":true}", clock.instant());
+                    } catch (RuntimeException noNotification) {
+                        // The report fact itself is durable; a missing inbox row is not a dispatch failure.
+                    }
+                }
+            } catch (RuntimeException ignored) {
+                // Bounded retry state is recorded below; this loop must not stop phase scanning.
+                try { reportRetries.failed(task.taskId(), "report retry failed"); } catch (RuntimeException ignoredAgain) { }
+            }
+        }
+    }
+
+    private String produceTaskReport(TaskFact task, String outcome) {
+        if (reports == null || reportComposer == null) return null;
+        List<TaskPhaseStore.PhaseResult> results;
+        try { results = phases.terminalPhases(task.taskId()); }
+        catch (RuntimeException unavailable) { return "任务阶段结果暂不可读"; }
+        String payload;
+        try { payload = reportComposer.compose(task, results, outcome, clock.instant()); }
+        catch (RuntimeException invalid) { return "报表请求内容无效"; }
+        if (payload == null) return null;
+        String phaseId = results.isEmpty() ? task.taskId() : results.get(results.size() - 1).phaseId();
+        Instant checkpointAt = results.isEmpty() ? clock.instant() : results.get(results.size() - 1).dueAt();
+        String tenant = field(task.payloadJson(), "tenantCode", "");
+        String owner = field(task.payloadJson(), "ownerKey", "");
+        String source = field(task.payloadJson(), "source", "office");
+        String objective = field(task.payloadJson(), "objective", field(task.payloadJson(), "title", ""));
+        if (executionIdentities == null) return "任务报表执行身份存储未配置";
+        RequestIdentity identity;
+        try {
+            var stored = executionIdentities.loadForTask(task.taskId()).orElse(null);
+            if (stored == null) return "任务报表执行身份缺失";
+            if (!tenant.equals(stored.tenantCode()) || !owner.equals(stored.ownerKey())) {
+                return "任务报表执行身份与任务归属不一致";
+            }
+            identity = new RequestIdentity(stored.authorization(), stored.tenantCode(),
+                    IotSource.parse(source), stored.ownerKey());
+        } catch (RuntimeException unavailable) {
+            return "任务报表执行身份不可用";
+        }
+        try {
+            java.util.Optional<ltd.qianc.iotagent.report.ReportFact> report = reports.produce(
+                    new ReportFactProducer.ReportCheckpoint(task.taskId(), phaseId, source, tenant, owner,
+                            objective, outcome, checkpointAt, clock.instant(), payload), identity);
+            if (report == null || report.isEmpty()) return "报表生成未返回持久事实";
+            if (reportRetries != null) {
+                try { reportRetries.succeeded(task.taskId()); } catch (RuntimeException ignored) { }
+            }
+            return null;
+        } catch (RuntimeException failure) {
+            String message = failure.getMessage() == null || failure.getMessage().isBlank()
+                    ? "报表生成失败" : failure.getMessage();
+            if (reportRetries != null) {
+                try { reportRetries.failed(task.taskId(), message); } catch (RuntimeException ignored) { }
+            }
+            return message;
+        }
+    }
+
+    private static String quote(String value) {
+        return MAPPER.getNodeFactory().textNode(value == null ? "" : value).toString();
     }
 
     public int recover() {
         List<TaskPhaseStore.TaskPhase> recovered = phases.recoverInterrupted(clock.instant());
         for (TaskPhaseStore.TaskPhase phase : recovered) {
             if (!phases.allTerminal(phase.taskId())) continue;
-            TaskFact task = completeTask(phase.taskId(), "INTERRUPTED");
-            if (task != null) {
-                TaskExecutionGateway.TaskExecutionResult terminalResult =
-                        new TaskExecutionGateway.TaskExecutionResult(task.status(),
-                                "{\"outcome\":\"unknown\",\"reason\":\"service_restart\"}", true);
-                terminalNotification(task, phase, terminalResult);
-                terminalReport(task, phase, terminalResult);
-            }
+            TaskFact task = tasks.find(phase.taskId()).orElse(null);
+            if (task == null || isTerminal(task.status())) continue;
+            finalizeTerminal(phase, task, "INTERRUPTED", "{\"outcome\":\"unknown\",\"reason\":\"service_restart\"}");
         }
+        retryReports();
         return recovered.size();
     }
     public ScanResult scan() { return scanOnce(); }
@@ -135,11 +240,16 @@ public final class TaskScanner {
     }
 
     private TaskFact completeTask(String taskId, String fallbackOutcome) {
+        return completeTask(taskId, fallbackOutcome, null);
+    }
+
+    private TaskFact completeTask(String taskId, String fallbackOutcome, String forcedOutcome) {
         for (int attempt = 0; attempt < 8; attempt++) {
             if (!phases.allTerminal(taskId)) return tasks.find(taskId).orElse(null);
             TaskFact current = tasks.find(taskId).orElse(null);
             if (current == null || isTerminal(current.status())) return current;
-            String status = aggregateOutcome(phases.outcomes(taskId), fallbackOutcome);
+            String status = forcedOutcome != null ? forcedOutcome
+                    : aggregateOutcome(phases.outcomes(taskId), fallbackOutcome);
             Optional<TaskFact> update = tasks.updateIfVersion(new TaskFact(
                     current.taskId(), current.version() + 1, status, current.payloadJson(), current.idempotencyKey()), current.version());
             if (update.isPresent()) return update.get();

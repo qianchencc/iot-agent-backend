@@ -24,6 +24,7 @@ import ltd.qianc.iotagent.auth.PrincipalInfo;
 import ltd.qianc.iotagent.error.BusinessException;
 import ltd.qianc.iotagent.report.ReportFact;
 import ltd.qianc.iotagent.report.ReportFactStore;
+import ltd.qianc.iotagent.task.internal.TaskProposalNormalizer;
 
 /**
  * Public task boundary. It performs proposal/plan/task CAS and idempotency while
@@ -43,6 +44,8 @@ public final class TaskFacade {
     private final TaskPhaseStore phases;
     private final IotAdapter iot;
     private final ReportFactStore reports;
+    private final TaskExecutionIdentityStore executionIdentities;
+    private final TaskProposalNormalizer normalizer;
     private final Clock clock;
 
     public TaskFacade(ObjectMapper mapper, TaskFactStore tasks, TaskProposalStore proposals,
@@ -64,6 +67,14 @@ public final class TaskFacade {
                       TaskPlanStore plans, TaskNotificationStore notifications,
                       TaskScheduler scheduler, TaskPhaseStore phases, IotAdapter iot,
                       ReportFactStore reports, Clock clock) {
+        this(mapper, tasks, proposals, plans, notifications, scheduler, phases, iot, reports, null, null, clock);
+    }
+
+    public TaskFacade(ObjectMapper mapper, TaskFactStore tasks, TaskProposalStore proposals,
+                      TaskPlanStore plans, TaskNotificationStore notifications,
+                      TaskScheduler scheduler, TaskPhaseStore phases, IotAdapter iot,
+                      ReportFactStore reports, TaskExecutionIdentityStore executionIdentities,
+                      TaskProposalNormalizer normalizer, Clock clock) {
         this.mapper = Objects.requireNonNull(mapper, "mapper");
         this.tasks = Objects.requireNonNull(tasks, "tasks");
         this.proposals = Objects.requireNonNull(proposals, "proposals");
@@ -73,7 +84,10 @@ public final class TaskFacade {
         this.phases = phases;
         this.iot = iot;
         this.reports = reports;
+        this.executionIdentities = executionIdentities;
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.normalizer = normalizer != null ? normalizer
+                : new TaskProposalNormalizer(mapper, iot, clock, Duration.ofSeconds(30));
     }
 
     public TaskProposalFact propose(PrincipalInfo principal, String source, String conversationId,
@@ -82,12 +96,12 @@ public final class TaskFacade {
         require(conversationId, "conversationId"); require(turnId, "turnId"); require(idempotencyKey, "idempotencyKey");
         String key = scoped(principal, idempotencyKey);
         Optional<TaskProposalFact> prior = proposals.findByIdempotencyKey(key);
-        if (prior.isPresent() && proposalOwned(prior.get(), principal, normalizedSource)) return prior.get();
+        if (prior.isPresent() && "TASK".equals(prior.get().kind())
+                && proposalOwned(prior.get(), principal, normalizedSource)) return prior.get();
         if (prior.isPresent()) throw conflict("IDEMPOTENCY_KEY_REUSED", "幂等键已用于其他任务来源");
-        JsonNode payload = safePayload(payloadJson);
+        JsonNode payload = safePayload(normalizer.normalizeProposal(principal, normalizedSource, payloadJson));
         if (payload.isObject()) {
-            ((com.fasterxml.jackson.databind.node.ObjectNode) payload).put("source", normalizedSource)
-                    .put("tenantCode", principal.tenantCode()).put("ownerKey", ownerKey(principal))
+            ((com.fasterxml.jackson.databind.node.ObjectNode) payload)
                     .put("conversationId", conversationId).put("turnId", turnId)
                     .put("createdAt", clock.instant().toString());
         }
@@ -233,6 +247,17 @@ public final class TaskFacade {
                 markConfirmed(proposal);
                 return managementResult(proposal, null, changed.planId());
             }
+            if ("delete".equals(proposal.operation())) {
+                TaskPlanFact deleted;
+                try {
+                    deleted = plans.cancelAllIfVersion(planId, current.version(), clock.instant())
+                            .orElseThrow(() -> conflict("VERSION_CONFLICT", "计划已变化，请重新提出修改"));
+                } catch (UnsupportedOperationException unavailable) {
+                    throw new BusinessException("TASK_PLAN_CANCELLATION_UNAVAILABLE", "当前存储未提供计划取消能力", 503);
+                }
+                markConfirmed(proposal);
+                return managementResult(proposal, null, deleted.planId());
+            }
             String nextStatus = switch (proposal.operation()) {
                 case "pause" -> "PAUSED";
                 case "resume" -> "ENABLED";
@@ -313,30 +338,116 @@ public final class TaskFacade {
         return proposal;
     }
 
-    public TaskFact confirm(PrincipalInfo principal, String proposalId, long expectedVersion) {
-        return confirm(principal, proposalId, expectedVersion, "office");
+    /**
+     * Human-confirmed creation of either a one-time/interval task or a recurring
+     * plan. The proposal CAS is followed by an idempotent fact materialization, so
+     * a crash between the two is recoverable by replay without duplicating work.
+     */
+    public Map<String, Object> confirmProposal(PrincipalInfo principal, String proposalId, long expectedVersion) {
+        return confirmProposal(principal, proposalId, expectedVersion, "office");
     }
 
-    public TaskFact confirm(PrincipalInfo principal, String proposalId, long expectedVersion, String requestedSource) {
+    public Map<String, Object> confirmProposal(PrincipalInfo principal, String proposalId, long expectedVersion,
+                                               String requestedSource) {
         TaskProposalFact proposal = proposal(principal, proposalId, requestedSource);
+        if (!"TASK".equals(proposal.kind())) throw notFound("TASK_PROPOSAL_NOT_FOUND", "任务提案不存在");
         if (CONFIRMED.equals(proposal.status())) {
-            TaskFact existing = taskForProposal(principal, proposalId, requestedSource);
-            scheduleIfDue(existing);
-            return existing;
+            return materializeConfirmed(principal, proposal);
         }
         resolveExpiry(proposal);
         if (!PENDING.equals(proposal.status())) throw conflict("TASK_PROPOSAL_NOT_PENDING", "任务提案已结束");
         if (proposal.version() != expectedVersion) throw conflict("VERSION_CONFLICT", "任务提案已变化，请刷新后重试");
+        JsonNode payload = safePayload(proposal.payloadJson());
+        validatePlanStructure(payload, payload.toString());
+        validateConfirmTime(payload);
+        assertCurrentCatalog(principal, proposal.source(), proposal.payloadJson(), true);
         TaskProposalFact confirmed = proposals.updateIfVersion(withStatus(proposal, CONFIRMED), proposal.version())
                 .orElseThrow(() -> conflict("VERSION_CONFLICT", "任务提案已变化，请刷新后重试"));
-        String taskKey = "task:" + confirmed.proposalId();
-        String taskPayload = materializePhaseIds(confirmed.payloadJson());
-        TaskFact task = new TaskFact(UUID.randomUUID().toString(), 1, SCHEDULED, taskPayload, taskKey);
-        TaskFact saved;
-        try { saved = tasks.save(task); }
-        catch (RuntimeException error) { saved = tasks.findByIdempotencyKey(taskKey).orElseThrow(() -> error); }
-        scheduleIfDue(saved);
-        return saved;
+        return materializeConfirmed(principal, confirmed);
+    }
+
+    private Map<String, Object> materializeConfirmed(PrincipalInfo principal, TaskProposalFact confirmed) {
+        JsonNode payload = safePayload(confirmed.payloadJson());
+        validatePlanStructure(payload, payload.toString());
+        TaskExecutionIdentityStore.TaskExecutionIdentity identity = identity(principal);
+        if (payload.path("repeat").isObject()) {
+            String key = "plan:" + confirmed.proposalId();
+            TaskPlanFact plan = plans.findByIdempotencyKey(key).orElseGet(() -> {
+                TaskPlanFact candidate = new TaskPlanFact(UUID.randomUUID().toString(), 1, "ENABLED",
+                        payload.toString(), key);
+                try {
+                    return plans.save(candidate);
+                } catch (RuntimeException error) {
+                    return plans.findByIdempotencyKey(key).orElseThrow(() -> error);
+                }
+            });
+            if (executionIdentities != null) executionIdentities.saveForPlan(plan.planId(), identity);
+            Map<String, Object> result = new LinkedHashMap<>(planView(plan));
+            result.put("proposalId", confirmed.proposalId());
+            result.put("status", plan.status());
+            result.put("taskKind", "recurring");
+            return result;
+        }
+        String key = "task:" + confirmed.proposalId();
+        TaskFact task = tasks.findByIdempotencyKey(key).orElseGet(() -> {
+            TaskFact candidate = new TaskFact(UUID.randomUUID().toString(), 1, SCHEDULED,
+                    materializePhaseIds(payload.toString()), key);
+            try {
+                return tasks.save(candidate);
+            } catch (RuntimeException error) {
+                return tasks.findByIdempotencyKey(key).orElseThrow(() -> error);
+            }
+        });
+        if (executionIdentities != null) executionIdentities.saveForTask(task.taskId(), identity);
+        scheduleIfDue(task);
+        Map<String, Object> result = new LinkedHashMap<>(view(task));
+        result.put("proposalId", confirmed.proposalId());
+        result.put("taskId", task.taskId());
+        return result;
+    }
+
+    private TaskExecutionIdentityStore.TaskExecutionIdentity identity(PrincipalInfo principal) {
+        return new TaskExecutionIdentityStore.TaskExecutionIdentity(
+                principal.tenantCode(), ownerKey(principal), principal.authorization());
+    }
+
+    private void validateConfirmTime(JsonNode payload) {
+        JsonNode phases = payload.path("phases");
+        if (!phases.isArray() || phases.isEmpty()) throw new BusinessException("INVALID_TASK_PAYLOAD", "任务阶段无效", 400);
+        Instant now = clock.instant();
+        if (payload.path("repeat").isObject()) {
+            try {
+                TaskRecurrence.RepeatRule rule = repeatRule(payload.path("repeat"), TaskRecurrence.localDate(anchor(payload)));
+                if (TaskRecurrence.next(rule, anchor(payload), now) == null) {
+                    throw new BusinessException("TASK_TIME_PASSED", "截止日前没有未来发生", 409);
+                }
+            } catch (BusinessException failure) {
+                throw failure;
+            } catch (RuntimeException invalid) {
+                throw new BusinessException("INVALID_TASK_PAYLOAD", "重复规则无效", 400);
+            }
+            return;
+        }
+        JsonNode interval = payload.path("interval");
+        if (interval.isObject()) {
+            try {
+                if (!Instant.parse(interval.path("endsAt").asText()).isAfter(now)) {
+                    throw new BusinessException("TASK_TIME_PASSED", "任务时间区间已过，请重新选择时间", 409);
+                }
+            } catch (BusinessException failure) {
+                throw failure;
+            } catch (RuntimeException invalid) {
+                throw new BusinessException("INVALID_TASK_PAYLOAD", "任务时间区间无效", 400);
+            }
+        }
+        for (JsonNode phase : phases) {
+            try {
+                if (Instant.parse(phase.path("at").asText()).isAfter(now)) return;
+            } catch (RuntimeException invalid) {
+                throw new BusinessException("INVALID_TASK_PAYLOAD", "任务阶段时间无效", 400);
+            }
+        }
+        throw new BusinessException("TASK_TIME_PASSED", "任务时间已过，请重新选择执行时间", 409);
     }
 
     public TaskProposalFact discard(PrincipalInfo principal, String proposalId, long expectedVersion) {
@@ -430,12 +541,21 @@ public final class TaskFacade {
         if (terminalTask(current.status())) throw conflict("TASK_ALREADY_FINISHED", "任务已结束");
         JsonNode nextPayload = safePayload(payloadJson);
         if (!nextPayload.isObject()) throw new BusinessException("INVALID_TASK_PAYLOAD", "任务内容无效", 400);
+        JsonNode beforePayload = safePayload(current.payloadJson());
+        validatePlanStructure(nextPayload, beforePayload.toString());
+        validateDurableHistory(beforePayload, nextPayload);
+        validateFutureChange(beforePayload, nextPayload, "edit");
+        validateDeviceReferences(beforePayload, nextPayload);
+        String currentSource = source(beforePayload.path("source").asText("office"));
+        assertCurrentCatalog(principal, currentSource, nextPayload.toString());
         ((com.fasterxml.jackson.databind.node.ObjectNode) nextPayload)
                 .put("tenantCode", principal.tenantCode())
                 .put("ownerKey", ownerKey(principal))
-                .put("source", source(safePayload(current.payloadJson()).path("source").asText("office")));
-        String normalizedPayload = materializePhaseIds(nextPayload.toString());
-        TaskFact replacement = new TaskFact(taskId, expectedVersion + 1, SCHEDULED,
+                .put("source", currentSource);
+        attachFingerprints(principal, currentSource, nextPayload);
+        String normalizedPayload = materializePreservingPhaseIds(nextPayload.toString(), current.payloadJson());
+        TaskFact replacement = new TaskFact(taskId, expectedVersion + 1,
+                "PAUSED".equals(current.status()) ? "PAUSED" : SCHEDULED,
                 normalizedPayload, current.idempotencyKey());
         TaskFact updated = tasks.updateIfVersion(replacement, expectedVersion)
                 .orElseThrow(() -> conflict("VERSION_CONFLICT", "任务状态已变化，请刷新后再试"));
@@ -465,18 +585,26 @@ public final class TaskFacade {
         String key = scoped(principal, idempotencyKey);
         Optional<TaskPlanFact> prior = plans.findByIdempotencyKey(key);
         if (prior.isPresent() && owns(prior.get().payloadJson(), principal)
-                && source(safePayload(prior.get().payloadJson()).path("source").asText("office")).equals(source(source))) return prior.get();
+                && source(safePayload(prior.get().payloadJson()).path("source").asText("office")).equals(source(source))) {
+            if (executionIdentities != null) executionIdentities.saveForPlan(prior.get().planId(), identity(principal));
+            return prior.get();
+        }
         if (prior.isPresent()) throw conflict("IDEMPOTENCY_KEY_REUSED", "幂等键已用于其他计划来源");
-        JsonNode payload = safePayload(payloadJson);
+        JsonNode payload = safePayload(normalizer.normalizePlan(principal, source, payloadJson));
         if (payload.isObject()) ((com.fasterxml.jackson.databind.node.ObjectNode) payload)
                 .put("source", source(source)).put("tenantCode", principal.tenantCode()).put("ownerKey", ownerKey(principal));
-        try { return plans.save(new TaskPlanFact(UUID.randomUUID().toString(), 1, "ENABLED", payload.toString(), key)); }
+        try {
+            TaskPlanFact saved = plans.save(new TaskPlanFact(UUID.randomUUID().toString(), 1, "ENABLED", payload.toString(), key));
+            if (executionIdentities != null) executionIdentities.saveForPlan(saved.planId(), identity(principal));
+            return saved;
+        }
         catch (RuntimeException error) {
             TaskPlanFact replay = plans.findByIdempotencyKey(key).orElseThrow(() -> error);
             if (!owns(replay.payloadJson(), principal)
                     || !source(safePayload(replay.payloadJson()).path("source").asText("office")).equals(source(source))) {
                 throw conflict("IDEMPOTENCY_KEY_REUSED", "幂等键已用于其他计划来源");
             }
+            if (executionIdentities != null) executionIdentities.saveForPlan(replay.planId(), identity(principal));
             return replay;
         }
     }
@@ -526,6 +654,14 @@ public final class TaskFacade {
         }
         if ("PAUSED".equals(next) && !"ENABLED".equals(current.status())) {
             throw new BusinessException("PLAN_FORBIDDEN", "当前计划不能停用", 403);
+        }
+        if ("DELETED".equals(next)) {
+            try {
+                return plans.cancelAllIfVersion(planId, expectedVersion, clock.instant())
+                        .orElseThrow(() -> conflict("VERSION_CONFLICT", "计划已变化，请刷新后重试"));
+            } catch (UnsupportedOperationException unavailable) {
+                // Fall through to the plain CAS when the store cannot atomically stop future work.
+            }
         }
         if ("ENABLED".equals(next) && !"ENABLED".equals(current.status())) {
             if (!confirmed) throw new BusinessException("RESUME_CONFIRMATION_REQUIRED", "重新启用周期计划需要确认当前范围和控制绑定", 400);
@@ -630,12 +766,34 @@ public final class TaskFacade {
         checkPrincipal(principal);
         String normalizedSource = source(source);
         if (iot != null) authorizedScope(principal, normalizedSource, "TASK_NOTIFICATION_UNAVAILABLE");
-        TaskNotificationFact fact = notifications.markSeen(principal.tenantCode(), ownerKey(principal), normalizedSource, id, clock.instant());
+        TaskNotificationFact fact = markSeen(principal, normalizedSource, id);
         if (!principal.tenantCode().equals(fact.tenantCode()) || !ownerKey(principal).equals(fact.recipientKey())
                 || !normalizedSource.equals(source(fact.source()))) {
             throw notFound("NOTIFICATION_NOT_FOUND", "消息不存在或已不可查看");
         }
         return Map.of("id", fact.notificationId(), "readAt", fact.readAt() == null ? clock.instant().toString() : fact.readAt().toString());
+    }
+
+    /** Opening a notification in the inbox marks it seen and returns its durable payload. */
+    public Map<String, Object> openNotification(PrincipalInfo principal, String source, String id) {
+        checkPrincipal(principal);
+        String normalizedSource = source(source);
+        AuthorizedDeviceScope scope = iot == null ? null
+                : authorizedScope(principal, normalizedSource, "TASK_NOTIFICATION_UNAVAILABLE");
+        TaskNotificationFact fact = markSeen(principal, normalizedSource, id);
+        if (!principal.tenantCode().equals(fact.tenantCode()) || !ownerKey(principal).equals(fact.recipientKey())
+                || !normalizedSource.equals(source(fact.source()))) {
+            throw notFound("NOTIFICATION_NOT_FOUND", "消息不存在或已不可查看");
+        }
+        return notificationView(fact, scope);
+    }
+
+    private TaskNotificationFact markSeen(PrincipalInfo principal, String source, String id) {
+        try {
+            return notifications.markSeen(principal.tenantCode(), ownerKey(principal), source, id, clock.instant());
+        } catch (java.util.NoSuchElementException missing) {
+            throw notFound("NOTIFICATION_NOT_FOUND", "消息不存在或已不可查看");
+        }
     }
 
     public Map<String, Object> seenAllNotifications(PrincipalInfo principal, String source) {
@@ -678,8 +836,86 @@ public final class TaskFacade {
         }
         view.putIfAbsent("hasReport", report.isObject());
         view.putIfAbsent("reportAt", report.isObject() ? report.path("generatedAt").asText(null) : null);
+        applyPhaseResults(task, view);
         return view;
     }
+
+    private void applyPhaseResults(TaskFact task, Map<String, Object> view) {
+        if (phases == null) return;
+        List<TaskPhaseStore.PhaseResult> results;
+        try { results = phases.terminalPhases(task.taskId()); }
+        catch (RuntimeException unavailable) { return; }
+        if (results.isEmpty()) return;
+        List<Map<String, Object>> phaseViews = new ArrayList<>();
+        List<Map<String, Object>> resultViews = new ArrayList<>();
+        boolean exceptional = false;
+        for (TaskPhaseStore.PhaseResult result : results) {
+            JsonNode definition = readJson(result.definitionJson());
+            JsonNode executed = readJson(result.resultJson());
+            Map<String, Object> phase = new LinkedHashMap<>();
+            if (definition.isObject()) definition.fields().forEachRemaining(entry ->
+                    phase.put(entry.getKey(), mapper.convertValue(publicPayload(entry.getValue()), Object.class)));
+            phase.put("phaseId", result.phaseId());
+            phase.put("id", result.phaseId());
+            phase.put("at", result.dueAt().toString());
+            phase.put("status", result.status());
+            phase.put("startedAt", result.startedAt() == null ? null : result.startedAt().toString());
+            phase.put("endedAt", result.endedAt() == null ? null : result.endedAt().toString());
+            if (executed.isObject()) {
+                for (String key : List.of("outcome", "dispatchStarted", "devices", "observations",
+                        "energyEstimate", "observedAt", "reason", "mode", "target", "adjustedDevices")) {
+                    JsonNode value = executed.get(key);
+                    if (value == null) continue;
+                    if ("devices".equals(key) && value.isObject()) {
+                        List<Object> devices = new ArrayList<>();
+                        value.fields().forEachRemaining(entry ->
+                                devices.add(mapper.convertValue(publicPayload(entry.getValue()), Object.class)));
+                        phase.put("devices", devices);
+                    } else {
+                        phase.put(key, mapper.convertValue(publicPayload(value), Object.class));
+                    }
+                }
+                if (executed.path("reason").isTextual()) phase.put("failureReason", executed.path("reason").asText());
+            }
+            phase.put("result", mapper.convertValue(publicPayload(executed), Object.class));
+            phaseViews.add(phase);
+            Map<String, Object> resultView = new LinkedHashMap<>();
+            resultView.put("phaseId", result.phaseId());
+            resultView.put("at", result.dueAt().toString());
+            resultView.put("status", result.status());
+            resultView.put("outcome", executed.path("outcome").asText(result.status()));
+            if (executed.path("devices").isObject()) {
+                resultView.put("devices", mapper.convertValue(publicPayload(executed.path("devices")), Object.class));
+            }
+            resultViews.add(resultView);
+            exceptional |= Set.of("PARTIAL", "FAILED", "UNCONFIRMED", "INTERRUPTED", "MISSED").contains(result.status());
+        }
+        view.put("phases", phaseViews);
+        view.put("results", resultViews);
+        view.put("phaseCount", phaseViews.size());
+        view.put("hasException", exceptional);
+    }
+    private void attachFingerprints(PrincipalInfo principal, String source, JsonNode payload) {
+        if (iot == null || deviceReferences(payload).isEmpty()) return;
+        IotSource requested;
+        try { requested = IotSource.parse(source); }
+        catch (RuntimeException invalid) { throw new BusinessException("INVALID_AGENT_SOURCE", "Agent 来源无效", 400); }
+        AuthorizedDeviceScope scope;
+        try {
+            scope = iot.loadAuthorizedDeviceScope(new RequestIdentity(
+                    principal.authorization(), principal.tenantCode(), requested, ownerKey(principal)))
+                    .block(Duration.ofSeconds(30));
+        } catch (RuntimeException failure) {
+            throw new BusinessException("TASK_DEVICE_AUTHORIZATION_UNAVAILABLE", "当前设备授权范围暂不可用", 503);
+        }
+        if (scope == null || scope.source() != requested) {
+            throw new BusinessException("TASK_DEVICE_AUTHORIZATION_UNAVAILABLE", "当前设备授权范围暂不可用", 503);
+        }
+        if (payload.isObject()) ((com.fasterxml.jackson.databind.node.ObjectNode) payload)
+                .put("catalogFingerprint", scope.catalogFingerprint())
+                .put("bindingFingerprint", scope.bindingFingerprint());
+    }
+
     private AuthorizedDeviceScope authorizedScope(PrincipalInfo principal, String requestedSource, String errorCode) {
         IotSource requested;
         try { requested = IotSource.parse(source(requestedSource)); }
@@ -706,6 +942,7 @@ public final class TaskFacade {
     }
     public List<Map<String, Object>> plans(PrincipalInfo principal, String source) {
         return plans.list(principal.tenantCode(), ownerKey(principal), source(source)).stream()
+                .filter(item -> !"DELETED".equalsIgnoreCase(item.status()))
                 .filter(item -> owns(item.payloadJson(), principal)).map(this::planView).toList();
     }
     public Map<String, Object> proposalView(TaskProposalFact proposal) {
@@ -719,6 +956,26 @@ public final class TaskFacade {
             if (proposal.expiresAt() != null) view.put("expiresAt", proposal.expiresAt().toString());
         }
         view.put("payload", mapper.convertValue(publicPayload(safePayload(proposal.payloadJson())), Object.class));
+        JsonNode proposed = safePayload(proposal.payloadJson());
+        if (proposed.path("repeat").isObject()) {
+            try {
+                Instant anchor = anchor(proposed);
+                TaskRecurrence.RepeatRule repeat = repeatRule(proposed.path("repeat"), TaskRecurrence.localDate(anchor));
+                java.time.LocalDate next = TaskRecurrence.next(repeat, anchor, clock.instant());
+                if (next != null) {
+                    view.put("nextOccurrenceId", TaskRecurrence.occurrenceId(proposal.proposalId(), next));
+                    view.put("nextCheckpointAt", TaskRecurrence.occurrenceAt(anchor, next).toString());
+                }
+                Instant checkpoint = activeWindowCheckpoint(proposed, clock.instant());
+                if (checkpoint != null) {
+                    view.put("nextOccurrenceId", TaskRecurrence.occurrenceId(proposal.proposalId(),
+                            TaskRecurrence.localDate(clock.instant())));
+                    view.put("nextCheckpointAt", checkpoint.toString());
+                }
+            } catch (RuntimeException ignored) {
+                // Invalid legacy proposals remain visible so the user can discard them.
+            }
+        }
         return view;
     }
     public Map<String, Object> planView(TaskPlanFact plan) {
@@ -726,34 +983,67 @@ public final class TaskFacade {
         view.put("planId", plan.planId()); view.put("version", plan.version()); view.put("status", plan.status());
         JsonNode payload = safePayload(plan.payloadJson());
         view.put("payload", mapper.convertValue(publicPayload(payload), Object.class));
+        view.put("taskKind", "recurring");
+        view.put("repeat", mapper.convertValue(publicPayload(payload.path("repeat")), Object.class));
+        if (payload.path("interval").isObject()) {
+            view.put("interval", mapper.convertValue(publicPayload(payload.path("interval")), Object.class));
+        }
+        view.put("canPause", "ENABLED".equalsIgnoreCase(plan.status()));
+        view.put("canResume", "PAUSED".equalsIgnoreCase(plan.status()));
+        view.put("canCancel", !"DELETED".equalsIgnoreCase(plan.status()));
         if ("ENABLED".equalsIgnoreCase(plan.status()) && payload.path("repeat").isObject()) {
             Instant anchor = anchor(payload);
             TaskRecurrence.RepeatRule repeat = repeatRule(payload.path("repeat"), TaskRecurrence.localDate(anchor));
-            java.time.LocalDate next = TaskRecurrence.next(repeat, anchor, clock.instant());
+            Instant now = clock.instant();
+            java.time.LocalDate today = TaskRecurrence.localDate(now);
+            Instant checkpoint = activeWindowCheckpoint(payload, now);
+            java.time.LocalDate next = TaskRecurrence.next(repeat, anchor, now);
             if (next != null) {
                 view.put("nextOccurrenceId", TaskRecurrence.occurrenceId(plan.planId(), next));
                 view.put("nextCheckpointAt", TaskRecurrence.occurrenceAt(anchor, next).toString());
             }
+            if (checkpoint != null) {
+                view.put("nextOccurrenceId", TaskRecurrence.occurrenceId(plan.planId(), today));
+                view.put("nextCheckpointAt", checkpoint.toString());
+            }
+        }
+        try {
+            Optional<String> latest = plans.latestTaskId(plan.planId());
+            if (latest.isPresent()) {
+                TaskFact task = tasks.find(latest.get()).orElse(null);
+                if (task != null) {
+                    Map<String, Object> latestView = view(task);
+                    view.put("latestTaskId", task.taskId());
+                    view.put("latestStatus", task.status());
+                    view.put("latestResult", latestView);
+                    view.put("latestResultAt", latestView.get("reportAt"));
+                }
+            }
+        } catch (RuntimeException ignored) {
+            // The plan itself remains readable when an optional latency projection is unavailable.
         }
         return view;
     }
 
-    private TaskFact taskForProposal(PrincipalInfo principal, String proposalId, String expectedSource) {
-        TaskFact task = tasks.findByIdempotencyKey("task:" + proposalId)
-                .orElseThrow(() -> new BusinessException("TASK_RECOVERY_REQUIRED", "任务确认已记账，正在恢复任务事实",
-                        Map.of("kind", "confirmation_blocked", "message", "请稍后重试或刷新任务状态"), 503));
-        if (!owns(task.payloadJson(), principal)) {
-            throw new BusinessException("TASK_RECOVERY_REQUIRED", "任务确认已记账，正在恢复任务事实",
-                    Map.of("kind", "confirmation_blocked", "message", "请稍后重试或刷新任务状态"), 503);
-        }
+    private Instant activeWindowCheckpoint(JsonNode payload, Instant now) {
+        JsonNode interval = payload.path("interval");
+        JsonNode phases = payload.path("phases");
+        if (!interval.isObject() || !phases.isArray() || phases.size() <= 1) return null;
         try {
-            assertSource(task.payloadJson(), expectedSource);
-        } catch (BusinessException mismatch) {
-            throw new BusinessException("TASK_RECOVERY_REQUIRED", "任务确认已记账，正在恢复任务事实",
-                    Map.of("kind", "confirmation_blocked", "message", "请稍后重试或刷新任务状态"), 503);
+            Instant start = Instant.parse(interval.path("startsAt").asText());
+            Instant end = Instant.parse(interval.path("endsAt").asText());
+            if (start.isAfter(now) || !now.isBefore(end)) return null;
+            Instant first = null;
+            for (JsonNode phase : phases) {
+                Instant at = Instant.parse(phase.path("at").asText());
+                if (at.isAfter(now) && (first == null || at.isBefore(first))) first = at;
+            }
+            return first;
+        } catch (RuntimeException ignored) {
+            return null;
         }
-        return task;
     }
+
     private String materializePhaseIds(String payloadJson) {
         JsonNode parsed = safePayload(payloadJson);
         if (!parsed.isObject() || !parsed.path("phases").isArray()) return parsed.toString();
@@ -770,6 +1060,7 @@ public final class TaskFacade {
     }
 
     private void scheduleIfDue(TaskFact task) {
+        if (!SCHEDULED.equals(task.status())) return;
         JsonNode payload = safePayload(task.payloadJson());
         JsonNode phases = payload.path("phases");
         if (!phases.isArray()) return;
@@ -999,6 +1290,10 @@ public final class TaskFacade {
     }
 
     private void assertCurrentCatalog(PrincipalInfo principal, String source, String payloadJson, boolean required) {
+        JsonNode payload = safePayload(payloadJson);
+        String expectedCatalog = text(payload, "catalogFingerprint", "catalog_fingerprint", "deviceCatalogFingerprint");
+        String expectedBinding = text(payload, "bindingFingerprint", "binding_fingerprint", "deviceBindingFingerprint");
+        if (deviceReferences(payload).isEmpty() && expectedCatalog == null && expectedBinding == null) return;
         if (iot == null) {
             if (required) throw new BusinessException("TASK_DEVICE_AUTHORIZATION_UNAVAILABLE", "当前设备授权范围暂不可用", 503);
             return;
@@ -1022,9 +1317,6 @@ public final class TaskFacade {
         if (scope == null || scope.source() != requested || scope.devices() == null) {
             throw new BusinessException("TASK_DEVICE_AUTHORIZATION_UNAVAILABLE", "当前设备授权范围暂不可用", 503);
         }
-        JsonNode payload = safePayload(payloadJson);
-        String expectedCatalog = text(payload, "catalogFingerprint", "catalog_fingerprint", "deviceCatalogFingerprint");
-        String expectedBinding = text(payload, "bindingFingerprint", "binding_fingerprint", "deviceBindingFingerprint");
         if ((expectedCatalog != null && !expectedCatalog.equals(scope.catalogFingerprint()))
                 || (expectedBinding != null && !expectedBinding.equals(scope.bindingFingerprint()))) {
             throw new BusinessException("TASK_DEVICE_AUTHORIZATION_UNAVAILABLE", "任务设备授权目录已变化，请重新确认", 403);
@@ -1206,9 +1498,23 @@ public final class TaskFacade {
         var phases = (com.fasterxml.jackson.databind.node.ArrayNode) after.path("phases");
         for (int i = 0; i < phases.size(); i++) {
             var phase = (com.fasterxml.jackson.databind.node.ObjectNode) phases.get(i);
-            if (!phase.path("phaseId").isTextual() && i < original.size() && original.get(i).path("phaseId").isTextual()) phase.put("phaseId", original.get(i).path("phaseId").asText());
+            JsonNode previous = i < original.size() ? original.get(i) : null;
+            boolean unchanged = previous != null && previous.isObject()
+                    && withoutPhaseId(previous).equals(withoutPhaseId(phase));
+            String previousId = previous == null ? "" : previous.path("phaseId").asText("");
+            if (unchanged && !previousId.isBlank()) {
+                phase.put("phaseId", previousId);
+            } else {
+                phase.put("phaseId", UUID.randomUUID().toString());
+            }
         }
         return after.toString();
+    }
+
+    private JsonNode withoutPhaseId(JsonNode value) {
+        JsonNode copy = value.deepCopy();
+        if (copy instanceof com.fasterxml.jackson.databind.node.ObjectNode object) object.remove("phaseId");
+        return copy;
     }
     private Map<String, Object> managementResult(TaskProposalFact proposal) {
         return managementResult(proposal, targetId(readJson(proposal.targetJson())), null);

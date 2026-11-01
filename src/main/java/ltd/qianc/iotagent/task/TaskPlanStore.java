@@ -38,4 +38,8 @@ public interface TaskPlanStore {
     default java.util.List<TaskPlanFact> list(String tenantCode, String ownerKey, String source) {
         throw new UnsupportedOperationException("Task plan list store is not configured");
     }
+    /** Latest materialized occurrence task, used by the plan read model. */
+    default java.util.Optional<String> latestTaskId(String planId) {
+        return java.util.Optional.empty();
+    }
 }

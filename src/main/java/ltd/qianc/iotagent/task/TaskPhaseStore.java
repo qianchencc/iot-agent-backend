@@ -32,6 +32,13 @@ public interface TaskPhaseStore {
      */
     default List<String> outcomes(String taskId) { return List.of(); }
 
+    /**
+     * Returns terminal phase facts with their preserved definition and actual
+     * result. The scanner uses this for a whole-task report without re-executing
+     * any checkpoint.
+     */
+    default List<PhaseResult> terminalPhases(String taskId) { return List.of(); }
+
     record TaskPhase(String taskId, String phaseId, long version, String source,
                      String payloadJson, Instant dueAt, String status) {
         public TaskPhase {
@@ -42,6 +49,22 @@ public interface TaskPhaseStore {
                     || dueAt == null || status == null || status.isBlank()) {
                 throw new IllegalArgumentException("phase is incomplete");
             }
+        }
+    }
+
+    /**
+     * Original phase definition and the result produced by execution. Definitions
+     * are never overwritten by terminal result JSON.
+     */
+    record PhaseResult(String taskId, String phaseId, Instant dueAt, String status,
+                       String definitionJson, String resultJson, Instant startedAt, Instant endedAt) {
+        public PhaseResult {
+            if (taskId == null || taskId.isBlank() || phaseId == null || phaseId.isBlank()
+                    || dueAt == null || status == null || status.isBlank()) {
+                throw new IllegalArgumentException("phase result is incomplete");
+            }
+            definitionJson = definitionJson == null || definitionJson.isBlank() ? "{}" : definitionJson;
+            resultJson = resultJson == null || resultJson.isBlank() ? "{}" : resultJson;
         }
     }
 }

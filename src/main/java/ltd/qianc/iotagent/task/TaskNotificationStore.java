@@ -17,4 +17,13 @@ public interface TaskNotificationStore {
     default int markAllSeen(String tenantCode, String recipientKey, String source, Instant at) {
         throw new UnsupportedOperationException("Task notification store is not configured");
     }
+    /**
+     * Refreshes a terminal notification after a report retry succeeds or fails.
+     * Execution history is not rewritten; only the notification projection moves
+     * from a recoverable failure to its evidence-backed terminal state.
+     */
+    default TaskNotificationFact refresh(String taskId, String recipientKey, String outcome,
+                                         String payloadJson, Instant at) {
+        throw new UnsupportedOperationException("Task notification refresh is not configured");
+    }
 }
