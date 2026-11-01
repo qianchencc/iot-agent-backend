@@ -134,7 +134,7 @@ L305 的「并执行」超出了 L106/L311 可证明的范围。`ANY-CTL-08` 及
 | CASE-ID | 说明书 | 真实输入与 UI 步骤 | 可观察结果 | 数据前提 / 安全停点 | 票据 | 证据 | 初始状态 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | COMP-CTL-01 | §2.2 L73 | 公司面板输入「关掉26楼会议室空调」→ 打开返回的草案 | 草案逐台列出空调、当前状态与预期调整；含拟执行/排除/无需操作数；未下发 | 真实授权空调；`D` | [04](issues/04-ac-parameter-drafts.md) | evidence/COMP-CTL-01/ | 未验收 |
-| COMP-CTL-03 | §2.2 L72、附录 A L295 | 输入「把26楼会议室空调开到 24 度制冷」；再以附录原句「把会议室空调开到 24 度」复跑一次 | 草案目标温度 24、模式制冷；当前值与目标值分列；两台以上时逐台可改；未下发 | 真实授权空调；`D` | [04](issues/04-ac-parameter-drafts.md) | evidence/COMP-CTL-03/ | 未验收 |
+| COMP-CTL-03 | §2.2 L72、附录 A L295 | 输入「把26楼会议室空调开到 24 度制冷」；再以附录原句「把会议室空调开到 24 度」复跑一次 | 两次目标温度均为24；只有明确指定制冷的指令改变模式，未指定模式时不得擅加制冷；当前值和目标分列，未下发 | 真实授权空调；`D` | [04](issues/04-ac-parameter-drafts.md) | evidence/COMP-CTL-03/ | 未验收 |
 | COMP-CTL-04 | §2.2 L79 | 在草案中长按某台空调卡片，打开自定义调整；依次改电源、模式、风速、温度并保存 | 四个参数均可编辑；保存后卡片/预览反映新目标；无静默重置 | 已有 AC 草案；`D` | [04](issues/04-ac-parameter-drafts.md) | evidence/COMP-CTL-04/ | 未验收 |
 | COMP-CTL-05A | §2.2 L79 | 温度输入 15.9℃（低于 16）并尝试提交 | 无法提交；提示允许范围 16–30℃；草案目标不变；无效指令不下发 | 已有可编辑 AC 草案；`D` | [04](issues/04-ac-parameter-drafts.md) | evidence/COMP-CTL-05A/ | 未验收 |
 | COMP-CTL-05B | §2.2 L79 | 温度输入精确 16℃ 并提交到草案 | 16℃ 被接受并显示为目标值；仍不下发 | 同上；`D` | [04](issues/04-ac-parameter-drafts.md) | evidence/COMP-CTL-05B/ | 未验收 |
@@ -166,13 +166,13 @@ L305 的「并执行」超出了 L106/L311 可证明的范围。`ANY-CTL-08` 及
 
 | CASE-ID | 说明书 | 真实输入与 UI 步骤 | 可观察结果 | 数据前提 / 安全停点 | 票据 | 证据 | 初始状态 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| ANY-CTL-03 | §2.5 L101-L108 | 在隔离环境对草案点「执行操作」，逐台查看结果 | 每台结果属于已完成/平台回读、已下发、部分完成/失败、无需操作之一；无空白/模板假结果 | `S-LOCAL` 生产形态适配器；`L`；不写生产 | [10](issues/10-once-interval-task-execution.md) | evidence/ANY-CTL-03/ | 未验收 |
+| ANY-CTL-03 | §2.5 L101-L108 | 打开可追溯真实历史执行记录或其本地副本，逐台查看各结果 | 已完成/回读、已下发、部分完成/失败、无需操作分别与真实来源事实一致；缺少某类事实则该分支未验 | `S-HIST`或其`S-LOCAL`副本；`R`；执行内核另验ENG-01 | [10](issues/10-once-interval-task-execution.md)、[13](issues/13-task-management-results-notifications.md) | evidence/ANY-CTL-03/ | 未验收 |
 | ANY-CTL-04 | §2.4 L97、附录 B L307 | 生成草案后等待有效期结束（生产 TTL 过长则在隔离环境用短 TTL）→ 再点执行 | 界面显示「核验已过期」；执行被阻止；设备无下发 | `D` 或 `L`；不得为等过期改生产配置 | [10](issues/10-once-interval-task-execution.md)、[13](issues/13-task-management-results-notifications.md) | evidence/ANY-CTL-04/ | 未验收 |
 | ANY-CTL-05 | §2.4 L95 | 观察草案从生成到确认的状态；在确认前检查无执行；隔离环境点「执行操作」 | 未确认无任何下发；确认动作是唯一执行入口；确认后进入执行结果 | 生产只到确认前；执行仅 `L` | [10](issues/10-once-interval-task-execution.md) | evidence/ANY-CTL-05/ | 未验收 |
 | ANY-CTL-06 | §2.5 L108 | 对已处于目标状态的设备发起同类操作，观察结果与计数 | 显示「无需操作」；未重复下发；预览中无需操作数包含该设备 | `S-LOCAL` 或真实历史已符合状态；`L` | [10](issues/10-once-interval-task-execution.md) | evidence/ANY-CTL-06/ | 未验收 |
-| ANY-CTL-07 | §2.5 L107 | 在隔离适配器构造一台失败/部分失败，点击「查看原因」 | 显示部分完成/失败；逐台原因可展开；成功与失败不混写 | `S-LOCAL` 故障注入；`L`；禁止对生产注入故障 | [10](issues/10-once-interval-task-execution.md) | evidence/ANY-CTL-07/ | 未验收 |
-| ANY-CTL-08 | §2.5 L106、附录 B L305、附录 C L311 | 找到或隔离产生一条「已下发」结果，展开说明；核对文案 | UI 显示「已下发」且说明无回读、以现场为准；不显示为已完成；记录 B 与 C 的措辞冲突 | `S-HIST` 或 `S-LOCAL`；`R/L`；不得宣称物理生效 | [10](issues/10-once-interval-task-execution.md) | evidence/ANY-CTL-08/ | 未验收 |
-| ANY-CTL-09 | §2.5 L105 | 对返回实测数据的设备执行，观察结果与回读值 | 显示「已完成 / 平台回读 X℃」；X 为适配器/上游实测，不是目标值复制 | `S-LOCAL` 或 `S-HIST`；`L`；禁止伪造回读 | [10](issues/10-once-interval-task-execution.md) | evidence/ANY-CTL-09/ | 未验收 |
+| ANY-CTL-07 | §2.5 L107 | 打开真实失败/部分失败历史或其可追溯副本，点击「查看原因」 | 部分完成/失败和逐台原因正确，成功与失败不混写；无真实失败记录则未验收 | `S-HIST`或其`S-LOCAL`副本；`R`；故障注入只计ENG-01工程证据 | [10](issues/10-once-interval-task-execution.md)、[13](issues/13-task-management-results-notifications.md) | evidence/ANY-CTL-07/ | 未验收 |
+| ANY-CTL-08 | §2.5 L106、附录 B L305、附录 C L311 | 找到真实「已下发」历史或其可追溯副本，展开说明并核对文案 | 显示已下发且未取得实测回读，不冒充已完成；记录B/C措辞冲突 | `S-HIST`或其`S-LOCAL`副本；`R`；不得制造受理结果 | [10](issues/10-once-interval-task-execution.md)、[13](issues/13-task-management-results-notifications.md) | evidence/ANY-CTL-08/ | 未验收 |
+| ANY-CTL-09 | §2.5 L105 | 打开有真实实测回读来源的历史记录或其可追溯副本，查看结果和读数 | 显示已完成/平台回读X℃；X可追溯至实测，不由目标填充；缺实测事实则未验收 | `S-HIST`或其`S-LOCAL`副本；`R`；不为取证下发生产控制 | [10](issues/10-once-interval-task-execution.md)、[13](issues/13-task-management-results-notifications.md) | evidence/ANY-CTL-09/ | 未验收 |
 | ANY-CTL-10 | §2.5 L110、§6.2 L279 | 执行后在任务记录/详情回查对话、确认清单、逐台结果与时间 | 三类记录均可回查；包含身份、区域、设备、时间；内容与执行时一致 | `S-HIST` 或 `S-LOCAL`；`R/L` | [13](issues/13-task-management-results-notifications.md) | evidence/ANY-CTL-10/ | 未验收 |
 | ANY-CTL-11 | §2.4 L97、附录 B L307 | 过期后重新核验（或重新要求助手给草案），再执行 | 生成新的有效期确认单；旧单仍不可执行；无重复任务/重复下发 | `D/L`；生产不执行 | [10](issues/10-once-interval-task-execution.md) | evidence/ANY-CTL-11/ | 未验收 |
 
@@ -281,9 +281,9 @@ L305 的「并执行」超出了 L106/L311 可证明的范围。`ANY-CTL-08` 及
 
 | CASE-ID | 说明书 | 真实输入与 UI 步骤 | 可观察结果 | 数据前提 / 安全停点 | 票据 | 证据 | 初始状态 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| COMP-SAFE-02 | §4.5 L193 | 打开告警详情 → 点「按当前位置查找监控」 | 列出同地点/同楼层候选摄像头；生成告警时点前后 15 分钟回放卡片；无候选时如实说明 | `S-HIST` 告警+真实摄像头；`R`；回放依赖 09 | [08](issues/08-safety-ledger-event-reference.md)、[09](issues/09-real-video-live-playback.md) | evidence/COMP-SAFE-02/ | 未验收 |
-| COMP-SAFE-07 | §4.5 L194 | 告警详情底部点「引用到对话」→ 编写消息 → 发送 | 对话带入告警上下文；检索候选摄像头；产出回放卡片与处理建议；不声称已通知 | `S-HIST`；`R` | [08](issues/08-safety-ledger-event-reference.md) | evidence/COMP-SAFE-07/ | 未验收 |
-| COMP-SAFE-08 | §4.5 L193 | 对同一条告警，核对回放卡片起止时间与事件时间 | 卡片窗口为事件时点 ±15 分钟；起止可读；点击可播放或明确不可用 | 真实告警与录像；`V`；无录像时标缺口 | [08](issues/08-safety-ledger-event-reference.md)、[09](issues/09-real-video-live-playback.md) | evidence/COMP-SAFE-08/ | 未验收 |
+| COMP-SAFE-02 | §4.5 L191-L193 | 打开告警详情→点「按当前位置查找监控」 | 同地点/同楼层候选真实且授权；展示关联直播和原告警±15分钟回放卡片，无候选诚实说明 | `S-HIST`告警+真实摄像头；`R`；播放与09组合验证 | [08](issues/08-safety-ledger-event-reference.md)、[09](issues/09-real-video-live-playback.md) | evidence/COMP-SAFE-02/ | 未验收 |
+| COMP-SAFE-07 | §4.5 L191-L194 | 告警详情点「引用到对话」→编写消息→发送 | 带入告警上下文、检索摄像头，提供关联直播/回放入口和处理建议，不声称已通知 | `S-HIST`；`R` | [08](issues/08-safety-ledger-event-reference.md) | evidence/COMP-SAFE-07/ | 未验收 |
+| COMP-SAFE-08 | §4.5 L191-L193 | 核对同一告警录像窗口，分别打开关联直播与回放入口 | 回放窗口为原事件±15分钟；两个入口播放真实画面，或将相应无源分支明确记为缺口，不以卡片替代播放 | 真实告警与摄像头/录像；`V`；无源保持未验 | [08](issues/08-safety-ledger-event-reference.md)、[09](issues/09-real-video-live-playback.md) | evidence/COMP-SAFE-08/ | 未验收 |
 
 ### 4.6 安全约束
 
@@ -319,7 +319,7 @@ L305 的「并执行」超出了 L106/L311 可证明的范围。`ANY-CTL-08` 及
 | OFF-TASK-03 | §5.3 L224、附录 A L299 | 输入附录原句「每天 18:00 关本层照明」 | 识别为每日周期（非仅一次）；规则/下次执行/范围正确；未创建 | 当前层授权照明；`D` | [11](issues/11-recurring-plans-reports.md) | evidence/OFF-TASK-03/ | 未验收 |
 | OFF-TASK-07 | §5.3 L224、§3.4 L146 | 输入「每天上午 9 点生成公司昨日能耗简报」→ 打开确认单 | 规则=每日 09:00；产物=昨日能耗简报；下一次执行正确；报告入口指向通知/报告 | 真实能耗数据；`D`；本地生成用 `L` | [11](issues/11-recurring-plans-reports.md)、[07](issues/07-evidenced-reports-exports.md) | evidence/OFF-TASK-07/ | 未验收 |
 | ANY-TASK-08 | §5.3 L228 | 在周期安排对某计划点「启用/关闭」各一次 | 状态切换持久；关闭后不再生成；重新启用后下次执行恢复 | `S-LOCAL` 计划；`L` | [11](issues/11-recurring-plans-reports.md) | evidence/ANY-TASK-08/ | 未验收 |
-| ANY-TASK-09 | §5.3 L228 | 对某周期点「跳过本次」 | 仅跳过当前一次；计划仍启用；下一次执行不变 | `S-LOCAL`；`L` | [11](issues/11-recurring-plans-reports.md) | evidence/ANY-TASK-09/ | 未验收 |
+| ANY-TASK-09 | §5.3 L228 | 对周期计划当前展示的下一次发生点「跳过本次」 | 只跳过该次且不会执行，计划仍启用；显示的下一次实际执行后移到后续有效发生，其他规则与历史不变 | `S-LOCAL`；`L` | [11](issues/11-recurring-plans-reports.md) | evidence/ANY-TASK-09/ | 未验收 |
 | ANY-TASK-10 | §5.3 L228 | 对某周期点「取消全部」并确认 | 计划删除；无后续生成；已执行结果仍保留可查 | `S-LOCAL`；`L` | [11](issues/11-recurring-plans-reports.md) | evidence/ANY-TASK-10/ | 未验收 |
 | ANY-TASK-07 | §5.3 L228、§5.5 L246、附录 A L300 | 输入「暂停每天的巡检计划」→ 在周期安排定位该计划 → 暂停 | 仅暂停目标巡检计划；后续不再生成；其他计划不受影响；可恢复启用 | `S-LOCAL` 计划；`L`；不暂停真实计划 | [11](issues/11-recurring-plans-reports.md)、[13](issues/13-task-management-results-notifications.md) | evidence/ANY-TASK-07/ | 未验收 |
 
@@ -327,12 +327,12 @@ L305 的「并执行」超出了 L106/L311 可证明的范围。`ANY-CTL-08` 及
 
 | CASE-ID | 说明书 | 真实输入与 UI 步骤 | 可观察结果 | 数据前提 / 安全停点 | 票据 | 证据 | 初始状态 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| COMP-TASK-03 | §5.4 L234 | 公司面板输入「每 30 分钟检查26楼会议室空调，低于26℃ 就调到 26℃」→ 打开确认单 | 检查点按 30 分钟展开；条件=低于 26℃；动作=调到 26℃；未创建 | 真实会议室空调；`D` | [12](issues/12-conditional-ac-inspections.md) | evidence/COMP-TASK-03/ | 未验收 |
+| COMP-TASK-03 | §5.4 L234 | 输入「每 30 分钟检查26楼会议室空调，低于26℃ 就调到 26℃」→观察追问→补充未来起止时间→打开确认单 | 未给窗口先澄清；补齐后按30分钟展开，显示窗口、检查点、条件及动作，未创建 | 真实会议室空调；`D`；不自行发明结束时间 | [12](issues/12-conditional-ac-inspections.md) | evidence/COMP-TASK-03/ | 未验收 |
 | COMP-TASK-04 | §5.4 L232-L236、附录 A L299 | 输入附录原句「每半小时检查机房空调」 | 助手澄清是仅检查/告警还是条件动作；不擅自生成控制；间隔识别为 30 分钟 | 机房空调；`D`；不得猜动作 | [12](issues/12-conditional-ac-inspections.md) | evidence/COMP-TASK-04/ | 未验收 |
 | COMP-TASK-05A | §5.4 L236 | 条件任务选 15 分钟间隔 | 检查点每 15 分钟展开；数量/起止正确；不按 30/60 分钟 | 隔离计划；`D/L` | [12](issues/12-conditional-ac-inspections.md) | evidence/COMP-TASK-05A/ | 未验收 |
 | COMP-TASK-05B | §5.4 L236 | 条件任务选 60 分钟间隔 | 检查点每 60 分钟展开；数量/起止正确 | 隔离计划；`D/L` | [12](issues/12-conditional-ac-inspections.md) | evidence/COMP-TASK-05B/ | 未验收 |
-| COMP-TASK-06 | §5.4 L236 | 在隔离执行中制造条件真/假两类检查点，查看逐点结果 | 仅条件满足点执行动作；不满足点记录未触发且不动作；无越点执行 | `S-LOCAL` 条件引擎；`L` | [12](issues/12-conditional-ac-inspections.md) | evidence/COMP-TASK-06/ | 未验收 |
-| COMP-TASK-07 | §5.4 L236 | 在检查点移除/缺失空调读数，观察决策 | 明确缺数/无法判断，暂停该点动作或要求澄清；不把缺失当 0/满足；记录原因 | `S-LOCAL` 缺数场景；`L` | [12](issues/12-conditional-ac-inspections.md) | evidence/COMP-TASK-07/ | 未验收 |
+| COMP-TASK-06 | §5.4 L236 | 打开有真实条件真/假检查点的历史巡检记录或其可追溯副本，查看逐点结果 | 条件、实测和结果一致；满足才动作，不满足记未触发；缺相应事实的分支未验 | `S-HIST`或其`S-LOCAL`副本；`R`；合成真/假仅作ENG-03 | [12](issues/12-conditional-ac-inspections.md) | evidence/COMP-TASK-06/ | 未验收 |
+| COMP-TASK-07 | §5.4 L236 | 打开存在真实缺读数/读取失败检查点的历史或其可追溯副本 | 缺数/无法判断和原因可见，不把缺失当0或满足条件；无对应事实则未验收 | `S-HIST`或其`S-LOCAL`副本；`R`；注入缺数只计ENG-03 | [12](issues/12-conditional-ac-inspections.md) | evidence/COMP-TASK-07/ | 未验收 |
 | COMP-TASK-08 | §5.4 L238 | 对空调巡检任务生成检查报告与节能估算，展开计算依据 | 报告与估算可见；估算附计算依据/假设；无依据不编造数字 | `S-LOCAL` 执行结果；`L` | [12](issues/12-conditional-ac-inspections.md)、[13](issues/13-task-management-results-notifications.md) | evidence/COMP-TASK-08/ | 未验收 |
 
 ### 5.5 任务查看与管理
@@ -413,7 +413,7 @@ L305 的「并执行」超出了 L106/L311 可证明的范围。`ANY-CTL-08` 及
 
 | CASE-ID | 目标 | 最小验证 | 安全边界 | 票据 | 证据 | 初始状态 |
 | --- | --- | --- | --- | --- | --- | --- |
-| ENG-01 | Java 生产形态执行适配器，而非仅 Fixture/FailClosed | 在隔离环境对一个草案产生逐设备结果，重复提交幂等；结果进入任务/记录 | 不写生产设备；`L` | [10](issues/10-once-interval-task-execution.md) | evidence/ENG-01/ | 未验收（工程门槛） |
+| ENG-01 | Java生产形态执行适配器，而非仅Fixture/FailClosed | 隔离工程验证逐设备结果、失败/部分失败注入、原因及重复提交幂等；故障夹具标`S-SYN`不计业务通过 | 无生产控制出口；`L` | [10](issues/10-once-interval-task-execution.md) | evidence/ENG-01/ | 未验收（工程门槛） |
 | ENG-02 | 调度生成/恢复/不重复 | 周期到点生成当日任务；重启/中断后恢复；同一计划同一时点仅一条 | `S-LOCAL`；`L` | [10](issues/10-once-interval-task-execution.md)、[11](issues/11-recurring-plans-reports.md) | evidence/ENG-02/ | 未验收（工程门槛） |
 | ENG-03 | 条件检查点引擎 | 15/30/60 分钟展开；条件真/假/缺数；动作仅在满足点；重启无重复 | `S-LOCAL`；`L` | [12](issues/12-conditional-ac-inspections.md) | evidence/ENG-03/ | 未验收（工程门槛） |
 | ENG-04 | 报告事实持久化与导出 | 报告生成后重启仍可查；PDF/XLSX 可打开；同一请求不重复生成 | `S-LOCAL`；`R/L` | [07](issues/07-evidenced-reports-exports.md)、[13](issues/13-task-management-results-notifications.md) | evidence/ENG-04/ | 未验收（工程门槛） |
@@ -444,7 +444,7 @@ L305 的「并执行」超出了 L106/L311 可证明的范围。`ANY-CTL-08` 及
 | §4.2 L171-L175 | 回放描述、查看录像、起止时间、播放 | COMP-VID-02、COMP-VID-03、COMP-VID-07、COMP-VID-08、COMP-VID-09、COMP-VID-10 |
 | §4.3 L177-L179 | 人员统计无接口 | COMP-VID-11 |
 | §4.4 L181-L187 | 安全块、三类台账、日期筛选、详情字段、对话查询/报告 | COMP-SAFE-01、COMP-SAFE-03、COMP-SAFE-04A、COMP-SAFE-04B、COMP-SAFE-04C、COMP-SAFE-05、COMP-SAFE-06 |
-| §4.5 L189-L194 | 同地点/楼层检索、±15 分钟、引用到对话 | COMP-SAFE-02、COMP-SAFE-07、COMP-SAFE-08 |
+| §4.5 L189-L194 | 同地点/楼层检索、±15分钟、关联直播/回放卡片及真实播放、引用对话 | COMP-SAFE-02、COMP-SAFE-07、COMP-SAFE-08 |
 | §4.6 L196-L200 | 只读、不声称通知/处置、人工确认暂停取消 | COMP-SAFE-09、COMP-SAFE-10、ANY-TASK-19、ANY-TASK-21 |
 | §5.1 L204-L211 | 全量设备、详细类别、分组、名称/位置/操作 | DEV-01 |
 | §5.2 L213-L220 | 一次性示例、确认单、创建/放弃、创建后取消 | OFF-TASK-01、OFF-TASK-04、OFF-TASK-05、OFF-TASK-06 |
@@ -506,7 +506,7 @@ L305 的「并执行」超出了 L106/L311 可证明的范围。`ANY-CTL-08` 及
 
 - **水表**：说明书 §3.1 L122 明说甲方接口未见水表。`COMP-ENE-06` 只验「如实说明」；不得写成水表能力已实现
 - **人员统计**：§4.3 L179 明说甲方暂未提供接口。`COMP-VID-11` 只验「如实说明」；不得展示伪造人数
-- **生产物理执行**：本轮不执行客户设备/任务/通知写入；`ANY-CTL-*` 的执行语义只用 `S-LOCAL` 观察，不能证明客户现场设备生效
+- **生产物理执行**：本轮不执行客户设备/任务/通知写入；结果展示优先使用可追溯真实历史或本地副本，实际执行内核在ENG门槛隔离验证。两类证据均不声称本轮客户现场设备已生效。
 - **第二身份**：`ID-02/05A/05B/08` 需要合法第二身份和独立隔离实例；不具备时保持未验收，不伪造账号，不清原登录
 - **真实视频源**：`COMP-VID-*` 需要真实授权摄像头/录像；样例视频、封面、旧截图不算
 - **历史数据**：`S-HIST` 需真实历史；`S-LOCAL` 需可追溯导入；两者不能混写，fixture 不能证明客户业务
@@ -521,7 +521,7 @@ L305 的「并执行」超出了 L106/L311 可证明的范围。`ANY-CTL-08` 及
 2. 可观察结果符合说明书该行，且不是 fixture/接口 200/单测/旧截图；
 3. 证据目录齐全，含构建/链路/时间/脱敏身份/source/区域/数据出处/限制；
 4. 视频含两不同时刻真实帧或录像；控制/任务结果标明 `S-LOCAL` 或 `S-HIST` 范围；
-5. 未发生生产写入，或生产写入已获单独授权且证据标明；「已下发」不被写成物理生效。
+5. 未发生生产写入；本轮没有任何生产写入许可。未来若用户另行要求，须另设任务和授权，不能用本矩阵作为放行依据。「已下发」不被写成物理生效。
 
 全表通过数当前为 **0 / 156**。任何汇总数字必须由逐条证据复核生成，不得按章节估算。
 

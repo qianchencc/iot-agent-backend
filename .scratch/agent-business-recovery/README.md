@@ -4,6 +4,8 @@
 
 先读[规格](spec.md)、[说明书验收矩阵](acceptance.md)和[ADR0004](../../docs/adr/0004-java-business-definition-generic-agent-engine.md)。业务用语见根GLOSSARY。唯一业务终点是新后端在真实微信开发者工具完成指定说明书全部可执行场景并有截图，不是票据数量、请求结果或测试通过。
 
+[双轴审查记录](review.md)列出Standards/Spec发现和修正；文档检查与业务验收的证据范围分开记录。
+
 ## 工作区与事实边界
 
 - 业务worktree：`iot-agent-backend-business`；分支 `refactor/java-agent-business`；基线 `1f101d5144de08e956614dcf6216a4de9dd67b1c`。
