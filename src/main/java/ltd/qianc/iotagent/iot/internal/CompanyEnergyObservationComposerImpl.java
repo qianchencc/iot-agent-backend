@@ -51,7 +51,11 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
     /** Meter fan-out is bounded so a large catalog cannot saturate the customer gateway. */
     private static final int METER_CONCURRENCY = 6;
     /** Wall-clock budget for one composed energy read; exhaustion is reported as truncation. */
-    private static final long DEFAULT_READ_BUDGET_MS = 3_000L;
+    private static final long DEFAULT_READ_BUDGET_MS = 12_000L;
+    /** Whole-company stream density: 43 meters at two samples a day is ~86 rows/day; keep headroom. */
+    private static final double STREAM_ROWS_PER_DAY = 120.0;
+    /** Concurrent stream page fetches; the pages are independent and the window caps the count. */
+    private static final int STREAM_PAGE_CONCURRENCY = 6;
     private static final int MAX_DAYS = 90;
     private static final long DAY_SECONDS = 86_400L;
     private static final long TWELVE_HOURS_SECONDS = 43_200L;
@@ -526,7 +530,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         Instant to = local(end.plusDays(1)).toInstant();
         // Strict read plus the wall-clock budget: work stops early as truncation instead of
         // letting one slow catalog hit the upstream timeout and turn the strip into a 503.
-        return readAll(request.identity(), meters, from, to)
+        return readCompanyStream(request.identity(), meters, from)
                 .map(reads -> energyResponse(dailyPayload(meters, reads, start, end, days)));
     }
 
@@ -638,6 +642,121 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
                 List.of(new ltd.qianc.iotagent.iot.ObservationFailure(
                         "energy", "HISTORY_TRUNCATED", "计量历史读取达到页/行预算，统计仅保留已取得事实")),
                 false);
+    }
+
+    /**
+     * Company-wide daily statistics read the unified sample stream: one paginated feed of
+     * every meter, newest first (see CONTEXT.md 统一采样流). Per-meter filtered reads would
+     * cost one paged scan per meter, and the upstream time window is unreliable, so the page
+     * count is derived from the window and the pages are fetched concurrently.
+     */
+    private Mono<List<MeterRead>> readCompanyStream(
+            RequestIdentity identity, List<AuthorizedDevice> meters, Instant from) {
+        long days = Math.max(1, ChronoUnit.DAYS.between(from, clock.instant()) + 1);
+        int needed = (int) Math.ceil(days * STREAM_ROWS_PER_DAY / 500.0) + 1;
+        int pages = Math.max(2, Math.min(maxPages, needed));
+        long deadlineAt = deadline();
+        return Flux.range(0, pages)
+                .flatMap(page -> fetchStreamPage(identity, page, deadlineAt)
+                        .onErrorResume(error -> Mono.just(List.<Map<String, Object>>of())),
+                        STREAM_PAGE_CONCURRENCY)
+                .collectList()
+                .map(chunks -> buildMeterReads(meters, chunks, from, pages >= maxPages));
+    }
+
+    private Mono<List<Map<String, Object>>> fetchStreamPage(
+            RequestIdentity identity, int page, long deadlineAt) {
+        if (System.currentTimeMillis() >= deadlineAt) return Mono.just(List.of());
+        Map<String, String> params = new LinkedHashMap<>();
+        params.put("page", Integer.toString(page));
+        params.put("size", "500");
+        return rawHistory.read(new ObservationRequest(identity, ObservationOperation.ENERGY_HISTORY, params))
+                .flatMap(response -> {
+                    if (response.status() == ObservationStatus.UNAVAILABLE) {
+                        return Mono.error(new ObservationUnavailableException("计量样本流上游不可用"));
+                    }
+                    if (response.status() != ObservationStatus.AVAILABLE
+                            && response.status() != ObservationStatus.EMPTY
+                            && response.status() != ObservationStatus.PARTIAL) {
+                        return Mono.error(new ObservationUnavailableException("计量样本流返回不可用结果"));
+                    }
+                    return Mono.just(streamSamples(response.payload()));
+                })
+                .onErrorMap(error -> error instanceof BusinessException
+                        ? error : new ObservationUnavailableException("计量样本流读取失败"));
+    }
+
+    private List<MeterRead> buildMeterReads(
+            List<AuthorizedDevice> meters, List<List<Map<String, Object>>> chunks, Instant from, boolean truncated) {
+        Map<String, List<Sample>> inWindow = new LinkedHashMap<>();
+        Map<String, Sample> anchors = new LinkedHashMap<>();
+        for (List<Map<String, Object>> chunk : chunks) {
+            for (Map<String, Object> sample : chunk) {
+                String meterId = text(sample.get("equipmentId"));
+                String readTime = text(sample.get("readTime"));
+                Instant at = instantOrNull(readTime);
+                // Malformed sample time is a content defect, never a silently skipped row.
+                if (readTime != null && at == null) {
+                    throw new ObservationUnavailableException("计量样本时间格式无效");
+                }
+                if (meterId == null || at == null) continue;
+                Object values = sample.get("values");
+                Double epf = values instanceof Map<?, ?> mapValues ? numberOrNull(mapValues.get("epf")) : null;
+                if (epf == null) continue;
+                Sample value = new Sample(text(sample.get("id")), at, epf);
+                if (at.isBefore(from)) {
+                    // Interval differences need the last reading at or before the window start.
+                    Sample prior = anchors.get(meterId);
+                    if (prior == null || at.isAfter(prior.readTime)) anchors.put(meterId, value);
+                } else {
+                    inWindow.computeIfAbsent(meterId, key -> new ArrayList<>()).add(value);
+                }
+            }
+        }
+        List<MeterRead> result = new ArrayList<>();
+        for (AuthorizedDevice meter : meters) {
+            List<Sample> samples = new ArrayList<>(inWindow.getOrDefault(meter.id(), List.of()));
+            Sample anchor = anchors.get(meter.id());
+            if (anchor != null) samples.add(anchor);
+            result.add(new MeterRead(meter, unique(samples), truncated));
+        }
+        return result;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<Map<String, Object>> streamSamples(Map<String, Object> payload) {
+        Object raw = payload.get("samples");
+        if (raw instanceof List<?> rows) {
+            List<Map<String, Object>> result = new ArrayList<>();
+            for (Object row : rows) {
+                if (row instanceof Map<?, ?> values) result.add((Map<String, Object>) values);
+            }
+            return result;
+        }
+        // Raw upstream page shape (content/rows/items) is accepted so the seam stays testable
+        // against the customer payload without a second parser.
+        Object page = payload.get("content");
+        if (page instanceof Map<?, ?> nested) page = nested.get("content");
+        if (page == null) page = payload.get("rows");
+        if (page == null) page = payload.get("items");
+        if (!(page instanceof List<?> rows)) return List.of();
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (Object row : rows) {
+            if (!(row instanceof Map<?, ?> rawRow)) continue;
+            Map<String, Object> values = new LinkedHashMap<>();
+            values.put("id", rawRow.get("id"));
+            values.put("equipmentId", rawRow.get("equipmentId"));
+            values.put("readTime", rawRow.get("readTime"));
+            Map<String, Object> metrics = new LinkedHashMap<>();
+            metrics.put("epf", rawRow.get("epf"));
+            values.put("values", metrics);
+            result.add(values);
+        }
+        return result;
+    }
+
+    private static Instant instantOrNull(String value) {
+        try { return instant(value); } catch (BusinessException invalid) { return null; }
     }
 
     private Mono<List<MeterRead>> readAll(RequestIdentity identity, List<AuthorizedDevice> meters, Instant from, Instant to) {

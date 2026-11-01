@@ -182,23 +182,35 @@ class CompanyEnergyObservationComposerContractTest {
     }
 
     @Test
-    void oversizedEnergyHistoryStopsWithinPageBudgetAndReportsTruncation() {
+    void companyDailyReadsPagesByWindowNotByMeterCount() {
         AtomicInteger calls = new AtomicInteger();
-        CompanyEnergyObservationComposer composer = composer((request, pageNumber) -> {
-            calls.incrementAndGet();
-            int size = Integer.parseInt(request.parameters().getOrDefault("size", "20"));
-            List<Map<String, Object>> rows = java.util.stream.IntStream.range(0, size)
-                    .mapToObj(index -> row("r" + pageNumber + "-" + index, "2026-10-01 08:00:00", 100 + index)).toList();
-            return Mono.just(ObservationResponse.available(page(rows, false)));
-        });
+        List<AuthorizedDevice> meters = List.of(METER,
+                new AuthorizedDevice("meter-2", "energy", "二号表", "27楼", true),
+                new AuthorizedDevice("meter-3", "energy", "三号表", "28楼", true));
+        CompanyEnergyObservationComposer composer = CompanyEnergyObservationComposerFactory.composed(
+                raw((request, pageNumber) -> {
+                    calls.incrementAndGet();
+                    int size = Integer.parseInt(request.parameters().getOrDefault("size", "20"));
+                    List<Map<String, Object>> rows = java.util.stream.IntStream.range(0, size)
+                            .mapToObj(index -> {
+                                Map<String, Object> row = new java.util.LinkedHashMap<>();
+                                row.put("id", "r" + pageNumber + "-" + index);
+                                row.put("equipmentId", meters.get(index % meters.size()).id());
+                                row.put("readTime", "2026-10-01 08:00:00");
+                                row.put("epf", 100 + index);
+                                return row;
+                            }).toList();
+                    return Mono.just(ObservationResponse.available(page(rows, false)));
+                }),
+                iot(COMPANY, meters), CLOCK);
 
         ObservationResponse response = composer.read(new ObservationRequest(COMPANY,
                 ObservationOperation.COMPANY_ENERGY_DAILY, Map.of("days", "30"))).block();
 
         assertThat(response).isNotNull();
-        // 1,200-row budget at 500 rows/page is 3 page reads; a 20-row page would need 60.
-        assertThat(calls.get()).isLessThanOrEqualTo(4);
-        assertThat(((Map<?, ?>) response.payload().get("budget")).get("truncated")).isEqualTo(true);
+        // Page count follows the window, so adding meters must not add upstream round trips.
+        assertThat(calls.get()).isLessThanOrEqualTo(10);
+        assertThat(((Map<?, ?>) response.payload().get("budget")).get("truncated")).isEqualTo(false);
     }
 
     private static CompanyEnergyObservationComposer composer(PageFixture fixture) {
