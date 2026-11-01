@@ -247,6 +247,11 @@ class IotAdapterContractTest {
                         new DeviceCandidateQuery("lighting", List.of(), "一层", List.of(), List.of(), null))
                 .block(Duration.ofSeconds(2));
         assertThat(lighting.devices()).extracting(AuthorizedDevice::id).containsExactly("light-1");
+        DeviceCandidateSet companyEnergy = adapter.findDeviceCandidates(
+                        new RequestIdentity("Bearer company-token", "TENANT-1", IotSource.COMPANY),
+                        new DeviceCandidateQuery("energy", List.of(), "公司", List.of("公司"), List.of(), "电表"))
+                .block(Duration.ofSeconds(2));
+        assertThat(companyEnergy.devices()).extracting(AuthorizedDevice::id).containsExactly("energy-1");
     }
 
     @Test

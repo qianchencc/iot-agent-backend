@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.Objects;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
@@ -1104,10 +1105,20 @@ public final class WebClientIotAdapter implements IotAdapter {
         String locations = device.locationPaths().stream().flatMap(List::stream).reduce("", (left, right) -> left + " " + right);
         String haystack = (device.name() + " " + (device.installAddress() == null ? "" : device.installAddress())
                 + " " + locations).toLowerCase();
-        if (query.scopeText() != null && !query.scopeText().isBlank() && !haystack.contains(query.scopeText().toLowerCase())) return false;
-        for (String term : query.scopeTerms()) if (!term.isBlank() && !haystack.contains(term.toLowerCase())) return false;
+        String scopeText = query.scopeText();
+        if (scopeText != null && !scopeText.isBlank() && !genericScopeTerm(scopeText)
+                && !haystack.contains(scopeText.toLowerCase())) return false;
+        for (String term : query.scopeTerms()) {
+            if (!term.isBlank() && !genericScopeTerm(term) && !haystack.contains(term.toLowerCase())) return false;
+        }
         if (query.deviceText() != null && !query.deviceText().isBlank() && !haystack.contains(query.deviceText().toLowerCase())) return false;
         return true;
+    }
+
+    private static boolean genericScopeTerm(String value) {
+        String normalized = value == null ? "" : value.replaceAll("\\s+", "").trim().toLowerCase();
+        return Set.of("公司", "company", "企业", "当前公司", "公司授权范围", "授权范围",
+                "全部", "全部设备", "all", "all devices").contains(normalized);
     }
 
     private static Map<String, String> withPage(Map<String, String> params, int page) {
