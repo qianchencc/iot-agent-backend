@@ -11,4 +11,8 @@ public interface ReportFactStore {
     ReportFact save(ReportFact report);
 
     Optional<ReportFact> find(String reportId);
+    /** Returns the newest immutable checkpoint report attached to a task, when present. */
+    default Optional<ReportFact> findLatestByTaskId(String taskId) {
+        return Optional.empty();
+    }
 }

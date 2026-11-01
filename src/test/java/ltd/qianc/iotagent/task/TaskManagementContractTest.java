@@ -18,6 +18,8 @@ import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 import ltd.qianc.iotagent.auth.PrincipalInfo;
 import ltd.qianc.iotagent.error.BusinessException;
+import ltd.qianc.iotagent.report.ReportFact;
+import ltd.qianc.iotagent.report.ReportFactStore;
 import org.junit.jupiter.api.Test;
 
 class TaskManagementContractTest {
@@ -204,6 +206,29 @@ class TaskManagementContractTest {
                 .containsEntry("hasReport", true)
                 .containsKey("observedStates");
         assertThat(view.get("payload").toString()).doesNotContain("tenantCode", PRINCIPAL.ownerKey());
+    }
+
+    @Test
+    void taskViewRestoresIndependentCheckpointReportFact() {
+        TaskPlanStore plans = org.mockito.Mockito.mock(TaskPlanStore.class);
+        TaskProposalStore proposals = org.mockito.Mockito.mock(TaskProposalStore.class);
+        TaskFactStore tasks = org.mockito.Mockito.mock(TaskFactStore.class);
+        ReportFactStore reports = org.mockito.Mockito.mock(ReportFactStore.class);
+        when(reports.findLatestByTaskId("task-report")).thenReturn(Optional.of(new ReportFact(
+                "report-1", "company",
+                "{\"id\":\"report-1\",\"generatedAt\":\"2026-10-12T01:00:00Z\",\"title\":\"巡检报告\",\"blocks\":[]}")));
+        TaskFacade facade = new TaskFacade(new ObjectMapper(), tasks, proposals, plans,
+                org.mockito.Mockito.mock(TaskNotificationStore.class), org.mockito.Mockito.mock(TaskScheduler.class),
+                null, null, reports, Clock.fixed(NOW, ZoneOffset.UTC));
+
+        Map<String, Object> view = facade.view(new TaskFact("task-report", 2, "COMPLETED",
+                "{\"tenantCode\":\"LOCAL\",\"ownerKey\":\"" + PRINCIPAL.ownerKey()
+                        + "\",\"source\":\"company\",\"reportId\":\"report-1\"}", "task-report-key"));
+
+        assertThat(view).containsEntry("reportId", "report-1")
+                .containsEntry("hasReport", true)
+                .containsEntry("reportAt", "2026-10-12T01:00:00Z");
+        verify(reports).find("report-1");
     }
 
     private static TaskFacade facade(TaskPlanStore plans, TaskProposalStore proposals, TaskFactStore tasks) {

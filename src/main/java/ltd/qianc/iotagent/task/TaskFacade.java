@@ -22,6 +22,8 @@ import ltd.qianc.iotagent.iot.DeviceStateReadResult;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.auth.PrincipalInfo;
 import ltd.qianc.iotagent.error.BusinessException;
+import ltd.qianc.iotagent.report.ReportFact;
+import ltd.qianc.iotagent.report.ReportFactStore;
 
 /**
  * Public task boundary. It performs proposal/plan/task CAS and idempotency while
@@ -40,21 +42,28 @@ public final class TaskFacade {
     private final TaskScheduler scheduler;
     private final TaskPhaseStore phases;
     private final IotAdapter iot;
+    private final ReportFactStore reports;
     private final Clock clock;
 
     public TaskFacade(ObjectMapper mapper, TaskFactStore tasks, TaskProposalStore proposals,
                       TaskPlanStore plans, TaskNotificationStore notifications,
                       TaskScheduler scheduler, Clock clock) {
-        this(mapper, tasks, proposals, plans, notifications, scheduler, null, null, clock);
+        this(mapper, tasks, proposals, plans, notifications, scheduler, null, null, null, clock);
     }
     public TaskFacade(ObjectMapper mapper, TaskFactStore tasks, TaskProposalStore proposals,
                       TaskPlanStore plans, TaskNotificationStore notifications,
                       TaskScheduler scheduler, TaskPhaseStore phases, Clock clock) {
-        this(mapper, tasks, proposals, plans, notifications, scheduler, phases, null, clock);
+        this(mapper, tasks, proposals, plans, notifications, scheduler, phases, null, null, clock);
     }
     public TaskFacade(ObjectMapper mapper, TaskFactStore tasks, TaskProposalStore proposals,
                       TaskPlanStore plans, TaskNotificationStore notifications,
                       TaskScheduler scheduler, TaskPhaseStore phases, IotAdapter iot, Clock clock) {
+        this(mapper, tasks, proposals, plans, notifications, scheduler, phases, iot, null, clock);
+    }
+    public TaskFacade(ObjectMapper mapper, TaskFactStore tasks, TaskProposalStore proposals,
+                      TaskPlanStore plans, TaskNotificationStore notifications,
+                      TaskScheduler scheduler, TaskPhaseStore phases, IotAdapter iot,
+                      ReportFactStore reports, Clock clock) {
         this.mapper = Objects.requireNonNull(mapper, "mapper");
         this.tasks = Objects.requireNonNull(tasks, "tasks");
         this.proposals = Objects.requireNonNull(proposals, "proposals");
@@ -63,6 +72,7 @@ public final class TaskFacade {
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
         this.phases = phases;
         this.iot = iot;
+        this.reports = reports;
         this.clock = Objects.requireNonNull(clock, "clock");
     }
 
@@ -650,7 +660,22 @@ public final class TaskFacade {
         }
         view.put("payload", mapper.convertValue(publicPayload(payload), Object.class));
         JsonNode report = payload.path("report");
-        view.putIfAbsent("report", report.isObject() ? mapper.convertValue(publicPayload(report), Object.class) : null);
+        if (!report.isObject() && reports != null) {
+            Optional<ReportFact> fact = Optional.empty();
+            String reportId = payload.path("reportId").asText("");
+            if (!reportId.isBlank()) fact = reports.find(reportId);
+            if (fact.isEmpty()) fact = reports.findLatestByTaskId(task.taskId());
+            if (fact.isPresent()) {
+                JsonNode stored = safePayload(fact.get().payloadJson());
+                report = stored.path("report").isObject() ? stored.path("report") : stored;
+            }
+        }
+        if (report.isObject()) {
+            view.putIfAbsent("report", mapper.convertValue(publicPayload(report), Object.class));
+            view.putIfAbsent("reportId", report.path("id").asText(null));
+        } else {
+            view.putIfAbsent("report", null);
+        }
         view.putIfAbsent("hasReport", report.isObject());
         view.putIfAbsent("reportAt", report.isObject() ? report.path("generatedAt").asText(null) : null);
         return view;

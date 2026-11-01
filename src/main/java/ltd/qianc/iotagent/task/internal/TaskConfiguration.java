@@ -3,6 +3,7 @@ package ltd.qianc.iotagent.task.internal;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Clock;
 import ltd.qianc.iotagent.report.ReportFactProducer;
+import ltd.qianc.iotagent.report.ReportFactStore;
 import ltd.qianc.iotagent.task.TaskExecutionGateway;
 import ltd.qianc.iotagent.task.TaskFactStore;
 import ltd.qianc.iotagent.task.TaskFacade;
@@ -75,8 +76,10 @@ public class TaskConfiguration {
 
     @Bean
     TaskFacade taskFacade(ObjectMapper mapper, TaskFactStore tasks, TaskProposalStore proposals, TaskPlanStore plans,
-                          TaskNotificationStore notifications, TaskScheduler scheduler, TaskPhaseStore phases, IotAdapter iot) {
-        return new TaskFacade(mapper, tasks, proposals, plans, notifications, scheduler, phases, iot, Clock.systemUTC());
+                          TaskNotificationStore notifications, TaskScheduler scheduler, TaskPhaseStore phases, IotAdapter iot,
+                          org.springframework.beans.factory.ObjectProvider<ReportFactStore> reports) {
+        return new TaskFacade(mapper, tasks, proposals, plans, notifications, scheduler, phases, iot,
+                reports.getIfAvailable(), Clock.systemUTC());
     }
     @Bean
     TaskScanner taskScanner(TaskPhaseStore phases, TaskFactStore tasks, TaskExecutionGateway gateway,
