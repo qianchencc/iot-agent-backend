@@ -88,8 +88,16 @@ public final class WebClientIotAdapter implements IotAdapter {
 
     private Mono<AuthorizedDeviceScope> cachedReadScope(
             RequestIdentity identity, Mono<AuthorizedDeviceScope> request) {
-        if (identity.source() != IotSource.OFFICE) return request;
         String key = identity.tenantCode() + "\u0000" + identity.ownerKey() + "\u0000" + identity.source();
+        // Company keeps control bindings fresh, so only concurrent callers share one load;
+        // a completed result is never reused. Office additionally reuses it for 5 seconds.
+        if (identity.source() != IotSource.OFFICE) {
+            Mono<AuthorizedDeviceScope> fresh = request
+                    .doFinally(signal -> scopeJobs.remove(key))
+                    .cache();
+            Mono<AuthorizedDeviceScope> prior = scopeJobs.putIfAbsent(key, fresh);
+            return prior == null ? fresh : prior;
+        }
         long now = System.currentTimeMillis();
         scopeCache.forEach((cacheKey, entry) -> {
             if (now - entry.at() > READ_SCOPE_REUSE_MILLIS) scopeCache.remove(cacheKey, entry);
