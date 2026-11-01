@@ -13,6 +13,12 @@ public final class CompanyEnergyObservationComposerFactory {
         return new CompanyEnergyObservationComposerImpl(rawHistory, iot, clock);
     }
 
+    /** Test/deployment seam for an explicitly confirmed conversion policy. */
+    public static CompanyEnergyObservationComposer composed(
+            ObservationAdapter rawHistory, IotAdapter iot, Clock clock, CompanyEnergyPolicy policy) {
+        return new CompanyEnergyObservationComposerImpl(rawHistory, iot, clock, policy);
+    }
+
 
     /** Test and deployment seam for making the read budget explicit. */
     public static CompanyEnergyObservationComposer composed(

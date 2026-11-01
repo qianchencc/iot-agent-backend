@@ -3,6 +3,7 @@ package ltd.qianc.iotagent.iot;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
@@ -47,6 +48,26 @@ class IotAdapterContractTest {
         assertThat(scope).isNotNull();
         assertThat(scope.source()).isEqualTo(IotSource.OFFICE);
         assertThat(scope.devices()).extracting(AuthorizedDevice::id).containsExactly("ac-1");
+    }
+
+    @Test
+    void reusesVerifiedReadScopeBrieflyWithoutCrossingIdentityKeys() {
+        AtomicInteger calls = new AtomicInteger();
+        ExchangeFunction fixture = candidate -> {
+            calls.incrementAndGet();
+            return Mono.just(json("{\"code\":200,\"content\":[{\"id\":\"ac-1\",\"kind\":\"ac\",\"name\":\"会议室空调\",\"installAddress\":\"A-101\"}]}"));
+        };
+        IotAdapter adapter = IotAdapterFactory.webClient(
+                WebClient.builder().exchangeFunction(fixture).build(),
+                new IotGatewayRoutes("/office-scope", "/company-scope"),
+                Duration.ofSeconds(1),
+                IotCallPolicy.passThrough());
+        RequestIdentity identity = new RequestIdentity("Bearer office-token", "TENANT-1", IotSource.OFFICE);
+
+        adapter.loadAuthorizedDeviceScope(identity).block(Duration.ofSeconds(1));
+        adapter.loadAuthorizedDeviceScope(identity).block(Duration.ofSeconds(1));
+
+        assertThat(calls).hasValue(1);
     }
 
     @Test

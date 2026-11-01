@@ -13,9 +13,13 @@ import reactor.core.publisher.Mono;
  */
 public interface CompanyEnergyObservationComposer {
 
+    /** Compose the Runtime-compatible statistics/comparison/inspection report. */
+    default Mono<ObservationResponse> readEnergyReport(ObservationRequest request) {
+        return read(request);
+    }
+
     /** Compose a report from the current authorization scope and raw history. */
     Mono<ObservationResponse> read(ObservationRequest request);
-
     /** Explicit alias for integration code that treats this seam as a composer. */
     default Mono<ObservationResponse> compose(ObservationRequest request) {
         return read(Objects.requireNonNull(request, "request"));

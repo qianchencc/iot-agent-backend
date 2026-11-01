@@ -5,9 +5,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
+import java.util.Set;
 import java.util.List;
 import java.util.Map;
+import java.util.LinkedHashMap;
 import ltd.qianc.iotagent.auth.PrincipalInfo;
 import ltd.qianc.iotagent.task.TaskPayloadSafety;
 import ltd.qianc.iotagent.task.TaskProjectionStore;
@@ -87,17 +88,34 @@ public final class JdbcTaskProjectionStore implements TaskProjectionStore {
     private Map<String, Object> summary(FactRow row, Instant from, Instant to) {
         Map<String, Object> view = new LinkedHashMap<>();
         view.put("taskId", row.taskId); view.put("version", row.version); view.put("status", row.status);
+        JsonNode payload = row.payload;
+        payload.fields().forEachRemaining(entry -> {
+            String key = entry.getKey();
+            if (!Set.of("tenantCode", "ownerKey", "phases", "report").contains(key)) {
+                view.putIfAbsent(key, mapper.convertValue(entry.getValue(), Object.class));
+            }
+        });
         List<Map<String, Object>> phases = new ArrayList<>();
-        for (JsonNode phase : row.payload.path("phases")) {
+        for (JsonNode phase : payload.path("phases")) {
             Instant at = parse(phase.path("at").asText(null));
             if (at == null || at.isBefore(from) || at.isAfter(to)) continue;
             Map<String, Object> item = new LinkedHashMap<>();
-            item.put("id", phase.path("phaseId").asText()); item.put("at", at.toString());
-            item.put("status", row.status); item.put("devices", List.of());
+            item.put("id", phase.path("phaseId").asText());
+            item.put("at", at.toString());
+            item.put("status", phase.path("status").asText(row.status.toLowerCase(java.util.Locale.ROOT)));
+            item.put("startedAt", phase.path("startedAt").asText(null));
+            item.put("endedAt", phase.path("endedAt").asText(null));
+            item.put("failureReason", phase.path("failureReason").asText(null));
+            item.put("devices", List.of());
             phases.add(item);
         }
         view.put("phases", phases);
-        view.put("payload", mapper.convertValue(row.safePayload, Object.class));
+        JsonNode report = payload.path("report");
+        boolean hasReport = report.isObject();
+        view.put("report", null);
+        view.put("hasReport", hasReport);
+        view.put("reportAt", hasReport ? report.path("generatedAt").asText(null) : null);
+        view.put("payload", mapper.convertValue(publicPayload(payload), Object.class));
         return view;
     }
 
@@ -135,6 +153,14 @@ public final class JdbcTaskProjectionStore implements TaskProjectionStore {
         return value instanceof List<?> list && list.stream().anyMatch(item -> expected.equals(String.valueOf(item)));
     }
 
+    private JsonNode publicPayload(JsonNode value) {
+        JsonNode safe = TaskPayloadSafety.withoutCredentials(mapper, value);
+        if (!safe.isObject()) return safe;
+        com.fasterxml.jackson.databind.node.ObjectNode result = (com.fasterxml.jackson.databind.node.ObjectNode) safe;
+        result.remove("tenantCode");
+        result.remove("ownerKey");
+        return result;
+    }
     private static Instant parse(String value) { try { return value == null ? null : Instant.parse(value); } catch (RuntimeException ignored) { return null; } }
 
     private record FactRow(String taskId, long version, String status, String payloadJson, JsonNode payload, JsonNode safePayload) {

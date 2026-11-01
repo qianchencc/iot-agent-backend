@@ -98,10 +98,12 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
             case SAFETY_EVENT_CAMERAS -> safetyEventCameras(request);
             case COMPANY_ENERGY_DAILY, COMPANY_ENERGY_REPORT, ENERGY_COMPARISON, COMPANY_METER_REPORT ->
                     energyComposer == null ? upstream.read(request) : energyComposer.read(request);
+            case ENERGY_REPORT ->
+                    energyComposer == null ? upstream.read(request) : energyComposer.readEnergyReport(request);
             default -> upstream.read(request);
         };
-    }
 
+    }
     private Mono<ObservationResponse> safetyEventCameras(ObservationRequest request) {
         requireSource(request.identity(), IotSource.COMPANY, "SAFETY_SOURCE_UNAVAILABLE",
                 "安全记录监控复盘仅支持公司来源");
@@ -186,7 +188,7 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
                         ? "当前安装位置未包含可核验楼层；仅返回同地点候选，记录时位置与画面覆盖未核验"
                         : "按当前安装位置查找同楼层（" + floor + "楼）候选；记录时位置与画面覆盖未核验";
         List<Map<String, Object>> candidates = new ArrayList<>();
-        if (occurred != null && !occurred.isBefore(clock.instant().minusSeconds(15 * 60L))) {
+        if (occurred != null) {
             Instant end = occurred.plusSeconds(15 * 60L).isBefore(clock.instant())
                     ? occurred.plusSeconds(15 * 60L) : clock.instant();
             if (end.isAfter(occurred)) {
@@ -394,7 +396,9 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
         if (devices.isEmpty()) return Mono.just(AreaRead.empty());
         return iot.readObservationStates(identity, devices)
                 .map(read -> observationAreaRead(read, devices, area, unavailableMessage))
-                .onErrorResume(error -> Mono.just(AreaRead.failed(area, unavailableMessage)));
+                .onErrorResume(error -> isAuthorizationFailure(error)
+                        ? Mono.error(error)
+                        : Mono.just(AreaRead.failed(area, unavailableMessage)));
     }
 
     private AreaRead observationAreaRead(
@@ -521,6 +525,7 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
         if (cached != null && now - cached.at() <= REGION_CATALOG_MILLIS) {
             return Mono.just(cached.regions());
         }
+        if (cached != null) regionCatalogCache.remove(key, cached);
         Mono<List<Map<String, Object>>> fresh = upstream.read(new ObservationRequest(
                         identity, ObservationOperation.REGION_LIST, Map.of()))
                 .flatMap(response -> {

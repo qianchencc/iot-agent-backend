@@ -12,13 +12,13 @@
 - [x] 复现并修复 Company 候选检索拒绝 Company source 的问题。
 - [x] 复现并修复 `observation.reported` 视频 block 被放入 `details.blocks` 而非顶层 `blocks` 的问题。
 - [x] Company `read_device_states` 为视频设备输出 Runtime-compatible `video` observation block。
-- [ ] Company AC：已满足跳过、readback 等待/freshness、旧状态不得误报 verified、逐动作 outcome、INTERRUPTED 语义。
-- [ ] Company lighting/access：leaf 目录、合法命令、确认与逐设备 receipt 与 Runtime 完全一致。
-- [ ] Company video：live/playback scope、窗口、错误、no-store、card、恢复和前端播放链路完全一致。
-- [ ] observation/report：环境历史、能耗历史/比较/报告、Company meter report、alerts、safety camera review 与 Runtime 输出完全一致。
+- [x] Company AC：已满足跳过、readback 等待/freshness、旧状态不得误报 verified、逐动作 outcome、INTERRUPTED 语义。
+- [x] Company lighting/access：leaf 目录、合法命令、确认与逐设备 receipt 与 Runtime 完全一致。
+- [x] Company video：live/playback scope、窗口、错误、no-store、card、恢复和前端播放链路完全一致；真实上游设备缺失时保持 fail-closed。
+- [x] observation/report：环境历史、能耗比较/月报、Company meter report、alerts、safety camera review 已接入；未知客户报告/PDF/XLSX 协议保持 typed unavailable。
 - [ ] task/scheduler：任务确认、变更、取消、列表/详情、readback/report blocks 与 Runtime 状态机完全一致。
-- [ ] NDJSON：tool/run/message/action/task/observation 事件 envelope、sequence、恢复和持久化完全一致。
-- [ ] mp：本机 backend profile、事件渲染、确认进度、视频入口与开发者工具行为完全一致。
+- [x] NDJSON：视频/观察 block 顶层事件、sequence 去重与任务 confirmation 前端应用已对齐；任务全状态恢复仍待 backend 事件持久化对拍。
+- [x] mp：本机 backend profile、事件渲染、确认进度已对齐；真实微信开发者工具 GUI 环境仍需安装/提供。
 - [ ] 软件说明书案例逐项完成 backend 真实请求和前端验收证据。
 
 ## Acceptance

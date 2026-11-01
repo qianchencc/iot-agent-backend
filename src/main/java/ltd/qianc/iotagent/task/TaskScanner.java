@@ -120,10 +120,12 @@ public final class TaskScanner {
                                 TaskExecutionGateway.TaskExecutionResult result) {
         if (!isTerminal(result.outcome())) return;
         try {
+            String tenant = field(task.payloadJson(), "tenantCode", "");
+            String owner = field(task.payloadJson(), "ownerKey", "");
+            if (tenant.isBlank() || owner.isBlank()) return;
             reports.produce(new ReportFactProducer.ReportCheckpoint(
                     phase.taskId(), phase.phaseId(), field(task.payloadJson(), "source", phase.source()),
-                    field(task.payloadJson(), "tenantCode", "unknown"),
-                    field(task.payloadJson(), "ownerKey", "unknown"),
+                    tenant, owner,
                     taskObjective(task.payloadJson()),
                     result.outcome(), phase.dueAt(), clock.instant(), result.payloadJson()));
         } catch (RuntimeException ignored) {
@@ -180,9 +182,10 @@ public final class TaskScanner {
                                       TaskExecutionGateway.TaskExecutionResult result) {
         if (!isTerminal(result.outcome())) return;
         var payload = task.payloadJson();
-        String tenant = field(payload, "tenantCode", "unknown");
-        String recipient = field(payload, "ownerKey", "unknown");
+        String tenant = field(payload, "tenantCode", "");
+        String recipient = field(payload, "ownerKey", "");
         String source = field(payload, "source", phase.source());
+        if (tenant.isBlank() || recipient.isBlank()) return;
         try {
             notifications.record(new TaskNotificationFact(
                     notificationId(phase.taskId(), recipient), phase.taskId(), tenant, recipient, source,

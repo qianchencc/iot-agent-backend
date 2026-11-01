@@ -13,6 +13,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 import ltd.qianc.iotagent.auth.PrincipalInfo;
@@ -165,6 +166,44 @@ class TaskManagementContractTest {
         assertThat(proposal.source()).isEqualTo("company");
         assertThat(proposal.targetJson()).contains("company-task");
         verify(tasks).find("company-task");
+    }
+
+    @Test
+    void proposalIdempotencyCannotReplayAcrossSources() {
+        TaskPlanStore plans = org.mockito.Mockito.mock(TaskPlanStore.class);
+        TaskProposalStore proposals = org.mockito.Mockito.mock(TaskProposalStore.class);
+        TaskFactStore tasks = org.mockito.Mockito.mock(TaskFactStore.class);
+        TaskFacade facade = facade(plans, proposals, tasks);
+        TaskProposalFact prior = new TaskProposalFact("prior", 1, "PENDING_CONFIRMATION",
+                "{\"source\":\"office\",\"tenantCode\":\"LOCAL\",\"ownerKey\":\"" + PRINCIPAL.ownerKey() + "\"}",
+                "LOCAL\u0000" + PRINCIPAL.ownerKey() + "\u0000same", "TASK", "{}", "{}", "{}", "create",
+                "LOCAL", PRINCIPAL.ownerKey(), "office", NOW.plusSeconds(60));
+        when(proposals.findByIdempotencyKey(anyString())).thenReturn(Optional.of(prior));
+
+        assertThatThrownBy(() -> facade.propose(PRINCIPAL, "company", "conversation", "turn", "{}", "same"))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("幂等键");
+        verify(proposals, never()).save(any());
+    }
+
+    @Test
+    void taskViewProjectsRuntimeFieldsWithoutTenantOrOwnerIdentity() {
+        TaskPlanStore plans = org.mockito.Mockito.mock(TaskPlanStore.class);
+        TaskProposalStore proposals = org.mockito.Mockito.mock(TaskProposalStore.class);
+        TaskFactStore tasks = org.mockito.Mockito.mock(TaskFactStore.class);
+        TaskFacade facade = facade(plans, proposals, tasks);
+        TaskFact task = new TaskFact("task-view", 2, "COMPLETED",
+                "{\"tenantCode\":\"LOCAL\",\"ownerKey\":\"" + PRINCIPAL.ownerKey()
+                        + "\",\"source\":\"company\",\"label\":\"空调巡检\","
+                        + "\"observedStates\":{\"device-1\":{\"power\":\"on\"}},"
+                        + "\"report\":{\"generatedAt\":\"2026-10-12T01:00:00Z\",\"outcome\":\"completed\"}}",
+                "task-view-key");
+
+        Map<String, Object> view = facade.view(task);
+        assertThat(view).containsEntry("label", "空调巡检")
+                .containsEntry("status", "COMPLETED")
+                .containsEntry("hasReport", true)
+                .containsKey("observedStates");
+        assertThat(view.get("payload").toString()).doesNotContain("tenantCode", PRINCIPAL.ownerKey());
     }
 
     private static TaskFacade facade(TaskPlanStore plans, TaskProposalStore proposals, TaskFactStore tasks) {

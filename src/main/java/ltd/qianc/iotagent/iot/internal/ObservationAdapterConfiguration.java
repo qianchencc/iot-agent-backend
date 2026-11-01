@@ -11,9 +11,10 @@ import ltd.qianc.iotagent.iot.ObservationAdapter;
 import ltd.qianc.iotagent.iot.ObservationAdapterFactory;
 import ltd.qianc.iotagent.iot.ObservationGatewayRoutes;
 import ltd.qianc.iotagent.iot.ObservationOperation;
-import ltd.qianc.iotagent.region.RegionSeenStore;
 import ltd.qianc.iotagent.iot.CompanyEnergyObservationComposer;
 import ltd.qianc.iotagent.iot.CompanyEnergyObservationComposerFactory;
+import ltd.qianc.iotagent.iot.CompanyEnergyPolicy;
+import ltd.qianc.iotagent.region.RegionSeenStore;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -27,9 +28,9 @@ import org.springframework.web.reactive.function.client.WebClient;
  * Customer read-only routes are explicit configuration. Defaults are limited to
  * paths and response envelopes copied from the Runtime observation reader:
  * environment/energy history, safety ledgers, and Office membership regions.
- * Company energy comparison/daily/monthly/meter projections are composed from
- * the configured energy-history seam; unknown energy-report and artifact
- * protocols remain unavailable until their exact customer contract is known.
+ * Company energy projections, including the Runtime-compatible energy report,
+ * are composed from the configured energy-history seam; artifact protocols
+ * remain unavailable until their exact customer contract is known.
  */
 @Configuration(proxyBeanMethods = false)
 public class ObservationAdapterConfiguration {
@@ -41,8 +42,9 @@ public class ObservationAdapterConfiguration {
             IotAdapter iot,
             ObjectProvider<AutomationSummaryReader> automation,
             ObjectProvider<RegionSeenStore> regionSeen,
-            @Value("${iot.gateway.base-url:}") String baseUrl,
-            @Value("${iot.gateway.call-timeout-ms:15000}") long timeoutMs) {
+            ObjectProvider<CompanyEnergyPolicy> energyPolicy,
+            @Value("${iot.gateway.call-timeout-ms:15000}") long timeoutMs,
+            @Value("${iot.gateway.base-url:}") String baseUrl) {
         ObservationAdapter delegate;
         if (baseUrl == null || baseUrl.isBlank()) {
             delegate = ObservationAdapterFactory.failClosed("物联只读观察上游未配置");
@@ -97,8 +99,10 @@ public class ObservationAdapterConfiguration {
         AutomationSummaryReader automationReader = automation.getIfAvailable(
                 () -> identity -> Mono.error(new IllegalStateException("任务摘要读取适配器未配置")));
         Clock clock = Clock.systemUTC();
-        CompanyEnergyObservationComposer energyComposer =
-                CompanyEnergyObservationComposerFactory.composed(delegate, iot, clock);
+        CompanyEnergyPolicy configuredPolicy = energyPolicy.getIfAvailable();
+        CompanyEnergyObservationComposer energyComposer = configuredPolicy == null
+                ? CompanyEnergyObservationComposerFactory.composed(delegate, iot, clock)
+                : CompanyEnergyObservationComposerFactory.composed(delegate, iot, clock, configuredPolicy);
         return ObservationAdapterFactory.composed(
                 delegate, iot, automationReader, regionSeen.getIfAvailable(), energyComposer, clock);
     }

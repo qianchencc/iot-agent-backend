@@ -197,40 +197,14 @@ public final class TaskController {
     @GetMapping("/tasks/{id}")
     public Map<String, Object> task(@PathVariable String id, @RequestParam(required = false) String source) {
         var principal = PrincipalContext.getPrincipalInfo();
-        return facade.view(source == null ? facade.current(principal, id) : facade.current(principal, id, source));
+        String requestedSource = source == null ? "office" : source;
+        var task = facade.current(principal, id, requestedSource);
+        return facade.view(principal, task, requestedSource);
     }
     @GetMapping("/tasks/{id}/lighting-states")
     public Map<String, Object> lightingStates(@PathVariable String id,
                                                @RequestParam(defaultValue = "office") String source) {
-        if (iot == null) throw new UpstreamUnavailableException("物联设备状态适配器未接入");
-        try {
-            var principal = PrincipalContext.getPrincipalInfo();
-            IotSource requestedSource = parseSource(source);
-            List<String> deviceIds = facade.lightingDeviceIds(principal, id, requestedSource.wireValue());
-            RequestIdentity identity = new RequestIdentity(principal.authorization(), principal.tenantCode(), requestedSource);
-            AuthorizedDeviceScope scope = iot.loadAuthorizedDeviceScope(identity).block(Duration.ofSeconds(30));
-            if (scope == null || scope.source() != requestedSource) throw new UpstreamUnavailableException("读取任务设备授权范围");
-            for (String deviceId : deviceIds) {
-                var authorized = scope.device(deviceId);
-                if (authorized.isEmpty() || !"lighting".equalsIgnoreCase(authorized.get().kind())) {
-                    throw new BusinessException("TASK_NOT_FOUND", "任务不存在", 404);
-                }
-            }
-            DeviceStateReadResult result = deviceIds.isEmpty()
-                    ? new DeviceStateReadResult(Map.of(), Instant.now().toString())
-                    : iot.readDeviceStates(identity, deviceIds).block(Duration.ofSeconds(30));
-            if (result == null) throw new UpstreamUnavailableException("读取设备状态");
-            List<Map<String, Object>> states = new ArrayList<>();
-            for (String deviceId : deviceIds) states.add(stateView(deviceId, result.states().get(deviceId)));
-            Map<String, Object> response = new LinkedHashMap<>();
-            response.put("observedAt", result.observedAt());
-            response.put("states", states);
-            return response;
-        } catch (BusinessException failure) {
-            throw failure;
-        } catch (RuntimeException failure) {
-            throw new UpstreamUnavailableException("读取任务设备状态");
-        }
+        return facade.lightingStates(PrincipalContext.getPrincipalInfo(), id, source);
     }
 
     @PostMapping("/tasks/{id}/update")

@@ -159,6 +159,9 @@ public final class WebClientObservationAdapter implements ObservationAdapter {
         if (content == null || content.isNull()) {
             return Mono.error(unavailable(operation, "客户观察上游内容格式无效"));
         }
+        if (operation == ObservationOperation.REGION_LIST) {
+            return parseRegions(content, operation);
+        }
         if (operation == ObservationOperation.ENVIRONMENT_HISTORY) {
             return parseEnvironment(content, operation, parameters);
         }

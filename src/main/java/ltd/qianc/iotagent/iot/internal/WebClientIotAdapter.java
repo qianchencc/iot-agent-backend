@@ -11,6 +11,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeoutException;
 import ltd.qianc.iotagent.error.BusinessException;
 import ltd.qianc.iotagent.iot.AuthorizedDevice;
@@ -45,11 +47,14 @@ import reactor.core.publisher.Mono;
 public final class WebClientIotAdapter implements IotAdapter {
 
     private static final ObjectMapper JSON = new ObjectMapper();
+    private static final long READ_SCOPE_REUSE_MILLIS = 5_000L;
     private final WebClient webClient;
     private final IotGatewayRoutes routes;
     private final Duration callTimeout;
     private final Duration compositionTimeout;
     private final IotCallPolicy callPolicy;
+    private final ConcurrentMap<String, ScopeEntry> scopeCache = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, Mono<AuthorizedDeviceScope>> scopeJobs = new ConcurrentHashMap<>();
     public WebClientIotAdapter(WebClient webClient, IotGatewayRoutes routes, Duration callTimeout, IotCallPolicy callPolicy) {
         this.webClient = Objects.requireNonNull(webClient, "webClient");
         this.routes = Objects.requireNonNull(routes, "routes");
@@ -72,7 +77,25 @@ public final class WebClientIotAdapter implements IotAdapter {
         } else {
             request = Mono.error(new UpstreamUnavailableException("物联授权设备范围路径未配置"));
         }
-        return execute("load authorized " + identity.source().wireValue() + " device scope", request);
+        return execute("load authorized " + identity.source().wireValue() + " device scope",
+                cachedReadScope(identity, request));
+    }
+
+    private Mono<AuthorizedDeviceScope> cachedReadScope(
+            RequestIdentity identity, Mono<AuthorizedDeviceScope> request) {
+        if (identity.source() != IotSource.OFFICE) return request;
+        String key = identity.tenantCode() + "\u0000" + identity.ownerKey() + "\u0000" + identity.source();
+        long now = System.currentTimeMillis();
+        ScopeEntry cached = scopeCache.get(key);
+        if (cached != null && now - cached.at() <= READ_SCOPE_REUSE_MILLIS) {
+            return Mono.just(cached.scope());
+        }
+        Mono<AuthorizedDeviceScope> fresh = request
+                .doOnNext(scope -> scopeCache.put(key, new ScopeEntry(scope, System.currentTimeMillis())))
+                .doFinally(signal -> scopeJobs.remove(key))
+                .cache();
+        Mono<AuthorizedDeviceScope> prior = scopeJobs.putIfAbsent(key, fresh);
+        return prior == null ? fresh : prior;
     }
 
     @Override
@@ -1136,6 +1159,7 @@ public final class WebClientIotAdapter implements IotAdapter {
         return timeout;
     }
 
+    private record ScopeEntry(AuthorizedDeviceScope scope, long at) { }
     private record PageResult(List<JsonNode> records, boolean last) {
         static PageResult empty() { return new PageResult(List.of(), true); }
     }

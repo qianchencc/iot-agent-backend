@@ -1,5 +1,7 @@
 package ltd.qianc.iotagent.iot.internal;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Clock;
@@ -26,6 +28,7 @@ import ltd.qianc.iotagent.error.BusinessException;
 import ltd.qianc.iotagent.iot.AuthorizedDevice;
 import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
 import ltd.qianc.iotagent.iot.CompanyEnergyObservationComposer;
+import ltd.qianc.iotagent.iot.CompanyEnergyPolicy;
 import ltd.qianc.iotagent.iot.IotAdapter;
 import ltd.qianc.iotagent.iot.IotSource;
 import ltd.qianc.iotagent.iot.ObservationAdapter;
@@ -54,13 +57,25 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
     private final Clock clock;
     private final int maxPages;
     private final int maxRows;
+    private final CompanyEnergyPolicy policy;
 
     public CompanyEnergyObservationComposerImpl(ObservationAdapter rawHistory, IotAdapter iot, Clock clock) {
-        this(rawHistory, iot, clock, DEFAULT_MAX_PAGES, DEFAULT_MAX_ROWS);
+        this(rawHistory, iot, clock, DEFAULT_MAX_PAGES, DEFAULT_MAX_ROWS, null);
+    }
+
+    public CompanyEnergyObservationComposerImpl(
+            ObservationAdapter rawHistory, IotAdapter iot, Clock clock, CompanyEnergyPolicy policy) {
+        this(rawHistory, iot, clock, DEFAULT_MAX_PAGES, DEFAULT_MAX_ROWS, policy);
     }
 
     public CompanyEnergyObservationComposerImpl(
             ObservationAdapter rawHistory, IotAdapter iot, Clock clock, int maxPages, int maxRows) {
+        this(rawHistory, iot, clock, maxPages, maxRows, null);
+    }
+
+    public CompanyEnergyObservationComposerImpl(
+            ObservationAdapter rawHistory, IotAdapter iot, Clock clock,
+            int maxPages, int maxRows, CompanyEnergyPolicy policy) {
         this.rawHistory = Objects.requireNonNull(rawHistory, "rawHistory");
         this.iot = Objects.requireNonNull(iot, "iot");
         this.clock = Objects.requireNonNull(clock, "clock");
@@ -68,8 +83,403 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         if (maxRows < 1 || maxRows > 100_000) throw new IllegalArgumentException("maxRows must be 1..100000");
         this.maxPages = maxPages;
         this.maxRows = maxRows;
+        this.policy = policy;
     }
 
+    @Override
+    public Mono<ObservationResponse> readEnergyReport(ObservationRequest request) {
+        return Mono.defer(() -> {
+            requireCompany(request.identity());
+            if (request.operation() != ObservationOperation.ENERGY_REPORT) {
+                return Mono.error(new ObservationUnavailableException("公司能耗组合器不支持该观察操作"));
+            }
+            Map<String, String> p = request.parameters();
+            String kind = p.get("kind");
+            if (!List.of("statistics", "comparison", "inspection").contains(kind)) {
+                return Mono.error(new BusinessException("INVALID_ENERGY_WINDOW", "请选择统计、对比或检查", 400));
+            }
+            List<ReportWindow> windows = reportWindows(p, kind);
+            List<AuthorizedDevice> meters;
+            return iot.loadAuthorizedDeviceScope(request.identity())
+                    .switchIfEmpty(Mono.error(new ObservationUnavailableException("公司电表授权范围为空")))
+                    .flatMap(scope -> {
+                        validateScope(request.identity(), scope);
+                        List<AuthorizedDevice> all = energyMeters(scope);
+                        List<AuthorizedDevice> selected = reportMeters(p.get("equipmentIds"), all);
+                        if (selected.isEmpty()) {
+                            return Mono.error(new BusinessException("FORBIDDEN", "统计范围中的计量点须属于当前公司授权目录，且不得重复", 403));
+                        }
+                        Instant from = windows.stream().map(ReportWindow::from).min(Instant::compareTo).orElseThrow();
+                        Instant to = windows.stream().map(ReportWindow::to).max(Instant::compareTo).orElseThrow();
+                        return readAllBestEffort(request.identity(), selected, from, to)
+                                .map(reads -> energyResponse(energyBusinessPayload(
+                                        request, selected, reads, windows, kind, p)));
+                    });
+        });
+    }
+
+    private List<ReportWindow> reportWindows(Map<String, String> parameters, String kind) {
+        if (parameters.containsKey("growthThreshold") && !"inspection".equals(kind)) {
+            throw new BusinessException("INVALID_ENERGY_WINDOW", "用电增长检查需要明确的非负百分比阈值", 400);
+        }
+        Instant now = clock.instant();
+        List<ReportWindow> explicit = new ArrayList<>();
+        String encoded = parameters.get("periods");
+        if (encoded != null) {
+            try {
+                List<Map<String, Object>> values = new ObjectMapper().readValue(encoded, new TypeReference<>() { });
+                if (!"comparison".equals(kind) || parameters.containsKey("baselineFrom")
+                        || parameters.containsKey("baselineTo") || values.size() < 2 || values.size() > 24) {
+                    throw new IllegalArgumentException();
+                }
+                for (Map<String, Object> value : values) {
+                    Instant periodFrom = strictInstant(String.valueOf(value.get("from")), now);
+                    Instant periodTo = strictInstant(String.valueOf(value.get("to")), now);
+                    if (!periodFrom.isBefore(periodTo)) throw new BusinessException(
+                            "INVALID_ENERGY_WINDOW", "结束须晚于开始且不晚于当前时刻", 400);
+                    String label = value.get("label") == null ? null : String.valueOf(value.get("label"));
+                    explicit.add(new ReportWindow(periodFrom, periodTo, label == null ? null : label.substring(0, Math.min(60, label.length()))));
+                }
+            } catch (Exception error) {
+                throw new BusinessException("INVALID_ENERGY_WINDOW", "明确对比支持2至24段，不能同时指定基期", 400);
+            }
+        }
+        if (!explicit.isEmpty()) return explicit;
+        Instant from = strictInstant(parameters.get("from"), now);
+        Instant to = strictInstant(parameters.get("to"), now);
+        if (!from.isBefore(to)) throw new BusinessException("INVALID_ENERGY_WINDOW", "结束须晚于开始且不晚于当前时刻", 400);
+        if ("statistics".equals(kind) && (parameters.containsKey("baselineFrom") || parameters.containsKey("baselineTo"))) {
+            throw new BusinessException("INVALID_ENERGY_WINDOW", "统计不需要基期", 400);
+        }
+        boolean baselineNeeded = "comparison".equals(kind) || ("inspection".equals(kind) && parameters.containsKey("growthThreshold"));
+        List<ReportWindow> result = new ArrayList<>();
+        if (baselineNeeded) {
+            Instant baseFrom = parameters.containsKey("baselineFrom")
+                    ? strictInstant(parameters.get("baselineFrom"), now) : from.minus(to.toEpochMilli() - from.toEpochMilli(), ChronoUnit.MILLIS);
+            Instant baseTo = parameters.containsKey("baselineTo") ? strictInstant(parameters.get("baselineTo"), now) : from;
+            if (!baseFrom.isBefore(baseTo)) throw new BusinessException(
+                    "INVALID_ENERGY_WINDOW", "结束须晚于开始且不晚于当前时刻", 400);
+            result.add(new ReportWindow(baseFrom, baseTo, null));
+        }
+        result.add(new ReportWindow(from, to, null));
+        if (parameters.containsKey("growthThreshold")) {
+            try {
+                double threshold = Double.parseDouble(parameters.get("growthThreshold"));
+                if (!Double.isFinite(threshold) || threshold < 0 || !"inspection".equals(kind)) throw new NumberFormatException();
+            } catch (NumberFormatException error) {
+                throw new BusinessException("INVALID_ENERGY_WINDOW", "用电增长检查需要明确的非负百分比阈值", 400);
+            }
+        }
+        return result;
+    }
+
+    private Instant strictInstant(String value, Instant now) {
+        if (value == null || !value.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?(?:Z|[+-]\\d{2}:\\d{2})$")) {
+            throw new BusinessException("INVALID_ENERGY_WINDOW", "起止时间须为有效的带时区时刻", 400);
+        }
+        try {
+            Instant parsed = OffsetDateTime.parse(value).toInstant();
+            if (!parsed.isBefore(now)) throw new BusinessException("INVALID_ENERGY_WINDOW", "结束须晚于开始且不晚于当前时刻", 400);
+            return parsed;
+        } catch (DateTimeParseException error) {
+            throw new BusinessException("INVALID_ENERGY_WINDOW", "起止时间须为有效的带时区时刻", 400);
+        }
+    }
+
+    private List<AuthorizedDevice> reportMeters(String encoded, List<AuthorizedDevice> all) {
+        if (encoded == null) return all;
+        if (encoded.isBlank()) return List.of();
+        Set<String> ids = new LinkedHashSet<>(List.of(encoded.split(",")));
+        if (ids.size() != encoded.split(",").length) return List.of();
+        if (ids.stream().anyMatch(id -> all.stream().noneMatch(m -> m.id().equals(id)))) return List.of();
+        return all.stream().filter(m -> ids.contains(m.id())).toList();
+    }
+
+    private static void applyPolicy(Map<String, Object> period, CompanyEnergyPolicy.Meter configured) {
+        if (configured == null || configured.multiplier() == null) return;
+        Object usage = period.get("usage");
+        if (usage instanceof Number number) period.put("usage", round(number.doubleValue() * configured.multiplier()));
+    }
+
+    private Map<String, Object> reportSeries(
+            MeterRead read, CompanyEnergyPolicy.Meter configured, Instant from, Instant to) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        for (String grain : List.of("day", "week", "month")) {
+            List<Map<String, Object>> points = new ArrayList<>();
+            for (ReportWindow bucket : bucketWindows(from, to, grain)) {
+                Map<String, Object> point = new LinkedHashMap<>(comparisonPeriod(
+                        read.samples, bucket.from(), bucket.to(), read.truncated, format(bucket.from()).substring(0, 10)));
+                applyPolicy(point, configured);
+                point.put("from", format(bucket.from())); point.put("to", format(bucket.to()));
+                point.put("key", format(bucket.from()).substring(0, 10));
+                point.put("usage", "comparable".equals(point.get("status")) ? point.get("usage") : null);
+                Map<String, Object> output = new LinkedHashMap<>();
+                output.put("key", point.get("key")); output.put("from", point.get("from")); output.put("to", point.get("to"));
+                output.put("usage", point.get("usage")); output.put("status", point.get("status")); points.add(output);
+            }
+            result.put(grain, points);
+        }
+        return result;
+    }
+
+    private Map<String, Object> reportSeries(
+            List<Map<String, Object>> rows, Instant from, Instant to) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        for (String grain : List.of("day", "week", "month")) {
+            List<ReportWindow> buckets = bucketWindows(from, to, grain);
+            List<Map<String, Object>> points = new ArrayList<>();
+            for (int index = 0; index < buckets.size(); index++) {
+                ReportWindow bucket = buckets.get(index);
+                double sum = 0; int count = 0; String status = "not_computable";
+                for (Map<String, Object> row : rows) {
+                    @SuppressWarnings("unchecked") Map<String, Object> series = (Map<String, Object>) row.get("series");
+                    @SuppressWarnings("unchecked") List<Map<String, Object>> values = (List<Map<String, Object>>) series.get(grain);
+                    if (index < values.size() && "comparable".equals(values.get(index).get("status"))
+                            && values.get(index).get("usage") instanceof Number value) {
+                        sum += value.doubleValue(); count++;
+                    }
+                }
+                if (count == rows.size() && count > 0) {
+                    @SuppressWarnings("unchecked")
+                    List<Map<String, Object>> periods = (List<Map<String, Object>>) rows.get(0).get("periods");
+                    status = !periods.isEmpty() && "complete".equals(periods.get(periods.size() - 1).get("status"))
+                            ? "comparable" : "partial";
+                }
+                Map<String, Object> point = new LinkedHashMap<>();
+                point.put("key", format(bucket.from()).substring(0, 10)); point.put("from", format(bucket.from()));
+                point.put("to", format(bucket.to())); point.put("usage", count == rows.size() && count > 0 ? round(sum) : null);
+                point.put("status", status); points.add(point);
+            }
+            result.put(grain, points);
+        }
+        return result;
+    }
+
+    private List<ReportWindow> bucketWindows(Instant from, Instant to, String grain) {
+        List<ReportWindow> result = new ArrayList<>();
+        Instant cursor = from;
+        while (cursor.isBefore(to) && result.size() < 400) {
+            Instant next;
+            if ("month".equals(grain)) {
+                var local = cursor.atZone(SHANGHAI);
+                next = local.withDayOfMonth(1).plusMonths(1).toInstant();
+            } else next = cursor.plus("week".equals(grain) ? 7 : 1, ChronoUnit.DAYS);
+            result.add(new ReportWindow(cursor, next.isAfter(to) ? to : next, null));
+            cursor = next;
+        }
+        return result;
+    }
+
+    private Map<String, Object> seriesCoverage(Instant from, Instant to) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        for (String grain : List.of("day", "week", "month")) {
+            List<ReportWindow> buckets = bucketWindows(from, to, grain);
+            ReportWindow last = buckets.get(buckets.size() - 1);
+            Map<String, Object> coverage = new LinkedHashMap<>();
+            coverage.put("complete", last.to().equals(to));
+            coverage.put("remaining", last.to().equals(to) ? null
+                    : Map.of("from", format(last.to()), "to", format(to)));
+            result.put(grain, coverage);
+        }
+        return result;
+    }
+
+    private static Double difference(Map<String, Object> current, Map<String, Object> previous) {
+        return current != null && previous != null ? round(((Number) current.get("value")).doubleValue() - ((Number) previous.get("value")).doubleValue()) : null;
+    }
+
+    private static Double ratio(Map<String, Object> current, Map<String, Object> previous, ReportWindow before, ReportWindow after) {
+        return current != null && previous != null && ((Number) previous.get("value")).doubleValue() != 0
+                && after.to().toEpochMilli() - after.from().toEpochMilli() == before.to().toEpochMilli() - before.from().toEpochMilli()
+                ? round((((Number) current.get("value")).doubleValue() - ((Number) previous.get("value")).doubleValue())
+                        / ((Number) previous.get("value")).doubleValue() * 100) : null;
+    }
+
+    private static String ratioNote(Map<String, Object> current, Map<String, Object> previous, ReportWindow before, ReportWindow after) {
+        if (before.to().toEpochMilli() - before.from().toEpochMilli() != after.to().toEpochMilli() - after.from().toEpochMilli()) return "两期时长不同";
+        if (previous == null || current == null) return "两期没有同口径的有效合计";
+        if (((Number) previous.get("value")).doubleValue() == 0) return "基期为零";
+        return "";
+    }
+
+    private static void annotateRatio(
+            Map<String, Object> previous, Map<String, Object> current, ReportWindow before, ReportWindow after) {
+        Object beforeValue = previous.get("usage"), currentValue = current.get("usage");
+        if (!(beforeValue instanceof Number base) || !(currentValue instanceof Number value)) {
+            current.put("ratio", null); current.put("ratioNote", "两期采样不完整，比例不可计算"); return;
+        }
+        long beforeDuration = before.to().toEpochMilli() - before.from().toEpochMilli();
+        long afterDuration = after.to().toEpochMilli() - after.from().toEpochMilli();
+        if (beforeDuration != afterDuration) {
+            current.put("ratio", null); current.put("ratioNote", "两期时长不同，不直接计算增幅"); return;
+        }
+        if (base.doubleValue() == 0) {
+            current.put("ratio", null); current.put("ratioNote", "基期为零，比例不可计算"); return;
+        }
+        current.put("ratio", round((value.doubleValue() - base.doubleValue()) / base.doubleValue() * 100));
+        current.put("ratioNote", "");
+    }
+
+    private static Map<String, Object> finding(String code, String meterId, String title, String detail) {
+        return finding(code, meterId, title, detail, "完整边界、无回退/同时间冲突且读取覆盖完整");
+    }
+
+    private static Map<String, Object> finding(String code, String meterId, String title, String detail, String rule) {
+        return Map.of("code", code, "meterId", meterId, "title", title, "detail", detail, "period", 0, "rule", rule);
+    }
+
+    private static Map<String, Object> check(String code, String label, List<Map<String, Object>> rows) {
+        List<String> ids = rows.stream().filter(row -> "ready".equals(row.get("status")))
+                .map(row -> String.valueOf(((Map<?, ?>) row.get("meter")).get("id"))).toList();
+        return Map.of("code", code, "label", label, "status", ids.size() == rows.size() ? "complete" : ids.isEmpty() ? "not_checked" : "partial",
+                "checkedMeterIds", ids);
+    }
+    private Map<String, Object> energyBusinessPayload(
+            ObservationRequest request, List<AuthorizedDevice> meters, List<MeterRead> reads,
+            List<ReportWindow> windows, String kind, Map<String, String> parameters) {
+        Instant selectedFrom = windows.get(windows.size() - 1).from();
+        Instant selectedTo = windows.get(windows.size() - 1).to();
+        boolean policyTenant = policy != null && request.identity().tenantCode().equals(policy.tenantCode())
+                && policy.version() != null;
+        boolean policyComplete = policyTenant && meters.stream().allMatch(m -> {
+            CompanyEnergyPolicy.Meter configured = policy.meters().get(m.id());
+            return configured != null && configured.unit() != null && configured.multiplier() != null;
+        });
+        List<Map<String, Object>> meterRows = new ArrayList<>();
+        for (AuthorizedDevice meter : meters) {
+            MeterRead read = reads.stream().filter(r -> r.device.id().equals(meter.id())).findFirst()
+                    .orElse(new MeterRead(meter, List.of(), true));
+            CompanyEnergyPolicy.Meter configured = policyTenant ? policy.meters().get(meter.id()) : null;
+            List<Map<String, Object>> periods = new ArrayList<>();
+            for (ReportWindow window : windows) {
+                Map<String, Object> period = new LinkedHashMap<>(
+                        comparisonPeriod(read.samples, window.from(), window.to(), read.truncated, format(window.from()).substring(0, 10)));
+                applyPolicy(period, configured);
+                periods.add(period);
+            }
+            if (periods.size() > 1) annotateRatio(periods.get(periods.size() - 2), periods.get(periods.size() - 1),
+                    windows.get(windows.size() - 2), windows.get(windows.size() - 1));
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("meter", Map.of("id", meter.id(), "name", meter.name(), "location", meter.installAddress()));
+            row.put("status", read.samples.isEmpty() && read.truncated ? "failed" : "ready");
+            row.put("error", read.truncated ? "读取页数预算用尽，保留已取得采样" : "");
+            row.put("unit", configured == null ? null : configured.unit());
+            row.put("multiplier", configured == null ? null : configured.multiplier());
+            row.put("periods", periods);
+            row.put("series", reportSeries(read, configured, selectedFrom, selectedTo));
+            row.put("samples", read.samples.size());
+            row.put("complete", !read.truncated);
+            row.put("latest", formatNullable(latestSample(read.samples)));
+            meterRows.add(row);
+        }
+        List<Map<String, Object>> periodRows = new ArrayList<>();
+        for (int index = 0; index < windows.size(); index++) {
+            ReportWindow window = windows.get(index);
+            List<String> validIds = new ArrayList<>();
+            double sum = 0;
+            for (Map<String, Object> meter : meterRows) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> period = (Map<String, Object>) ((List<?>) meter.get("periods")).get(index);
+                if (policyComplete && "comparable".equals(period.get("status")) && period.get("usage") instanceof Number value) {
+                    validIds.add(String.valueOf(((Map<?, ?>) meter.get("meter")).get("id")));
+                    sum += value.doubleValue();
+                }
+            }
+            Map<String, Object> metric = new LinkedHashMap<>();
+            if (policyComplete && !validIds.isEmpty()) {
+                metric.put("value", round(sum)); metric.put("unit", "kWh");
+                metric.put("status", validIds.size() == meters.size() ? "complete" : "partial");
+                metric.put("meterIds", validIds);
+            } else {
+                metric = null;
+            }
+            Map<String, Object> period = new LinkedHashMap<>();
+            period.put("from", format(window.from())); period.put("to", format(window.to()));
+            if (window.label() != null) period.put("label", window.label());
+            period.put("metric", metric);
+            periodRows.add(period);
+        }
+        Map<String, Object> summary = new LinkedHashMap<>();
+        Map<String, Object> total = periodRows.isEmpty() ? null : (Map<String, Object>) periodRows.get(periodRows.size() - 1).get("metric");
+        summary.put("total", total); summary.put("average",
+                total == null || !"complete".equals(total.get("status"))
+                        ? null : round(((Number) total.get("value")).doubleValue() / dayCount(selectedFrom, selectedTo)));
+        if ("comparison".equals(kind) && periodRows.size() > 1) {
+            Map<String, Object> previous = (Map<String, Object>) periodRows.get(periodRows.size() - 2).get("metric");
+            summary.put("previous", previous);
+            Double difference = difference(total, previous);
+            summary.put("difference", difference);
+            summary.put("ratio", ratio(total, previous, windows.get(windows.size() - 2), windows.get(windows.size() - 1)));
+            summary.put("ratioNote", ratioNote(total, previous, windows.get(windows.size() - 2), windows.get(windows.size() - 1)));
+        }
+        Map<String, Object> coverage = new LinkedHashMap<>();
+        int complete = (int) reads.stream().filter(read -> !read.truncated).count();
+        int valid = (int) meterRows.stream().filter(row -> {
+            @SuppressWarnings("unchecked") List<Map<String, Object>> periods = (List<Map<String, Object>>) row.get("periods");
+            return !periods.isEmpty() && "comparable".equals(periods.get(periods.size() - 1).get("status"));
+        }).count();
+        coverage.put("requestedMeters", meters.size()); coverage.put("completedMeters", complete);
+        coverage.put("validMeters", valid); coverage.put("failedMeters", meters.size() - complete);
+        coverage.put("status", complete == meters.size() && valid == meters.size() ? "ready" : "partial");
+        coverage.put("remainingMeterIds", meterRows.stream().filter(row -> !"ready".equals(row.get("status")))
+                .map(row -> String.valueOf(((Map<?, ?>) row.get("meter")).get("id"))).toList());
+        coverage.put("reason", complete == meters.size() ? "" : "部分电表未读完，详见逐表原因");
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("reportId", java.util.UUID.randomUUID().toString());
+        result.put("type", "energy-report"); result.put("source", "company"); result.put("kind", kind);
+        result.put("observedAt", clock.instant().toString());
+        result.put("requested", Map.of("from", format(selectedFrom), "to", format(selectedTo)));
+        result.put("windows", windows.stream().map(w -> {
+            Map<String, Object> out = new LinkedHashMap<>(); out.put("from", format(w.from())); out.put("to", format(w.to()));
+            if (w.label() != null) out.put("label", w.label()); return out;
+        }).toList());
+        Map<String, Object> basis = new LinkedHashMap<>();
+        basis.put("field", "epf"); basis.put("timezone", "Asia/Shanghai");
+        basis.put("policyVersion", policyComplete ? policy.version() : null);
+        basis.put("aggregation", policyComplete ? "verified" : "pending"); basis.put("upstream", "ENERGY_HISTORY");
+        result.put("basis", basis);
+        result.put("meters", meterRows); result.put("periods", periodRows);
+        result.put("series", reportSeries(meterRows, selectedFrom, selectedTo));
+        result.put("seriesCoverage", seriesCoverage(selectedFrom, selectedTo));
+        result.put("summary", summary); result.put("coverage", coverage);
+        List<Map<String, Object>> checks = new ArrayList<>();
+        List<Map<String, Object>> notChecked = new ArrayList<>();
+        List<Map<String, Object>> findings = new ArrayList<>();
+        if ("inspection".equals(kind)) {
+            for (Map<String, Object> row : meterRows) {
+                String id = String.valueOf(((Map<?, ?>) row.get("meter")).get("id"));
+                @SuppressWarnings("unchecked") List<Map<String, Object>> periods = (List<Map<String, Object>>) row.get("periods");
+                if (!"ready".equals(row.get("status"))) findings.add(finding("read_failed", id, "采样读取未完成", String.valueOf(row.get("error"))));
+                if (row.get("unit") == null) findings.add(finding("basis", id, "计量口径未确认", "单位/倍率未确认，保留原始示数差，不换算或跨表相加"));
+                for (Map<String, Object> period : periods) if (!"comparable".equals(period.get("status"))) {
+                    findings.add(finding("coverage", id, "采样需要核查", String.valueOf(period.get("notes")), "完整边界、无回退/同时间冲突且读取覆盖完整"));
+                }
+                if (parameters.containsKey("growthThreshold")) {
+                    Map<String, Object> latest = periods.get(periods.size() - 1);
+                    Object growth = latest.get("ratio");
+                    if (growth instanceof Number value
+                            && value.doubleValue() > Double.parseDouble(parameters.get("growthThreshold"))) {
+                        findings.add(finding("growth", id, "区间增幅超过检查阈值",
+                                "增幅 " + value + "% · 阈值 " + parameters.get("growthThreshold") + "%"));
+                    } else if (!(growth instanceof Number)) {
+                        notChecked.add(Map.of("code", "growth", "meterId", id,
+                                "reason", String.valueOf(latest.get("ratioNote"))));
+                    }
+                }
+            }
+            checks.add(check("coverage", "请求边界与读取覆盖", meterRows));
+            checks.add(check("counter", "累计回退与同时间冲突", meterRows));
+            checks.add(check("basis", "计量口径", meterRows));
+        } else {
+            checks = List.of();
+        }
+        result.put("checks", checks); result.put("notChecked", notChecked); result.put("findings", findings);
+        Map<String, Object> rules = new LinkedHashMap<>();
+        rules.put("growthThreshold", parameters.containsKey("growthThreshold")
+                ? Double.valueOf(parameters.get("growthThreshold")) : null);
+        result.put("rules", rules);
+        return result;
+    }
     @Override
     public Mono<ObservationResponse> read(ObservationRequest request) {
         Objects.requireNonNull(request, "request");
@@ -891,7 +1301,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
             if (!sample.readTime.isAfter(to)) end = sample;
         }
         Double value = usage(samples, from, to);
-        return new Window(start, end, value);
+        return new Window(start, end, value, from, to);
     }
 
     private static Map<String, Object> sampleMap(Sample sample) {
@@ -1010,14 +1420,21 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
     }
     private static double round(double value) { return BigDecimal.valueOf(value).setScale(2, RoundingMode.HALF_UP).doubleValue(); }
 
+    private record ReportWindow(Instant from, Instant to, String label) { }
     private record MonthWindow(YearMonth month, Instant from, Instant to, boolean current) { }
 
     private record Sample(String id, Instant readTime, double value) { }
     private record MeterRead(AuthorizedDevice device, List<Sample> samples, boolean truncated) { }
     private record PageRead(List<Sample> rows, boolean truncated) { }
-    private record Window(Sample from, Sample to, Double value) {
-        static Window empty() { return new Window(null, null, null); }
-        String status(boolean truncated) { return value == null ? (from == null && to == null ? "noData" : "partial") : truncated ? "partial" : "ok"; }
+    private record Window(Sample from, Sample to, Double value, Instant requestedFrom, Instant requestedTo) {
+        static Window empty() { return new Window(null, null, null, null, null); }
+        String status(boolean truncated) {
+            if (value == null) return from == null && to == null ? "noData" : "partial";
+            if (truncated || requestedFrom == null || requestedTo == null
+                    || from == null || to == null
+                    || !from.readTime.equals(requestedFrom) || !to.readTime.equals(requestedTo)) return "partial";
+            return "ok";
+        }
     }
     private record Zoned(java.time.ZonedDateTime value) {
         Instant toInstant() { return value.toInstant(); }
