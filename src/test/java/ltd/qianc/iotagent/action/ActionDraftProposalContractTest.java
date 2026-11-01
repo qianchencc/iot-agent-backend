@@ -83,8 +83,8 @@ class ActionDraftProposalContractTest {
 
     @Test
     void realisticTenantAndTurnFitTheBoundedDurableIdempotencyColumn() throws Exception {
-        PrincipalInfo realPrincipal = new PrincipalInfo("Bearer fixture",
-                "tenant-0123456789abcdef0123456789abcdef01234567");
+        // Production diagnosis: tenant 3 + owner 64 + source 6 + caller 66 + NULs = 142.
+        PrincipalInfo realPrincipal = new PrincipalInfo("Bearer fixture", "XSJ");
         RequestIdentity identity = new RequestIdentity(realPrincipal.authorization(), realPrincipal.tenantCode(),
                 IotSource.OFFICE, realPrincipal.ownerKey());
         String fingerprint = AuthorizedDeviceScope.of(identity, IotSource.OFFICE, LIGHTS).catalogFingerprint();
@@ -99,7 +99,7 @@ class ActionDraftProposalContractTest {
         String payload = payload(Map.of("candidateSetIds", List.of("set-real"), "summary", "打开当前位置的灯",
                 "actions", List.of(Map.of("deviceId", "light-2", "kind", "lighting",
                         "closeOrOpen", 1, "selected", true))));
-        String turnKey = "turn-12345678-1234-1234-1234-123456789abc";
+        String turnKey = "12345678-1234-1234-1234-123456789abc:" + "call_" + "a".repeat(24);
         ActionDraftFact created = facade.propose(realPrincipal, "office", CONVERSATION, "turn-1", payload, turnKey);
         ActionDraftFact retried = facade.propose(realPrincipal, "office", CONVERSATION, "turn-1", payload, turnKey);
 
