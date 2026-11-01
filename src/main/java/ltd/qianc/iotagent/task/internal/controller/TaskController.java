@@ -7,18 +7,10 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import ltd.qianc.iotagent.auth.PrincipalContext;
 import ltd.qianc.iotagent.error.BusinessException;
-import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
-import ltd.qianc.iotagent.iot.DeviceStateReadResult;
-import ltd.qianc.iotagent.iot.IotAdapter;
-import ltd.qianc.iotagent.iot.IotSource;
-import ltd.qianc.iotagent.iot.RequestIdentity;
-import ltd.qianc.iotagent.iot.UpstreamUnavailableException;
 import ltd.qianc.iotagent.task.TaskFacade;
 import ltd.qianc.iotagent.task.TaskPlanFact;
 import ltd.qianc.iotagent.task.TaskProposalFact;
@@ -37,14 +29,10 @@ public final class TaskController {
     private final TaskFacade facade;
     private final ObjectMapper mapper;
     private final ltd.qianc.iotagent.task.TaskProjectionStore projections;
-    private final IotAdapter iot;
-    public TaskController(TaskFacade facade, ObjectMapper mapper) { this(facade, mapper, null, null); }
-    public TaskController(TaskFacade facade, ObjectMapper mapper, ltd.qianc.iotagent.task.TaskProjectionStore projections) {
-        this(facade, mapper, projections, null);
-    }
+    public TaskController(TaskFacade facade, ObjectMapper mapper) { this(facade, mapper, null); }
     @org.springframework.beans.factory.annotation.Autowired
-    public TaskController(TaskFacade facade, ObjectMapper mapper, ltd.qianc.iotagent.task.TaskProjectionStore projections, IotAdapter iot) {
-        this.facade = facade; this.mapper = mapper; this.projections = projections; this.iot = iot;
+    public TaskController(TaskFacade facade, ObjectMapper mapper, ltd.qianc.iotagent.task.TaskProjectionStore projections) {
+        this.facade = facade; this.mapper = mapper; this.projections = projections;
     }
 
     @PostMapping("/task-proposals")
@@ -320,22 +308,6 @@ public final class TaskController {
     private static long versionOrDefault(Map<String, Object> body) {
         Object value = body == null ? null : body.get("version");
         return value instanceof Number number && number.longValue() >= 1 ? number.longValue() : 1L;
-    }
-    private static Map<String, Object> stateView(String id, Object raw) {
-        Map<String, Object> view = new LinkedHashMap<>();
-        view.put("id", id);
-        if (raw instanceof Map<?, ?> values) {
-            values.forEach((key, value) -> { if (key instanceof String name) view.put(name, value); });
-        } else {
-            view.put("state", raw);
-        }
-        view.putIfAbsent("state", null);
-        view.putIfAbsent("reportedAt", null);
-        return view;
-    }
-    private static IotSource parseSource(String value) {
-        try { return IotSource.parse(value == null ? "office" : value); }
-        catch (RuntimeException error) { throw new BusinessException("INVALID_AGENT_SOURCE", "Agent 来源无效", 400); }
     }
     private record DateRange(Instant from, Instant to) { }
 }

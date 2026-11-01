@@ -521,6 +521,9 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
             RequestIdentity identity, AuthorizedDeviceScope scope) {
         String key = regionCatalogKey(identity, scope);
         long now = clock.millis();
+        regionCatalogCache.forEach((cacheKey, entry) -> {
+            if (now - entry.at() > REGION_CATALOG_MILLIS) regionCatalogCache.remove(cacheKey, entry);
+        });
         RegionCatalogEntry cached = regionCatalogCache.get(key);
         if (cached != null && now - cached.at() <= REGION_CATALOG_MILLIS) {
             return Mono.just(cached.regions());

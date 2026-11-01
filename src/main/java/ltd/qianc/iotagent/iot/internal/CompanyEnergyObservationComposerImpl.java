@@ -242,7 +242,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
                 if (count == rows.size() && count > 0) {
                     @SuppressWarnings("unchecked")
                     List<Map<String, Object>> periods = (List<Map<String, Object>>) rows.get(0).get("periods");
-                    status = !periods.isEmpty() && "complete".equals(periods.get(periods.size() - 1).get("status"))
+                    status = !periods.isEmpty() && "comparable".equals(periods.get(periods.size() - 1).get("status"))
                             ? "comparable" : "partial";
                 }
                 Map<String, Object> point = new LinkedHashMap<>();

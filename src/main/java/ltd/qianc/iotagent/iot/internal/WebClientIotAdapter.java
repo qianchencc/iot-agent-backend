@@ -86,6 +86,9 @@ public final class WebClientIotAdapter implements IotAdapter {
         if (identity.source() != IotSource.OFFICE) return request;
         String key = identity.tenantCode() + "\u0000" + identity.ownerKey() + "\u0000" + identity.source();
         long now = System.currentTimeMillis();
+        scopeCache.forEach((cacheKey, entry) -> {
+            if (now - entry.at() > READ_SCOPE_REUSE_MILLIS) scopeCache.remove(cacheKey, entry);
+        });
         ScopeEntry cached = scopeCache.get(key);
         if (cached != null && now - cached.at() <= READ_SCOPE_REUSE_MILLIS) {
             return Mono.just(cached.scope());

@@ -120,7 +120,8 @@ public final class TaskFacade {
         }
         String planId = occurrence == null ? id : occurrence.planId();
         JsonNode before = occurrence != null ? occurrenceForProposal(principal, normalizedSource, occurrence)
-                : plan ? planForProposal(principal, normalizedSource, planId) : taskForProposal(principal, normalizedSource, id);
+                : plan ? planForProposal(principal, normalizedSource, planId)
+                        : taskPayloadForProposal(principal, normalizedSource, id);
         long targetVersion = plan ? plans.find(planId).orElseThrow(() -> notFound("PLAN_NOT_FOUND", "计划不存在")).version()
                 : tasks.find(id).orElseThrow(() -> notFound("TASK_NOT_FOUND", "任务不存在")).version();
         JsonNode after = changedPayload(before, request, operation);
@@ -309,7 +310,7 @@ public final class TaskFacade {
     public TaskFact confirm(PrincipalInfo principal, String proposalId, long expectedVersion, String requestedSource) {
         TaskProposalFact proposal = proposal(principal, proposalId, requestedSource);
         if (CONFIRMED.equals(proposal.status())) {
-            TaskFact existing = taskForProposal(principal, proposalId);
+            TaskFact existing = taskForProposal(principal, proposalId, requestedSource);
             scheduleIfDue(existing);
             return existing;
         }
@@ -606,6 +607,7 @@ public final class TaskFacade {
                         && ownerKey(principal).equals(item.recipientKey())
                         && normalizedSource.equals(source(item.source())))
                 .map(item -> notificationView(item, scope)).toList();
+    }
     public long unreadNotificationCount(PrincipalInfo principal, String source) {
         checkPrincipal(principal);
         String normalizedSource = source(source);
@@ -672,10 +674,9 @@ public final class TaskFacade {
     public Map<String, Object> view(PrincipalInfo principal, TaskFact task, String requestedSource) {
         checkPrincipal(principal);
         Map<String, Object> view = view(task);
-        if (iot == null) return view;
+        if (iot == null || !(view.get("report") instanceof Map<?, ?> reportMap)) return view;
         AuthorizedDeviceScope scope = authorizedScope(principal, requestedSource, "TASK_REPORT_UNAVAILABLE");
-        Object report = view.get("report");
-        if (report instanceof Map<?, ?> reportMap) view.put("report", filterReport(reportMap, scope));
+        view.put("report", filterReport(reportMap, scope));
         return view;
     }
     public List<Map<String, Object>> plans(PrincipalInfo principal, String source) {
@@ -702,10 +703,21 @@ public final class TaskFacade {
         return view;
     }
 
-    private TaskFact taskForProposal(PrincipalInfo principal, String proposalId) {
-        return tasks.findByIdempotencyKey("task:" + proposalId)
+    private TaskFact taskForProposal(PrincipalInfo principal, String proposalId, String expectedSource) {
+        TaskFact task = tasks.findByIdempotencyKey("task:" + proposalId)
                 .orElseThrow(() -> new BusinessException("TASK_RECOVERY_REQUIRED", "任务确认已记账，正在恢复任务事实",
                         "请稍后重试或刷新任务状态", 503));
+        if (!owns(task.payloadJson(), principal)) {
+            throw new BusinessException("TASK_RECOVERY_REQUIRED", "任务确认已记账，正在恢复任务事实",
+                    "请稍后重试或刷新任务状态", 503);
+        }
+        try {
+            assertSource(task.payloadJson(), expectedSource);
+        } catch (BusinessException mismatch) {
+            throw new BusinessException("TASK_RECOVERY_REQUIRED", "任务确认已记账，正在恢复任务事实",
+                    "请稍后重试或刷新任务状态", 503);
+        }
+        return task;
     }
     private String materializePhaseIds(String payloadJson) {
         JsonNode parsed = safePayload(payloadJson);
@@ -832,7 +844,7 @@ public final class TaskFacade {
         require(id, "target");
         return id;
     }
-    private JsonNode taskForProposal(PrincipalInfo principal, String source, String id) {
+    private JsonNode taskPayloadForProposal(PrincipalInfo principal, String source, String id) {
         TaskFact task = current(principal, id, source);
         assertSource(task.payloadJson(), source);
         return safePayload(task.payloadJson());
@@ -1205,6 +1217,10 @@ public final class TaskFacade {
                 filteredPhases.add(safePhase);
             }
             report.put("phases", filteredPhases);
+        }
+        Object meterIds = report.get("meterIds");
+        if (meterIds instanceof List<?> ids) {
+            report.put("meterIds", ids.stream().filter(id -> scope.device(String.valueOf(id)).isPresent()).toList());
         }
         return report;
     }
