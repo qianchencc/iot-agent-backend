@@ -49,8 +49,6 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
     private static final long FRESH_MILLIS = 15_000L;
     private static final long STALE_MILLIS = 5 * 60_000L;
     private static final long REGION_CATALOG_MILLIS = 5_000L;
-    /** Energy is read-only and changes at sampling boundaries, so one minute of reuse is safe. */
-    private static final long ENERGY_CACHE_MILLIS = 60_000L;
     private static final Pattern FLOOR_PATTERN = Pattern.compile("(?:^|[^\\d])(\\d+)(?:楼|层)");
 
     private final ObservationAdapter upstream;
@@ -63,8 +61,6 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
     private final ConcurrentMap<String, Mono<ObservationResponse>> dashboardJobs = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, RegionCatalogEntry> regionCatalogCache = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Mono<List<Map<String, Object>>>> regionCatalogJobs = new ConcurrentHashMap<>();
-    private final ConcurrentMap<String, CacheEntry> energyCache = new ConcurrentHashMap<>();
-    private final ConcurrentMap<String, Mono<ObservationResponse>> energyJobs = new ConcurrentHashMap<>();
 
     public CompanyOfficeObservationAdapter(
             ObservationAdapter upstream,
@@ -109,35 +105,12 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
     }
 
     /**
-     * Energy results are the most expensive read in the product: a company-wide daily window
-     * walks the whole tenant sample stream. Reuse the last successful composition for a minute
-     * and merge concurrent callers, so opening the page never repeats that work.
+     * Energy is always composed from the current authorization and sample stream.
+     * A cached AVAILABLE projection could outlive a revoked meter, so the read is
+     * not reused across calls; partial and missing facts remain visible.
      */
     private Mono<ObservationResponse> energy(ObservationRequest request) {
-        String key = energyCacheKey(request);
-        long now = clock.millis();
-        energyCache.forEach((cacheKey, entry) -> {
-            if (now - entry.at() > ENERGY_CACHE_MILLIS) energyCache.remove(cacheKey, entry);
-        });
-        CacheEntry cached = energyCache.get(key);
-        if (cached != null && now - cached.at() <= ENERGY_CACHE_MILLIS) {
-            return Mono.just(cached.response());
-        }
-        Mono<ObservationResponse> fresh = composeEnergy(request)
-                .doOnNext(response -> {
-                    // Partial or truncated results are deliberately not reused.
-                    if (response.status() == ObservationStatus.AVAILABLE
-                            && response.payload().get("errors") == null) {
-                        energyCache.put(key, new CacheEntry(response, clock.millis()));
-                    }
-                })
-                .doOnError(error -> {
-                    if (isAuthorizationFailure(error)) energyCache.remove(key);
-                })
-                .doFinally(signal -> energyJobs.remove(key))
-                .cache();
-        Mono<ObservationResponse> prior = energyJobs.putIfAbsent(key, fresh);
-        return prior == null ? fresh : prior;
+        return composeEnergy(request);
     }
 
     private Mono<ObservationResponse> composeEnergy(ObservationRequest request) {
@@ -145,18 +118,6 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
         return request.operation() == ObservationOperation.ENERGY_REPORT
                 ? energyComposer.readEnergyReport(request)
                 : energyComposer.read(request);
-    }
-
-    private static String energyCacheKey(ObservationRequest request) {
-        RequestIdentity identity = request.identity();
-        StringBuilder key = new StringBuilder()
-                .append(identity.tenantCode()).append('\u0000')
-                .append(identity.ownerKey()).append('\u0000')
-                .append(identity.source()).append('\u0000')
-                .append(request.operation());
-        new java.util.TreeMap<>(request.parameters())
-                .forEach((name, value) -> key.append('\u0001').append(name).append('=').append(value));
-        return key.toString();
     }
 
     private Mono<ObservationResponse> safetyEventCameras(ObservationRequest request) {
@@ -244,8 +205,10 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
                         : "按当前安装位置查找同楼层（" + floor + "楼）候选；记录时位置与画面覆盖未核验";
         List<Map<String, Object>> candidates = new ArrayList<>();
         if (occurred != null) {
-            Instant end = occurred.plusSeconds(15 * 60L).isBefore(clock.instant())
-                    ? occurred.plusSeconds(15 * 60L) : clock.instant();
+            // The candidate window is the recorded event's actual ±15 minutes. It is
+            // never clipped to "now": a too-recent recording must fail playback
+            // honestly instead of silently rewriting the referenced window.
+            Instant end = occurred.plusSeconds(15 * 60L);
             if (end.isAfter(occurred)) {
                 DateTimeFormatter format = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSXXX")
                         .withZone(ZoneOffset.ofHours(8));

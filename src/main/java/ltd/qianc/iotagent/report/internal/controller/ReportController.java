@@ -34,8 +34,12 @@ public final class ReportController {
     public ResponseEntity<?> read(HttpServletRequest request, @PathVariable String id) {
         if (!companySource(request)) return notFound();
         try {
-            return ResponseEntity.ok().header(HttpHeaders.CACHE_CONTROL, "no-store")
-                    .body(Map.of("report", reports.read(id, RequestIdentity.fromPrincipal(IotSource.COMPANY))));
+            Map<String, Object> report = reports.read(id, RequestIdentity.fromPrincipal(IotSource.COMPANY));
+            ResponseEntity.BodyBuilder response = ResponseEntity.ok().header(HttpHeaders.CACHE_CONTROL, "no-store");
+            if (report.get("contentHash") != null) {
+                response.header("X-Report-Content-Hash", String.valueOf(report.get("contentHash")));
+            }
+            return response.body(Map.of("report", report));
         } catch (BusinessException failure) {
             return error(failure);
         }
@@ -46,9 +50,15 @@ public final class ReportController {
             @RequestParam(defaultValue = "pdf") String format) {
         if (!companySource(request)) return notFound();
         try {
-            ReportDownload result = reports.download(id, format, RequestIdentity.fromPrincipal(IotSource.COMPANY));
+            RequestIdentity identity = RequestIdentity.fromPrincipal(IotSource.COMPANY);
+            Map<String, Object> report = reports.read(id, identity);
+            ReportDownload result = reports.download(id, format, identity);
             String encoded = URLEncoder.encode(result.filename(), StandardCharsets.UTF_8).replace("+", "%20");
-            return ResponseEntity.ok().header(HttpHeaders.CACHE_CONTROL, "no-store")
+            ResponseEntity.BodyBuilder response = ResponseEntity.ok().header(HttpHeaders.CACHE_CONTROL, "no-store");
+            if (report.get("contentHash") != null) {
+                response.header("X-Report-Content-Hash", String.valueOf(report.get("contentHash")));
+            }
+            return response
                     .header(HttpHeaders.CONTENT_DISPOSITION,
                             "attachment; filename=\"" + asciiFallback(result.filename()) + "\"; filename*=UTF-8''" + encoded)
                     .header(HttpHeaders.CONTENT_TYPE, result.contentType()).body(result.content());

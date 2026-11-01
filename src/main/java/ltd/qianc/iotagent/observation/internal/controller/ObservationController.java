@@ -382,7 +382,8 @@ public final class ObservationController {
             case COMPANY_ENERGY_REPORT -> Set.of("months", "endMonth", "boundaryHour");
             case COMPANY_METER_REPORT -> Set.of("kind", "axis", "scopeLevel", "floor", "text", "meterId",
                     "meterIds", "from", "to", "windowFrom", "windowTo", "grain", "baseFrom", "baseTo",
-                    "otherScopeLevel", "otherFloor", "otherText", "otherMeterId", "otherMeterIds");
+                    "otherScopeLevel", "otherFloor", "otherText", "otherMeterId", "otherMeterIds",
+                    "otherFrom", "otherTo");
             case VIDEO_STREAM -> Set.of("mode", "beginTime", "endTime");
             case REPORT_DOWNLOAD -> Set.of("format");
             case REGION_SEEN, REGION_DEVICES, REGION_STATES, REPORT -> Set.of();

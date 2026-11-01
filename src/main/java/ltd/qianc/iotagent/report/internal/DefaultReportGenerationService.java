@@ -6,17 +6,13 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.time.Duration;
+import java.time.Clock;
 import java.time.Instant;
-import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import ltd.qianc.iotagent.error.BusinessException;
-import ltd.qianc.iotagent.iot.AuthorizedDevice;
-import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
-import ltd.qianc.iotagent.iot.GatewayAuthorizationException;
 import ltd.qianc.iotagent.iot.IotAdapter;
 import ltd.qianc.iotagent.iot.IotSource;
+import ltd.qianc.iotagent.iot.ObservationAdapter;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.report.ReportFact;
 import ltd.qianc.iotagent.report.ReportFactStore;
@@ -25,19 +21,25 @@ import ltd.qianc.iotagent.report.ReportUnavailableException;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.stereotype.Service;
 
-/** Generates immutable conversation-origin report snapshots after current-scope validation. */
+/** Generates immutable conversation-origin reports from server-owned evidence. */
 @Service
 @ConditionalOnBean(ReportFactStore.class)
 public final class DefaultReportGenerationService implements ReportGenerationService {
-    private static final Duration SCOPE_TIMEOUT = Duration.ofSeconds(30);
     private final ReportFactStore store;
     private final ObjectMapper mapper;
-    private final IotAdapter iot;
+    private final ReportEvidenceService evidence;
 
-    public DefaultReportGenerationService(ReportFactStore store, ObjectMapper mapper, IotAdapter iot) {
+    @org.springframework.beans.factory.annotation.Autowired
+    public DefaultReportGenerationService(ReportFactStore store, ObjectMapper mapper,
+            IotAdapter iot, ObservationAdapter observations) {
+        this(store, mapper, iot, observations, Clock.systemUTC());
+    }
+
+    public DefaultReportGenerationService(ReportFactStore store, ObjectMapper mapper,
+            IotAdapter iot, ObservationAdapter observations, Clock clock) {
         this.store = store;
         this.mapper = mapper;
-        this.iot = iot;
+        this.evidence = new ReportEvidenceService(iot, observations, clock);
     }
 
     @Override
@@ -49,21 +51,19 @@ public final class DefaultReportGenerationService implements ReportGenerationSer
         require(conversationId, "conversationId");
         require(turnId, "turnId");
         String effectiveKey = requestKey == null || requestKey.isBlank() ? turnId : requestKey;
-        JsonNode report = normalize(content);
         String reportId = stableId(identity, conversationId, turnId, effectiveKey);
-        AuthorizedDeviceScope scope = loadScope(identity);
-        validateReferences(report, scope);
 
         try {
             var existing = store.find(reportId);
             if (existing.isPresent()) return new GeneratedReport(reportId, true, publicReport(existing.get()));
-            ObjectNode snapshot = (ObjectNode) report.deepCopy();
+            Map<String, Object> report = evidence.build(identity, content);
+            ObjectNode snapshot = mapper.valueToTree(report);
             snapshot.put("id", reportId);
             snapshot.put("source", "company");
             snapshot.put("tenantCode", identity.tenantCode());
             snapshot.put("ownerKey", identity.ownerKey());
-            snapshot.put("objective", snapshot.path("objective").asText(""));
             snapshot.put("generatedAt", Instant.now().toString());
+            if (!snapshot.path("objective").isTextual()) snapshot.put("objective", "");
             ObjectNode origin = mapper.createObjectNode();
             snapshot.set("origin", origin);
             origin.put("kind", "conversation");
@@ -80,55 +80,6 @@ public final class DefaultReportGenerationService implements ReportGenerationSer
         }
     }
 
-    private JsonNode normalize(Map<String, Object> content) {
-        if (content == null || content.isEmpty()) throw new BusinessException("INVALID_REPORT", "报告内容不能为空");
-        JsonNode root = mapper.valueToTree(content);
-        if (root.has("report") && root.get("report").isObject()) root = root.get("report");
-        if (!root.isObject() || !root.path("title").isTextual() || root.path("title").asText().isBlank()
-                || !root.path("blocks").isArray()) {
-            throw new BusinessException("INVALID_REPORT", "报告必须包含标题和内容区块");
-        }
-        String status = root.path("status").asText("completed").toLowerCase(Locale.ROOT);
-        if (!List.of("preparing", "partial", "failed", "completed").contains(status)) {
-            throw new BusinessException("INVALID_REPORT", "报告状态无效");
-        }
-        ((ObjectNode) root).put("status", status);
-        String source = root.path("source").asText("company");
-        if (!"company".equals(source)) throw new BusinessException("REPORT_SOURCE_UNSUPPORTED", "报告只支持 Company 来源");
-        return root;
-    }
-
-    private void validateReferences(JsonNode report, AuthorizedDeviceScope scope) {
-        try {
-            for (ReportReferenceExtractor.Reference reference : ReportReferenceExtractor.extract(report)) {
-                AuthorizedDevice device = scope.device(reference.id()).orElse(null);
-                if (device == null || (reference.meter() && !energy(device))) {
-                    throw new BusinessException("REPORT_SCOPE_CHANGED", "报告引用的设备已不在当前授权范围内", 404);
-                }
-            }
-        } catch (BusinessException error) {
-            throw error;
-        } catch (RuntimeException error) {
-            throw new BusinessException("INVALID_REPORT", "报告引用无效");
-        }
-    }
-
-    private AuthorizedDeviceScope loadScope(RequestIdentity identity) {
-        try {
-            AuthorizedDeviceScope scope = iot.loadAuthorizedDeviceScope(identity).block(SCOPE_TIMEOUT);
-            if (scope == null || scope.source() != IotSource.COMPANY || !identity.equals(scope.identity())) {
-                throw new ReportUnavailableException("REPORT_SCOPE_UNAVAILABLE", "授权目录暂不可用，请稍后重试");
-            }
-            return scope;
-        } catch (GatewayAuthorizationException error) {
-            throw error;
-        } catch (BusinessException error) {
-            throw error;
-        } catch (RuntimeException error) {
-            throw new ReportUnavailableException("REPORT_SCOPE_UNAVAILABLE", "授权目录暂不可用，请稍后重试");
-        }
-    }
-
     private Map<String, Object> publicReport(ReportFact fact) throws Exception {
         JsonNode root = mapper.readTree(fact.payloadJson());
         if (root.has("report") && root.get("report").isObject()) root = root.get("report");
@@ -136,11 +87,6 @@ public final class DefaultReportGenerationService implements ReportGenerationSer
         result.remove("tenantCode");
         result.remove("ownerKey");
         return result;
-    }
-
-    private static boolean energy(AuthorizedDevice device) {
-        String kind = device.kind() == null ? "" : device.kind().toLowerCase(Locale.ROOT);
-        return kind.equals("energy") || kind.equals("meter") || kind.equals("electricity");
     }
 
     private static String stableId(RequestIdentity identity, String conversationId, String turnId, String key) {

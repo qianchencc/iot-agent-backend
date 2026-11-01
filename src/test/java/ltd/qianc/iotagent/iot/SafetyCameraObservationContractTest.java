@@ -18,7 +18,7 @@ class SafetyCameraObservationContractTest {
     private static final Instant NOW = Instant.parse("2024-04-20T07:11:01Z");
 
     @Test
-    void filtersCompanyMonitorsByCurrentFloorAndCapsWindowAtNow() {
+    void filtersCompanyMonitorsByCurrentFloorWithoutRewritingEventWindow() {
         ObservationAdapter upstream = event(Map.of(
                 "eventId", "alarm-1", "ledger", "gas", "deviceId", "gas-1",
                 "deviceName", "recorded gas", "occurredAt", "2024-04-20T07:10:01Z"));
@@ -37,7 +37,7 @@ class SafetyCameraObservationContractTest {
         Map<?, ?> candidate = (Map<?, ?>) candidates.get(0);
         assertThat(candidate.get("deviceId")).isEqualTo("cam-27");
         assertThat(candidate.get("beginTime")).isEqualTo("2024-04-20T14:55:01.000+08:00");
-        assertThat(candidate.get("endTime")).isEqualTo("2024-04-20T15:11:01.000+08:00");
+        assertThat(candidate.get("endTime")).isEqualTo("2024-04-20T15:25:01.000+08:00");
         assertThat(((Map<?, ?>) candidate.get("safetyContext")).get("eventId")).isEqualTo("alarm-1");
     }
 

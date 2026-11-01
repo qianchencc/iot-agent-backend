@@ -38,7 +38,7 @@ public final class ReportReferenceExtractor {
         String normalized = key.toLowerCase(Locale.ROOT);
         if (ARRAY_KEYS.contains(normalized)) {
             if (!value.isArray()) throw new IllegalArgumentException("report reference list is invalid");
-            boolean meter = normalized.contains("meter") || normalized.equals("deviceids");
+            boolean meter = normalized.contains("meter");
             for (JsonNode item : value) addText(item, meter, references);
             return;
         }
