@@ -37,6 +37,7 @@ public final class DefaultReportService implements ReportService {
     private final ReportRenderer pdfRenderer;
     private final ReportRenderer xlsxRenderer;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public DefaultReportService(ReportFactStore store, ObjectMapper mapper, IotAdapter iot) {
         this(store, mapper, iot, ReportRendererFactory.pdf(), ReportRendererFactory.xlsx());
     }
@@ -93,11 +94,13 @@ public final class DefaultReportService implements ReportService {
         } catch (RuntimeException invalid) {
             throw new ReportNotFoundException();
         }
+        String contentHash = sha256(fact.payloadJson());
         report.remove("tenantCode");
         report.remove("ownerKey");
         report.remove("authorization");
         report.putIfAbsent("id", fact.reportId());
         report.put("source", "company");
+        report.put("contentHash", contentHash);
         return report;
     }
 
@@ -149,6 +152,18 @@ public final class DefaultReportService implements ReportService {
     private static String text(Map<String, Object> map, String key, String fallback) {
         Object value = map.get(key);
         return value == null ? fallback : String.valueOf(value);
+    }
+
+    private static String sha256(String value) {
+        try {
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder result = new StringBuilder(digest.length * 2);
+            for (byte item : digest) result.append(String.format("%02x", item));
+            return result.toString();
+        } catch (java.security.NoSuchAlgorithmException error) {
+            throw new IllegalStateException(error);
+        }
     }
 
 }

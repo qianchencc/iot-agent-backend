@@ -22,6 +22,7 @@ import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.report.ReportFact;
 import ltd.qianc.iotagent.report.ReportFactStore;
 import ltd.qianc.iotagent.report.ReportGenerationService;
+import ltd.qianc.iotagent.report.ReportEvidenceFixture;
 import ltd.qianc.iotagent.report.ReportGenerationServiceFactory;
 import ltd.qianc.iotagent.report.ReportService;
 import ltd.qianc.iotagent.report.ReportServiceFactory;
@@ -38,7 +39,7 @@ class AgentReportToolContractTest {
     void authenticatedAgentBridgeCreatesIdempotentReportAndExposesDownloads() {
         MemoryStore store = new MemoryStore();
         MutableScopeAdapter scope = new MutableScopeAdapter();
-        ReportGenerationService generation = ReportGenerationServiceFactory.local(store, mapper, scope);
+        ReportGenerationService generation = ReportGenerationServiceFactory.local(store, mapper, scope, ReportEvidenceFixture.evidence());
         ConversationFacade conversations = mock(ConversationFacade.class);
         when(conversations.toolPrincipal("tool-1", "conversation-1", "turn-1")).thenReturn(principal);
         AgentToolBridge bridge = AgentToolBridgeFactory.local(conversations, mock(IotAdapter.class),
@@ -46,7 +47,7 @@ class AgentReportToolContractTest {
 
         Map<String, Object> result = bridge.execute(Map.of("toolContextId", "tool-1", "conversationId", "conversation-1",
                 "turnId", "turn-1", "toolName", "create_report", "arguments", Map.of("source", "company",
-                        "idempotencyKey", "req-1", "report", content())));
+                        "idempotencyKey", "req-1", "report", ReportEvidenceFixture.energy("meter-1", false))));
         String reportId = String.valueOf(result.get("reportId"));
         assertThat(result).containsEntry("reused", false);
 
@@ -56,18 +57,8 @@ class AgentReportToolContractTest {
         assertThat(pdf.contentType()).isEqualTo("application/pdf");
         assertThat(pdf.filename()).endsWith(".pdf");
         ReportGenerationService.GeneratedReport replay = generation.generate(identity, "conversation-1", "turn-1",
-                "req-1", content());
+                "req-1", ReportEvidenceFixture.energy("meter-1", false));
         assertThat(replay.reused()).isTrue();
-    }
-
-    private static Map<String, Object> content() {
-        Map<String, Object> meter = Map.of("id", "meter-1");
-        Map<String, Object> report = new LinkedHashMap<>();
-        report.put("authorizationMeterIds", List.of("meter-1"));
-        report.put("meters", new ArrayList<>(List.of(meter)));
-        Map<String, Object> block = Map.of("type", "meter_report", "report", report);
-        return Map.of("title", "Energy", "status", "completed", "meterIds", List.of("meter-1"),
-                "blocks", List.of(block));
     }
 
     private static final class MemoryStore implements ReportFactStore {
