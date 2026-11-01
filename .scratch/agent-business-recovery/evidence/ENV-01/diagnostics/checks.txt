@@ -1,0 +1,6 @@
+Documentation:16-ticket dependency graph acyclic;156 unique candidate CASEs (149 business,2 unavailable,5 engineering);local links resolve;frozen manual SHA-256 valid.
+Acceptance:about20 representative business paths;number/list flexible;unselected candidates do not block.
+Read guard isolated smoke:catalogue query/company-live read forwarded;control/extra-field/cross-tenant/task/notification/destructive GET denied.
+Static player isolated smoke:actual HTML bytes served;200/404 logs contain statuses but no URLs/query credentials.
+HBuilderX compile succeeded;existing warnings retained.
+No full business acceptance or test-suite pass claimed.

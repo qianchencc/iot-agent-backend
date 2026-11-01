@@ -1,0 +1,25 @@
+[
+  {
+    "at": "2026-11-01T17:58:15.989Z",
+    "step": "bluetooth",
+    "result": "denied; not needed for Agent"
+  },
+  {
+    "at": "2026-11-01T17:58:15.995Z",
+    "step": "homePath",
+    "result": "pages/index/index"
+  },
+  {
+    "at": "2026-11-01T17:58:17.034Z",
+    "step": "login",
+    "result": {
+      "hasToken": true,
+      "hasDistrict": true
+    }
+  },
+  {
+    "at": "2026-11-01T17:58:17.050Z",
+    "step": "entered",
+    "result": "pages/index/index"
+  }
+]

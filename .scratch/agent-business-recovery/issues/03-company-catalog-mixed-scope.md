@@ -46,7 +46,7 @@
 
 ## 证据要求
 
-证据落在 `.scratch/agent-business-recovery/evidence/<CASE-ID>/`，覆盖 `COMP-QRY-01`、`COMP-CTL-01`、`COMP-CTL-02` 等验收矩阵案例；每个案例含步骤、结果、截图、脱敏诊断、构建/账号/来源/区域。旧接口结果不算业务验收。
+证据落在 `.scratch/agent-business-recovery/evidence/<CASE-ID>/`，覆盖 `COMP-QRY-01`、`COMP-CTL-02` 等本域案例；单台空调参数 `COMP-CTL-01`由04收口，不作为03的先决闭票条件。共享CASE按[闭票规则](../README.md#共享case闭票与并行交接)留本域贡献，完整状态由收口票更新。旧接口结果不算业务验收。
 
 ## 本票尚未验收
 

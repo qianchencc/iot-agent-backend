@@ -2,7 +2,9 @@
 
 **What to build:** 公司 Agent 的监控视频能力在真实授权账号下可用：从对话、设备页或告警台账进入摄像头，直播卡片展示来自真实摄像头的画面，且画面随时间实际变化；回放卡片提供起止时间与时区表单，按真实录像源播放，范围校验失败时明确拒绝；网络中断可重连，离开/关闭卡片释放播放资源与凭证；短时播放地址不持久化、不泄露到日志或前端可复用存储。告警关联候选与原始事件窗口复用 [08](08-safety-ledger-event-reference.md) 的能力。样例视频、静态首帧或伪造流不能作为业务通过证据。
 
-**Blocked by:** [01: Java 业务定义与通用 Node 执行引擎](01-java-business-generic-engine.md)
+**Blocked by:** [01: Java业务定义与通用执行](01-java-business-generic-engine.md)；[08: 安全台账与关联候选](08-safety-ledger-event-reference.md)
+
+可先调查播放器与直接设备入口，但本票闭票必须在08完成后，于同一集成构建完成告警关联入口的真实播放。`COMP-SAFE-02/07/08`整条CASE由本票收口，08保留候选/卡片贡献证据，不以尚缺播放阻塞08闭票。
 
 **Status:** ready-for-agent
 
