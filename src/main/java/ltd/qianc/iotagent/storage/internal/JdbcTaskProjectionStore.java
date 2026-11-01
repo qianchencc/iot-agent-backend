@@ -94,7 +94,8 @@ public final class JdbcTaskProjectionStore implements TaskProjectionStore {
                 (rs, n) -> new FactRow(rs.getString(1), rs.getLong(2), rs.getString(3), rs.getString(4)),
                 tenantCode, ownerKey, source)) {
             JsonNode payload;
-            try { payload = mapper.readTree(row.payloadJson()); } catch (Exception ignored) { continue; }
+            try { payload = mapper.readTree(row.payloadJson()); }
+            catch (Exception invalid) { throw new IllegalStateException("任务事实内容无效", invalid); }
             if (!tenantCode.equals(payload.path("tenantCode").asText())
                     || !ownerKey.equals(payload.path("ownerKey").asText())
                     || !source.equals(payload.path("source").asText("office"))) continue;
@@ -170,10 +171,12 @@ public final class JdbcTaskProjectionStore implements TaskProjectionStore {
                     : jdbc.query("SELECT payload_json FROM report_facts WHERE report_id=? LIMIT 1",
                             (rs, n) -> rs.getString(1), reportId);
             if (rows.isEmpty()) return null;
-            JsonNode stored = mapper.readTree(rows.get(0));
+            JsonNode stored;
+            try { stored = mapper.readTree(rows.get(0)); }
+            catch (Exception invalid) { throw new IllegalStateException("报表事实内容无效", invalid); }
             return stored.path("report").isObject() ? stored.path("report") : stored;
-        } catch (RuntimeException unavailable) {
-            return null;
+        } catch (IllegalStateException invalid) {
+            throw invalid;
         }
     }
 
@@ -298,8 +301,9 @@ public final class JdbcTaskProjectionStore implements TaskProjectionStore {
     }
 
     private JsonNode read(String value) {
-        try { return mapper.readTree(value == null || value.isBlank() ? "{}" : value); }
-        catch (RuntimeException error) { return mapper.createObjectNode(); }
+        if (value == null || value.isBlank()) return mapper.createObjectNode();
+        try { return mapper.readTree(value); }
+        catch (Exception error) { throw new IllegalStateException("任务阶段内容无效", error); }
     }
 
     private JsonNode publicPayload(JsonNode value) {

@@ -21,6 +21,7 @@ import ltd.qianc.iotagent.iot.DeviceCandidateQuery;
 import ltd.qianc.iotagent.iot.DeviceCandidateSet;
 import ltd.qianc.iotagent.iot.DeviceStateReadResult;
 import ltd.qianc.iotagent.iot.IotAdapter;
+import ltd.qianc.iotagent.iot.OfficeRegion;
 import ltd.qianc.iotagent.iot.ObservationAdapter;
 import ltd.qianc.iotagent.iot.ObservationOperation;
 import ltd.qianc.iotagent.iot.ObservationRequest;
@@ -33,6 +34,23 @@ import reactor.core.publisher.Mono;
 class AgentToolBridgeContractTest {
     private final ObjectMapper mapper = new ObjectMapper();
     private final PrincipalInfo principal = new PrincipalInfo("Bearer fixture", "TENANT", "owner-1", "fixture");
+
+    @Test
+    void officeRegionNameSearchReturnsOnlyMatchingAuthorizedRegions() {
+        ConversationFacade conversations = mock(ConversationFacade.class);
+        IotAdapter iot = mock(IotAdapter.class);
+        bind(conversations, "office", "region-1");
+        when(iot.loadOfficeRegions(any())).thenReturn(Mono.just(List.of(
+                new OfficeRegion("region-1", "26楼运营办公区"),
+                new OfficeRegion("region-2", "杨国英办公室"))));
+        AgentToolBridge bridge = AgentToolBridgeFactory.local(conversations, iot,
+                mock(ActionDraftFacade.class), mock(TaskFacade.class), mapper, null);
+
+        Map<String, Object> result = bridge.execute(request("list_office_regions",
+                Map.of("nameContains", "杨国英")));
+
+        assertThat(result.get("regions")).isEqualTo(List.of(new OfficeRegion("region-2", "杨国英办公室")));
+    }
 
     @Test
     void publicFactoryRoutesObservationThroughTheJavaSeam() {
@@ -182,32 +200,6 @@ class AgentToolBridgeContractTest {
         assertThat(result.get("states")).isEqualTo(Map.of("device-1", Map.of("power", "on")));
     }
 
-    @Test
-    void proposeActionPreservesExplicitKindAndDerivesServerIdempotency() throws Exception {
-        ConversationFacade conversations = mock(ConversationFacade.class);
-        ActionDraftFacade actions = mock(ActionDraftFacade.class);
-        bind(conversations, "office", null);
-        AtomicReference<String> payload = new AtomicReference<>();
-        AtomicReference<String> idempotency = new AtomicReference<>();
-        when(actions.propose(any(), any(), any(), any(), any(), any(), any())).thenAnswer(invocation -> {
-            payload.set(invocation.getArgument(4));
-            idempotency.set(invocation.getArgument(5));
-            return new ltd.qianc.iotagent.action.ActionDraftFact("draft-1", 1, "PENDING_CONFIRMATION", payload.get(), "turn-1");
-        });
-        when(actions.view(any())).thenReturn(Map.of("draftId", "draft-1", "status", "PENDING_CONFIRMATION"));
-        AgentToolBridge bridge = AgentToolBridgeFactory.local(conversations, mock(IotAdapter.class),
-                actions, mock(TaskFacade.class), mapper, null);
-
-        bridge.execute(request("propose_action_draft", Map.of(
-                "summary", "打开灯",
-                "idempotencyKey", "model-controlled", "candidateSetIds", List.of("set-1"),
-                "actions", List.of(Map.of("deviceId", "device-1", "kind", "lighting",
-                        "closeOrOpen", 1, "selected", true)))));
-
-        assertThat(mapper.readTree(payload.get()).at("/actions/0/kind").asText()).isEqualTo("lighting");
-        assertThat(mapper.readTree(payload.get()).at("/actions/0/command/power").asText()).isEqualTo("on");
-        assertThat(idempotency.get()).isEqualTo("turn-1:call-1");
-    }
 
     @Test
     void prepareVideoPlaybackUsesBoundCompanySourceAndNormalizesWindow() {

@@ -429,7 +429,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
                 Map<String, Object> value = new LinkedHashMap<>();
                 value.put("requested", Map.of("from", format(finalEnd), "to", format(now)));
                 value.put("partialUsage", live.usage());
-                value.put("sampledThrough", live.sampledTo() == null ? null : live.sampledTo().get("readTime"));
+                value.put("sampledThrough", live.last() == null ? null : format(live.last().readTime()));
                 value.put("comparable", false);
                 current = value;
             }
@@ -798,8 +798,9 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
             context = contextValue;
         }
         List<Map<String, Object>> compositionRows = new ArrayList<>(compositionSource.subList(0, Math.min(8, compositionSource.size())));
-        if (highlight != null && compositionRows.stream().noneMatch(row -> highlight.equals(row.get("label")))) {
-            compositionSource.stream().filter(row -> highlight.equals(row.get("label"))).findFirst()
+        String visibleHighlight = highlight;
+        if (visibleHighlight != null && compositionRows.stream().noneMatch(row -> visibleHighlight.equals(row.get("label")))) {
+            compositionSource.stream().filter(row -> visibleHighlight.equals(row.get("label"))).findFirst()
                     .ifPresent(row -> compositionRows.add(new LinkedHashMap<>(row)));
         }
         Map<String, Object> rest = null;
@@ -874,7 +875,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         composition.put("excluded", compositionExcluded);
         payload.put("composition", composition);
         payload.put("coverage", coverage(rows, stream.truncated(), stream.latest()));
-        payload.put("meters", rows.stream().map(this::statisticsRowMap).toList());
+        payload.put("meters", rows.stream().map(CompanyEnergyObservationComposerImpl::statisticsRowMap).toList());
         payload.put("authorizationMeterIds", all.stream().map(AuthorizedDevice::id).toList());
         return payload;
     }
@@ -1207,7 +1208,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         payload.put("contribution", contributionView);
         payload.put("context", context);
         payload.put("coverage", coverage);
-        payload.put("meters", scopeRows.stream().map(this::comparisonRowMap).toList());
+        payload.put("meters", scopeRows.stream().map(CompanyEnergyObservationComposerImpl::comparisonRowMap).toList());
         payload.put("authorizationMeterIds", all.stream().map(AuthorizedDevice::id).toList());
         return payload;
     }
@@ -1376,7 +1377,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         return payload;
     }
 
-    private static Map<String, Object> comparisonMetrics(Aggregate a, Aggregate b, boolean isDay) {
+    private static List<Map<String, Object>> comparisonMetrics(Aggregate a, Aggregate b, boolean isDay) {
         List<Map<String, Object>> metrics = new ArrayList<>();
         if (isDay) {
             metrics.add(metricComparison("dayTotal", "度", a.dayTotal(), b.dayTotal()));
@@ -1388,11 +1389,11 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         night.put("nightWindow", "20:00-08:00");
         metrics.add(night);
         if (isDay) {
-            metrics.add(metricComparison("peakHour", "度", a.peakHour() == null ? null : a.peakHour().value(),
-                    b.peakHour() == null ? null : b.peakHour().value()));
+            metrics.add(metricComparison("peakHour", "度", a.peakHour(),
+                    b.peakHour()));
         } else {
-            Map<String, Object> peak = metricComparison("peakDay", "度", a.peakDay() == null ? null : a.peakDay().value(),
-                    b.peakDay() == null ? null : b.peakDay().value());
+            Map<String, Object> peak = metricComparison("peakDay", "度", a.peakDay(),
+                    b.peakDay());
             peak.put("dayWindow", "previous08:00-08:00");
             metrics.add(peak);
         }
@@ -1449,8 +1450,9 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         all.sort((left, right) -> Double.compare(Math.abs(((Number) right.get("delta")).doubleValue()),
                 Math.abs(((Number) left.get("delta")).doubleValue())));
         List<Map<String, Object>> rows = new ArrayList<>(all.subList(0, Math.min(8, all.size())));
-        if (highlight != null && rows.stream().noneMatch(row -> highlight.equals(row.get("label")))) {
-            all.stream().filter(row -> highlight.equals(row.get("label"))).findFirst().ifPresent(row -> rows.add(new LinkedHashMap<>(row)));
+        String visibleHighlight = highlight;
+        if (visibleHighlight != null && rows.stream().noneMatch(row -> visibleHighlight.equals(row.get("label")))) {
+            all.stream().filter(row -> visibleHighlight.equals(row.get("label"))).findFirst().ifPresent(row -> rows.add(new LinkedHashMap<>(row)));
         }
         Map<String, Object> rest = null;
         if (all.size() > rows.size()) {
@@ -1610,7 +1612,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         coverage.put("truncated", stream.truncated());
         coverage.put("latestSampleAt", stream.latest() == null ? null : format(stream.latest()));
         payload.put("coverage", coverage);
-        payload.put("meters", unionRows.stream().map(this::statisticsRowMap).toList());
+        payload.put("meters", unionRows.stream().map(CompanyEnergyObservationComposerImpl::statisticsRowMap).toList());
         payload.put("authorizationMeterIds", all.stream().map(AuthorizedDevice::id).toList());
         return payload;
     }
@@ -1644,7 +1646,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         coverage.put("noData", noData);
         coverage.put("partial", partial);
         result.put("coverage", coverage);
-        result.put("meters", side.meters().stream().map(this::statisticsRowMap).toList());
+        result.put("meters", side.meters().stream().map(CompanyEnergyObservationComposerImpl::statisticsRowMap).toList());
         Map<String, Object> composition = new LinkedHashMap<>();
         composition.put("kind", "ranking");
         composition.put("rows", side.composition());
@@ -1709,8 +1711,8 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
                 aggregate.total(), aggregate.dataMeters(), aggregate.coveredFraction(),
                 aggregate.rates(), aggregate.dayBuckets(), composition, context,
                 aggregate.dailyAvg(), aggregate.dayTotal(), aggregate.nightBase(),
-                aggregate.peakDay() == null ? null : aggregate.peakDay().value(),
-                aggregate.peakHour() == null ? null : aggregate.peakHour().value());
+                aggregate.peakDay(),
+                aggregate.peakHour());
     }
 
     // ------------------------------------------------------------------
@@ -2184,8 +2186,20 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         return result;
     }
 
+    /**
+     * Primary scope keys are lower camel case ({@code scopeLevel}, {@code meterId}),
+     * while a region-comparison counterpart prefixes the capitalised suffix
+     * ({@code otherScopeLevel}, {@code otherMeterId}). Concatenating directly
+     * would make the primary lookup miss and silently fall back to the whole
+     * authorised catalog, so resolve the canonical key explicitly.
+     */
+    private static String scopeKey(String prefix, String name) {
+        if (prefix.isEmpty()) return name;
+        return prefix + Character.toUpperCase(name.charAt(0)) + name.substring(1);
+    }
+
     private Scope resolveScope(Map<String, String> p, List<AuthorizedDevice> all, String prefix) {
-        String level = p.getOrDefault(prefix + "ScopeLevel", "all");
+        String level = p.getOrDefault(scopeKey(prefix, "scopeLevel"), "all");
         String label;
         String basis = "areaName";
         List<AuthorizedDevice> selected;
@@ -2195,8 +2209,8 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
                 label = "全部电表";
             }
             case "floor" -> {
-                String floor = required(p, prefix + "Floor");
-                if (p.containsKey(prefix + "Text") && !p.get(prefix + "Text").isBlank()) {
+                String floor = required(p, scopeKey(prefix, "floor"));
+                if (p.containsKey(scopeKey(prefix, "text")) && !p.get(scopeKey(prefix, "text")).isBlank()) {
                     throw new BusinessException("INVALID_ENERGY_WINDOW",
                             "楼层计量范围不接受名称匹配词：请改用 nameMatch 并同时提供 floor 与 text", 400);
                 }
@@ -2204,7 +2218,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
                 label = floor;
             }
             case "location" -> {
-                String id = required(p, prefix + "MeterId");
+                String id = required(p, scopeKey(prefix, "meterId"));
                 AuthorizedDevice device = all.stream().filter(item -> item.id().equals(id)).findFirst().orElse(null);
                 if (device == null) throw new BusinessException("FORBIDDEN", "该计量点不在当前公司观察范围内", 403);
                 selected = List.of(device);
@@ -2212,15 +2226,15 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
                 basis = "deviceIds";
             }
             case "nameMatch" -> {
-                String text = required(p, prefix + "Text");
-                String floor = p.get(prefix + "Floor");
+                String text = required(p, scopeKey(prefix, "text"));
+                String floor = p.get(scopeKey(prefix, "floor"));
                 selected = all.stream().filter(device -> (floor == null || floor.equals(floorOf(device.installAddress())))
                         && ((device.installAddress() + " " + device.name()).contains(text))).toList();
                 label = (floor == null ? "" : floor + " · ") + "按名称匹配「" + text + "」";
                 basis = "nameMatch";
             }
             case "selection" -> {
-                Set<String> ids = splitIds(p.get(prefix + "MeterIds"));
+                Set<String> ids = splitIds(p.get(scopeKey(prefix, "meterIds")));
                 if (ids.isEmpty()) throw new BusinessException("INVALID_ENERGY_WINDOW", "计量范围参数不完整", 400);
                 selected = ids.stream().map(id -> all.stream().filter(item -> item.id().equals(id)).findFirst().orElse(null))
                         .toList();
@@ -2348,8 +2362,8 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
             empty.put("to", null);
             return empty;
         }
-        Instant from = valid.stream().map(row -> instant(row.observedFrom().get("readTime"))).min(Instant::compareTo).orElse(null);
-        Instant to = valid.stream().map(row -> instant(row.observedTo().get("readTime"))).max(Instant::compareTo).orElse(null);
+        Instant from = valid.stream().map(row -> instant(String.valueOf(row.observedFrom().get("readTime")))).min(Instant::compareTo).orElse(null);
+        Instant to = valid.stream().map(row -> instant(String.valueOf(row.observedTo().get("readTime")))).max(Instant::compareTo).orElse(null);
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("from", from == null ? null : format(from));
         result.put("to", to == null ? null : format(to));
@@ -2539,7 +2553,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         return (end.getYear() - start.getYear()) * 12 + end.getMonthValue() - start.getMonthValue();
     }
 
-    private static List<Map<String, Object>> bucketWindows(Instant from, Instant to, String grain) {
+    private static List<ReportWindow> bucketWindows(Instant from, Instant to, String grain) {
         List<ReportWindow> windows = new ArrayList<>();
         Instant cursor = from;
         while (cursor.isBefore(to) && windows.size() < MAX_BUCKETS + 1) {

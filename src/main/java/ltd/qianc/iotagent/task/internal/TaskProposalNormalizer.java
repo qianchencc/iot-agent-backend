@@ -186,43 +186,76 @@ public final class TaskProposalNormalizer {
             String deviceId = action.path("deviceId").asText("").trim();
             if (deviceId.isBlank()) throw invalid("任务动作缺少设备");
             String kind = action.path("kind").asText("").trim().toLowerCase(Locale.ROOT);
-            if (!Set.of("lighting", "access", "ac").contains(kind)) throw invalid("设备类型不可控");
+            if (!kind.isBlank() && !Set.of("lighting", "access", "ac").contains(kind)) {
+                throw invalid("设备类型不可控");
+            }
             JsonNode command = action.get("command");
             if (command == null || !command.isObject() || command.isEmpty()) {
-                JsonNode commandSource = action.get("ac");
-                if ("ac".equals(kind) && commandSource != null && commandSource.isObject()) {
-                    action.set("command", commandSource);
-                    command = commandSource;
-                } else if ("lighting".equals(kind) && action.has("closeOrOpen")) {
-                    command = mapper.createObjectNode().put("power", action.path("closeOrOpen").asInt() == 1 ? "on" : "off");
-                    action.set("command", command);
-                } else if ("access".equals(kind) && action.has("controlType")) {
-                    command = mapper.createObjectNode().put("controlType", action.path("controlType").asInt());
-                    action.set("command", command);
-                } else {
-                    throw invalid("任务动作参数无效");
+                JsonNode ac = action.get("ac");
+                JsonNode closeOrOpen = action.get("closeOrOpen");
+                JsonNode controlType = action.get("controlType");
+                if (ac != null && ac.isObject()) {
+                    if (!kind.isBlank() && !"ac".equals(kind)) throw invalid("任务动作参数与设备类型不一致");
+                    kind = "ac";
+                    command = ac;
+                } else if (closeOrOpen != null) {
+                    if (!kind.isBlank() && !"lighting".equals(kind)) throw invalid("任务动作参数与设备类型不一致");
+                    kind = "lighting";
+                    command = lightingCommand(closeOrOpen);
+                } else if (controlType != null) {
+                    if (!kind.isBlank() && !"access".equals(kind)) throw invalid("任务动作参数与设备类型不一致");
+                    kind = "access";
+                    command = mapper.createObjectNode().put("controlType", controlType.asInt(-1));
                 }
             }
-            validateCommand(kind, (ObjectNode) command);
-            action.put("deviceId", deviceId).put("kind", kind);
+            if (command != null && command.isObject()) {
+                ObjectNode commandObject = (ObjectNode) command;
+                if ("lighting".equals(kind)) {
+                    commandObject = canonicalLightingCommand(commandObject);
+                }
+                action.set("command", commandObject);
+                if (!kind.isBlank()) validateCommand(kind, commandObject);
+            } else if (!kind.isBlank()) {
+                throw invalid("任务动作参数无效");
+            }
+            action.put("deviceId", deviceId);
+            if (!kind.isBlank()) action.put("kind", kind); else action.remove("kind");
             action.put("id", action.path("id").asText(deviceId));
             action.remove("controlBinding");
             action.remove("bindingFingerprint");
         }
     }
 
+    private ObjectNode lightingCommand(JsonNode closeOrOpen) {
+        if (closeOrOpen == null || !closeOrOpen.isIntegralNumber()) throw invalid("照明指令参数无效");
+        int value = closeOrOpen.asInt(-1);
+        if (value != 0 && value != 1) throw invalid("照明指令参数无效");
+        return mapper.createObjectNode().put("closeOrOpen", value);
+    }
+
+    private ObjectNode canonicalLightingCommand(ObjectNode command) {
+        if (command.has("closeOrOpen")) {
+            if (command.size() != 1 || !command.path("closeOrOpen").isIntegralNumber()) throw invalid("照明指令参数无效");
+            int value = command.path("closeOrOpen").asInt(-1);
+            if (value != 0 && value != 1) throw invalid("照明指令参数无效");
+            return command;
+        }
+        String power = command.path("power").asText("");
+        if (command.size() == 1 && Set.of("on", "off").contains(power)) {
+            return mapper.createObjectNode().put("closeOrOpen", "on".equals(power) ? 1 : 0);
+        }
+        throw invalid("照明指令参数无效");
+    }
+
     private void validateCommand(String kind, ObjectNode command) {
         switch (kind) {
             case "lighting" -> {
-                if (command.has("closeOrOpen")) {
-                    int value = command.path("closeOrOpen").asInt(-1);
-                    if (!command.path("closeOrOpen").isIntegralNumber() || (value != 0 && value != 1)) {
-                        throw invalid("照明指令参数无效");
-                    }
-                } else {
-                    String power = command.path("power").asText("");
-                    if (!Set.of("on", "off").contains(power) || command.size() != 1) throw invalid("照明指令参数无效");
+                if (command.size() != 1 || !command.has("closeOrOpen")
+                        || !command.path("closeOrOpen").isIntegralNumber()) {
+                    throw invalid("照明指令参数无效");
                 }
+                int value = command.path("closeOrOpen").asInt(-1);
+                if (value != 0 && value != 1) throw invalid("照明指令参数无效");
             }
             case "access" -> {
                 if (command.size() != 1 || command.path("controlType").asInt(-1) != 2) {
@@ -531,11 +564,20 @@ public final class TaskProposalNormalizer {
             for (JsonNode actionNode : phase.path("actions")) {
                 ObjectNode action = (ObjectNode) actionNode;
                 AuthorizedDevice device = scope.device(action.path("deviceId").asText()).orElseThrow();
-                if (!device.kind().equalsIgnoreCase(action.path("kind").asText())) {
+                String kind = action.path("kind").asText("").trim();
+                if (kind.isBlank()) {
+                    kind = device.kind();
+                } else if (!device.kind().equalsIgnoreCase(kind)) {
                     throw new BusinessException("TASK_DEVICE_AUTHORIZATION_UNAVAILABLE", "任务动作与设备类型不匹配", 403);
                 }
+                JsonNode commandNode = action.get("command");
+                if (commandNode == null || !commandNode.isObject()) throw invalid("任务动作参数无效");
+                ObjectNode command = (ObjectNode) commandNode;
+                if ("lighting".equalsIgnoreCase(kind)) command = canonicalLightingCommand(command);
+                validateCommand(kind.toLowerCase(Locale.ROOT), command);
                 action.put("kind", device.kind()).put("deviceName", device.name())
                         .put("location", device.installAddress()).put("controlBinding", device.controlRef());
+                action.set("command", command);
                 putBinding(action, device);
             }
             JsonNode readNode = phase.get("read");
@@ -802,7 +844,7 @@ public final class TaskProposalNormalizer {
     private JsonNode read(String value) {
         if (value == null || value.isBlank()) throw invalid("任务内容无效");
         try { return mapper.readTree(value); }
-        catch (RuntimeException error) { throw invalid("任务内容无效"); }
+        catch (com.fasterxml.jackson.core.JsonProcessingException | RuntimeException error) { throw invalid("任务内容无效"); }
     }
 
     private static BusinessException invalid(String message) {

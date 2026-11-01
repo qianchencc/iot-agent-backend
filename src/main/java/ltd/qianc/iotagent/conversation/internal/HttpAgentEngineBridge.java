@@ -77,8 +77,12 @@ public final class HttpAgentEngineBridge implements AgentEngineBridge {
                     "run.started", Map.of("createdAt", java.time.Instant.now().toString()));
             for (AgentEngineEvent projected : policy.projection().apply(started)) events.accept(projected);
             String body = objectMapper.writeValueAsString(policy.request());
+            Map<?, ?> definition = policy.request().get("definition") instanceof Map<?, ?> value ? value : Map.of();
+            Object configuredTimeout = definition.get("runTimeoutMs");
+            Duration deadline = configuredTimeout instanceof Number value
+                    ? Duration.ofMillis(value.longValue()) : runTimeout;
             HttpRequest httpRequest = HttpRequest.newBuilder(baseUri.resolve("run"))
-                    .timeout(runTimeout)
+                    .timeout(deadline)
                     .header("content-type", "application/json")
                     .header("accept", "application/x-ndjson")
                     .header("authorization", "Bearer " + bridgeToken)
@@ -94,7 +98,7 @@ public final class HttpAgentEngineBridge implements AgentEngineBridge {
                     try { bodyStream.close(); } catch (Exception ignored) { }
                 }
                 result.completeExceptionally(timeout());
-            }, runTimeout.toMillis(), TimeUnit.MILLISECONDS);
+            }, deadline.toMillis(), TimeUnit.MILLISECONDS);
             client.sendAsync(httpRequest, HttpResponse.BodyHandlers.ofInputStream())
                     .whenCompleteAsync((response, failure) -> {
                         if (failure != null) {

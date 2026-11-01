@@ -112,10 +112,10 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
 
     private TaskExecutionResult executeActions(RequestIdentity identity, AuthorizedDeviceScope scope,
                                                JsonNode phase, JsonNode task, TaskExecutionRequest request) {
-        ArrayNode actions = mapper.createArrayNode();
-        for (JsonNode action : phase.path("actions")) actions.add(action);
+        ArrayNode selected = mapper.createArrayNode();
+        for (JsonNode action : phase.path("actions")) selected.add(action);
         List<String> ids = new ArrayList<>();
-        for (JsonNode action : actions) ids.add(action.path("deviceId").asText());
+        for (JsonNode action : selected) ids.add(action.path("deviceId").asText());
         DeviceStateReadResult before = readStates(identity, ids);
         Map<String, Object> observed = before == null ? Map.of() : new LinkedHashMap<>(before.states());
         ObjectNode result = mapper.createObjectNode();
@@ -124,7 +124,7 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
         try {
             AuthorizedDeviceScope fresh = loadScope(identity);
             validateTaskAuthorization(task, phase, fresh);
-            ActionDispatchResult dispatch = actions.dispatch(identity, fresh, actions.toString(), observed);
+            ActionDispatchResult dispatch = actions.dispatch(identity, fresh, selected.toString(), observed);
             dispatchStarted = dispatch.dispatchStarted();
             result.put("gateway", "customer").put("dispatchStarted", dispatchStarted);
             JsonNode gatewayResult = read(dispatch.resultJson());
@@ -134,7 +134,7 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
             result.set("observedStates", gatewayResult.path("observedStates").deepCopy());
             result.put("receiptOutcome", dispatch.receiptOutcome().name());
             result.put("gatewayStatus", dispatch.status().name());
-            String outcome = devicesOutcome(actions, gatewayResult, devices);
+            String outcome = devicesOutcome(selected, gatewayResult, devices);
             result.put("outcome", outcome).put("executedAt", clock.instant().toString());
             result.set("devices", mapper.valueToTree(devices));
             return new TaskExecutionResult(outcome, result.toString(), dispatchStarted);
@@ -608,8 +608,9 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
     }
 
     private JsonNode read(String value) {
-        try { return mapper.readTree(value == null || value.isBlank() ? "{}" : value); }
-        catch (RuntimeException error) { throw new DispatchException("任务执行内容无效", false); }
+        if (value == null || value.isBlank()) throw new DispatchException("任务执行内容为空", false);
+        try { return mapper.readTree(value); }
+        catch (Exception error) { throw new DispatchException("任务执行内容无效", false); }
     }
 
     private record Decision(String disposition, String reason, String outcome, Double afterSetpoint, Double initialSetpoint) {

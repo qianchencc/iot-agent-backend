@@ -145,7 +145,7 @@ public class TaskConfiguration {
                             ObjectProvider<TaskExecutionIdentityStore> identities) {
         ReportFactProducer fallback = (checkpoint, identity) -> java.util.Optional.empty();
         return new TaskScanner(phases, tasks, gateway, notifications,
-                reports.orElse(fallback),
+                reports.getIfAvailable(() -> fallback),
                 composer.getIfAvailable(), retries.getIfAvailable(), identities.getIfAvailable(), Clock.systemUTC());
     }
     @Bean

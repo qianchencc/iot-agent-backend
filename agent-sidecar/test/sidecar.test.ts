@@ -156,6 +156,7 @@ function openHangingModel(): Promise<{ server: Server; url: string; started: Pro
 interface ModelStep {
   content?: string;
   tool?: { name: string; arguments: Record<string, unknown> };
+  error?: { status: number; message: string };
 }
 
 interface FakeModel {
@@ -178,6 +179,11 @@ function openModel(script: (index: number) => ModelStep): Promise<FakeModel> {
     authorizations.push(typeof request.headers.authorization === "string" ? request.headers.authorization : "");
     const step = script(requests.length - 1);
     const id = `completion-${requests.length}`;
+    if (step.error) {
+      response.writeHead(step.error.status, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: { message: step.error.message, type: "invalid_request_error" } }));
+      return;
+    }
     response.writeHead(200, { "content-type": "text/event-stream" });
     if (step.tool) {
       response.write(`data: ${JSON.stringify({ id, choices: [{ delta: { role: "assistant", tool_calls: [{
@@ -363,6 +369,19 @@ it("streams generic NDJSON and supports cancellation", async () => {
   const cancel = await app.inject({ method: "POST", url: "/cancel/unknown", headers: auth() });
   assert.equal(cancel.statusCode, 404);
   await app.close();
+});
+
+it("reports provider failures instead of a successful empty run", async () => {
+  const model = await openModel(() => ({ error: { status: 401, message: "provider rejected request" } }));
+  const app = buildApp(await config({ modelBaseUrl: model.url }));
+  try {
+    const run = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody() });
+    const observed = events(run.body);
+    assert.ok(observed.some(event => event.type === "run.failed"));
+    assert.equal(observed.some(event => event.type === "run.completed"), false);
+  } finally {
+    await app.close();
+  }
 });
 
 it("uses the per-run model snapshot without exposing its key", async () => {

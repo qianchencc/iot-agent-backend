@@ -79,8 +79,8 @@ public final class JdbcTaskPhaseStore extends JdbcFactSupport implements TaskPha
             String reason = value.path("reason").asText("");
             if (reason.isBlank()) reason = value.path("error").asText("");
             return reason.isBlank() ? null : reason;
-        } catch (RuntimeException ignored) {
-            return null;
+        } catch (com.fasterxml.jackson.core.JsonProcessingException | RuntimeException invalid) {
+            throw new ltd.qianc.iotagent.error.BusinessException("INVALID_TASK_RESULT", "任务执行记录无法读取", 503);
         }
     }
 }

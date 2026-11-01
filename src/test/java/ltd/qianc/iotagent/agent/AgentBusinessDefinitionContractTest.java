@@ -110,6 +110,23 @@ class AgentBusinessDefinitionContractTest {
     }
 
     @Test
+    void toolSchemasKeepNestedPropertiesAsSchemasRatherThanSchemaMetadata() {
+        ConversationFacade conversations = mock(ConversationFacade.class);
+        AgentRunPolicyProvider provider = AgentBusinessEngineFactory.policyProvider(
+                () -> conversations, null, null, null, null, CLOCK, 8);
+        for (String source : List.of("office", "company")) {
+            when(conversations.toolContext("tool-1", "conversation-1", "turn-1", "run-1"))
+                    .thenReturn(new AgentToolContext(PRINCIPAL, "run-1", "conversation-1", "turn-1",
+                            source, null, null));
+            Map<String, Object> definition = map(provider.prepare(request(source, null, null))
+                    .request().get("definition"));
+            for (Map<String, Object> tool : listOfMaps(definition.get("tools"))) {
+                assertToolSchema(tool.get("parameters"), source + ":" + tool.get("name"));
+            }
+        }
+    }
+
+    @Test
     void resolvesSafetyEventAndOriginalReviewWindowFromServerFact() {
         ConversationFacade conversations = mock(ConversationFacade.class);
         ObservationAdapter observations = mock(ObservationAdapter.class);
@@ -414,6 +431,21 @@ class AgentBusinessDefinitionContractTest {
 
     private static AgentEngineEvent event(String type, Map<String, Object> fields) {
         return new AgentEngineEvent("run-1", "conversation-1", "turn-1", type, fields);
+    }
+
+    private static void assertToolSchema(Object value, String path) {
+        assertThat(value).as(path).isInstanceOf(Map.class);
+        Map<String, Object> schema = map(value);
+        if (schema.containsKey("properties")) {
+            assertThat(schema.get("properties")).as(path + ".properties").isInstanceOf(Map.class);
+            map(schema.get("properties")).forEach((name, property) -> assertToolSchema(property, path + "." + name));
+        }
+        if (schema.containsKey("items")) assertToolSchema(schema.get("items"), path + "[]");
+        for (String alternatives : List.of("oneOf", "anyOf", "allOf")) {
+            if (schema.get(alternatives) instanceof List<?> options) {
+                for (Object option : options) assertToolSchema(option, path + "." + alternatives);
+            }
+        }
     }
 
     @SuppressWarnings("unchecked")

@@ -12,6 +12,7 @@ import java.util.UUID;
 import ltd.qianc.iotagent.iot.IotSource;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.report.ReportFactProducer;
+import ltd.qianc.iotagent.task.internal.TaskReportComposer;
 
 /**
  * Recovery-safe scanner. A phase must be claimed by durable CAS before gateway
@@ -162,7 +163,10 @@ public final class TaskScanner {
         catch (RuntimeException unavailable) { return "任务阶段结果暂不可读"; }
         String payload;
         try { payload = reportComposer.compose(task, results, outcome, clock.instant()); }
-        catch (RuntimeException invalid) { return "报表请求内容无效"; }
+        catch (RuntimeException invalid) {
+            return invalid.getMessage() == null || invalid.getMessage().isBlank()
+                    ? "任务检查点证据无效" : invalid.getMessage();
+        }
         if (payload == null) return null;
         String phaseId = results.isEmpty() ? task.taskId() : results.get(results.size() - 1).phaseId();
         Instant checkpointAt = results.isEmpty() ? clock.instant() : results.get(results.size() - 1).dueAt();

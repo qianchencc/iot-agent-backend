@@ -33,7 +33,7 @@ public final class TaskReportComposer {
                           String outcome, Instant generatedAt) {
         JsonNode payload;
         try { payload = mapper.readTree(task.payloadJson()); }
-        catch (RuntimeException error) { throw new IllegalArgumentException("任务事实内容无效", error); }
+        catch (Exception error) { throw new IllegalArgumentException("任务事实 JSON 无效", error); }
         JsonNode request = payload.path("reportRequest");
         ObjectNode inspection = inspectionEvidence(task.taskId(), results, outcome, generatedAt);
         if (!request.isObject() && inspection == null) return null;
@@ -46,7 +46,7 @@ public final class TaskReportComposer {
         if (request.isObject()) {
             checkpoint.set("reportRequest", TaskPayloadSafety.withoutCredentials(mapper, request));
         } else {
-            checkpoint.set("reportRequest", inspectionRequest(payload, inspection));
+            checkpoint.set("reportRequest", inspectionRequest(payload, inspection, results));
         }
         if (inspection != null) checkpoint.set("inspectionEvidence", inspection);
         checkpoint.put("taskId", task.taskId());
@@ -161,7 +161,7 @@ public final class TaskReportComposer {
         return evidence;
     }
 
-    private ObjectNode inspectionRequest(JsonNode payload, ObjectNode evidence) {
+    private ObjectNode inspectionRequest(JsonNode payload, ObjectNode evidence, List<TaskPhaseStore.PhaseResult> results) {
         ObjectNode request = mapper.createObjectNode();
         request.put("kind", "ac_inspection");
         String title = payload.path("title").asText(payload.path("label").asText(""));
@@ -180,13 +180,33 @@ public final class TaskReportComposer {
             if (from == null) from = checkpoints.get(0).path("at").asText();
             if (to == null) to = checkpoints.get(checkpoints.size() - 1).path("at").asText();
         }
-        if (from == null) from = Instant.now().minusSeconds(60).toString();
-        if (to == null) to = Instant.now().toString();
+        if (from == null || to == null || from.isBlank() || to.isBlank()) {
+            throw new IllegalStateException("空调巡检缺少可验证的检查点时间，无法生成报告");
+        }
         try {
-            if (!Instant.parse(to).isAfter(Instant.parse(from))) to = Instant.parse(from).plusSeconds(60).toString();
+            Instant start = Instant.parse(from);
+            Instant end = Instant.parse(to);
+            if (!end.isAfter(start)) {
+                // A single checkpoint has one real business time; use the phase's
+                // actual end only when it is later, never Instant.now().
+                Instant fallback = null;
+                for (TaskPhaseStore.PhaseResult result : results) {
+                    if (result.endedAt() != null && result.endedAt().isAfter(start)
+                            && (fallback == null || result.endedAt().isAfter(fallback))) {
+                        fallback = result.endedAt();
+                    }
+                }
+                if (fallback == null) {
+                    throw new IllegalStateException("空调巡检只有单一检查点时间，无法确定报告期间");
+                }
+                end = fallback;
+            }
+            from = start.toString();
+            to = end.toString();
+        } catch (IllegalStateException failure) {
+            throw failure;
         } catch (RuntimeException invalid) {
-            from = Instant.now().minusSeconds(60).toString();
-            to = Instant.now().toString();
+            throw new IllegalStateException("空调巡检检查点时间无效，无法生成报告", invalid);
         }
         ObjectNode period = request.putObject("period");
         period.put("kind", "absolute").put("from", from).put("to", to);
@@ -194,7 +214,8 @@ public final class TaskReportComposer {
     }
 
     private JsonNode read(String value) {
-        try { return mapper.readTree(value == null || value.isBlank() ? "{}" : value); }
-        catch (RuntimeException error) { return mapper.createObjectNode(); }
+        if (value == null || value.isBlank()) return mapper.createObjectNode();
+        try { return mapper.readTree(value); }
+        catch (Exception error) { throw new IllegalStateException("任务检查点 JSON 无效", error); }
     }
 }

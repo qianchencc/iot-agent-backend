@@ -66,8 +66,9 @@ final class AgentToolCatalog {
     private static Map<String, Definition> build() {
         Map<String, Definition> tools = new LinkedHashMap<>();
         add(tools, definition("list_office_regions", "查询可用办公室区域",
-                "只读列出当前账号真实有权选择的办公室关注区域，回答有哪些办公室可切换；不切换区域，不创建任务。当前区域仍由用户界面选择。",
-                object(required(), props()), OFFICE, Confirmation.NONE));
+                "只读查询当前账号真实有权选择的办公室关注区域；可按名称包含的文字筛选。回答可选区域，不切换区域，不创建任务。当前区域仍由用户界面选择。",
+                object(required(), props(prop("nameContains", string("可选：区域名称包含的非空文字", 1, 120)))),
+                OFFICE, Confirmation.NONE));
         add(tools, definition("find_device_candidates", "查询设备候选",
                 "按当前来源、当前关注区域和当前授权目录检索设备候选。位置条件放 scopeText/scopeTerms，设备名称或型号放 deviceText/nameHints；不要把地点拼进设备名称。返回真实候选及 candidateSetId；候选不是用户已选择的操作范围，空候选必须如实处理，不得发明设备。",
                 object(required("kind"), props(
@@ -245,165 +246,137 @@ final class AgentToolCatalog {
     }
 
     private static Map<String, Object> reportPeriod(String description) {
-        return object(required("kind"), Map.of(
-                "type", "object",
-                "additionalProperties", false,
-                "description", description,
-                "properties", props(
-                        prop("kind", stringEnum("期间类型", "absolute", "previous")),
-                        prop("from", string("absolute 期间的带时区 ISO 起点", 1, 64)),
-                        prop("to", string("absolute 期间的带时区 ISO 终点", 1, 64)),
-                        prop("unit", stringEnum("previous 期间的日历单位", "day", "week", "month")))));
+        return object(required("kind"), props(
+                prop("kind", stringEnum("期间类型", "absolute", "previous")),
+                prop("from", string("absolute 期间的带时区 ISO 起点", 1, 64)),
+                prop("to", string("absolute 期间的带时区 ISO 终点", 1, 64)),
+                prop("unit", stringEnum("previous 期间的日历单位", "day", "week", "month"))), Map.of("type", "object",
+        "additionalProperties", false,
+        "description", description));
     }
 
     private static Map<String, Object> reportScope(String description) {
-        return object(required("level"), Map.of(
-                "type", "object",
-                "additionalProperties", false,
-                "description", description,
-                "properties", props(
-                        prop("level", stringEnum("已确定范围类型", "all", "floor", "location", "nameMatch", "selection")),
-                        prop("floor", string("明确整层的真实楼层", 1, 64)),
-                        prop("text", string("已从当前目录确认的地点描述", 1, 120)),
-                        prop("meterId", string("单台电表标识", 1, 300)),
-                        prop("meterIds", stringArray("已核验的电表标识集合", 1, 100)))));
+        return object(required("level"), props(
+                prop("level", stringEnum("已确定范围类型", "all", "floor", "location", "nameMatch", "selection")),
+                prop("floor", string("明确整层的真实楼层", 1, 64)),
+                prop("text", string("已从当前目录确认的地点描述", 1, 120)),
+                prop("meterId", string("单台电表标识", 1, 300)),
+                prop("meterIds", stringArray("已核验的电表标识集合", 1, 100))), Map.of("type", "object",
+        "additionalProperties", false,
+        "description", description));
     }
 
     private static Map<String, Object> reportRequest(String description) {
-        return object(required("kind", "period"), Map.of(
-                "type", "object",
-                "additionalProperties", false,
-                "description", description,
-                "properties", props(
-                        prop("kind", stringEnum("报告类型", "energy", "safety")),
-                        prop("title", string("可选标题", 1, 100)),
-                        prop("period", reportPeriod("报告期间")),
-                        prop("comparisons", stringArray("环比/同比", 0, 2, "previousPeriod", "yearOverYear")),
-                        prop("scope", reportScope("已确定计量范围")),
-                        prop("grain", stringEnum("分段粒度", "day", "week", "month")))));
+        return object(required("kind", "period"), props(
+                prop("kind", stringEnum("报告类型", "energy", "safety")),
+                prop("title", string("可选标题", 1, 100)),
+                prop("period", reportPeriod("报告期间")),
+                prop("comparisons", stringArray("环比/同比", 0, 2, "previousPeriod", "yearOverYear")),
+                prop("scope", reportScope("已确定计量范围")),
+                prop("grain", stringEnum("分段粒度", "day", "week", "month"))), Map.of("type", "object",
+        "additionalProperties", false,
+        "description", description));
     }
 
     private static Map<String, Object> candidateSet(String description) {
-        return object(required("candidateSetId", "deviceIds"), Map.of(
-                "type", "object",
-                "additionalProperties", false,
-                "description", description,
-                "properties", props(
-                        prop("candidateSetId", string("候选集标识", 1, 300)),
-                        prop("deviceIds", stringArray("候选集中的真实设备标识", 1, 50)))));
+        return object(required("candidateSetId", "deviceIds"), props(
+                prop("candidateSetId", string("候选集标识", 1, 300)),
+                prop("deviceIds", stringArray("候选集中的真实设备标识", 1, 50))), Map.of("type", "object",
+        "additionalProperties", false,
+        "description", description));
     }
 
     private static Map<String, Object> controlAction() {
-        return object(required("deviceId", "kind", "selected"), Map.of(
-                "type", "object",
-                "additionalProperties", false,
-                "properties", props(
-                        prop("deviceId", string("已查明的真实设备标识", 1, 300)),
-                        prop("kind", stringEnum("设备类型；照明只能用 closeOrOpen，空调只能用 ac，门禁只能用 controlType=2",
-                                "lighting", "ac", "access")),
-                        prop("closeOrOpen", integerEnum("照明：0 关闭、1 打开", 0, 1)),
-                        prop("controlType", integerEnum("门禁：一次开门", 2)),
-                        prop("ac", acParameters("空调参数；只传用户要求改变的参数")),
-                        prop("selected", bool("是否默认勾选该操作")))));
+        return object(required("deviceId", "kind", "selected"), props(
+                prop("deviceId", string("已查明的真实设备标识", 1, 300)),
+                prop("kind", stringEnum("设备类型；照明只能用 closeOrOpen，空调只能用 ac，门禁只能用 controlType=2",
+                        "lighting", "ac", "access")),
+                prop("closeOrOpen", integerEnum("照明：0 关闭、1 打开", 0, 1)),
+                prop("controlType", integerEnum("门禁：一次开门", 2)),
+                prop("ac", acParameters("空调参数；只传用户要求改变的参数")),
+                prop("selected", bool("是否默认勾选该操作"))), Map.of("type", "object",
+        "additionalProperties", false));
     }
 
     private static Map<String, Object> acParameters(String description) {
-        return object(required(), Map.of(
-                "type", "object",
-                "additionalProperties", false,
-                "description", description,
-                "properties", props(
-                        prop("power", stringEnum("电源开关", "on", "off")),
-                        prop("temperature", number("设定温度（整数℃，16–30）", 16, 30, true)),
-                        prop("mode", stringEnum("运行模式", "cool", "heat", "dry", "fan")),
-                        prop("fanSpeed", stringEnum("风速", "low", "high")))));
+        return object(required(), props(
+                prop("power", stringEnum("电源开关", "on", "off")),
+                prop("temperature", number("设定温度（整数℃，16–30）", 16, 30, true)),
+                prop("mode", stringEnum("运行模式", "cool", "heat", "dry", "fan")),
+                prop("fanSpeed", stringEnum("风速", "low", "high"))), Map.of("type", "object",
+        "additionalProperties", false,
+        "description", description));
     }
 
     private static Map<String, Object> taskAction() {
-        return object(required("deviceId"), Map.of(
-                "type", "object",
-                "additionalProperties", false,
-                "properties", props(
-                        prop("deviceId", string("已核验的真实设备标识", 1, 300)),
-                        prop("closeOrOpen", integerEnum("照明：0 关闭、1 打开", 0, 1)),
-                        prop("ac", acParameters("空调参数")))));
+        return object(required("deviceId"), props(
+                prop("deviceId", string("已核验的真实设备标识", 1, 300)),
+                prop("closeOrOpen", integerEnum("照明：0 关闭、1 打开", 0, 1)),
+                prop("ac", acParameters("空调参数"))), Map.of("type", "object",
+        "additionalProperties", false));
     }
 
     private static Map<String, Object> taskPhase() {
-        return object(required("at", "actions"), Map.of(
-                "type", "object",
-                "additionalProperties", false,
-                "properties", props(
-                        prop("at", string("带时区的阶段时刻", 1, 64)),
-                        prop("actions", arrayOf(taskAction(), 0, 50)),
-                        prop("read", object(required(), props(), Map.of("type", "object",
-                                "additionalProperties", true, "description", "只读检查要求，与控制动作不能混用"))))));
+        return object(required("at", "actions"), props(
+                prop("at", string("带时区的阶段时刻", 1, 64)),
+                prop("actions", arrayOf(taskAction(), 0, 50)),
+                prop("read", object(required(), props(), Map.of("type", "object",
+                        "additionalProperties", true, "description", "只读检查要求，与控制动作不能混用")))), Map.of("type", "object",
+        "additionalProperties", false));
     }
 
     private static Map<String, Object> taskInterval(String description) {
-        return object(required("startsAt", "endsAt"), Map.of(
-                "type", "object",
-                "additionalProperties", false,
-                "description", description,
-                "properties", props(
-                        prop("startsAt", string("带时区的区间开始", 1, 64)),
-                        prop("endsAt", string("带时区的区间结束", 1, 64)))));
+        return object(required("startsAt", "endsAt"), props(
+                prop("startsAt", string("带时区的区间开始", 1, 64)),
+                prop("endsAt", string("带时区的区间结束", 1, 64))), Map.of("type", "object",
+        "additionalProperties", false,
+        "description", description));
     }
 
     private static Map<String, Object> repeat(String description) {
-        return object(required("frequency"), Map.of(
-                "type", "object",
-                "additionalProperties", false,
-                "description", description,
-                "properties", props(
-                        prop("frequency", stringEnum("重复频率", "daily", "weekdays", "weekly", "monthly")),
-                        prop("weekdays", integerArray("周几，1=周一", 1, 7)),
-                        prop("dayOfMonth", integer("每月日期", 1, 31)),
-                        prop("until", string("含当天的开始日期截止，YYYY-MM-DD", 1, 32)))));
+        return object(required("frequency"), props(
+                prop("frequency", stringEnum("重复频率", "daily", "weekdays", "weekly", "monthly")),
+                prop("weekdays", integerArray("周几，1=周一", 1, 7)),
+                prop("dayOfMonth", integer("每月日期", 1, 31)),
+                prop("until", string("含当天的开始日期截止，YYYY-MM-DD", 1, 32))), Map.of("type", "object",
+        "additionalProperties", false,
+        "description", description));
     }
 
     private static Map<String, Object> taskTarget(String description) {
-        return object(required("type"), Map.of(
-                "type", "object",
-                "additionalProperties", false,
-                "description", description,
-                "properties", props(
-                        prop("type", stringEnum("目标类型", "task", "task_plan")),
-                        prop("taskId", string("一次性任务标识或虚拟本次发生标识", 1, 300)),
-                        prop("planId", string("周期计划标识", 1, 300)),
-                        prop("occurrenceDate", string("本次发生日期，YYYY-MM-DD", 1, 32)))));
+        return object(required("type"), props(
+                prop("type", stringEnum("目标类型", "task", "task_plan")),
+                prop("taskId", string("一次性任务标识或虚拟本次发生标识", 1, 300)),
+                prop("planId", string("周期计划标识", 1, 300)),
+                prop("occurrenceDate", string("本次发生日期，YYYY-MM-DD", 1, 32))), Map.of("type", "object",
+        "additionalProperties", false,
+        "description", description));
     }
 
     private static Map<String, Object> meterScope(String description) {
-        return object(required("level"), Map.of(
-                "type", "object",
-                "additionalProperties", false,
-                "description", description,
-                "properties", props(
-                        prop("level", stringEnum("计量范围：全部/整层/单台/已发现集合", "all", "floor", "location", "selection")),
-                        prop("floor", string("level=floor 时的真实楼层", 1, 64)),
-                        prop("meterId", string("level=location 时的单台电表标识", 1, 300)),
-                        prop("meterIds", stringArray("level=selection 时的电表标识集合", 1, 100)))));
+        return object(required("level"), props(
+                prop("level", stringEnum("计量范围：全部/整层/单台/已发现集合", "all", "floor", "location", "selection")),
+                prop("floor", string("level=floor 时的真实楼层", 1, 64)),
+                prop("meterId", string("level=location 时的单台电表标识", 1, 300)),
+                prop("meterIds", stringArray("level=selection 时的电表标识集合", 1, 100))), Map.of("type", "object",
+        "additionalProperties", false,
+        "description", description));
     }
 
     private static Map<String, Object> baseline(String description) {
-        return object(required("from", "to"), Map.of(
-                "type", "object",
-                "additionalProperties", false,
-                "description", description,
-                "properties", props(
-                        prop("from", string("带时区基期起点", 1, 64)),
-                        prop("to", string("带时区基期终点", 1, 64)))));
+        return object(required("from", "to"), props(
+                prop("from", string("带时区基期起点", 1, 64)),
+                prop("to", string("带时区基期终点", 1, 64))), Map.of("type", "object",
+        "additionalProperties", false,
+        "description", description));
     }
 
     private static Map<String, Object> dailyWindow(String description) {
-        return object(required("from", "to"), Map.of(
-                "type", "object",
-                "additionalProperties", false,
-                "description", description,
-                "properties", props(
-                        prop("from", stringEnum("每日窗口开始", "20:00")),
-                        prop("to", stringEnum("每日窗口结束", "08:00")))));
+        return object(required("from", "to"), props(
+                prop("from", stringEnum("每日窗口开始", "20:00")),
+                prop("to", stringEnum("每日窗口结束", "08:00"))), Map.of("type", "object",
+        "additionalProperties", false,
+        "description", description));
     }
 
     private static Map<String, Object> object(List<String> required, Map<String, Object> properties) {

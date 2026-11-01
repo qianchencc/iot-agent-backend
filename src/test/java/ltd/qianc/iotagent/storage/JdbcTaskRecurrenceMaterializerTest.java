@@ -15,10 +15,19 @@ import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
+import ltd.qianc.iotagent.task.TaskExecutionIdentityStore;
 import ltd.qianc.iotagent.task.TaskOccurrenceMaterializer;
 class JdbcTaskRecurrenceMaterializerTest {
     private static final Instant NOW = Instant.parse("2026-11-01T01:00:01Z");
     private final ObjectMapper mapper = new ObjectMapper();
+    private final TaskExecutionIdentityStore identities = new TaskExecutionIdentityStore() {
+        @Override public void saveForTask(String taskId, TaskExecutionIdentityStore.TaskExecutionIdentity identity) { }
+        @Override public void saveForPlan(String planId, TaskExecutionIdentityStore.TaskExecutionIdentity identity) { }
+        @Override public java.util.Optional<TaskExecutionIdentityStore.TaskExecutionIdentity> loadForTask(String taskId) {
+            return java.util.Optional.empty();
+        }
+        @Override public void copyPlanIdentityToTask(String planId, String taskId) { }
+    };
     private JdbcTemplate jdbc;
     private TransactionTemplate transactions;
 
@@ -32,7 +41,7 @@ class JdbcTaskRecurrenceMaterializerTest {
         jdbc.execute("CREATE TABLE task_plans (id BIGINT AUTO_INCREMENT PRIMARY KEY, plan_id VARCHAR(64) NOT NULL UNIQUE, version BIGINT NOT NULL, status VARCHAR(32) NOT NULL, next_at TIMESTAMP NULL, next_date DATE NULL, repeat_json VARCHAR(2000) NOT NULL, payload_json VARCHAR(20000) NOT NULL, idempotency_key VARCHAR(256) NOT NULL, create_time TIMESTAMP NOT NULL, update_time TIMESTAMP NOT NULL)");
         jdbc.execute("CREATE TABLE task_plan_occurrences (id BIGINT AUTO_INCREMENT PRIMARY KEY, plan_id VARCHAR(64) NOT NULL, occurrence_date DATE NOT NULL, task_id VARCHAR(64) NULL, status VARCHAR(32) NOT NULL, override_payload_json VARCHAR(20000) NULL, version BIGINT NOT NULL DEFAULT 1, create_time TIMESTAMP NOT NULL, update_time TIMESTAMP NOT NULL, UNIQUE(plan_id, occurrence_date))");
         jdbc.execute("CREATE TABLE task_facts (id BIGINT AUTO_INCREMENT PRIMARY KEY, task_id VARCHAR(64) NOT NULL UNIQUE, version BIGINT NOT NULL, status VARCHAR(32) NOT NULL, payload_json VARCHAR(20000) NOT NULL, idempotency_key VARCHAR(256) NOT NULL UNIQUE, create_time TIMESTAMP NOT NULL, update_time TIMESTAMP NOT NULL)");
-        jdbc.execute("CREATE TABLE task_phases (id BIGINT AUTO_INCREMENT PRIMARY KEY, phase_id VARCHAR(64) NOT NULL UNIQUE, task_id VARCHAR(64) NOT NULL, source VARCHAR(16) NOT NULL, version BIGINT NOT NULL, status VARCHAR(32) NOT NULL, due_at TIMESTAMP NOT NULL, payload_json VARCHAR(20000) NOT NULL, create_time TIMESTAMP NOT NULL, update_time TIMESTAMP NOT NULL)");
+        jdbc.execute("CREATE TABLE task_phases (id BIGINT AUTO_INCREMENT PRIMARY KEY, phase_id VARCHAR(64) NOT NULL UNIQUE, task_id VARCHAR(64) NOT NULL, source VARCHAR(16) NOT NULL, version BIGINT NOT NULL, status VARCHAR(32) NOT NULL, due_at TIMESTAMP NOT NULL, payload_json VARCHAR(20000) NOT NULL, definition_json VARCHAR(20000) NULL, result_json VARCHAR(20000) NULL, failure_reason VARCHAR(1024) NULL, create_time TIMESTAMP NOT NULL, update_time TIMESTAMP NOT NULL)");
     }
 
     @Test
@@ -82,7 +91,8 @@ class JdbcTaskRecurrenceMaterializerTest {
     }
 
     private TaskOccurrenceMaterializer materializer() {
-        return TaskOccurrenceMaterializerFactory.jdbc(jdbc, transactions, mapper, Clock.fixed(NOW, ZoneOffset.UTC), 10);
+        return TaskOccurrenceMaterializerFactory.jdbc(jdbc, transactions, mapper,
+                Clock.fixed(NOW, ZoneOffset.UTC), 10, identities);
     }
 
     private void insertPlan(String id, String source, String owner, String at) {

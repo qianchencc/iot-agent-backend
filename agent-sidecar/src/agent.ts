@@ -326,8 +326,15 @@ export class AgentRunner {
     try {
       await agent.prompt(request.content);
       const produced = agent.state.messages.slice(initialCount);
+      let modelFailed = false;
       for (const message of produced) {
         await session.appendMessage(JSON.parse(JSON.stringify(message)) as AgentMessage);
+        if (message.role === "assistant" && message.stopReason === "error") modelFailed = true;
+      }
+      if (modelFailed) {
+        // Pi resolves prompt() for provider errors; the persisted assistant
+        // message retains diagnostics, but the public run must fail safely.
+        throw new Error("Agent model request failed");
       }
       if (state.finalText) {
         observedEmit({ type: "message.completed", content: state.finalText, phase: "final" });

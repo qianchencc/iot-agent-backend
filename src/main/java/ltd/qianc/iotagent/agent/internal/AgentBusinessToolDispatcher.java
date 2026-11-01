@@ -34,6 +34,7 @@ import ltd.qianc.iotagent.iot.ObservationOperation;
 import ltd.qianc.iotagent.iot.ObservationRequest;
 import ltd.qianc.iotagent.iot.ObservationResponse;
 import ltd.qianc.iotagent.iot.ObservationStatus;
+import ltd.qianc.iotagent.iot.OfficeRegion;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.iot.VideoPlaybackPreparation;
 import ltd.qianc.iotagent.iot.VideoPlaybackWindow;
@@ -91,7 +92,7 @@ public final class AgentBusinessToolDispatcher implements AgentToolBridge {
         Map<String, Object> arguments = normalizeArguments(definition, request.get("arguments"), context,
                 turnId, toolCallId);
         return switch (definition.name()) {
-            case "list_office_regions" -> officeRegions(principal);
+            case "list_office_regions" -> officeRegions(principal, arguments);
             case "find_device_candidates" -> findCandidates(principal, source, conversationId,
                     context.focusRegionId(), arguments);
             case "get_device_details" -> findCandidates(principal, source, conversationId,
@@ -129,9 +130,18 @@ public final class AgentBusinessToolDispatcher implements AgentToolBridge {
         };
     }
 
-    private Map<String, Object> officeRegions(PrincipalInfo principal) {
+    private Map<String, Object> officeRegions(PrincipalInfo principal, Map<String, Object> args) {
         var regions = iot.loadOfficeRegions(identity(principal, IotSource.OFFICE)).block(TIMEOUT);
         if (regions == null) throw new BusinessException("REGION_UNAVAILABLE", "办公室授权区域暂不可用", 503);
+        if (args.containsKey("nameContains")) {
+            String name = stringValue(args.get("nameContains"), "INVALID_AGENT_TOOL", "区域名称筛选不能为空").strip();
+            List<OfficeRegion> matches = new ArrayList<>();
+            for (int index = 0; index < regions.size(); index++) {
+                OfficeRegion region = regions.get(index);
+                if (region.name().contains(name)) matches.add(region);
+            }
+            regions = matches;
+        }
         return Map.of("regions", regions, "source", "office");
     }
 
@@ -406,7 +416,8 @@ public final class AgentBusinessToolDispatcher implements AgentToolBridge {
             normalized.put("type", type);
         }
         if (operation == ObservationOperation.COMPANY_METER_REPORT) {
-            normalizeMeterScope(normalized);
+            normalizeMeterScope(normalized, "scope", false);
+            normalizeMeterScope(normalized, "other", true);
             if (args.get("baseline") instanceof Map<?, ?> baseline) {
                 Map<String, Object> values = map(baseline);
                 if (values.get("from") instanceof String from) normalized.put("baseFrom", from);
@@ -428,17 +439,18 @@ public final class AgentBusinessToolDispatcher implements AgentToolBridge {
         }
     }
 
-    private static void normalizeMeterScope(Map<String, Object> normalized) {
-        if (!(normalized.get("scope") instanceof Map<?, ?> rawScope)) return;
-        Map<String, Object> scope = map(rawScope);
+    private static void normalizeMeterScope(Map<String, Object> normalized, String key, boolean other) {
+        if (!(normalized.get(key) instanceof Map<?, ?> scope)) return;
         Object level = scope.get("level");
-        if (level != null) normalized.put("scopeLevel", level);
+        if (level != null) normalized.put(other ? "otherScopeLevel" : "scopeLevel", level);
         Object floor = scope.get("floor");
-        if (floor != null) normalized.put("floor", floor);
+        if (floor != null) normalized.put(other ? "otherFloor" : "floor", floor);
+        Object text = scope.get("text");
+        if (text != null) normalized.put(other ? "otherText" : "text", text);
         Object meterId = scope.get("meterId");
-        if (meterId != null) normalized.put("meterId", meterId);
+        if (meterId != null) normalized.put(other ? "otherMeterId" : "meterId", meterId);
         Object meterIds = scope.get("meterIds");
-        if (meterIds != null) normalized.put("meterIds", meterIds);
+        if (meterIds != null) normalized.put(other ? "otherMeterIds" : "meterIds", meterIds);
     }
 
     private Map<String, String> parameterMap(Map<String, Object> args) {
@@ -567,7 +579,7 @@ public final class AgentBusinessToolDispatcher implements AgentToolBridge {
                 if ("ac".equals(kind) && ac instanceof Map<?, ?>) {
                     action.put("command", map(ac));
                 } else if ("lighting".equals(kind) && action.get("closeOrOpen") instanceof Number power) {
-                    action.put("command", Map.of("power", power.intValue() == 1 ? "on" : "off"));
+                    action.put("command", Map.of("closeOrOpen", power.intValue()));
                 } else if ("access".equals(kind) && action.get("controlType") instanceof Number controlType) {
                     action.put("command", Map.of("controlType", controlType.intValue()));
                 } else if (ac instanceof Map<?, ?>) {
@@ -575,7 +587,7 @@ public final class AgentBusinessToolDispatcher implements AgentToolBridge {
                     action.put("command", map(ac));
                 } else if (action.get("closeOrOpen") instanceof Number power) {
                     action.put("kind", "lighting");
-                    action.put("command", Map.of("power", power.intValue() == 1 ? "on" : "off"));
+                    action.put("command", Map.of("closeOrOpen", power.intValue()));
                 } else if (action.get("controlType") instanceof Number controlType) {
                     action.put("kind", "access");
                     action.put("command", Map.of("controlType", controlType.intValue()));

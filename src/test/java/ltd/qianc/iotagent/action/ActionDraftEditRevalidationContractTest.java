@@ -89,7 +89,7 @@ class ActionDraftEditRevalidationContractTest {
 
         ActionDraftFact updated = facade.parameters(PRINCIPAL, draft.draftId(), 1,
                 List.of(Map.of("actionId", "light-action", "patch", Map.of("closeOrOpen", 1))));
-        assertThat(commandOf(updated, "light-action")).isEqualTo(Map.of("closeOrOpen", 1));
+        assertThat(commandOf(updated, "light-1")).isEqualTo(Map.of("closeOrOpen", 1));
     }
 
     @Test

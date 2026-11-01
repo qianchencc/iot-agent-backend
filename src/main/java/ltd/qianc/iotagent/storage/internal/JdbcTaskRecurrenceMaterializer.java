@@ -80,15 +80,15 @@ public final class JdbcTaskRecurrenceMaterializer implements TaskOccurrenceMater
             // grace window is never replayed on restart. It is recorded as skipped so
             // the next occurrence can be computed without losing the decision.
             if (row.nextAt().isBefore(now.minus(Duration.ofMinutes(10)))) {
-                TaskRecurrence.RepeatRule rule = repeat(row.repeatJson(), TaskRecurrence.localDate(anchor(mapper.readTree(row.payloadJson()))));
-                Pointer pointer = nextPointer(row, rule, anchor(mapper.readTree(row.payloadJson())), date, now);
+                TaskRecurrence.RepeatRule rule = repeat(row.repeatJson(), TaskRecurrence.localDate(anchor(readPayload(row.payloadJson()))));
+                Pointer pointer = nextPointer(row, rule, anchor(readPayload(row.payloadJson())), date, now);
                 jdbc.update("INSERT IGNORE INTO task_plan_occurrences(plan_id,occurrence_date,status,create_time,update_time) "
                                 + "VALUES (?,?, 'SKIPPED',?,?)",
                         row.planId(), date.toString(), Timestamp.from(now), Timestamp.from(now));
                 return advance(row, pointer, now, status);
             }
             try {
-                JsonNode payload = mapper.readTree(row.payloadJson());
+                JsonNode payload = readPayload(row.payloadJson());
                 Instant anchor = anchor(payload);
                 LocalDate anchorDate = TaskRecurrence.localDate(anchor);
                 TaskRecurrence.RepeatRule repeat = repeat(row.repeatJson(), anchorDate);
@@ -111,7 +111,7 @@ public final class JdbcTaskRecurrenceMaterializer implements TaskOccurrenceMater
                     return false;
                 }
                 Instant occurrenceAt = override != null && override.overridePayloadJson() != null
-                        ? effectiveAt(mapper.readTree(override.overridePayloadJson())) : TaskRecurrence.occurrenceAt(anchor, date);
+                        ? effectiveAt(readPayload(override.overridePayloadJson())) : TaskRecurrence.occurrenceAt(anchor, date);
                 if (occurrenceAt.isAfter(now)) return false;
 
                 if (override != null && "SKIPPED".equals(override.status())) {
@@ -122,7 +122,7 @@ public final class JdbcTaskRecurrenceMaterializer implements TaskOccurrenceMater
                 String occurrenceId = TaskRecurrence.occurrenceId(row.planId(), date);
                 String taskId = deterministicId("task\0" + occurrenceId);
                 JsonNode snapshot = override != null && override.overridePayloadJson() != null
-                        ? withPlanIdentity(payload, mapper.readTree(override.overridePayloadJson()))
+                        ? withPlanIdentity(payload, readPayload(override.overridePayloadJson()))
                         : shifted(payload, date, anchorDate, occurrenceId);
                 if (!snapshot.isObject()) throw new IllegalArgumentException("周期任务内容无效");
                 ((ObjectNode) snapshot).put("sourcePlanId", row.planId()).put("occurrenceDate", date.toString());
@@ -177,7 +177,7 @@ public final class JdbcTaskRecurrenceMaterializer implements TaskOccurrenceMater
     }
 
     private Pointer nextPointer(PlanRow row, TaskRecurrence.RepeatRule repeat, Instant anchor,
-                                LocalDate completedDate, Instant now) throws Exception {
+                                LocalDate completedDate, Instant now) {
         Map<LocalDate, OccurrenceState> states = new HashMap<>();
         jdbc.query("SELECT occurrence_date,task_id,status,override_payload_json FROM task_plan_occurrences WHERE plan_id=?",
                 (org.springframework.jdbc.core.RowCallbackHandler) rs -> states.put(rs.getDate(1).toLocalDate(),
@@ -191,8 +191,8 @@ public final class JdbcTaskRecurrenceMaterializer implements TaskOccurrenceMater
             if (state != null && (state.taskId() != null
                     || Set.of("SKIPPED", "CLAIMED", "MATERIALIZED").contains(state.status()))) continue;
             Instant at = state != null && "OVERRIDDEN".equals(state.status())
-                    ? firstFutureAt(mapper.readTree(requiredOverride(state)), now, anchor, date)
-                    : firstFutureAt(shifted(mapper.readTree(row.payloadJson()), date,
+                    ? firstFutureAt(readPayload(requiredOverride(state)), now, anchor, date)
+                    : firstFutureAt(shifted(readPayload(row.payloadJson()), date,
                             TaskRecurrence.localDate(anchor), TaskRecurrence.occurrenceId(row.planId(), date)),
                             now, anchor, date);
             selected = new Pointer(at, date);
@@ -203,7 +203,7 @@ public final class JdbcTaskRecurrenceMaterializer implements TaskOccurrenceMater
             OccurrenceState state = entry.getValue();
             if (!"OVERRIDDEN".equals(state.status()) || state.taskId() != null
                     || !entry.getKey().isAfter(completedDate) || !TaskRecurrence.matches(repeat, entry.getKey())) continue;
-            Instant at = firstFutureAt(mapper.readTree(requiredOverride(state)), now, anchor, entry.getKey());
+            Instant at = firstFutureAt(readPayload(requiredOverride(state)), now, anchor, entry.getKey());
             if (selected == null || at.isBefore(selected.at())
                     || at.equals(selected.at()) && entry.getKey().isBefore(selected.date())) {
                 selected = new Pointer(at, entry.getKey());
@@ -274,8 +274,14 @@ public final class JdbcTaskRecurrenceMaterializer implements TaskOccurrenceMater
         }
     }
 
-    private TaskRecurrence.RepeatRule repeat(String json, LocalDate anchorDate) throws Exception {
-        JsonNode value = mapper.readTree(json);
+    private JsonNode readPayload(String value) {
+        if (value == null || value.isBlank()) throw new IllegalStateException("周期计划内容为空");
+        try { return mapper.readTree(value); }
+        catch (Exception error) { throw new IllegalStateException("周期计划内容无效", error); }
+    }
+
+    private TaskRecurrence.RepeatRule repeat(String json, LocalDate anchorDate) {
+        JsonNode value = readPayload(json);
         String frequency = value.path("frequency").asText("");
         Set<Integer> weekdays = Set.of();
         if (value.has("weekdays")) {

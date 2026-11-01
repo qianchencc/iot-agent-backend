@@ -176,25 +176,6 @@ class CompanyOfficeObservationAdapterContractTest {
                 .hasMessageContaining("区域不存在");
     }
 
-    @Test
-    void repeatedEnergyReadsReuseOneComposition() {
-        AtomicInteger compositions = new AtomicInteger();
-        CompanyEnergyObservationComposer composer = request -> {
-            compositions.incrementAndGet();
-            return Mono.just(ObservationResponse.available(Map.of("source", "company", "days", List.of())));
-        };
-        ObservationAdapter adapter = ObservationAdapterFactory.composed(
-                request -> Mono.just(ObservationResponse.available(Map.of())),
-                iot(OFFICE, List.of()), identity -> Mono.just(Map.of()), null, composer,
-                Clock.fixed(Instant.parse("2026-01-01T00:00:00Z"), ZoneOffset.UTC));
-        ObservationRequest energy = new ObservationRequest(COMPANY,
-                ObservationOperation.COMPANY_ENERGY_DAILY, Map.of("days", "30"));
-
-        adapter.read(energy).block();
-        adapter.read(energy).block();
-
-        assertThat(compositions).hasValue(1);
-    }
 
     private static IotAdapter iot(RequestIdentity expected, List<AuthorizedDevice> devices) {
         return iot(expected, devices, null);

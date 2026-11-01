@@ -116,7 +116,7 @@ class CompanyEnergyObservationComposerContractTest {
                 row("a", "2026-10-02 08:00:00", "meter-1", 10),
                 row("b", "2026-10-03 08:00:00", "meter-1", 15),
                 row("c", "2026-10-02 08:00:00", "meter-2", 10),
-                row("d", "2026-10-03 08:00:00", "meter-2", 15)), true)));
+                row("d", "2026-10-03 08:00:00", "meter-2", 15)), true))));
         CompanyEnergyObservationComposer composer = CompanyEnergyObservationComposerFactory.composed(
                 raw, iot(COMPANY, List.of(METER, SECOND)), CLOCK);
 
@@ -131,7 +131,7 @@ class CompanyEnergyObservationComposerContractTest {
         assertThat(((Map<?, ?>) ((Map<?, ?>) one.get("params")).get("scope")).get("meterCount")).isEqualTo(1);
         assertThat(((Map<?, ?>) all.get("total")).get("value")).isEqualTo(10.0d);
         assertThat(((Map<?, ?>) one.get("total")).get("value")).isEqualTo(5.0d);
-        assertThat(((Map<?, ?>) one.get("coverage")).get("dataMeters")).isEqualTo(1);
+        assertThat(((Number) ((Map<?, ?>) one.get("coverage")).get("dataMeters")).longValue()).isEqualTo(1L);
     }
 
     @Test
@@ -217,7 +217,7 @@ class CompanyEnergyObservationComposerContractTest {
                 row("a", "2026-09-30 20:00:00", "meter-1", 80),
                 row("b", "2026-10-01 08:00:00", "meter-1", 90),
                 row("c", "2026-10-01 20:00:00", "meter-1", 100),
-                row("d", "2026-10-02 08:00:00", "meter-1", 112)), true)));
+                row("d", "2026-10-02 08:00:00", "meter-1", 112)), true));
 
         Map<String, Object> payload = composer.read(new ObservationRequest(COMPANY, ObservationOperation.COMPANY_METER_REPORT,
                 Map.of("kind", "comparison", "axis", "time", "scopeLevel", "all",
