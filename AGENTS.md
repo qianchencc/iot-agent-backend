@@ -2,6 +2,10 @@
 
 `../iot-agent-runtime`（Fastify/TypeScript）的 Java 版实现，逐功能对齐，全本地开发。HTTP 契约以 runtime 的 `docs/api/`（openapi + NDJSON 事件协议）为对齐基准；业务语义以 runtime `apps/runtime/src` 各模块 `AGENTS.md` 为准。
 
+当前业务恢复入口：[规格与十六组闭环](.scratch/agent-business-recovery/README.md)；涉及 Java/Node 职责、智能体工具/指引、Runtime 对照或验收时先读。业务定义归 Java、Node 只提供通用 Agent Engine，见 [ADR 0004](docs/adr/0004-java-business-definition-generic-agent-engine.md)。
+
+本 worktree 与缓存主线隔离；普通读取/同步的未提交缓存实现不在此分支。不得直接启用复制出的 `.env`、`var/` 或 Compose 数据目录；联调先配置独立端口、MySQL schema、Redis命名空间、Pi Session和Admin状态，不重启/切换原工作区服务。
+
 前端控制台在 `web/admin/`（Vite + Vue3 + Arco，按客户选型清单）；开发与组件规范 `web/admin/AGENTS.md`，部署与维护 `web/admin/docs/maintenance.md`。
 
 ## 技术栈
@@ -50,7 +54,7 @@ curl -s http://127.0.0.1:3200/healthz
 | `runtime-config.ts` | `config` | 进程环境解析，缺配置 fail closed |
 | `app.ts`/`domain.ts`/`server.ts`（会话、草案、事件存储、确认执行） | `conversation` | 会话与 NDJSON 流式事件核心 |
 | `iot/` | `iot` | 网关适配器：双目录、状态/能耗读、控制下发、视频取流 |
-| `agent/` | `agent` | LLM runner（固定 openai-completions 边界） |
+| `agent/` | `agent` | Business Agent Definition、业务工具与上下文；通用 Pi 执行由 Node Agent Engine 提供 |
 | `tasks/` | `task` | 任务/周期/通知/提案/扫描执行 |
 | `energy/` | `energy` | 电表统计/对比/日报月报/报告快照 |
 | `reports/` | `report` | 报告事实落库 + PDF/XLSX 渲染 |
@@ -67,6 +71,13 @@ curl -s http://127.0.0.1:3200/healthz
 ## 测试基线
 
 进程内生产协议夹具（对齐 runtime `apps/runtime/test/support/production-gateway-fixture.ts`）：不联网、不监听真实端口、不控制真实设备。
+
+## 业务验收
+
+- 逐项覆盖冻结的[软件说明书](docs/reference/软件说明书-2026-11-02.md)，以真实微信开发者工具业务结果和截图为唯一业务通过依据；接口、NDJSON、测试、旧截图和计划均不替代。
+- 原 Runtime 是用户确认可靠的单向业务基线；新后端失败时对照源码修复，不修改、切换或测试生产 Runtime，不为确认用户已报告故障而重跑。
+- 主验收使用真实账号/模型/授权只读数据；草案可不执行、任务可不创建。执行后展示/管理仍有独立证据，隔离事实副本注明来源及范围，不冒充设备真实执行。
+- 生产控制、任务、通知和配置出口禁写；验收不得注入消息/卡片或模拟成功。证据及未验项按[验收矩阵](.scratch/agent-business-recovery/acceptance.md)记录。
 
 ## Agent skills
 

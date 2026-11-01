@@ -2,6 +2,8 @@
 
 Status: 采纳 · Date: 2026-10-28
 
+业务职责已由 [ADR 0004](0004-java-business-definition-generic-agent-engine.md) 收紧：工具契约、业务指引、上下文与公开业务事件归 Java，Node 只负责通用机制；本决策的双运行时及 Pi Session 存储选择保留。
+
 物联系统 Agent 必须对齐客户 Java 21 / Spring Boot 3.5 技术栈，同时保留当前 `pi-agent-core` 的 Agent 循环、工具调用、流式模型、上下文压缩和会话能力。由于 `pi-agent-core` 是 Node >=22.19 的 ESM npm 包，Java 不能直接加载当前实现；因此采用 Java 主服务承载对外契约与业务事实，Node sidecar 承载真实 Pi Agent Engine。
 
 ## 决定
