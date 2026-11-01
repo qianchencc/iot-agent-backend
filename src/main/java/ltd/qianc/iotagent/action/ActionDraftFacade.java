@@ -648,6 +648,9 @@ public final class ActionDraftFacade {
         view.put("inventory", mapper.convertValue(array(body, "inventory"), Object.class));
         view.put("counts", mapper.convertValue(objectNode(body.get("counts")), Object.class));
         view.put("observedAt", body.path("observedAt").asText(null));
+        if (!body.path("revalidatedInto").asText("").isBlank()) {
+            view.put("revalidatedInto", body.path("revalidatedInto").asText());
+        }
         if (body.has("result") && body.get("result").isObject()) {
             ObjectNode result = (ObjectNode) body.get("result").deepCopy();
             ObjectNode readback = mapper.createObjectNode();
@@ -1197,12 +1200,13 @@ public final class ActionDraftFacade {
             // Presentation may be bounded, but the persisted member list is complete:
             // server-side expansion is exactly what prevents the model from owning the
             // final id list.
-            if (!scope.catalogFingerprint().equals(record.catalogFingerprint())) {
+            AuthorizedDeviceScope candidateScope = candidateScope(scope, record);
+            if (!candidateScope.catalogFingerprint().equals(record.catalogFingerprint())) {
                 throw new BusinessException("CANDIDATE_SET_STALE", "设备候选集已过期，请重新检索", 409);
             }
             List<AuthorizedDevice> members = new ArrayList<>();
             for (AuthorizedDevice member : record.members()) {
-                AuthorizedDevice current = scope.device(member.id())
+                AuthorizedDevice current = candidateScope.device(member.id())
                         .filter(device -> device.kind().equals(member.kind()))
                         .orElseThrow(ActionDraftScopeChangedException::new);
                 members.add(current);
@@ -1210,6 +1214,12 @@ public final class ActionDraftFacade {
             sets.add(new CandidateView(record.candidateSetId(), record.query().kind(), members));
         }
         return sets;
+    }
+
+    private static AuthorizedDeviceScope candidateScope(AuthorizedDeviceScope scope, DeviceCandidateRecord record) {
+        String regionId = record.query().regionId();
+        if (scope.source() != IotSource.OFFICE || regionId == null || regionId.isBlank()) return scope;
+        return scope.retain(device -> device.officeIds().contains(regionId));
     }
 
     private List<ExplicitAction> explicitActions(JsonNode raw, AuthorizedDeviceScope scope,

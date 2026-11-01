@@ -237,13 +237,14 @@ class IotAdapterContractTest {
         RequestIdentity identity = new RequestIdentity("Bearer office-token", "TENANT-1", IotSource.OFFICE, "owner-1");
 
         DeviceCandidateSet set = adapter.findDeviceCandidates(identity,
-                        new DeviceCandidateQuery("lighting", List.of(), "A区", List.of(), List.of(), null, null),
+                        new DeviceCandidateQuery("lighting", List.of(), "A区", List.of(), List.of(), null, "office-a"),
                         new DeviceCandidateBinding("conversation-1"))
                 .block(Duration.ofSeconds(1));
 
         assertThat(set.devices()).extracting(AuthorizedDevice::id).containsExactly("light-a");
         DeviceCandidateRecord record = saved.get(set.candidateSetId());
         assertThat(record).isNotNull();
+        assertThat(record.query().regionId()).isEqualTo("office-a");
         assertThat(record.conversationId()).isEqualTo("conversation-1");
         assertThat(record.members()).extracting(AuthorizedDevice::id).containsExactly("light-a");
         assertThat(record.complete()).isTrue();

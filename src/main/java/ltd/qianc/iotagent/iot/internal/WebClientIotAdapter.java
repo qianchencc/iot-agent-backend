@@ -204,11 +204,12 @@ public final class WebClientIotAdapter implements IotAdapter {
             for (DeviceCapabilityRequest.DeviceCapabilitySelection selection : request.candidateSets()) {
                 DeviceCandidateRecord set = requiredCandidateSet(identity, selection.candidateSetId(), conversationId);
                 Map<String, AuthorizedDevice> members = membersById(set);
-                if (!scope.catalogFingerprint().equals(set.catalogFingerprint())) {
+                AuthorizedDeviceScope setScope = candidateScope(scope, set);
+                if (!setScope.catalogFingerprint().equals(set.catalogFingerprint())) {
                     throw new BusinessException("CANDIDATE_SET_STALE", "设备候选集已过期，请重新检索", 409);
                 }
                 for (String id : selection.deviceIds()) {
-                    if (!members.containsKey(id)) {
+                    if (!members.containsKey(id) || setScope.device(id).isEmpty()) {
                         throw new BusinessException("INVALID_DEVICE_REFERENCE", "设备不属于引用的候选集", 403);
                     }
                     ids.add(id);
@@ -577,14 +578,15 @@ public final class WebClientIotAdapter implements IotAdapter {
                     Map<String, AuthorizedDevice> devicesById = new LinkedHashMap<>();
                     for (DeviceCapabilityRequest.DeviceCapabilitySelection selection : request.candidateSets()) {
                         DeviceCandidateRecord set = requiredCandidateSet(identity, selection.candidateSetId(), conversationId);
-                        if (!scope.catalogFingerprint().equals(set.catalogFingerprint())) {
+                        AuthorizedDeviceScope setScope = candidateScope(scope, set);
+                        if (!setScope.catalogFingerprint().equals(set.catalogFingerprint())) {
                             throw new BusinessException("CANDIDATE_SET_STALE", "设备候选集已过期，请重新检索", 409);
                         }
                         Map<String, AuthorizedDevice> members = membersById(set);
                         for (String id : selection.deviceIds()) {
                             AuthorizedDevice member = members.get(id);
-                            if (member == null) throw new BusinessException("INVALID_DEVICE_REFERENCE",
-                                    "设备不属于引用的候选集", 403);
+                            if (member == null || setScope.device(id).isEmpty()) throw new BusinessException(
+                                    "INVALID_DEVICE_REFERENCE", "设备不属于引用的候选集", 403);
                             devicesById.put(id, member);
                         }
                     }
@@ -594,6 +596,18 @@ public final class WebClientIotAdapter implements IotAdapter {
                     return new DeviceCapabilityInspection(request.candidateSets().stream()
                             .map(DeviceCapabilityRequest.DeviceCapabilitySelection::candidateSetId).toList(), capabilities);
                 }));
+    }
+
+    /**
+     * Reconstructs the exact scope a candidate set was discovered from. Office
+     * discovery is focus-region filtered before its fingerprint is persisted, so
+     * every later consumer must apply the same region filter or a valid set is
+     * misreported as stale.
+     */
+    private static AuthorizedDeviceScope candidateScope(AuthorizedDeviceScope scope, DeviceCandidateRecord set) {
+        String regionId = set.query().regionId();
+        if (scope.source() != IotSource.OFFICE || regionId == null || regionId.isBlank()) return scope;
+        return scope.retain(device -> device.officeIds().contains(regionId));
     }
 
     private DeviceCandidateRecord requiredCandidateSet(RequestIdentity identity, String candidateSetId,
