@@ -11,6 +11,7 @@ import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
+import java.time.YearMonth;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -75,6 +76,8 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         return Mono.defer(() -> {
             requireCompany(request.identity());
             if (request.operation() != ObservationOperation.COMPANY_ENERGY_DAILY
+                    && request.operation() != ObservationOperation.ENERGY_COMPARISON
+                    && request.operation() != ObservationOperation.COMPANY_ENERGY_REPORT
                     && request.operation() != ObservationOperation.COMPANY_METER_REPORT) {
                 return Mono.error(new ObservationUnavailableException("公司能耗组合器不支持该观察操作"));
             }
@@ -86,6 +89,12 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
                         if (meters.isEmpty()) return Mono.error(new BusinessException("FORBIDDEN", "当前来源没有公司电表观察范围", 403));
                         if (request.operation() == ObservationOperation.COMPANY_ENERGY_DAILY) {
                             return daily(request, meters);
+                        }
+                        if (request.operation() == ObservationOperation.ENERGY_COMPARISON) {
+                            return comparison(request, meters);
+                        }
+                        if (request.operation() == ObservationOperation.COMPANY_ENERGY_REPORT) {
+                            return monthlyReport(request, meters);
                         }
                         return meterReport(request, meters);
                     })
@@ -103,6 +112,74 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         Instant to = local(end.plusDays(1)).toInstant();
         return readAll(request.identity(), meters, from, to)
                 .map(reads -> energyResponse(dailyPayload(meters, reads, start, end, days)));
+    }
+
+    private Mono<ObservationResponse> comparison(ObservationRequest request, List<AuthorizedDevice> meters) {
+        Map<String, String> p = request.parameters();
+        String id = required(p, "equipmentId");
+        AuthorizedDevice meter = meters.stream().filter(item -> item.id().equals(id)).findFirst().orElse(null);
+        if (meter == null) throw new BusinessException("FORBIDDEN", "该计量点不在当前公司观察范围内", 403);
+        int count = integer(p.get("weeks"), 4, 2, 6);
+        int boundary = boundaryHour(p.get("boundaryHour"));
+        Instant now = clock.instant();
+        LocalDate today = LocalDate.now(clock.withZone(SHANGHAI));
+        LocalDate requestedEnd = p.containsKey("endDate") ? date(p.get("endDate")) : today;
+        LocalDate endDate = requestedEnd.minusDays((requestedEnd.getDayOfWeek().getValue() + 6) % 7L);
+        Instant end = local(endDate).toInstant().plusSeconds(boundary * 3600L);
+        if (p.containsKey("endDate")) {
+            if (!requestedEnd.equals(endDate) || end.isAfter(now)) {
+                throw new ObservationUnavailableException("结束日须为已到达的周一");
+            }
+        } else if (end.isAfter(now)) {
+            end = end.minus(7, ChronoUnit.DAYS);
+        }
+        Instant start = end.minus((count + 1L) * 7L, ChronoUnit.DAYS);
+        Instant finalEnd = end;
+        return readAll(request.identity(), List.of(meter), start, now.isBefore(end.plus(7, ChronoUnit.DAYS)) ? now : end.plus(7, ChronoUnit.DAYS))
+                .map(reads -> energyResponse(comparisonPayload(meter, reads.get(0), start, finalEnd, count, boundary, now)));
+    }
+
+    private Mono<ObservationResponse> monthlyReport(ObservationRequest request, List<AuthorizedDevice> meters) {
+        Map<String, String> p = request.parameters();
+        int months = integer(p.get("months"), 3, 1, 12);
+        int boundary = boundaryHour(p.get("boundaryHour"));
+        YearMonth latest = YearMonth.now(clock.withZone(SHANGHAI));
+        YearMonth endMonth = p.containsKey("endMonth") ? yearMonth(p.get("endMonth")) : latest;
+        if (endMonth.isAfter(latest)) throw new ObservationUnavailableException("结束月份须为已到达月份");
+        List<MonthWindow> windows = new ArrayList<>();
+        for (int index = 0; index <= months; index++) {
+            YearMonth month = endMonth.minusMonths(months - index);
+            Instant from = month.atDay(1).atTime(boundary, 0).atZone(SHANGHAI).toInstant();
+            Instant next = month.plusMonths(1).atDay(1).atTime(boundary, 0).atZone(SHANGHAI).toInstant();
+            windows.add(new MonthWindow(month, from, next.isAfter(clock.instant()) ? clock.instant() : next,
+                    next.isAfter(clock.instant())));
+        }
+        if (windows.get(windows.size() - 1).from.isAfter(clock.instant())) {
+            throw new ObservationUnavailableException("本月采样边界尚未到达");
+        }
+        Instant from = windows.get(0).from.minusSeconds(TWELVE_HOURS_SECONDS);
+        Instant to = windows.get(windows.size() - 1).to;
+        return readAllBestEffort(request.identity(), meters, from, to)
+                .map(reads -> energyResponse(monthlyPayload(meters, reads, windows, boundary)));
+    }
+
+    private static int boundaryHour(String value) {
+        if (value == null) return 8;
+        try {
+            int parsed = Integer.parseInt(value);
+            if (parsed == 0 || parsed == 8) return parsed;
+        } catch (NumberFormatException ignored) {
+            // fall through
+        }
+        throw new ObservationUnavailableException("边界时刻仅支持零点或08:00");
+    }
+
+    private static YearMonth yearMonth(String value) {
+        try {
+            return YearMonth.parse(value);
+        } catch (RuntimeException error) {
+            throw new ObservationUnavailableException("结束月份格式无效");
+        }
     }
 
     private Mono<ObservationResponse> meterReport(ObservationRequest request, List<AuthorizedDevice> meters) {
@@ -150,6 +227,14 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
     private Mono<List<MeterRead>> readAll(RequestIdentity identity, List<AuthorizedDevice> meters, Instant from, Instant to) {
         return Flux.fromIterable(meters)
                 .flatMap(meter -> readMeter(identity, meter, from, to), 6)
+                .collectList();
+    }
+
+    private Mono<List<MeterRead>> readAllBestEffort(
+            RequestIdentity identity, List<AuthorizedDevice> meters, Instant from, Instant to) {
+        return Flux.fromIterable(meters)
+                .flatMap(meter -> readMeter(identity, meter, from, to)
+                        .onErrorResume(error -> Mono.just(new MeterRead(meter, List.of(), true))), 6)
                 .collectList();
     }
 
@@ -301,6 +386,250 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         Map<String, Object> shape24 = new LinkedHashMap<>(); shape24.put("rates", null); shape24.put("coveredFraction", 0);
         payload.put("shape24", shape24);
         return payload;
+    }
+
+    private Map<String, Object> comparisonPayload(
+            AuthorizedDevice meter, MeterRead read, Instant start, Instant end, int count, int boundary, Instant now) {
+        List<Map<String, Object>> periods = new ArrayList<>();
+        for (int index = 0; index <= count; index++) {
+            Instant from = start.plus(index * 7L, ChronoUnit.DAYS);
+            Instant to = from.plus(7, ChronoUnit.DAYS);
+            periods.add(comparisonPeriod(read.samples, from, to, read.truncated, format(from).substring(0, 10)));
+        }
+        Map<String, Object> baseline = periods.get(0);
+        List<Map<String, Object>> weeks = new ArrayList<>(periods.subList(1, periods.size()));
+        java.util.Collections.reverse(weeks);
+        for (int index = 0; index < weeks.size(); index++) {
+            Map<String, Object> current = weeks.get(index);
+            Map<String, Object> previous = index + 1 < weeks.size()
+                    ? weeks.get(index + 1) : baseline;
+            Double previousUsage = numberOrNull(previous.get("usage"));
+            Double currentUsage = numberOrNull(current.get("usage"));
+            if (!"comparable".equals(current.get("status")) || currentUsage == null) {
+                current.put("ratioNote", "缺少可比较的完整基期");
+            } else if (!"comparable".equals(previous.get("status")) || previousUsage == null) {
+                current.put("ratioNote", "缺少可比较的完整基期");
+            } else if (previousUsage == 0d) {
+                current.put("ratioNote", "基期为零，比例不可计算");
+            } else {
+                current.put("ratio", round((currentUsage - previousUsage) / previousUsage * 100));
+                current.put("ratioNote", "");
+            }
+        }
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("reportId", "local-energy-comparison-" + Integer.toHexString(Objects.hash(
+                meter.id(), start, end, count, boundary)));
+        payload.put("type", "energy-comparison");
+        payload.put("source", "company");
+        payload.put("observedAt", clock.instant().toString());
+        payload.put("status", comparisonStatus(weeks));
+        payload.put("meter", Map.of("id", meter.id(), "name", meter.name(), "location", meter.installAddress()));
+        Map<String, Object> basis = new LinkedHashMap<>();
+        basis.put("field", "epf"); basis.put("fieldLabel", "反向累计示数"); basis.put("unit", null);
+        basis.put("multiplier", null); basis.put("timezone", "Asia/Shanghai");
+        basis.put("cycle", boundary == 8 ? "周一08:00 → 下周一08:00" : "周一00:00 → 下周一00:00");
+        basis.put("boundaryHour", boundary);
+        payload.put("basis", basis);
+        Map<String, Object> window = new LinkedHashMap<>();
+        window.put("from", format(start.plus(7, ChronoUnit.DAYS)));
+        window.put("to", format(end));
+        payload.put("window", window);
+        payload.put("baseline", baseline);
+        payload.put("weeks", weeks);
+        payload.put("summary", comparisonSummary(weeks));
+        Map<String, Object> current = null;
+        if (!end.isAfter(now) && now.isBefore(end.plus(7, ChronoUnit.DAYS))) {
+            Map<String, Object> live = comparisonPeriod(read.samples, end, now, read.truncated,
+                    format(end).substring(0, 10));
+            Map<String, Object> liveValue = new LinkedHashMap<>();
+            liveValue.put("requested", Map.of("from", format(end), "to", format(now)));
+            liveValue.put("partialUsage", live.get("usage"));
+            Object sampledTo = live.get("sampledTo");
+            liveValue.put("sampledThrough", sampledTo instanceof Map<?, ?> sample ? sample.get("readTime") : null);
+            liveValue.put("comparable", false);
+            current = liveValue;
+        }
+        payload.put("current", current);
+        Map<String, Object> coverage = new LinkedHashMap<>();
+        coverage.put("samples", read.samples.size());
+        coverage.put("oldest", formatNullable(read.samples.isEmpty() ? null : read.samples.get(0).readTime));
+        coverage.put("latest", formatNullable(latestSample(read.samples)));
+        coverage.put("complete", !read.truncated);
+        coverage.put("upstream", "ENERGY_HISTORY");
+        coverage.put("truncated", read.truncated);
+        payload.put("coverage", coverage);
+        payload.put("explanation", Map.of("status", "pending"));
+        return payload;
+    }
+
+    private static String comparisonStatus(List<Map<String, Object>> weeks) {
+        long comparable = weeks.stream().filter(row -> "comparable".equals(row.get("status"))).count();
+        if (comparable == weeks.size()) return "comparable";
+        return comparable > 0 ? "partial" : "not_computable";
+    }
+
+    private static Map<String, Object> comparisonPeriod(
+            List<Sample> samples, Instant from, Instant to, boolean truncated, String key) {
+        List<Sample> rows = samples.stream().filter(row -> !row.readTime.isBefore(from) && !row.readTime.isAfter(to)).toList();
+        Sample first = rows.isEmpty() ? null : rows.get(0);
+        Sample last = rows.isEmpty() ? null : rows.get(rows.size() - 1);
+        boolean conflict = false, reset = false;
+        for (int index = 1; index < rows.size(); index++) {
+            Sample previous = rows.get(index - 1), current = rows.get(index);
+            conflict |= current.readTime.equals(previous.readTime) && current.value != previous.value;
+            reset |= current.value < previous.value;
+        }
+        Double usage = null;
+        String status = "not_computable";
+        List<String> notes = new ArrayList<>();
+        if (conflict) notes.add("同一时刻存在冲突示数");
+        else if (reset) notes.add("累计示数回退，可能清零或换表，不计算增量");
+        else if (first == null || last == null || first.readTime.equals(last.readTime)) notes.add("不足两个不同时间的有效采样");
+        else {
+            usage = round(last.value - first.value);
+            status = first.readTime.equals(from) && last.readTime.equals(to) && !truncated ? "comparable" : "partial";
+            if (!first.readTime.equals(from) || !last.readTime.equals(to)) notes.add("边界缺采样，仅显示实际缩短区间的示数增量，不估算整周");
+            if (truncated) notes.add("读取预算内未核验全部采样，暂不计算环比");
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("key", key);
+        result.put("requested", Map.of("from", format(from), "to", format(to)));
+        result.put("sampledFrom", sampleMap(first));
+        result.put("sampledTo", sampleMap(last));
+        result.put("usage", usage);
+        result.put("ratio", null);
+        result.put("ratioNote", "缺少可比较的完整基期");
+        result.put("status", status);
+        result.put("notes", notes);
+        return result;
+    }
+
+    private Map<String, Object> comparisonSummary(List<Map<String, Object>> weeks) {
+        List<Map<String, Object>> valid = weeks.stream().filter(row -> "comparable".equals(row.get("status"))
+                && row.get("usage") instanceof Number).toList();
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("comparableWeeks", valid.size());
+        Map<String, Object> highest = valid.stream().max(Comparator.comparingDouble(row -> ((Number) row.get("usage")).doubleValue()))
+                .map(row -> Map.of("week", row.get("key"), "usage", row.get("usage"))).orElse(null);
+        Map<String, Object> lowest = valid.stream().min(Comparator.comparingDouble(row -> ((Number) row.get("usage")).doubleValue()))
+                .map(row -> Map.of("week", row.get("key"), "usage", row.get("usage"))).orElse(null);
+        result.put("highest", highest);
+        result.put("lowest", lowest);
+        List<Map<String, Object>> changes = new ArrayList<>();
+        for (int index = 1; index < weeks.size(); index++) {
+            Map<String, Object> previous = weeks.get(index - 1), current = weeks.get(index);
+            if (!"comparable".equals(previous.get("status")) || !"comparable".equals(current.get("status"))
+                    || !(previous.get("usage") instanceof Number before)
+                    || !(current.get("usage") instanceof Number after)) continue;
+            changes.add(Map.of("fromWeek", previous.get("key"), "toWeek", current.get("key"),
+                    "direction", after.doubleValue() > before.doubleValue() ? "up"
+                            : after.doubleValue() < before.doubleValue() ? "down" : "flat"));
+        }
+        result.put("changes", changes);
+        return result;
+    }
+
+    private Map<String, Object> monthlyPayload(
+            List<AuthorizedDevice> meters, List<MeterRead> reads, List<MonthWindow> windows, int boundary) {
+        Map<String, MeterRead> byId = new HashMap<>();
+        for (MeterRead read : reads) byId.put(read.device.id(), read);
+        List<Map<String, Object>> meterRows = new ArrayList<>();
+        for (AuthorizedDevice meter : meters) {
+            MeterRead read = byId.get(meter.id());
+            List<Map<String, Object>> all = new ArrayList<>();
+            for (MonthWindow window : windows) {
+                Map<String, Object> period = comparisonPeriod(read == null ? List.of() : read.samples,
+                        window.from, window.to, read == null || read.truncated, window.month.toString());
+                period.put("current", window.current);
+                all.add(period);
+            }
+            for (int index = 1; index < all.size(); index++) {
+                Map<String, Object> previous = all.get(index - 1), current = all.get(index);
+                if (Boolean.TRUE.equals(current.get("current")) || !"comparable".equals(previous.get("status"))
+                        || !"comparable".equals(current.get("status"))) continue;
+                Double before = numberOrNull(previous.get("usage")), after = numberOrNull(current.get("usage"));
+                if (before == null || after == null) continue;
+                if (before == 0d) current.put("ratioNote", "上期零增量，环比不可计算");
+                else {
+                    current.put("ratio", round((after - before) / before * 100));
+                    current.put("ratioNote", "");
+                }
+            }
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("meter", Map.of("id", meter.id(), "name", meter.name(), "location", meter.installAddress()));
+            boolean failed = read == null || (read.samples.isEmpty() && read.truncated);
+            row.put("status", failed ? "failed" : "ready");
+            row.put("includedInTotal", false);
+            row.put("unit", null); row.put("multiplier", null);
+            row.put("baseline", null);
+            row.put("periods", new ArrayList<>(all.subList(1, all.size())));
+            row.put("summary", monthlySummary(all.subList(1, all.size())));
+            row.put("samples", read == null ? 0 : read.samples.size());
+            row.put("complete", read != null && !read.truncated);
+            row.put("latest", read == null ? null : formatNullable(latestSample(read.samples)));
+            row.put("error", failed ? "没有取得有效采样" : "");
+            meterRows.add(row);
+        }
+        List<Map<String, Object>> periods = new ArrayList<>();
+        for (int index = 1; index < windows.size(); index++) {
+            MonthWindow window = windows.get(index);
+            Map<String, Object> period = comparisonPeriod(List.of(), window.from, window.to, true, window.month.toString());
+            period.put("current", window.current);
+            period.put("coveredMeters", 0);
+            period.put("expectedMeters", meters.size());
+            periods.add(period);
+        }
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("reportId", "local-company-energy-" + Integer.toHexString(Objects.hash(windows.get(0).from, windows.get(windows.size() - 1).to)));
+        payload.put("type", "company-energy"); payload.put("source", "company");
+        payload.put("observedAt", clock.instant().toString());
+        payload.put("window", Map.of("from", format(windows.get(0).from), "to", format(windows.get(windows.size() - 1).to)));
+        Map<String, Object> basis = new LinkedHashMap<>();
+        basis.put("field", "epf"); basis.put("timezone", "Asia/Shanghai"); basis.put("boundaryHour", boundary);
+        basis.put("cycle", boundary == 8 ? "月初08:00 → 下月初08:00（采样月）" : "自然月");
+        basis.put("upstream", "ENERGY_HISTORY");
+        payload.put("basis", basis);
+        Map<String, Object> aggregation = new LinkedHashMap<>();
+        aggregation.put("status", "pending"); aggregation.put("label", "当前接入电表月报");
+        aggregation.put("unit", null); aggregation.put("policyVersion", null);
+        aggregation.put("note", "公司合计待计量集合、单位与倍率确认；逐表结果已自动读取");
+        payload.put("aggregation", aggregation);
+        payload.put("baseline", null); payload.put("periods", periods); payload.put("meters", meterRows);
+        payload.put("truncated", reads.stream().anyMatch(MeterRead::truncated));
+        long failed = meterRows.stream().filter(row -> "failed".equals(row.get("status"))).count();
+        payload.put("progress", Map.of("status", failed == 0 ? "ready" : "partial", "total", meters.size(),
+                "completed", meters.size() - failed, "failed", failed));
+        payload.put("explanation", Map.of("status", "pending"));
+        return payload;
+    }
+
+    private static Map<String, Object> monthlySummary(List<Map<String, Object>> periods) {
+        List<Map<String, Object>> valid = periods.stream().filter(row -> !Boolean.TRUE.equals(row.get("current"))
+                && "comparable".equals(row.get("status"))
+                && row.get("usage") instanceof Number).toList();
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("comparableMonths", valid.size());
+        result.put("highest", valid.stream().max(Comparator.comparingDouble(row -> ((Number) row.get("usage")).doubleValue()))
+                .map(row -> Map.of("month", row.get("key"), "usage", row.get("usage"))).orElse(null));
+        result.put("lowest", valid.stream().min(Comparator.comparingDouble(row -> ((Number) row.get("usage")).doubleValue()))
+                .map(row -> Map.of("month", row.get("key"), "usage", row.get("usage"))).orElse(null));
+        List<Map<String, Object>> changes = new ArrayList<>();
+        for (int index = 1; index < periods.size(); index++) {
+            Map<String, Object> previous = periods.get(index - 1), current = periods.get(index);
+            if (Boolean.TRUE.equals(current.get("current"))
+                    || !"comparable".equals(previous.get("status")) || !"comparable".equals(current.get("status"))
+                    || !(previous.get("usage") instanceof Number before)
+                    || !(current.get("usage") instanceof Number after)) continue;
+            changes.add(Map.of("fromMonth", previous.get("key"), "toMonth", current.get("key"),
+                    "direction", after.doubleValue() > before.doubleValue() ? "up"
+                            : after.doubleValue() < before.doubleValue() ? "down" : "flat"));
+        }
+        result.put("changes", changes);
+        return result;
+    }
+
+    private static Double numberOrNull(Object value) {
+        return value instanceof Number number ? number.doubleValue() : null;
     }
 
     private Map<String, Object> comparisonPayload(
@@ -680,6 +1009,8 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         return result;
     }
     private static double round(double value) { return BigDecimal.valueOf(value).setScale(2, RoundingMode.HALF_UP).doubleValue(); }
+
+    private record MonthWindow(YearMonth month, Instant from, Instant to, boolean current) { }
 
     private record Sample(String id, Instant readTime, double value) { }
     private record MeterRead(AuthorizedDevice device, List<Sample> samples, boolean truncated) { }

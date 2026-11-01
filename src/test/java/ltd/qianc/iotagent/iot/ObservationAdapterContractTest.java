@@ -114,4 +114,20 @@ class ObservationAdapterContractTest {
                 })
                 .verify();
     }
+    @Test
+    void unknownEnergyReportProtocolRemainsTypedUnavailable() {
+        ObservationAdapter adapter = ObservationAdapterFactory.webClient(
+                WebClient.builder().build(), new ObservationGatewayRoutes(Map.of()),
+                Duration.ofSeconds(1), IotCallPolicy.passThrough());
+
+        StepVerifier.create(adapter.read(new ObservationRequest(COMPANY,
+                        ObservationOperation.ENERGY_REPORT, Map.of("kind", "statistics"))))
+                .expectErrorSatisfies(error -> {
+                    assertThat(error).isInstanceOf(ObservationUnavailableException.class);
+                    assertThat(((ObservationUnavailableException) error).code())
+                            .isEqualTo("OBSERVATION_UPSTREAM_UNAVAILABLE");
+                    assertThat(((ObservationUnavailableException) error).httpStatus()).isEqualTo(503);
+                })
+                .verify();
+    }
 }

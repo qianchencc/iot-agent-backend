@@ -95,8 +95,8 @@ public final class ObservationController {
 
     @GetMapping("/safety-events/{id}")
     public ResponseEntity<?> safetyEvent(HttpServletRequest request, @PathVariable String id) {
-        ResponseEntity<?> source = requireCompanySource(request, "SAFETY_SOURCE_UNAVAILABLE", "安全台账详情仅支持公司来源");
-        if (source != null) return source;
+        ResponseEntity<?> duplicate = rejectDuplicates(request, "INVALID_REFERENCE", "安全台账记录身份不可重复", "ledger", "deviceId");
+        if (duplicate != null) return duplicate;
         if (request.getParameter("ledger") == null || request.getParameter("deviceId") == null
                 || !List.of("gas", "smoke", "flooding").contains(request.getParameter("ledger"))) {
             return error(400, "INVALID_REFERENCE", "安全台账记录身份无效");
@@ -107,6 +107,8 @@ public final class ObservationController {
     public ResponseEntity<?> safetyEventCameras(HttpServletRequest request, @PathVariable String id) {
         ResponseEntity<?> source = requireCompanySource(request, "SAFETY_SOURCE_UNAVAILABLE", "安全记录监控复盘仅支持公司来源");
         if (source != null) return source;
+        ResponseEntity<?> duplicate = rejectDuplicates(request, "INVALID_REFERENCE", "安全台账记录身份不可重复", "ledger", "deviceId");
+        if (duplicate != null) return duplicate;
         if (request.getParameter("ledger") == null || request.getParameter("deviceId") == null
                 || !List.of("gas", "smoke", "flooding").contains(request.getParameter("ledger"))) {
             return error(400, "INVALID_REFERENCE", "安全台账记录身份无效");

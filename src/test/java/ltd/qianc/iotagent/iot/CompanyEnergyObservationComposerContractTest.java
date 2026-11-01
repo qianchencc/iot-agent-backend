@@ -135,6 +135,52 @@ class CompanyEnergyObservationComposerContractTest {
         assertThat(diff.get("pctNote")).isEqualTo("基期为零，比例不可计算");
     }
 
+    @Test
+    void weeklyComparisonKeepsZeroBaselineUndefinedAndCurrentWeekSeparate() {
+        CompanyEnergyObservationComposer composer = composer((request, pageNumber) -> Mono.just(ObservationResponse.available(
+                page(List.of(row("a", "2026-09-21 08:00:00", 100),
+                        row("b", "2026-09-28 08:00:00", 100),
+                        row("c", "2026-10-05 08:00:00", 110)), true))));
+
+        Map<String, Object> payload = composer.read(new ObservationRequest(COMPANY,
+                ObservationOperation.ENERGY_COMPARISON,
+                Map.of("equipmentId", "meter-1", "weeks", "2", "endDate", "2026-10-05",
+                        "boundaryHour", "8"))).block().payload();
+
+        assertThat(payload.get("type")).isEqualTo("energy-comparison");
+        assertThat(((List<?>) payload.get("weeks"))).hasSize(2);
+        Map<?, ?> first = (Map<?, ?>) ((List<?>) payload.get("weeks")).get(0);
+        assertThat(first.get("usage")).isEqualTo(10.0d);
+        assertThat(first.get("ratio")).isNull();
+        assertThat(first.get("ratioNote")).isEqualTo("基期为零，比例不可计算");
+        assertThat(payload.get("current")).isNotNull();
+        assertThat(((Map<?, ?>) payload.get("basis")).get("unit")).isNull();
+    }
+
+    @Test
+    void monthlyCompanyReportRetainsPerMeterFactsButDoesNotInventPendingAggregate() {
+        CompanyEnergyObservationComposer composer = composer((request, pageNumber) -> Mono.just(ObservationResponse.available(
+                page(List.of(row("a", "2026-07-01 08:00:00", 100),
+                        row("b", "2026-08-01 08:00:00", 110),
+                        row("c", "2026-09-01 08:00:00", 130),
+                        row("d", "2026-10-01 08:00:00", 160)), true))));
+
+        Map<String, Object> payload = composer.read(new ObservationRequest(COMPANY,
+                ObservationOperation.COMPANY_ENERGY_REPORT,
+                Map.of("months", "2", "endMonth", "2026-09", "boundaryHour", "8"))).block().payload();
+
+        assertThat(payload.get("type")).isEqualTo("company-energy");
+        assertThat(((Map<?, ?>) payload.get("aggregation")).get("status")).isEqualTo("pending");
+        assertThat(((Map<?, ?>) payload.get("aggregation")).get("unit")).isNull();
+        List<?> periods = (List<?>) payload.get("periods");
+        assertThat(((Map<?, ?>) periods.get(0)).get("usage")).isNull();
+        assertThat(((Map<?, ?>) periods.get(1)).get("usage")).isNull();
+        Map<?, ?> meter = (Map<?, ?>) ((List<?>) payload.get("meters")).get(0);
+        List<?> meterPeriods = (List<?>) meter.get("periods");
+        assertThat(((Map<?, ?>) meterPeriods.get(0)).get("usage")).isEqualTo(20.0d);
+        assertThat(((Map<?, ?>) meterPeriods.get(1)).get("usage")).isEqualTo(30.0d);
+    }
+
     private static CompanyEnergyObservationComposer composer(PageFixture fixture) {
         return CompanyEnergyObservationComposerFactory.composed(raw(fixture), iot(COMPANY, List.of(METER)), CLOCK);
     }

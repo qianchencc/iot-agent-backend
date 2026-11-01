@@ -29,6 +29,7 @@ import ltd.qianc.iotagent.iot.ObservationStatus;
 import ltd.qianc.iotagent.iot.ObservationUnavailableException;
 import ltd.qianc.iotagent.iot.ReportDownload;
 import ltd.qianc.iotagent.iot.RequestIdentity;
+import ltd.qianc.iotagent.iot.ObservationNotFoundException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.web.reactive.function.client.ClientResponse;
@@ -205,7 +206,7 @@ public final class WebClientObservationAdapter implements ObservationAdapter {
             String deviceId = text(row, "deviceId");
             String deviceName = text(row, "deviceName");
             String occurredAt = safetyTime(row.get("createdAt"));
-            if (id == null || deviceId == null || deviceName == null || occurredAt == null) continue;
+            if (id == null || deviceId == null || occurredAt == null) continue;
             long occurredMillis = instantMillis(occurredAt);
             if (occurredMillis < fromMillis || occurredMillis > toMillis) continue;
             if (requestedDevice != null && !requestedDevice.equals(deviceId)) continue;
@@ -218,7 +219,7 @@ public final class WebClientObservationAdapter implements ObservationAdapter {
             record.put("recordedDeviceName", deviceName);
             Map<String, Object> currentDevice = new LinkedHashMap<>();
             currentDevice.put("name", null);
-            currentDevice.put("location", "");
+            currentDevice.put("location", null);
             record.put("currentDevice", currentDevice);
             record.put("location", "");
             record.put("subtype", "flooding".equals(ledger) ? "water" : ledger);
@@ -228,7 +229,7 @@ public final class WebClientObservationAdapter implements ObservationAdapter {
             records.add(record);
         }
         if (operation == ObservationOperation.SAFETY_EVENT) {
-            if (records.isEmpty()) return Mono.error(unavailable(operation, "当前授权范围内未找到安全台账记录"));
+            if (records.isEmpty()) return Mono.error(new ObservationNotFoundException("当前授权范围内未找到安全台账记录"));
             return Mono.just(ObservationResponse.available(Map.of("source", "company", "record", records.get(0))));
         }
         int limit = parseLimit(parameters.get("limit"));

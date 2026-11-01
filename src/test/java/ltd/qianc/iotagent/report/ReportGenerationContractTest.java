@@ -91,6 +91,40 @@ class ReportGenerationContractTest {
     }
 
 
+    @Test
+    void companyEnergyBlockKeepsAttachmentFactsAndRechecksMeterAuthorization() {
+        MemoryStore store = new MemoryStore();
+        MutableScopeAdapter iot = new MutableScopeAdapter();
+        ReportGenerationService.GeneratedReport saved = ReportGenerationServiceFactory.local(store, mapper, iot)
+                .generate(identity, "conversation-1", "turn-company-energy", "request-company-energy",
+                        companyEnergyContent());
+
+        assertThat(saved.report()).containsEntry("status", "completed");
+        Map<?, ?> block = (Map<?, ?>) ((List<?>) saved.report().get("blocks")).get(0);
+        assertThat(block.get("type")).isEqualTo("company_energy");
+        iot.devices.clear();
+        assertThatThrownBy(() -> ReportServiceFactory.local(store, mapper, iot).read(saved.reportId(), identity))
+                .isInstanceOf(ReportNotFoundException.class);
+    }
+
+    private static Map<String, Object> companyEnergyContent() {
+        Map<String, Object> meter = new LinkedHashMap<>();
+        meter.put("id", "meter-1");
+        Map<String, Object> report = new LinkedHashMap<>();
+        report.put("type", "company-energy");
+        report.put("meters", List.of(meter));
+        report.put("periods", List.of(Map.of("key", "2026-09", "usage", 0d, "status", "comparable")));
+        Map<String, Object> block = new LinkedHashMap<>();
+        block.put("type", "company_energy");
+        block.put("report", report);
+        Map<String, Object> content = new LinkedHashMap<>();
+        content.put("title", "公司电量月报");
+        content.put("status", "completed");
+        content.put("meterIds", List.of("meter-1"));
+        content.put("blocks", List.of(block));
+        return content;
+    }
+
     private static Map<String, Object> content(String status, String meterId) {
         Map<String, Object> meter = new LinkedHashMap<>();
         meter.put("id", meterId);

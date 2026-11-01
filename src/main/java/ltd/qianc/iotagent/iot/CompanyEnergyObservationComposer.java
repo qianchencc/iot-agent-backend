@@ -7,9 +7,9 @@ import reactor.core.publisher.Mono;
  * Local, read-only Company energy business projection.
  *
  * <p>The composer owns aggregation but not HTTP routing. Callers pass the same
- * server-built request used by {@link ObservationAdapter}; only
- * {@link ObservationOperation#COMPANY_ENERGY_DAILY} and
- * {@link ObservationOperation#COMPANY_METER_REPORT} are supported.</p>
+ * server-built request used by {@link ObservationAdapter}. It supports the
+ * local Runtime-compatible Company energy projections: daily, weekly
+ * comparison, monthly report, and scoped meter report.</p>
  */
 public interface CompanyEnergyObservationComposer {
 

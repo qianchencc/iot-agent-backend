@@ -9,6 +9,7 @@ import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import ltd.qianc.iotagent.region.RegionSeenStore;
 import org.junit.jupiter.api.Test;
@@ -95,6 +96,37 @@ class CompanyOfficeObservationAdapterContractTest {
         adapter.read(new ObservationRequest(OFFICE, ObservationOperation.REGION_SEEN,
                 Map.of("regionId", "office-a"))).block();
         assertThat(seen.markedRegion).isEqualTo("office-a");
+    }
+
+    @Test
+    void reusesOfficeContextAcrossRegionReadsWithinShortWindow() {
+        AtomicInteger scopeReads = new AtomicInteger();
+        AtomicInteger regionReads = new AtomicInteger();
+        ObservationAdapter upstream = request -> {
+            regionReads.incrementAndGet();
+            return Mono.just(ObservationResponse.available(Map.of(
+                    "regions", List.of(Map.of("id", "office-a", "name", "一号楼")))));
+        };
+        IotAdapter iot = new IotAdapter() {
+            @Override public Mono<AuthorizedDeviceScope> loadAuthorizedDeviceScope(RequestIdentity identity) {
+                scopeReads.incrementAndGet();
+                return Mono.just(new AuthorizedDeviceScope() {
+                    @Override public RequestIdentity identity() { return identity; }
+                    @Override public IotSource source() { return identity.source(); }
+                    @Override public List<AuthorizedDevice> devices() { return List.of(AC); }
+                });
+            }
+        };
+        ObservationAdapter adapter = ObservationAdapterFactory.composed(
+                upstream, iot, identity -> Mono.just(Map.of()), null,
+                Clock.fixed(Instant.parse("2026-01-01T00:00:00Z"), ZoneOffset.UTC));
+
+        adapter.read(new ObservationRequest(OFFICE, ObservationOperation.REGION_LIST, Map.of())).block();
+        adapter.read(new ObservationRequest(OFFICE, ObservationOperation.REGION_DEVICES,
+                Map.of("regionId", "office-a"))).block();
+
+        assertThat(scopeReads).hasValue(2);
+        assertThat(regionReads).hasValue(1);
     }
 
     @Test

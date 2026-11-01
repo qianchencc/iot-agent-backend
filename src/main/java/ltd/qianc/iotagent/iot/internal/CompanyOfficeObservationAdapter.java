@@ -2,6 +2,9 @@ package ltd.qianc.iotagent.iot.internal;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
@@ -12,6 +15,8 @@ import java.util.Optional;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import ltd.qianc.iotagent.iot.AuthorizedDevice;
 import ltd.qianc.iotagent.iot.AutomationSummaryReader;
 import ltd.qianc.iotagent.iot.CompanyEnergyObservationComposer;
@@ -43,6 +48,8 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
     private static final String REGION_UNAVAILABLE = "当前用户区域暂不可用，请稍后重试";
     private static final long FRESH_MILLIS = 15_000L;
     private static final long STALE_MILLIS = 5 * 60_000L;
+    private static final long REGION_CATALOG_MILLIS = 5_000L;
+    private static final Pattern FLOOR_PATTERN = Pattern.compile("(?:^|[^\\d])(\\d+)(?:楼|层)");
 
     private final ObservationAdapter upstream;
     private final IotAdapter iot;
@@ -52,6 +59,8 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
     private final Clock clock;
     private final ConcurrentMap<String, CacheEntry> dashboardCache = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Mono<ObservationResponse>> dashboardJobs = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, RegionCatalogEntry> regionCatalogCache = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, Mono<List<Map<String, Object>>>> regionCatalogJobs = new ConcurrentHashMap<>();
 
     public CompanyOfficeObservationAdapter(
             ObservationAdapter upstream,
@@ -86,10 +95,187 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
             case REGION_DEVICES -> regionDevices(request);
             case REGION_STATES -> regionStates(request);
             case REGION_SEEN -> regionSeen(request);
-            case COMPANY_ENERGY_DAILY, COMPANY_METER_REPORT ->
+            case SAFETY_EVENT_CAMERAS -> safetyEventCameras(request);
+            case COMPANY_ENERGY_DAILY, COMPANY_ENERGY_REPORT, ENERGY_COMPARISON, COMPANY_METER_REPORT ->
                     energyComposer == null ? upstream.read(request) : energyComposer.read(request);
             default -> upstream.read(request);
         };
+    }
+
+    private Mono<ObservationResponse> safetyEventCameras(ObservationRequest request) {
+        requireSource(request.identity(), IotSource.COMPANY, "SAFETY_SOURCE_UNAVAILABLE",
+                "安全记录监控复盘仅支持公司来源");
+        String eventId = request.parameters().get("id");
+        String ledger = request.parameters().get("ledger");
+        String deviceId = request.parameters().get("deviceId");
+        if (eventId == null || eventId.isBlank() || deviceId == null || deviceId.isBlank()
+                || !List.of("gas", "smoke", "flooding").contains(ledger)) {
+            return Mono.error(new BusinessException("INVALID_REFERENCE", "安全台账记录身份无效", 400));
+        }
+        Map<String, String> eventParameters = new LinkedHashMap<>(request.parameters());
+        eventParameters.put("id", eventId);
+        eventParameters.put("ledger", ledger);
+        eventParameters.put("deviceId", deviceId);
+        return upstream.read(new ObservationRequest(request.identity(), ObservationOperation.SAFETY_EVENT, eventParameters))
+                .flatMap(response -> {
+                    if (response.status() == ObservationStatus.UNAVAILABLE) {
+                        return Mono.error(new ltd.qianc.iotagent.iot.ObservationUnavailableException("安全台账读取失败"));
+                    }
+                    Object raw = response.payload().get("record");
+                    if (!(raw instanceof Map<?, ?>)) {
+                        return Mono.error(new BusinessException("SAFETY_EVENT_UNAVAILABLE",
+                                "当前范围内未找到这条记录", 404));
+                    }
+                    Map<String, Object> record = castMap((Map<?, ?>) raw);
+                    if (!eventId.equals(text(record, "eventId", "id"))
+                            || !deviceId.equals(text(record, "deviceId"))
+                            || !ledger.equals(text(record, "ledger"))) {
+                        return Mono.error(new BusinessException("SAFETY_EVENT_UNAVAILABLE",
+                                "当前范围内未找到这条记录", 404));
+                    }
+                    return iot.loadAuthorizedSafetyScope(request.identity())
+                            .switchIfEmpty(Mono.error(new BusinessException("SAFETY_EVENT_READ_FAILED",
+                                    "安全设备授权范围为空", 503)))
+                            .map(scope -> checkedCompanyScope(scope, request.identity(), "安全设备授权范围无效"))
+                            .flatMap(safety -> iot.loadAuthorizedVideoScope(request.identity())
+                                    .switchIfEmpty(Mono.error(new BusinessException("SAFETY_EVENT_READ_FAILED",
+                                            "监控授权范围为空", 503)))
+                                    .map(scope -> checkedCompanyScope(scope, request.identity(), "监控授权范围无效"))
+                                    .map(video -> safetyCameraPayload(request, record, safety, video)));
+                });
+    }
+
+    private static AuthorizedDeviceScope checkedCompanyScope(
+            AuthorizedDeviceScope scope, RequestIdentity identity, String message) {
+        if (scope == null || scope.source() != IotSource.COMPANY || !identity.equals(scope.identity())) {
+            throw new BusinessException("SAFETY_EVENT_READ_FAILED", message, 503);
+        }
+        return scope;
+    }
+
+    private ObservationResponse safetyCameraPayload(
+            ObservationRequest request,
+            Map<String, Object> sourceRecord,
+            AuthorizedDeviceScope safety,
+            AuthorizedDeviceScope video) {
+        AuthorizedDevice current = safety.device(request.parameters().get("deviceId")).orElse(null);
+        Map<String, Object> currentDevice = currentSafetyDevice(sourceRecord, current);
+        Map<String, Object> record = new LinkedHashMap<>(sourceRecord);
+        record.put("currentDevice", currentDevice);
+        record.put("currentSafetyDevice", currentDevice);
+        record.put("deviceName", text(currentDevice, "name") == null
+                ? text(sourceRecord, "deviceName", "recordedDeviceName") : text(currentDevice, "name"));
+        record.put("location", text(currentDevice, "location") == null ? "" : text(currentDevice, "location"));
+        String occurredAt = text(record, "occurredAt");
+        Instant occurred = parseInstant(occurredAt);
+        String place = safetyPlace(text(currentDevice, "location"), text(currentDevice, "name"));
+        List<AuthorizedDevice> cameras = video.devices().stream()
+                .filter(device -> "video".equalsIgnoreCase(device.kind()) && device.hubDeviceId() != null)
+                .toList();
+        String floor = floorOf(place);
+        List<AuthorizedDevice> samePlace = place.length() > 2
+                ? cameras.stream().filter(camera -> normalized(camera.installAddress(), camera.name()).contains(normalized(place, "")))
+                        .filter(camera -> floor == null || floor.equals(floorOf(cameraText(camera)))).toList()
+                : List.of();
+        List<AuthorizedDevice> matches = !samePlace.isEmpty() ? samePlace
+                : floor == null ? List.of() : cameras.stream()
+                        .filter(camera -> floor.equals(floorOf(cameraText(camera)))).toList();
+        String basis = !samePlace.isEmpty()
+                ? "按当前安装位置匹配“" + place + "”；仅为候选，记录时位置与画面覆盖未核验"
+                : floor == null
+                        ? "当前安装位置未包含可核验楼层；仅返回同地点候选，记录时位置与画面覆盖未核验"
+                        : "按当前安装位置查找同楼层（" + floor + "楼）候选；记录时位置与画面覆盖未核验";
+        List<Map<String, Object>> candidates = new ArrayList<>();
+        if (occurred != null && !occurred.isBefore(clock.instant().minusSeconds(15 * 60L))) {
+            Instant end = occurred.plusSeconds(15 * 60L).isBefore(clock.instant())
+                    ? occurred.plusSeconds(15 * 60L) : clock.instant();
+            if (end.isAfter(occurred)) {
+                DateTimeFormatter format = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSXXX")
+                        .withZone(ZoneOffset.ofHours(8));
+                String beginTime = format.format(occurred.minusSeconds(15 * 60L));
+                String endTime = format.format(end);
+                String label = text(currentDevice, "name");
+                if (label == null) label = text(record, "deviceName", "recordedDeviceName");
+                for (AuthorizedDevice camera : matches) {
+                    Map<String, Object> candidate = new LinkedHashMap<>();
+                    candidate.put("source", "company");
+                    candidate.put("deviceId", camera.id());
+                    candidate.put("name", camera.name());
+                    candidate.put("location", cameraLocation(camera));
+                    candidate.put("beginTime", beginTime);
+                    candidate.put("endTime", endTime);
+                    candidate.put("safetyContext", Map.of(
+                            "type", "safety_event", "ledger", request.parameters().get("ledger"),
+                            "eventId", request.parameters().get("id"), "deviceId", request.parameters().get("deviceId"),
+                            "label", label == null ? "" : label, "occurredAt", occurredAt, "basis", basis));
+                    candidates.add(candidate);
+                }
+            }
+        }
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("source", "company");
+        payload.put("record", record);
+        payload.put("currentSafetyDevice", currentDevice);
+        payload.put("candidates", candidates);
+        payload.put("note", candidates.isEmpty()
+                ? "当前Company目录中未找到同地点或同楼层候选监控；记录时位置未核验，不扩大到Office目录"
+                : "按当前位置匹配，记录时位置未核验；可选直播或回放，默认记录前后各15分钟且不超过当前时间，录像是否存在以播放结果为准");
+        return ObservationResponse.available(payload);
+    }
+
+    private static Map<String, Object> currentSafetyDevice(Map<String, Object> record, AuthorizedDevice current) {
+        Map<String, Object> source = record.get("currentDevice") instanceof Map<?, ?> map
+                ? castMap(map) : new LinkedHashMap<>();
+        Map<String, Object> result = new LinkedHashMap<>();
+        String name = text(source, "name");
+        String location = text(source, "location", "installAddress");
+        if (name == null && current != null) name = current.name();
+        if (location == null && current != null) location = current.installAddress();
+        result.put("name", name);
+        result.put("location", location);
+        return result;
+    }
+
+    private static String safetyPlace(String location, String name) {
+        String value = location == null ? "" : location;
+        if (value.isBlank()) value = name == null ? "" : name;
+        return value.replaceFirst("(燃气|光电感烟|烟感|水浸).*", "").replaceAll("\\s", "");
+    }
+
+    private static String floorOf(String value) {
+        if (value == null) return null;
+        Matcher matcher = FLOOR_PATTERN.matcher(value);
+        return matcher.find() ? matcher.group(1) : null;
+    }
+
+    private static String cameraText(AuthorizedDevice camera) {
+        String paths = camera.locationPaths().stream().map(path -> String.join(" ", path)).reduce("", (a, b) -> a + " " + b);
+        return String.join(" ", camera.installAddress() == null ? "" : camera.installAddress(),
+                camera.name() == null ? "" : camera.name(), paths);
+    }
+
+    private static String normalized(String left, String right) {
+        return (left == null ? "" : left + right).replaceAll("\\s", "");
+    }
+
+    private static String cameraLocation(AuthorizedDevice camera) {
+        if (camera.installAddress() != null && !camera.installAddress().isBlank()
+                && !camera.installAddress().equals(camera.name())) return camera.installAddress();
+        if (!camera.locationPaths().isEmpty()) return String.join(" / ", camera.locationPaths().get(0));
+        return camera.installAddress() == null ? "" : camera.installAddress();
+    }
+
+    private static Instant parseInstant(String value) {
+        if (value == null || value.isBlank()) return null;
+        try {
+            return Instant.parse(value);
+        } catch (RuntimeException ignored) {
+            try {
+                return OffsetDateTime.parse(value).toInstant();
+            } catch (RuntimeException ignoredAgain) {
+                return null;
+            }
+        }
     }
 
     private Mono<ObservationResponse> dashboard(ObservationRequest request) {
@@ -323,11 +509,33 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
 
     private Mono<OfficeContext> officeContext(RequestIdentity identity) {
         return iot.loadAuthorizedDeviceScope(identity)
-                .flatMap(scope -> upstream.read(new ObservationRequest(identity, ObservationOperation.REGION_LIST, Map.of()))
-                        .map(response -> {
-                            if (response.status() != ObservationStatus.AVAILABLE) throw new BusinessException("AUTHORIZED_SCOPE_UNAVAILABLE", REGION_UNAVAILABLE, 503);
-                            return new OfficeContext(scope, parseRegions(response.payload()));
-                        }));
+                .flatMap(scope -> regionCatalog(identity, scope)
+                        .map(regions -> new OfficeContext(scope, regions)));
+    }
+
+    private Mono<List<Map<String, Object>>> regionCatalog(
+            RequestIdentity identity, AuthorizedDeviceScope scope) {
+        String key = regionCatalogKey(identity, scope);
+        long now = clock.millis();
+        RegionCatalogEntry cached = regionCatalogCache.get(key);
+        if (cached != null && now - cached.at() <= REGION_CATALOG_MILLIS) {
+            return Mono.just(cached.regions());
+        }
+        Mono<List<Map<String, Object>>> fresh = upstream.read(new ObservationRequest(
+                        identity, ObservationOperation.REGION_LIST, Map.of()))
+                .flatMap(response -> {
+                    if (response.status() != ObservationStatus.AVAILABLE) {
+                        return Mono.error(new BusinessException(
+                                "AUTHORIZED_SCOPE_UNAVAILABLE", REGION_UNAVAILABLE, 503));
+                    }
+                    return Mono.just(parseRegions(response.payload()));
+                })
+                .doOnNext(regions -> regionCatalogCache.put(
+                        key, new RegionCatalogEntry(regions, clock.millis())))
+                .doFinally(signal -> regionCatalogJobs.remove(key))
+                .cache();
+        Mono<List<Map<String, Object>>> prior = regionCatalogJobs.putIfAbsent(key, fresh);
+        return prior == null ? fresh : prior;
     }
 
     private static List<Map<String, Object>> parseRegions(Map<String, Object> payload) {
@@ -462,6 +670,11 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
         return identity.tenantCode() + "\u0000" + identity.ownerKey() + "\u0000" + (section == null ? "all" : section);
     }
 
+    private static String regionCatalogKey(RequestIdentity identity, AuthorizedDeviceScope scope) {
+        return identity.tenantCode() + "\u0000" + identity.ownerKey() + "\u0000"
+                + identity.source() + "\u0000" + scope.catalogFingerprint();
+    }
+
     private void invalidateDashboard(String key) {
         dashboardCache.remove(key);
     }
@@ -481,6 +694,7 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
     }
 
     private record CacheEntry(ObservationResponse response, long at) { }
+    private record RegionCatalogEntry(List<Map<String, Object>> regions, long at) { }
     private record OfficeContext(AuthorizedDeviceScope scope, List<Map<String, Object>> regions) { }
     private record AreaRead(Map<String, Object> values, List<Map<String, Object>> errors) {
         static AreaRead empty() { return new AreaRead(Map.of(), List.of()); }

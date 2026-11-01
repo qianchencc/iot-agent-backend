@@ -27,8 +27,9 @@ import org.springframework.web.reactive.function.client.WebClient;
  * Customer read-only routes are explicit configuration. Defaults are limited to
  * paths and response envelopes copied from the Runtime observation reader:
  * environment/energy history, safety ledgers, and Office membership regions.
- * Report/video and composed dashboard capabilities remain unavailable until
- * their exact customer protocol is configured.
+ * Company energy comparison/daily/monthly/meter projections are composed from
+ * the configured energy-history seam; unknown energy-report and artifact
+ * protocols remain unavailable until their exact customer contract is known.
  */
 @Configuration(proxyBeanMethods = false)
 public class ObservationAdapterConfiguration {

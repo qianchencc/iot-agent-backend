@@ -7,6 +7,10 @@ import reactor.core.publisher.Mono;
 public interface IotAdapter {
 
     Mono<AuthorizedDeviceScope> loadAuthorizedDeviceScope(RequestIdentity identity);
+    /** Company safety metadata is a narrower read-only scope than the full catalog. */
+    default Mono<AuthorizedDeviceScope> loadAuthorizedSafetyScope(RequestIdentity identity) {
+        return loadAuthorizedDeviceScope(identity);
+    }
     /** Video authorization is a separate Company monitor grant, not the full device catalog. */
     default Mono<AuthorizedDeviceScope> loadAuthorizedVideoScope(RequestIdentity identity) {
         return loadAuthorizedDeviceScope(identity);

@@ -443,6 +443,14 @@ public final class WebClientIotAdapter implements IotAdapter {
     }
 
     @Override
+    public Mono<AuthorizedDeviceScope> loadAuthorizedSafetyScope(RequestIdentity identity) {
+        Objects.requireNonNull(identity, "identity");
+        return identity.source() == IotSource.COMPANY
+                ? execute("load authorized Company safety scope", loadCompanySafetyScope(identity))
+                : loadAuthorizedDeviceScope(identity);
+    }
+
+    @Override
     public Mono<AuthorizedDeviceScope> loadAuthorizedVideoScope(RequestIdentity identity) {
         Objects.requireNonNull(identity, "identity");
         return identity.source() == IotSource.COMPANY
@@ -528,11 +536,7 @@ public final class WebClientIotAdapter implements IotAdapter {
                 .map(rows -> rows.stream().map(this::parseEnvironmentObservation).toList());
         Mono<List<AuthorizedDevice>> energy = page(routes.companyEnergyPath(), Map.of(), identity)
                 .map(rows -> rows.stream().map(this::parseEnergyObservation).toList());
-        Mono<List<AuthorizedDevice>> safety = page(routes.companySafetyPath(), Map.of("type", "FIRE"), identity)
-                .flatMapMany(rows -> Flux.fromIterable(rows)
-                        .filter(WebClientIotAdapter::isFireSafetyRecord)
-                        .concatMap(row -> parseSafetyObservation(row, identity)))
-                .collectList();
+        Mono<List<AuthorizedDevice>> safety = collectCompanySafety(identity);
         return Mono.zip(environment, energy, safety, collectCompanySmart(identity, "lighting"),
                 collectCompanySmart(identity, "access"), collectCompanySmart(identity, "monitor"),
                 collectCompanyAc(identity)).map(tuple -> {
@@ -549,9 +553,22 @@ public final class WebClientIotAdapter implements IotAdapter {
         });
     }
 
+    private Mono<AuthorizedDeviceScope> loadCompanySafetyScope(RequestIdentity identity) {
+        return collectCompanySafety(identity)
+                .map(devices -> (AuthorizedDeviceScope) new AuthorizedDeviceScopeSnapshot(identity, devices));
+    }
+
     private Mono<AuthorizedDeviceScope> loadCompanyVideoScope(RequestIdentity identity) {
         return collectCompanySmart(identity, "monitor")
                 .map(devices -> (AuthorizedDeviceScope) new AuthorizedDeviceScopeSnapshot(identity, devices));
+    }
+
+    private Mono<List<AuthorizedDevice>> collectCompanySafety(RequestIdentity identity) {
+        return page(routes.companySafetyPath(), Map.of("type", "FIRE"), identity)
+                .flatMapMany(rows -> Flux.fromIterable(rows)
+                        .filter(WebClientIotAdapter::isFireSafetyRecord)
+                        .concatMap(row -> parseSafetyObservation(row, identity)))
+                .collectList();
     }
 
     private Mono<List<AuthorizedDevice>> collectCompanySmart(RequestIdentity identity, String family) {
