@@ -416,7 +416,14 @@ export class AgentRunner {
             }],
           }
           : result;
-        emit({ type: capability.event, tool: capability.name, details: eventDetails });
+        const eventPayload: PublicEvent = { type: capability.event, tool: capability.name, details: eventDetails };
+        if (capability.event === "observation.reported" && eventDetails && typeof eventDetails === "object"
+          && !Array.isArray(eventDetails)) {
+          const report = eventDetails as Record<string, unknown>;
+          if (Array.isArray(report.blocks)) eventPayload.blocks = report.blocks;
+          if (typeof report.observedAt === "string") eventPayload.observedAt = report.observedAt;
+        }
+        emit(eventPayload);
         if (capability.status === "java" && isPendingConfirmation(result)) {
           state.confirmation = { tool: capability.name, details: result };
         }

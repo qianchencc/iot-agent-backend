@@ -295,10 +295,10 @@ it("forwards video playback preparation to Java without issuing the stream", asy
     runId: "video-run", toolContextId: "ctx", conversationId: "video-conversation",
     turnId: "t1", source: "company", tenantCode: "tenant", content: "回放大堂摄像头",
   } });
-  const events = run.body.trim().split("\n").map(line => JSON.parse(line) as { type: string; details?: Record<string, unknown> });
+  const events = run.body.trim().split("\n").map(line => JSON.parse(line) as { type: string; blocks?: Array<Record<string, unknown>>; details?: Record<string, unknown> });
   const observation = events.find(event => event.type === "observation.reported");
   assert.ok(observation);
-  assert.equal((observation?.details?.blocks as Array<Record<string, unknown>>)?.[0]?.type, "video_playback");
+  assert.equal(observation?.blocks?.[0]?.type, "video_playback");
   assert.ok(events.some(event => event.type === "run.completed"));
   assert.equal(java.calls.length, 1);
   assert.equal(java.calls[0]?.toolName, "prepare_video_playback");

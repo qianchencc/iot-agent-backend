@@ -2,6 +2,7 @@ package ltd.qianc.iotagent.iot;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
@@ -220,6 +221,11 @@ class IotAdapterContractTest {
                 .block(Duration.ofSeconds(2));
         assertThat(missingBinding.device("hub-ac").orElseThrow().observationOnly()).isTrue();
         assertThat(missingBinding.device("hub-ac").orElseThrow().controlRef()).isNull();
+        DeviceCandidateSet lighting = adapter.findDeviceCandidates(
+                        new RequestIdentity("Bearer company-token", "TENANT-1", IotSource.COMPANY),
+                        new DeviceCandidateQuery("lighting", List.of(), "一层", List.of(), List.of(), null))
+                .block(Duration.ofSeconds(2));
+        assertThat(lighting.devices()).extracting(AuthorizedDevice::id).containsExactly("light-1");
     }
 
     @Test
@@ -351,7 +357,39 @@ class IotAdapterContractTest {
 
         assertThat(result.states()).containsEntry("light-1", true);
     }
+    @Test
+    void companyVideoStateReadsProduceRuntimeObservationBlockWithoutStartingStream() {
+        ExchangeFunction fixture = candidate -> {
+            String path = candidate.url().getPath();
+            String query = candidate.url().getQuery() == null ? "" : candidate.url().getQuery();
+            if (path.endsWith("/monitor/myAreaList") && !query.contains("parentId")) {
+                return Mono.just(json("[{\"id\":\"monitor-root\",\"fullCode\":\"M-1\",\"name\":\"一层\"}]"));
+            }
+            if (path.endsWith("/monitor/myAreaList")) return Mono.just(json("[]"));
+            if (path.endsWith("/monitor/devicePage")) {
+                return Mono.just(json("[{\"id\":\"camera-1\",\"hubDeviceId\":\"hub-camera\",\"name\":\"摄像头\",\"netStatus\":\"ON_LINE\"}]"));
+            }
+            return Mono.just(json("{\"code\":204,\"content\":null}"));
+        };
+        IotAdapter adapter = IotAdapterFactory.webClient(
+                WebClient.builder().exchangeFunction(fixture).build(),
+                IotGatewayRoutes.runtimeCompany("/office-scope", null,
+                        "/micro-api/api/iot-center/device/page", "/micro-api/api/energy/equipment/page",
+                        "/micro-api/api/perception/device/page", "/micro-api/api/iot-center/device",
+                        "/micro-api/api/office/app/device", "/micro-api/api/office/app/device/ac/myAreaList",
+                        "/micro-api/api/office/app/device/ac/devicePage", "/micro-api/api/iot-center/device/page"),
+                Duration.ofSeconds(1), IotCallPolicy.passThrough());
 
+        DeviceStateReadResult result = adapter.readDeviceStates(
+                new RequestIdentity("Bearer company-user", "TENANT-1", IotSource.COMPANY), List.of("camera-1"))
+                .block(Duration.ofSeconds(2));
+
+        assertThat(result.states()).containsEntry("camera-1", true);
+        assertThat(result.blocks()).containsExactly(Map.<String, Object>of(
+                "type", "video",
+                "devices", List.<Map<String, Object>>of(Map.of(
+                        "deviceId", "camera-1", "name", "摄像头", "location", "摄像头", "online", true))));
+    }
     private static ClientResponse json(String body) {
         return ClientResponse.create(HttpStatus.OK)
                 .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)

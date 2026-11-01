@@ -79,16 +79,19 @@ public final class WebClientIotAdapter implements IotAdapter {
     public Mono<DeviceCandidateSet> findDeviceCandidates(RequestIdentity identity, DeviceCandidateQuery query) {
         Objects.requireNonNull(identity, "identity");
         Objects.requireNonNull(query, "query");
-        if (identity.source() != IotSource.OFFICE) return Mono.error(new BusinessException("IOT_SOURCE_UNAVAILABLE", "设备候选仅支持 Office 来源", 404));
-        return execute("find authorized Office device candidates", loadAuthorizedDeviceScope(identity).map(scope -> {
-            List<AuthorizedDevice> matching = scope.devices().stream()
-                    .filter(device -> "unknown".equalsIgnoreCase(query.kind())
-                            || device.kind().equalsIgnoreCase(query.kind()))
-                    .filter(device -> query.deviceIds().isEmpty() || query.deviceIds().contains(device.id()))
-                    .filter(device -> matches(device, query))
-                    .toList();
-            return new DeviceCandidateSet(null, query, matching, true, matching.size());
-        }));
+        if (identity.source() != IotSource.OFFICE && identity.source() != IotSource.COMPANY) {
+            return Mono.error(new BusinessException("IOT_SOURCE_UNAVAILABLE", "设备候选仅支持 Office 或 Company 来源", 404));
+        }
+        return execute("find authorized " + identity.source().wireValue() + " device candidates",
+                loadAuthorizedDeviceScope(identity).map(scope -> {
+                    List<AuthorizedDevice> matching = scope.devices().stream()
+                            .filter(device -> "unknown".equalsIgnoreCase(query.kind())
+                                    || device.kind().equalsIgnoreCase(query.kind()))
+                            .filter(device -> query.deviceIds().isEmpty() || query.deviceIds().contains(device.id()))
+                            .filter(device -> matches(device, query))
+                            .toList();
+                    return new DeviceCandidateSet(null, query, matching, true, matching.size());
+                }));
     }
 
     @Override
@@ -184,9 +187,27 @@ public final class WebClientIotAdapter implements IotAdapter {
                         Map<String, Object> states = new LinkedHashMap<>(tuple.getT1());
                         states.putAll(tuple.getT2());
                         for (AuthorizedDevice device : requested) states.putIfAbsent(device.id(), null);
-                        return new DeviceStateReadResult(states, Instant.now().toString());
+                        String observedAt = Instant.now().toString();
+                        return new DeviceStateReadResult(states, observedAt, companyObservationBlocks(requested, states));
                     });
                 }));
+    }
+
+    private static List<Map<String, Object>> companyObservationBlocks(
+            List<AuthorizedDevice> requested, Map<String, Object> states) {
+        List<Map<String, Object>> videos = requested.stream()
+                .filter(device -> "video".equalsIgnoreCase(device.kind()))
+                .map(device -> {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("deviceId", device.id());
+                    row.put("name", device.name());
+                    row.put("location", device.installAddress() == null || device.installAddress().isBlank()
+                            ? device.name() : device.installAddress());
+                    row.put("online", states.get(device.id()));
+                    return row;
+                })
+                .toList();
+        return videos.isEmpty() ? List.of() : List.of(Map.of("type", "video", "devices", videos));
     }
 
     private static Object companySmartState(AuthorizedDevice device, List<JsonNode> rows) {
@@ -401,9 +422,12 @@ public final class WebClientIotAdapter implements IotAdapter {
     public Mono<DeviceCapabilityInspection> inspectDeviceCapabilities(RequestIdentity identity, DeviceCapabilityRequest request) {
         Objects.requireNonNull(identity, "identity");
         Objects.requireNonNull(request, "request");
-        if (identity.source() != IotSource.OFFICE) return Mono.error(new BusinessException("IOT_SOURCE_UNAVAILABLE", "设备能力仅支持 Office 来源", 404));
+        if (identity.source() != IotSource.OFFICE && identity.source() != IotSource.COMPANY) {
+            return Mono.error(new BusinessException("IOT_SOURCE_UNAVAILABLE", "设备能力仅支持 Office 或 Company 来源", 404));
+        }
         if (request.candidateSets().isEmpty()) return Mono.error(new BusinessException("INVALID_DEVICE_REFERENCE", "设备候选集不能为空"));
-        return execute("inspect authorized Office device capabilities", loadAuthorizedDeviceScope(identity).map(scope -> {
+        return execute("inspect authorized " + identity.source().wireValue() + " device capabilities",
+                loadAuthorizedDeviceScope(identity).map(scope -> {
             List<DeviceCapabilityInspection.DeviceCapability> capabilities = new ArrayList<>();
             for (DeviceCapabilityRequest.DeviceCapabilitySelection selection : request.candidateSets()) {
                 if (selection.deviceIds().isEmpty() || selection.deviceIds().stream().distinct().count() != selection.deviceIds().size()) {
@@ -1034,7 +1058,9 @@ public final class WebClientIotAdapter implements IotAdapter {
     }
 
     private static boolean matches(AuthorizedDevice device, DeviceCandidateQuery query) {
-        String haystack = (device.name() + " " + device.installAddress()).toLowerCase();
+        String locations = device.locationPaths().stream().flatMap(List::stream).reduce("", (left, right) -> left + " " + right);
+        String haystack = (device.name() + " " + (device.installAddress() == null ? "" : device.installAddress())
+                + " " + locations).toLowerCase();
         if (query.scopeText() != null && !query.scopeText().isBlank() && !haystack.contains(query.scopeText().toLowerCase())) return false;
         for (String term : query.scopeTerms()) if (!term.isBlank() && !haystack.contains(term.toLowerCase())) return false;
         if (query.deviceText() != null && !query.deviceText().isBlank() && !haystack.contains(query.deviceText().toLowerCase())) return false;
