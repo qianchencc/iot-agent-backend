@@ -305,7 +305,7 @@ public final class AgentToolBridgeController {
     }
 
     private Map<String, Object> confirmTask(PrincipalInfo principal, Map<String, Object> args) {
-        return tasks.view(tasks.confirm(principal, identifier(args), version(args), source(args).wireValue()));
+        return tasks.confirmProposal(principal, identifier(args), version(args), source(args).wireValue());
     }
     private Map<String, Object> confirmTaskChange(PrincipalInfo principal, Map<String, Object> args) {
         return tasks.confirmChange(principal, identifier(args), version(args), source(args).wireValue());

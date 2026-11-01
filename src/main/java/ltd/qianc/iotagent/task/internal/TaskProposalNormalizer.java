@@ -662,12 +662,13 @@ public final class TaskProposalNormalizer {
         String kind = request.path("kind").asText("");
         if (!REPORT_KINDS.contains(kind)) throw invalid("报表类型不受支持");
         for (String key : iterable(request.fieldNames())) {
-            boolean common = Set.of("kind", "title", "period").contains(key);
+            boolean common = Set.of("kind", "title", "period", "objective").contains(key);
             boolean energy = "energy".equals(kind) && Set.of("comparisons", "scope", "grain").contains(key);
             boolean safety = "safety".equals(kind) && "types".equals(key);
             if (!common && !energy && !safety) throw invalid("报表请求包含不支持的字段：" + key);
         }
         if (request.has("title") && !request.get("title").isTextual()) throw invalid("报表标题无效");
+        if (request.has("objective") && !request.get("objective").isTextual()) throw invalid("报表目标无效");
         JsonNode period = request.get("period");
         if (period == null || !period.isObject()) throw invalid("报表期间无效");
         String periodKind = period.path("kind").asText("");

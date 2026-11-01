@@ -338,19 +338,6 @@ public final class TaskFacade {
         return proposal;
     }
 
-    public TaskFact confirm(PrincipalInfo principal, String proposalId, long expectedVersion) {
-        return confirm(principal, proposalId, expectedVersion, "office");
-    }
-
-    public TaskFact confirm(PrincipalInfo principal, String proposalId, long expectedVersion, String requestedSource) {
-        Map<String, Object> confirmed = confirmProposal(principal, proposalId, expectedVersion, requestedSource);
-        Object taskId = confirmed.get("taskId");
-        if (taskId instanceof String value && !value.isBlank()) {
-            return tasks.find(value).orElseThrow(() -> notFound("TASK_NOT_FOUND", "任务不存在"));
-        }
-        throw new BusinessException("TASK_CONFIRMED_AS_PLAN", "周期任务已创建为计划，请刷新周期安排", 409);
-    }
-
     /**
      * Human-confirmed creation of either a one-time/interval task or a recurring
      * plan. The proposal CAS is followed by an idempotent fact materialization, so
