@@ -28,19 +28,18 @@
 - [前后端缓存责任与失效协作](issues/34-frontend-backend-cache-ownership.md)：Frontend 只对显式只读路径复用快照；手动刷新只 bypass frontend；Backend 逐步提供当前结果和在途合并；写操作局部失效，不改变 MySQL 事实/CAS。
 - [当天实时数据 1 分钟模板与强制现读例外](issues/36-realtime-one-minute-exceptions.md)：当天读请求纳入当前数据范围但不统一复杂化；控制、readback、执行态/详情、视频短地址、会话保持实时/事实语义。
 - [物联 Agent 业务性能目标与缓存地图校正](issues/40-business-performance-slas.md)：时间目标用于发现明显等待并做必要的局部 backend/frontend 逻辑矫正；首屏按可见数据、工具只计 Tool Bridge/Java 执行，不为达成数字强行引入复杂预热、索引或缓存分层。
+- [历史数据深夜刷新与迟到修正](issues/35-historical-data-refresh-policy.md)：历史默认深夜刷新；补数和迟到采样不新增复杂主动失效机制，实际问题再做局部修正；Report Fact 仍由 MySQL 负责。
+- [缓存存储、Redis 协调与 MySQL 事实分工](issues/37-cache-storage-coordination-placement.md)：frontend 使用现有内存读快照，backend 先做简单进程内最新结果/在途合并；Redis不作为全局统一cache，MySQL/SQLite继续承载事实。
+- [缓存验收、故障矩阵与推进顺序](issues/38-cache-acceptance-and-rollout-map.md)：先查明显重复读取/串行等待，再做首屏、常用子页面和工具的必要局部矫正；不先建设统一 Redis cache 或复杂预热平台。
 - 权限撤销不作为独立缓存设计票；现有认证/授权校验作为业务不变量保留，避免为低概率边缘扩张缓存体系。
 
 ## Not yet specified
 
-- backend 最新快照的粒度：按来源/业务能力/设备集合/查询键如何划分，哪些请求可以复用同一份快照。
-- 哪些页面数据必须在 backend 预热，哪些可以在页面打开后并行读取；首屏“所有数据”的精确定义。
-- frontend 1 分钟策略覆盖所有当天读请求时，页面打开、手动刷新、后台轮询和在途请求如何协作并满足 SLA。
-- 设备查询工具的 1 秒预算是否只计算 Tool Bridge/Java 业务执行，是否排除模型生成与网络传输。
-- 手动刷新 2 秒是否要求触发 upstream refresh，还是只要求拿到 backend 最新快照。
-- “日期过了基本不变”是否允许客户补数、迟到采样、历史修正；允许时如何主动/被动失效。
-- 能耗原始分页、能耗报告快照、报告 Business Fact 的存储分工。
-- Redis 是否只做协调，还是承担 backend 跨实例读快照；若承担，key/容量/重启/故障规则如何定义。
-- 多实例刷新锁、指标、容量、重启恢复和 Redis 故障降级的统一契约。
+- 哪些页面数据必须在 backend 提前准备，哪些可以在页面打开后并行读取；首屏可见数据的实际组合和当前慢点仍需业务抽样确认。
+- frontend 1 分钟策略与页面打开、手动刷新、后台轮询、在途请求的具体交互仍需在实现验收中检查。
+- 设备查询工具是否存在实际超过约 1 秒的目录重复读取或串行上游调用，需通过 backend 业务 smoke 定位。
+- 历史补数/迟到采样只有在真实验收发现问题时再补局部修正。
+- 多实例 Redis lease、容量指标和故障降级暂不实施，除非实际部署形态或业务 smoke 证明必要。
 
 ## Out of scope
 

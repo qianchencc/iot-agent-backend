@@ -1,7 +1,7 @@
 # 35: 历史数据深夜刷新与迟到修正
 
 **Type:** grilling
-**Status:** open
+**Status:** resolved
 **Blocked by:** 31, 33
 
 ## Question
@@ -13,3 +13,11 @@
 - Runtime `energy/history-cache.ts`、`energy/report-snapshot-cache.ts`
 - `mp/pages/agent/AGENTS.md` 能耗快照规则
 - 软件说明书中的历史能耗、报告和安全台账案例
+
+## Answer
+
+- 已结束日期/历史窗口默认按深夜刷新，不在普通页面交互路径中反复访问上游。
+- 历史报告与 Report Fact 分开：Report Fact 继续由 MySQL 事实存储负责，不作为普通缓存替代。
+- 客户补数、迟到采样、历史分页变化暂不扩张成复杂主动失效机制；通过下一次深夜刷新或用户主动刷新重新读取 backend。
+- 用户主动刷新只绕过 frontend 快照并重新请求 backend；是否触发上游仍由 backend 当前结果策略决定。
+- 只有实际验收发现历史数据明显错误或补数未能进入结果时，才为对应业务增加局部修正。
