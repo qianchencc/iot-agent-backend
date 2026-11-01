@@ -5,6 +5,10 @@ server:
 spring:
   application:
     name: iot-agent-backend
+  # Customer history pages are large: a 500-row energy page is ~650KB, well past the
+  # 256KB codec default, which surfaced as "上游请求失败" instead of data.
+  codec:
+    max-in-memory-size: ${SPRING_CODEC_MAX_IN_MEMORY_SIZE:8MB}
 
 agent:
   bridge:

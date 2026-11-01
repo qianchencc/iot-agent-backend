@@ -48,6 +48,10 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
     private static final DateTimeFormatter LOCAL_DATE_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final int DEFAULT_MAX_PAGES = 60;
     private static final int DEFAULT_MAX_ROWS = 1_200;
+    /** Meter fan-out is bounded so a large catalog cannot saturate the customer gateway. */
+    private static final int METER_CONCURRENCY = 6;
+    /** Wall-clock budget for one composed energy read; exhaustion is reported as truncation. */
+    private static final long DEFAULT_READ_BUDGET_MS = 3_000L;
     private static final int MAX_DAYS = 90;
     private static final long DAY_SECONDS = 86_400L;
     private static final long TWELVE_HOURS_SECONDS = 43_200L;
@@ -520,6 +524,8 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         LocalDate start = end.minusDays(days - 1L);
         Instant from = local(start).toInstant().minusSeconds(TWELVE_HOURS_SECONDS);
         Instant to = local(end.plusDays(1)).toInstant();
+        // Strict read plus the wall-clock budget: work stops early as truncation instead of
+        // letting one slow catalog hit the upstream timeout and turn the strip into a 503.
         return readAll(request.identity(), meters, from, to)
                 .map(reads -> energyResponse(dailyPayload(meters, reads, start, end, days)));
     }
@@ -635,28 +641,37 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
     }
 
     private Mono<List<MeterRead>> readAll(RequestIdentity identity, List<AuthorizedDevice> meters, Instant from, Instant to) {
+        long deadlineAt = deadline();
         return Flux.fromIterable(meters)
-                .flatMap(meter -> readMeter(identity, meter, from, to), 6)
+                .flatMap(meter -> readMeter(identity, meter, from, to, deadlineAt), METER_CONCURRENCY)
                 .collectList();
     }
 
     private Mono<List<MeterRead>> readAllBestEffort(
             RequestIdentity identity, List<AuthorizedDevice> meters, Instant from, Instant to) {
+        long deadlineAt = deadline();
         return Flux.fromIterable(meters)
-                .flatMap(meter -> readMeter(identity, meter, from, to)
-                        .onErrorResume(error -> Mono.just(new MeterRead(meter, List.of(), true))), 6)
+                .flatMap(meter -> readMeter(identity, meter, from, to, deadlineAt)
+                        .onErrorResume(error -> Mono.just(new MeterRead(meter, List.of(), true))), METER_CONCURRENCY)
                 .collectList();
     }
 
-    private Mono<MeterRead> readMeter(RequestIdentity identity, AuthorizedDevice meter, Instant from, Instant to) {
-        return readPage(identity, meter, from, to, 0, new ArrayList<>(), false, 0)
+    private long deadline() {
+        return System.currentTimeMillis() + DEFAULT_READ_BUDGET_MS;
+    }
+
+    private Mono<MeterRead> readMeter(
+            RequestIdentity identity, AuthorizedDevice meter, Instant from, Instant to, long deadlineAt) {
+        return readPage(identity, meter, from, to, 0, new ArrayList<>(), false, 0, deadlineAt)
                 .map(rows -> new MeterRead(meter, rows.rows, rows.truncated));
     }
 
     private Mono<PageRead> readPage(
             RequestIdentity identity, AuthorizedDevice meter, Instant from, Instant to,
-            int page, List<Sample> collected, boolean truncated, int rowCount) {
-        if (page >= maxPages || rowCount >= maxRows) {
+            int page, List<Sample> collected, boolean truncated, int rowCount, long deadlineAt) {
+        // A bounded wall-clock budget keeps one expensive meter from turning the whole
+        // page into an upstream timeout; exhausted budget is reported as truncation.
+        if (page >= maxPages || rowCount >= maxRows || System.currentTimeMillis() >= deadlineAt) {
             return Mono.just(new PageRead(collected, true));
         }
         Map<String, String> params = new LinkedHashMap<>();
@@ -664,7 +679,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         params.put("from", format(from));
         params.put("to", format(to));
         params.put("page", Integer.toString(page));
-        params.put("size", "100");
+        params.put("size", "500");
         return rawHistory.read(new ObservationRequest(identity, ObservationOperation.ENERGY_HISTORY, params))
                 .flatMap(response -> {
                     if (response.status() == ObservationStatus.UNAVAILABLE) {
@@ -688,7 +703,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
                     if (nextCount >= maxRows || page + 1 >= maxPages) {
                         return Mono.just(new PageRead(unique(collected), true));
                     }
-                    return readPage(identity, meter, from, to, page + 1, collected, pageTruncated, nextCount);
+                    return readPage(identity, meter, from, to, page + 1, collected, pageTruncated, nextCount, deadlineAt);
                 })
                 .onErrorMap(error -> error instanceof BusinessException
                         ? error : new ObservationUnavailableException("计量历史页读取失败"));

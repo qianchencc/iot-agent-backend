@@ -181,6 +181,26 @@ class CompanyEnergyObservationComposerContractTest {
         assertThat(((Map<?, ?>) meterPeriods.get(1)).get("usage")).isEqualTo(30.0d);
     }
 
+    @Test
+    void oversizedEnergyHistoryStopsWithinPageBudgetAndReportsTruncation() {
+        AtomicInteger calls = new AtomicInteger();
+        CompanyEnergyObservationComposer composer = composer((request, pageNumber) -> {
+            calls.incrementAndGet();
+            int size = Integer.parseInt(request.parameters().getOrDefault("size", "20"));
+            List<Map<String, Object>> rows = java.util.stream.IntStream.range(0, size)
+                    .mapToObj(index -> row("r" + pageNumber + "-" + index, "2026-10-01 08:00:00", 100 + index)).toList();
+            return Mono.just(ObservationResponse.available(page(rows, false)));
+        });
+
+        ObservationResponse response = composer.read(new ObservationRequest(COMPANY,
+                ObservationOperation.COMPANY_ENERGY_DAILY, Map.of("days", "30"))).block();
+
+        assertThat(response).isNotNull();
+        // 1,200-row budget at 500 rows/page is 3 page reads; a 20-row page would need 60.
+        assertThat(calls.get()).isLessThanOrEqualTo(4);
+        assertThat(((Map<?, ?>) response.payload().get("budget")).get("truncated")).isEqualTo(true);
+    }
+
     private static CompanyEnergyObservationComposer composer(PageFixture fixture) {
         return CompanyEnergyObservationComposerFactory.composed(raw(fixture), iot(COMPANY, List.of(METER)), CLOCK);
     }
