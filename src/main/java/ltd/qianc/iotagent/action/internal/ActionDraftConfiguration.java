@@ -37,11 +37,13 @@ public class ActionDraftConfiguration {
             ltd.qianc.iotagent.iot.IotAdapter iot,
             @Value("${iot.gateway.base-url}") String baseUrl,
             @Value("${iot.gateway.call-timeout-ms:30000}") long timeoutMs,
+            @Value("${iot.gateway.readback-wait-ms:6000}") long readbackWaitMs,
             @Value("${iot.gateway.company-lighting-down-path:/micro-api/api/office/app/device/lighting/down}") String lightingPath,
             @Value("${iot.gateway.company-access-down-path:/micro-api/api/office/app/device/access/down}") String accessPath,
             @Value("${iot.gateway.company-ac-down-path:/micro-api/api/office/app/device/ac/down}") String acPath) {
         return new WebClientActionCommandGateway(mapper, builder.baseUrl(baseUrl).build(), iot,
-                Duration.ofMillis(Math.max(1, timeoutMs)), lightingPath, accessPath, acPath);
+                Duration.ofMillis(Math.max(1, timeoutMs)), lightingPath, accessPath, acPath,
+                Duration.ofMillis(Math.max(0, readbackWaitMs)));
     }
 
     @Bean

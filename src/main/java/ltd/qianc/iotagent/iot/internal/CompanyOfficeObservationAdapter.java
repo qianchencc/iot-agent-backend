@@ -191,7 +191,7 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
             payload.put("energy", readings(energy, energyRead.values));
         }
         if (section == null || section.equals("summary") || section.equals("alerts")) {
-            payload.put("alerts", Map.of("total", alerts.records.size(), "records", alerts.records));
+            payload.put("alerts", Map.of("total", alerts.total, "records", alerts.records));
         }
         if (section == null || section.equals("summary") || section.equals("automation")) {
             payload.put("automation", automation.value);
@@ -255,7 +255,9 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
             record.putIfAbsent("recordedDeviceName", device.name());
             records.add(record);
         }
-        return new AlertRead(records, errors);
+        int total = records.size();
+        List<Map<String, Object>> visible = records.size() > 50 ? List.copyOf(records.subList(0, 50)) : List.copyOf(records);
+        return new AlertRead(visible, total, errors);
     }
 
     private Mono<AutomationRead> readAutomation(RequestIdentity identity) {
@@ -484,9 +486,9 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
         static AreaRead empty() { return new AreaRead(Map.of(), List.of()); }
         static AreaRead failed(String area, String message) { return new AreaRead(Map.of(), List.of(error(area, message))); }
     }
-    private record AlertRead(List<Map<String, Object>> records, List<Map<String, Object>> errors) {
-        static AlertRead empty() { return new AlertRead(List.of(), List.of()); }
-        static AlertRead failed(String message) { return new AlertRead(List.of(), List.of(error("alerts", message))); }
+    private record AlertRead(List<Map<String, Object>> records, int total, List<Map<String, Object>> errors) {
+        static AlertRead empty() { return new AlertRead(List.of(), 0, List.of()); }
+        static AlertRead failed(String message) { return new AlertRead(List.of(), 0, List.of(error("alerts", message))); }
     }
     private record AutomationRead(Object value, List<Map<String, Object>> errors) {
         static AutomationRead empty() { return new AutomationRead(null, List.of()); }

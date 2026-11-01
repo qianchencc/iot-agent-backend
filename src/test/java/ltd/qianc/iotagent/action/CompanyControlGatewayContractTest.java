@@ -72,6 +72,58 @@ class CompanyControlGatewayContractTest {
         assertThat(result.resultJson()).contains("confirmed");
     }
 
+
+    @Test
+    void freshPreStateSkipsAlreadySatisfiedCommandWithoutCallingUpstream() {
+        AtomicReference<ClientRequest> request = new AtomicReference<>();
+        IotAdapter iot = mock(IotAdapter.class);
+        ActionCommandGateway gateway = gateway(candidate -> {
+            request.set(candidate);
+            return Mono.just(json("{\"code\":0}"));
+        }, iot);
+        AuthorizedDevice ac = new AuthorizedDevice("ac-1", "ac", "会议室空调", "26楼会议室", false,
+                "provider-ac", "ac-1", "hub-ac", "1-2-3", List.of(), List.of(), Map.of());
+
+        ActionDispatchResult result = gateway.dispatch(IDENTITY, scope(ac),
+                "[{\"id\":\"action-1\",\"deviceId\":\"ac-1\",\"kind\":\"ac\",\"command\":{\"power\":\"on\"}}]",
+                Map.of("ac-1", Map.of("power", "on")));
+
+        assertThat(request.get()).isNull();
+        assertThat(result.resultJson()).contains("ALREADY_SATISFIED");
+    }
+
+    @Test
+    void readbackBeforeCommandAtIsUnconfirmedEvenWhenStateMatches() {
+        IotAdapter iot = mock(IotAdapter.class);
+        when(iot.readDeviceStates(IDENTITY, List.of("ac-1")))
+                .thenReturn(Mono.just(new DeviceStateReadResult(Map.of("ac-1", Map.of("power", "on")),
+                        "2020-01-01T00:00:00Z")));
+        ActionCommandGateway gateway = ActionCommandGatewayFactory.webClient(new ObjectMapper(),
+                WebClient.builder().exchangeFunction(candidate -> Mono.just(json("{\"code\":0}"))).build(), iot,
+                Duration.ofSeconds(1), "/lighting", "/access", "/ac", Duration.ZERO);
+        AuthorizedDevice ac = new AuthorizedDevice("ac-1", "ac", "会议室空调", "26楼会议室", false,
+                "provider-ac", "ac-1", "hub-ac", "1-2-3", List.of(), List.of(), Map.of("companyAcActionId", "air"));
+
+        ActionDispatchResult result = gateway.dispatch(IDENTITY, scope(ac),
+                "[{\"id\":\"action-1\",\"deviceId\":\"ac-1\",\"kind\":\"ac\",\"command\":{\"power\":\"on\"}}]",
+                Map.of("ac-1", Map.of("power", "off")));
+
+        assertThat(result.resultJson()).contains("\"outcome\":\"unconfirmed\"");
+    }
+    @Test
+    void accessOnlyAcceptsRuntimeOneShotControlType() {
+        IotAdapter iot = mock(IotAdapter.class);
+        ActionCommandGateway gateway = gateway(candidate -> Mono.just(json("{\"code\":0}")), iot);
+        AuthorizedDevice access = new AuthorizedDevice("door-1", "access", "门禁", "一层", false,
+                "door-control", "door-1", "hub-door", "1-2-3", List.of(), List.of(), Map.of());
+
+        ActionDispatchResult accepted = gateway.dispatch(IDENTITY, scope(access),
+                "[{\"id\":\"action-1\",\"deviceId\":\"door-1\",\"kind\":\"access\",\"command\":{\"controlType\":2}}]");
+        assertThat(accepted.status()).isEqualTo(ActionDraftStatus.ACCEPTED);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> gateway.dispatch(IDENTITY, scope(access),
+                "[{\"id\":\"action-1\",\"deviceId\":\"door-1\",\"kind\":\"access\",\"command\":{\"controlType\":2,\"count\":2}}]"))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
     @Test
     void controlCannotUseADeviceOutsideTheFreshCompanyScope() {
         AtomicReference<ClientRequest> request = new AtomicReference<>();

@@ -17,6 +17,7 @@ import ltd.qianc.iotagent.conversation.ConversationFacade;
 import ltd.qianc.iotagent.conversation.ReportGenerationPort;
 import ltd.qianc.iotagent.error.BusinessException;
 import ltd.qianc.iotagent.iot.DeviceCandidateQuery;
+import ltd.qianc.iotagent.iot.DeviceCandidateSet;
 import ltd.qianc.iotagent.iot.DeviceCapabilityRequest;
 import ltd.qianc.iotagent.iot.IotAdapter;
 import ltd.qianc.iotagent.iot.IotSource;
@@ -442,7 +443,22 @@ public final class AgentToolBridgeController {
         }
         DeviceCandidateQuery query = new DeviceCandidateQuery(text(args, "kind", "unknown"), deviceIds,
                 scopeText, scopeTerms, strings(args.get("nameHints")), nullableText(args, "deviceText"));
-        return mapper.convertValue(iot.findDeviceCandidates(identity(principal, source), query).block(TIMEOUT), Map.class);
+        DeviceCandidateSet candidates = iot.findDeviceCandidates(identity(principal, source), query).block(TIMEOUT);
+        if (candidates == null) throw new BusinessException("IOT_SCOPE_UNAVAILABLE", "设备候选范围暂不可用", 503);
+        Map<String, Object> result = new LinkedHashMap<>(mapper.convertValue(candidates, Map.class));
+        result.put("devices", candidates.devices().stream().map(AgentToolBridgeController::publicDevice).toList());
+        return result;
+    }
+
+    private static Map<String, Object> publicDevice(ltd.qianc.iotagent.iot.AuthorizedDevice device) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("id", device.id());
+        result.put("kind", device.kind());
+        result.put("name", device.name());
+        result.put("location", device.installAddress());
+        result.put("observationOnly", device.observationOnly());
+        result.put("locationPaths", device.locationPaths());
+        return result;
     }
     private static boolean currentScope(String scopeText) {
         return scopeText == null || scopeText.isBlank() || "当前位置".equals(scopeText) || "当前区域".equals(scopeText)

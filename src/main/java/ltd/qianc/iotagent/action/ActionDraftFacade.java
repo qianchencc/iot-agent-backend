@@ -24,6 +24,7 @@ import ltd.qianc.iotagent.auth.PrincipalInfo;
 import ltd.qianc.iotagent.conversation.ConversationEventFact;
 import ltd.qianc.iotagent.conversation.ConversationEventStore;
 import ltd.qianc.iotagent.error.BusinessException;
+import ltd.qianc.iotagent.iot.DeviceStateReadResult;
 import ltd.qianc.iotagent.iot.AuthorizedDevice;
 import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
 import ltd.qianc.iotagent.iot.GatewayAuthorizationException;
@@ -94,12 +95,15 @@ public final class ActionDraftFacade {
         if (idempotencyKey == null || idempotencyKey.isBlank()) {
             throw new BusinessException("INVALID_IDEMPOTENCY_KEY", "Idempotency key is required");
         }
-        String scopedKey = principal.tenantCode() + "\u0000" + ownerKey(principal) + "\u0000" + idempotencyKey;
+        String scopedKey = principal.tenantCode() + "\u0000" + ownerKey(principal)
+                + "\u0000" + iotSource.wireValue() + "\u0000" + idempotencyKey;
         Optional<ActionDraftFact> prior = store.findByIdempotencyKey(scopedKey);
         if (prior.isPresent() && tenantOf(prior.get()).equals(principal.tenantCode())
-                && ownerKey(principal).equals(payload(prior.get()).path("ownerKey").asText(""))) return prior.get();
+                && ownerKey(principal).equals(payload(prior.get()).path("ownerKey").asText(""))
+                && iotSource.wireValue().equals(payload(prior.get()).path("source").asText(""))) return prior.get();
         for (ActionDraftFact existing : store.findByConversation(conversationId)) {
             if (tenantOf(existing).equals(principal.tenantCode())
+                    && iotSource.wireValue().equals(payload(existing).path("source").asText(""))
                     && (existing.status().equals(ActionDraftStatus.EXECUTING.name())
                     || existing.status().equals(ActionDraftStatus.PENDING_CONFIRMATION.name()) && !expired(existing))) {
                 throw new ActionDraftBusyException("当前会话已有待确认草案");
@@ -141,6 +145,15 @@ public final class ActionDraftFacade {
 
     public ActionDraftFact current(PrincipalInfo principal, String draftId) {
         ActionDraftFact draft = find(principal, draftId);
+        return currentChecked(draft, principal);
+    }
+
+    public ActionDraftFact current(PrincipalInfo principal, String draftId, String source) {
+        ActionDraftFact draft = find(principal, draftId, parseSource(source));
+        return currentChecked(draft, principal);
+    }
+
+    private ActionDraftFact currentChecked(ActionDraftFact draft, PrincipalInfo principal) {
         if (draft.status().equals(ActionDraftStatus.PENDING_CONFIRMATION.name()) && expired(draft)) {
             expire(draft);
             return store.find(draft.draftId()).orElse(draft);
@@ -220,7 +233,14 @@ public final class ActionDraftFacade {
 
     /** Confirm is CAS-gated before the fresh scope call, so concurrent confirms cannot dispatch twice. */
     public ActionDraftFact confirm(PrincipalInfo principal, String draftId, Long expectedRevision) {
-        ActionDraftFact initial = find(principal, draftId);
+        return confirmFrom(principal, find(principal, draftId), expectedRevision);
+    }
+
+    public ActionDraftFact confirm(PrincipalInfo principal, String draftId, String source, Long expectedRevision) {
+        return confirmFrom(principal, find(principal, draftId, parseSource(source)), expectedRevision);
+    }
+
+    private ActionDraftFact confirmFrom(PrincipalInfo principal, ActionDraftFact initial, Long expectedRevision) {
         if (terminal(initial)) return initial;
         if (!initial.status().equals(ActionDraftStatus.PENDING_CONFIRMATION.name())) {
             throw new ActionDraftBusyException("Action draft is already executing");
@@ -254,7 +274,35 @@ public final class ActionDraftFacade {
             throw new BusinessException("UNSUPPORTED_ACTION_DRAFT", "Unsupported action draft", 422);
         }
         try {
-            ActionDispatchResult result = gateway.dispatch(new RequestIdentity(principal.authorization(), principal.tenantCode(), source), scope, json(selectedActions));
+            RequestIdentity identity = new RequestIdentity(principal.authorization(), principal.tenantCode(), source);
+            DeviceStateReadResult fresh = readFreshStates(identity, selectedActions);
+            ArrayNode toDispatch = mapper.createArrayNode();
+            ArrayNode satisfiedReceipts = mapper.createArrayNode();
+            ArrayNode satisfiedReadbacks = mapper.createArrayNode();
+            for (JsonNode action : selectedActions) {
+                Object state = fresh.states().get(action.path("deviceId").asText(""));
+                if (!"access".equals(action.path("kind").asText("")) && commandSatisfied(action.path("command"), state)) {
+                    ObjectNode receipt = mapper.createObjectNode();
+                    receipt.put("actionId", action.path("id").asText());
+                    receipt.put("outcome", ActionReceiptOutcome.ALREADY_SATISFIED.name());
+                    receipt.put("reason", "already_satisfied");
+                    satisfiedReceipts.add(receipt);
+                    ObjectNode readback = mapper.createObjectNode();
+                    readback.put("actionId", action.path("id").asText());
+                    readback.put("outcome", "satisfied");
+                    readback.set("observedState", mapper.valueToTree(state));
+                    readback.put("observedAt", fresh.observedAtByDevice()
+                            .getOrDefault(action.path("deviceId").asText(""), fresh.observedAt()));
+                    satisfiedReadbacks.add(readback);
+                } else {
+                    toDispatch.add(action);
+                }
+            }
+            ActionDispatchResult dispatched = toDispatch.isEmpty()
+                    ? new ActionDispatchResult(ActionDraftStatus.NO_CHANGE, resultJson("fixture", "ALREADY_SATISFIED",
+                    mapper.createArrayNode(), mapper.createArrayNode()), false, ActionReceiptOutcome.ALREADY_SATISFIED)
+                    : gateway.dispatch(identity, scope, json(toDispatch), fresh.states());
+            ActionDispatchResult result = mergeDispatch(dispatched, satisfiedReceipts, satisfiedReadbacks, !toDispatch.isEmpty());
             body.put("status", result.status().name());
             ObjectNode resultBody = object(result.resultJson());
             if (!resultBody.has("outcome")) resultBody.put("outcome", result.receiptOutcome().name());
@@ -309,7 +357,32 @@ public final class ActionDraftFacade {
         view.put("turnId", body.path("turnId").asText(null));
         view.put("actions", mapper.convertValue(array(body, "actions"), Object.class));
         view.put("selectedActionIds", mapper.convertValue(array(body, "selectedActionIds"), Object.class));
-        view.put("result", body.has("result") ? mapper.convertValue(body.get("result"), Object.class) : null);
+        if (body.has("result") && body.get("result").isObject()) {
+            ObjectNode result = (ObjectNode) body.get("result").deepCopy();
+            ObjectNode readback = mapper.createObjectNode();
+            ObjectNode observedStates = mapper.createObjectNode();
+            Map<String, String> devicesByAction = actionDevices(draft);
+            String observedAt = null;
+            JsonNode records = result.get("readbacks");
+            if (records != null && records.isArray()) {
+                for (JsonNode record : records) {
+                    String actionId = record.path("actionId").asText("");
+                    if (actionId.isBlank()) continue;
+                    readback.put(actionId, record.path("outcome").asText("unconfirmed"));
+                    if (record.has("observedState")) {
+                        String deviceId = devicesByAction.get(actionId);
+                        if (deviceId != null) observedStates.set(deviceId, record.get("observedState"));
+                    }
+                    if (record.has("observedAt")) observedAt = record.path("observedAt").asText(observedAt);
+                }
+            }
+            result.set("readback", readback);
+            result.set("observedStates", observedStates);
+            if (observedAt != null) result.put("observedAt", observedAt);
+            view.put("result", mapper.convertValue(result, Object.class));
+        } else {
+            view.put("result", null);
+        }
         return view;
     }
 
@@ -317,8 +390,11 @@ public final class ActionDraftFacade {
     public Map<String, Object> deviceStates(PrincipalInfo principal, String draftId) {
         ActionDraftFact draft = current(principal, draftId);
         List<Map<String, Object>> stateList = new ArrayList<>();
-        Map<String, Object> deviceStates = new LinkedHashMap<>();
         Map<String, String> deviceByAction = actionDevices(draft);
+        Map<String, Object> deviceStates = new LinkedHashMap<>();
+        Map<String, String> readback = new LinkedHashMap<>();
+        Map<String, String> observedAtByAction = new LinkedHashMap<>();
+        String observedAt = null;
         if (readbackStore != null) {
             for (ActionReadbackFact fact : readbackStore.findByDraft(draft.draftId())) {
                 Map<String, Object> state = new LinkedHashMap<>();
@@ -328,13 +404,23 @@ public final class ActionDraftFacade {
                 Object observedState = parseObject(fact.observedStateJson());
                 state.put("observedState", observedState);
                 stateList.add(state);
+                readback.put(fact.actionId(), fact.outcome());
+                observedAtByAction.put(fact.actionId(), fact.observedAt());
+                observedAt = fact.observedAt();
                 String deviceId = deviceByAction.get(fact.actionId());
                 if (deviceId != null && !deviceId.isBlank()) deviceStates.put(deviceId, observedState);
             }
         }
-        // `states` is the original durable fact list. `deviceStates` is the
-        // additive projection consumed by the mini-program's device cards.
-        return Map.of("draftId", draft.draftId(), "states", stateList, "deviceStates", deviceStates);
+        // `states` is the original durable fact list. The keyed maps are the
+        // Runtime-compatible additive projection consumed by clients.
+        return Map.of("draftId", draft.draftId(), "states", stateList, "deviceStates", deviceStates,
+                "readback", readback, "observedStates", deviceStates, "observedAt", observedAt == null ? "" : observedAt,
+                "observedAtByAction", observedAtByAction);
+    }
+
+    public Map<String, Object> deviceStates(PrincipalInfo principal, String draftId, String source) {
+        current(principal, draftId, source);
+        return deviceStates(principal, draftId);
     }
 
     private Map<String, String> actionDevices(ActionDraftFact draft) {
@@ -364,10 +450,20 @@ public final class ActionDraftFacade {
                 "readbacks", deviceStates(principal, draft.draftId()).get("states"));
     }
 
+    public Map<String, Object> summary(PrincipalInfo principal, String draftId, String source) {
+        current(principal, draftId, source);
+        return summary(principal, draftId);
+    }
+
     private ActionDraftFact find(PrincipalInfo principal, String draftId) {
+        return find(principal, draftId, null);
+    }
+
+    private ActionDraftFact find(PrincipalInfo principal, String draftId, IotSource source) {
         ActionDraftFact draft = store.find(draftId).orElseThrow(() -> new BusinessException("ACTION_DRAFT_NOT_FOUND", "草案不存在", 404));
         if (!principal.tenantCode().equals(tenantOf(draft))
-                || !ownerKey(principal).equals(payload(draft).path("ownerKey").asText(""))) {
+                || !ownerKey(principal).equals(payload(draft).path("ownerKey").asText(""))
+                || source != null && !source.wireValue().equals(payload(draft).path("source").asText(""))) {
             throw new BusinessException("ACTION_DRAFT_NOT_FOUND", "草案不存在", 404);
         }
         return draft;
@@ -451,10 +547,83 @@ public final class ActionDraftFacade {
             receipts.add(receipt);
         }
         result.set("receipts", receipts);
+        body.set("result", result);
         ActionDraftFact done = cas(executing, body, ActionDraftStatus.INTERRUPTED.name());
         persistExecutionFacts(done, result);
         audit(done, "ACTION_DRAFT_INTERRUPTED");
         return done;
+    }
+
+    private DeviceStateReadResult readFreshStates(RequestIdentity identity, ArrayNode actions) {
+        List<String> ids = actions.valueStream().map(action -> action.path("deviceId").asText(""))
+                .filter(id -> !id.isBlank()).distinct().toList();
+        try {
+            DeviceStateReadResult states = iot.readDeviceStates(identity, ids).block(scopeTimeout);
+            if (states == null) throw new UpstreamUnavailableException("设备状态");
+            return states;
+        } catch (GatewayAuthorizationException error) {
+            throw error;
+        } catch (ActionDraftUnavailableException error) {
+            throw error;
+        } catch (RuntimeException error) {
+            throw new ActionDraftUnavailableException("确认前设备状态暂不可用", error);
+        }
+    }
+
+    private boolean commandSatisfied(JsonNode command, Object state) {
+        if (state == null || command == null || !command.isObject()) return false;
+        JsonNode observed = mapper.valueToTree(state);
+        boolean hasField = false;
+        Iterator<String> fields = command.fieldNames();
+        while (fields.hasNext()) {
+            String field = fields.next();
+            hasField = true;
+            JsonNode expected = command.get(field);
+            JsonNode actual = observed.get(field);
+            if ("closeOrOpen".equals(field) && actual == null && observed.has("power")) {
+                actual = mapper.getNodeFactory().numberNode("on".equals(observed.path("power").asText()) ? 1 : 0);
+            }
+            if (actual == null || !expected.asText().equals(actual.asText())) return false;
+        }
+        return hasField;
+    }
+
+    private ActionDispatchResult mergeDispatch(ActionDispatchResult dispatched, ArrayNode satisfiedReceipts,
+                                               ArrayNode satisfiedReadbacks, boolean dispatchedAny) {
+        ObjectNode result = object(dispatched.resultJson());
+        ArrayNode receipts = mapper.createArrayNode();
+        satisfiedReceipts.forEach(receipts::add);
+        JsonNode gatewayReceipts = result.get("receipts");
+        if (gatewayReceipts != null && gatewayReceipts.isArray()) gatewayReceipts.forEach(receipts::add);
+        ArrayNode readbacks = mapper.createArrayNode();
+        satisfiedReadbacks.forEach(readbacks::add);
+        JsonNode gatewayReadbacks = result.get("readbacks");
+        if (gatewayReadbacks != null && gatewayReadbacks.isArray()) gatewayReadbacks.forEach(readbacks::add);
+        result.set("receipts", receipts);
+        result.set("readbacks", readbacks);
+        if (!result.has("observedStates")) {
+            ObjectNode observedStates = mapper.createObjectNode();
+            for (JsonNode readback : readbacks) {
+                if (readback.has("observedState")) observedStates.set(readback.path("actionId").asText(), readback.get("observedState"));
+            }
+            result.set("observedStates", observedStates);
+        }
+        ActionDraftStatus status = dispatched.status();
+        if (!dispatchedAny) status = ActionDraftStatus.NO_CHANGE;
+        else if (!satisfiedReceipts.isEmpty() && dispatched.status() == ActionDraftStatus.REJECTED) {
+            status = ActionDraftStatus.PARTIALLY_ACCEPTED;
+        }
+        ActionReceiptOutcome outcome = dispatchedAny ? dispatched.receiptOutcome() : ActionReceiptOutcome.ALREADY_SATISFIED;
+        return new ActionDispatchResult(status, result.toString(), dispatched.dispatchStarted(), outcome);
+    }
+
+    private String resultJson(String gateway, String outcome, ArrayNode receipts, ArrayNode readbacks) {
+        ObjectNode result = mapper.createObjectNode();
+        result.put("gateway", gateway);
+        result.put("outcome", outcome);
+        result.set("receipts", receipts);
+        result.set("readbacks", readbacks);
+        return result.toString();
     }
 
     private void persistExecutionFacts(ActionDraftFact draft, ObjectNode result) {
@@ -532,7 +701,8 @@ public final class ActionDraftFacade {
                 if (!power && !switchValue) throw new BusinessException("UNSUPPORTED_ACTION_DRAFT", "照明指令参数无效", 422);
             }
             case "access" -> {
-                if (!command.path("controlType").isIntegralNumber() || command.path("controlType").asInt() != 2) {
+                if (command.size() != 1 || !command.path("controlType").isIntegralNumber()
+                        || command.path("controlType").asInt() != 2) {
                     throw new BusinessException("UNSUPPORTED_ACTION_DRAFT", "门禁指令参数无效", 422);
                 }
             }
@@ -542,9 +712,10 @@ public final class ActionDraftFacade {
                 if (command.has("temperature")) valid &= command.path("temperature").isIntegralNumber()
                         && command.path("temperature").asInt() >= 16 && command.path("temperature").asInt() <= 30;
                 if (command.has("mode")) valid &= command.path("mode").isTextual()
-                        && Set.of("auto", "cool", "heat", "dry", "fan").contains(command.path("mode").textValue());
+                        && Set.of("cool", "heat", "dry", "fan").contains(command.path("mode").textValue());
                 if (command.has("fanSpeed")) valid &= command.path("fanSpeed").isTextual()
                         && Set.of("low", "high", "auto").contains(command.path("fanSpeed").textValue());
+                if ("off".equals(command.path("power").asText(null)) && command.size() > 1) valid = false;
                 if (!command.has("power") && !command.has("temperature") && !command.has("mode") && !command.has("fanSpeed")) valid = false;
                 if (!valid) throw new BusinessException("UNSUPPORTED_ACTION_DRAFT", "空调指令参数无效", 422);
             }

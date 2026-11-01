@@ -65,6 +65,42 @@ class ObservationAdapterContractTest {
     }
 
     @Test
+    void environmentHistoryMapsWindowSamplesAndPartialCoverage() {
+        ExchangeFunction fixture = candidate -> Mono.just(ClientResponse.create(HttpStatus.OK)
+                .header("Content-Type", MediaType.APPLICATION_JSON_VALUE)
+                .body("{\"code\":200,\"content\":{\"content\":[{\"id\":\"e1\",\"deviceCode\":\"site-1\",\"createdAt\":\"2026-10-09 08:00:00\",\"tem\":\"28.5\",\"hum\":null,\"pm25\":\"bad\"}],\"last\":false,\"totalElements\":101}}")
+                .build());
+        ObservationAdapter adapter = ObservationAdapterFactory.webClient(
+                WebClient.builder().exchangeFunction(fixture).build(),
+                new ObservationGatewayRoutes(Map.of(ObservationOperation.ENVIRONMENT_HISTORY, "/customer/environment/history")),
+                Duration.ofSeconds(1), IotCallPolicy.passThrough());
+        ObservationResponse response = adapter.read(new ObservationRequest(COMPANY, ObservationOperation.ENVIRONMENT_HISTORY,
+                Map.of("from", "2026-10-09T00:00:00+08:00", "to", "2026-10-09T23:59:59+08:00", "page", "0"))).block();
+        assertThat(response.status()).isEqualTo(ObservationStatus.PARTIAL);
+        assertThat(response.coverageComplete()).isFalse();
+        Map<?, ?> sample = (Map<?, ?>) ((java.util.List<?>) response.payload().get("samples")).get(0);
+        assertThat(sample.get("recordedAt")).isEqualTo("2026-10-09T00:00:00Z");
+        assertThat(((Map<?, ?>) sample.get("values")).get("temp")).isEqualTo(28.5d);
+        assertThat(((Map<?, ?>) sample.get("values")).get("pm25")).isNull();
+        assertThat(response.payload().get("nextPage")).isEqualTo(1);
+    }
+
+    @Test
+    void upstreamAuthorizationAndServiceFailuresRemainTyped() {
+        for (HttpStatus status : new HttpStatus[] { HttpStatus.UNAUTHORIZED, HttpStatus.SERVICE_UNAVAILABLE }) {
+            ExchangeFunction fixture = candidate -> Mono.just(ClientResponse.create(status).build());
+            ObservationAdapter adapter = ObservationAdapterFactory.webClient(
+                    WebClient.builder().exchangeFunction(fixture).build(),
+                    new ObservationGatewayRoutes(Map.of(ObservationOperation.ENVIRONMENT_HISTORY, "/customer/environment/history")),
+                    Duration.ofSeconds(1), IotCallPolicy.passThrough());
+            Throwable error = org.assertj.core.api.Assertions.catchThrowable(() -> adapter.read(new ObservationRequest(
+                    COMPANY, ObservationOperation.ENVIRONMENT_HISTORY, Map.of())).block());
+            if (status == HttpStatus.UNAUTHORIZED) assertThat(error).isInstanceOf(GatewayAuthorizationException.class);
+            else assertThat(error).isInstanceOf(ObservationUnavailableException.class);
+        }
+    }
+
+    @Test
     void absentRouteFailsClosedAndDoesNotBecomeSuccessfulEmptyPayload() {
         ObservationAdapter adapter = ObservationAdapterFactory.webClient(
                 WebClient.builder().build(), new ObservationGatewayRoutes(Map.of()),

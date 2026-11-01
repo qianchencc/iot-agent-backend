@@ -9,9 +9,15 @@ import java.util.Map;
 
 /** Read-only state projection; unknown state is represented by null, never by false. */
 public record DeviceStateReadResult(Map<String, Object> states, String observedAt,
-                                    List<Map<String, Object>> blocks) {
+                                    List<Map<String, Object>> blocks,
+                                    Map<String, String> observedAtByDevice) {
     public DeviceStateReadResult(Map<String, Object> states, String observedAt) {
-        this(states, observedAt, List.of());
+        this(states, observedAt, List.of(), Map.of());
+    }
+
+    public DeviceStateReadResult(Map<String, Object> states, String observedAt,
+                                 List<Map<String, Object>> blocks) {
+        this(states, observedAt, blocks, Map.of());
     }
 
     public DeviceStateReadResult {
@@ -25,5 +31,12 @@ public record DeviceStateReadResult(Map<String, Object> states, String observedA
             }
         }
         blocks = Collections.unmodifiableList(blockCopy);
+        Map<String, String> observedCopy = new LinkedHashMap<>();
+        if (observedAtByDevice != null) {
+            observedAtByDevice.forEach((id, at) -> {
+                if (id != null && !id.isBlank() && at != null && !at.isBlank()) observedCopy.put(id, at);
+            });
+        }
+        observedAtByDevice = Collections.unmodifiableMap(observedCopy);
     }
 }

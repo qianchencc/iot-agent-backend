@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -38,9 +39,16 @@ public final class WebClientActionCommandGateway implements ActionCommandGateway
     private final String lightingPath;
     private final String accessPath;
     private final String acPath;
+    private final Duration readbackWait;
 
     public WebClientActionCommandGateway(ObjectMapper mapper, WebClient client, IotAdapter iot,
                                          Duration timeout, String lightingPath, String accessPath, String acPath) {
+        this(mapper, client, iot, timeout, lightingPath, accessPath, acPath, Duration.ofSeconds(6));
+    }
+
+    public WebClientActionCommandGateway(ObjectMapper mapper, WebClient client, IotAdapter iot,
+                                         Duration timeout, String lightingPath, String accessPath, String acPath,
+                                         Duration readbackWait) {
         this.mapper = mapper;
         this.client = client;
         this.iot = iot;
@@ -48,27 +56,44 @@ public final class WebClientActionCommandGateway implements ActionCommandGateway
         this.lightingPath = lightingPath;
         this.accessPath = accessPath;
         this.acPath = acPath;
+        this.readbackWait = readbackWait == null || readbackWait.isNegative() ? Duration.ZERO : readbackWait;
     }
 
     @Override
     public ActionDispatchResult dispatch(RequestIdentity identity, AuthorizedDeviceScope scope, String selectedActionsJson) {
+        return dispatch(identity, scope, selectedActionsJson, Map.of());
+    }
+
+    @Override
+    public ActionDispatchResult dispatch(RequestIdentity identity, AuthorizedDeviceScope scope,
+                                         String selectedActionsJson, Map<String, Object> observedStates) {
         ArrayNode actions = readActions(selectedActionsJson);
         validateActions(scope, actions);
         ArrayNode receipts = mapper.createArrayNode();
         List<JsonNode> accepted = new ArrayList<>();
         int rejected = 0;
+        long commandAtMs = observedStates.isEmpty() ? Long.MIN_VALUE : System.currentTimeMillis();
         for (JsonNode action : actions) {
             String actionId = action.path("id").asText("");
             ObjectNode receipt = mapper.createObjectNode();
             receipt.put("actionId", actionId);
+            if (!"access".equals(action.path("kind").asText(""))
+                    && commandSatisfied(action.path("command"), observedStates.get(action.path("deviceId").asText("")))) {
+                receipt.put("outcome", ActionReceiptOutcome.ALREADY_SATISFIED.name());
+                receipts.add(receipt);
+                continue;
+            }
             try {
                 JsonNode response = dispatchOne(identity, scope, action);
                 boolean acceptedResult = accepted(response);
                 receipt.put("outcome", acceptedResult ? ActionReceiptOutcome.ACCEPTED.name() : ActionReceiptOutcome.REJECTED.name());
                 receipt.set("response", response == null ? mapper.createObjectNode() : response);
                 if (acceptedResult) accepted.add(action); else rejected++;
+            } catch (GatewayAuthorizationException authorization) {
+                throw authorization;
+            } catch (ActionDispatchException interrupted) {
+                throw interrupted;
             } catch (RuntimeException error) {
-                if (error instanceof GatewayAuthorizationException authorization) throw authorization;
                 receipt.put("outcome", ActionReceiptOutcome.UNKNOWN.name());
                 receipt.put("error", error.getMessage() == null ? "设备指令结果未知" : error.getMessage());
                 rejected++;
@@ -79,7 +104,26 @@ public final class WebClientActionCommandGateway implements ActionCommandGateway
         result.put("gateway", "customer");
         result.put("outcome", rejected == actions.size() ? "REJECTED" : "ACCEPTED");
         result.set("receipts", receipts);
-        result.set("readbacks", readbacks(identity, accepted));
+        ArrayNode readbacks = readbacks(identity, accepted, commandAtMs);
+        result.set("readbacks", readbacks);
+        ObjectNode readback = mapper.createObjectNode();
+        ObjectNode observedStateMap = mapper.createObjectNode();
+        String observedAt = null;
+        for (JsonNode item : readbacks) {
+            String actionId = item.path("actionId").asText("");
+            if (actionId.isBlank()) continue;
+            readback.put(actionId, item.path("outcome").asText("unconfirmed"));
+            for (JsonNode action : actions) {
+                if (actionId.equals(action.path("id").asText("")) && item.has("observedState")) {
+                    observedStateMap.set(action.path("deviceId").asText(""), item.get("observedState"));
+                    break;
+                }
+            }
+            if (item.has("observedAt")) observedAt = item.path("observedAt").asText(observedAt);
+        }
+        result.set("readback", readback);
+        result.set("observedStates", observedStateMap);
+        if (observedAt != null) result.put("observedAt", observedAt);
         ActionDraftStatus status = rejected == actions.size() ? ActionDraftStatus.REJECTED
                 : rejected > 0 ? ActionDraftStatus.PARTIALLY_ACCEPTED : ActionDraftStatus.ACCEPTED;
         ActionReceiptOutcome overall = rejected == actions.size() ? ActionReceiptOutcome.REJECTED
@@ -92,6 +136,13 @@ public final class WebClientActionCommandGateway implements ActionCommandGateway
             String deviceId = action.path("deviceId").asText("");
             AuthorizedDevice device = scope.device(deviceId).orElseThrow(() -> new IllegalArgumentException("设备不在授权范围"));
             if (device.observationOnly()) throw new IllegalArgumentException("设备不可控");
+            if ("access".equals(action.path("kind").asText(""))) {
+                JsonNode command = action.path("command");
+                if (!command.isObject() || command.size() != 1 || !command.path("controlType").isIntegralNumber()
+                        || command.path("controlType").asInt() != 2) {
+                    throw new IllegalArgumentException("门禁指令参数无效");
+                }
+            }
             requireBinding(device);
         }
     }
@@ -144,6 +195,8 @@ public final class WebClientActionCommandGateway implements ActionCommandGateway
                 fields.add(fieldResult);
             } catch (GatewayAuthorizationException error) {
                 throw error;
+            } catch (ActionDispatchException error) {
+                throw error;
             } catch (RuntimeException error) {
                 ObjectNode fieldResult = mapper.createObjectNode();
                 fieldResult.put("field", field);
@@ -161,9 +214,17 @@ public final class WebClientActionCommandGateway implements ActionCommandGateway
     }
 
     private JsonNode post(RequestIdentity identity, String path, Map<String, ?> body) {
-        return client.post().uri(path)
-                .headers(headers -> identity.gatewayHeaders().forEach(headers::set))
-                .bodyValue(body).exchangeToMono(this::decode).block(timeout);
+        try {
+            return client.post().uri(path)
+                    .headers(headers -> identity.gatewayHeaders().forEach(headers::set))
+                    .bodyValue(body).exchangeToMono(this::decode).block(timeout);
+        } catch (GatewayAuthorizationException error) {
+            throw error;
+        } catch (ActionDispatchException error) {
+            throw error;
+        } catch (RuntimeException error) {
+            throw new ActionDispatchException("上游控制请求中断", error, true);
+        }
     }
 
 
@@ -187,26 +248,32 @@ public final class WebClientActionCommandGateway implements ActionCommandGateway
                 });
     }
 
-    private ArrayNode readbacks(RequestIdentity identity, List<JsonNode> actions) {
+    private ArrayNode readbacks(RequestIdentity identity, List<JsonNode> actions, long commandAtMs) {
         ArrayNode result = mapper.createArrayNode();
         if (actions.isEmpty()) return result;
         List<String> ids = actions.stream().map(action -> action.path("deviceId").asText(""))
                 .filter(id -> !id.isBlank()).distinct().toList();
         try {
+            if (!readbackWait.isZero()) Thread.sleep(readbackWait.toMillis());
             DeviceStateReadResult states = iot.readDeviceStates(identity, ids).block(timeout);
             if (states == null) return unknownReadbacks(actions);
             for (JsonNode action : actions) {
                 String deviceId = action.path("deviceId").asText("");
                 Object state = states.states().get(deviceId);
+                String observedAt = states.observedAtByDevice().getOrDefault(deviceId, states.observedAt());
+                boolean fresh = freshSince(observedAt, commandAtMs);
                 ObjectNode readback = mapper.createObjectNode();
                 readback.put("actionId", action.path("id").asText(""));
-                boolean confirmed = "ac".equals(action.path("kind").asText(""))
+                boolean confirmed = fresh && "ac".equals(action.path("kind").asText(""))
                         && state != null && commandSatisfied(action.path("command"), state);
                 readback.put("outcome", confirmed ? "confirmed" : "unconfirmed");
                 readback.set("observedState", mapper.valueToTree(state == null ? Map.of() : state));
-                readback.put("observedAt", states.observedAt());
+                readback.put("observedAt", observedAt);
                 result.add(readback);
             }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return unknownReadbacks(actions);
         } catch (RuntimeException ignored) {
             return unknownReadbacks(actions);
         }
@@ -215,22 +282,40 @@ public final class WebClientActionCommandGateway implements ActionCommandGateway
 
     private ArrayNode unknownReadbacks(List<JsonNode> actions) {
         ArrayNode result = mapper.createArrayNode();
+        String observedAt = Instant.now().toString();
         for (JsonNode action : actions) {
             ObjectNode readback = mapper.createObjectNode();
             readback.put("actionId", action.path("id").asText(""));
             readback.put("outcome", "unconfirmed");
             readback.set("observedState", mapper.createObjectNode());
+            readback.put("observedAt", observedAt);
             result.add(readback);
         }
         return result;
     }
 
+    private boolean freshSince(String observedAt, long commandAtMs) {
+        try {
+            return Instant.parse(observedAt).toEpochMilli() >= commandAtMs;
+        } catch (RuntimeException ignored) {
+            return false;
+        }
+    }
+
     private boolean commandSatisfied(JsonNode command, Object state) {
+        if (state == null || command == null || !command.isObject()) return false;
         JsonNode observed = mapper.valueToTree(state);
         if (command.has("power") && !command.path("power").asText().equals(observed.path("power").asText())) return false;
         if (command.has("mode") && !command.path("mode").asText().equals(observed.path("mode").asText())) return false;
         if (command.has("fanSpeed") && !command.path("fanSpeed").asText().equals(observed.path("fanSpeed").asText())) return false;
         if (command.has("temperature") && Math.abs(command.path("temperature").asDouble() - observed.path("temperature").asDouble(Double.NaN)) > 0.01) return false;
+        if (command.has("closeOrOpen")) {
+            JsonNode closeOrOpen = observed.get("closeOrOpen");
+            if (closeOrOpen == null && observed.has("power")) {
+                closeOrOpen = mapper.getNodeFactory().numberNode("on".equals(observed.path("power").asText()) ? 1 : 0);
+            }
+            if (closeOrOpen == null || command.path("closeOrOpen").asInt() != closeOrOpen.asInt(Integer.MIN_VALUE)) return false;
+        }
         return command.fieldNames().hasNext();
     }
 

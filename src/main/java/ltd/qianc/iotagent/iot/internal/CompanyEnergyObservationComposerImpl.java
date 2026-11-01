@@ -83,6 +83,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
                     .flatMap(scope -> {
                         validateScope(request.identity(), scope);
                         List<AuthorizedDevice> meters = energyMeters(scope);
+                        if (meters.isEmpty()) return Mono.error(new BusinessException("FORBIDDEN", "当前来源没有公司电表观察范围", 403));
                         if (request.operation() == ObservationOperation.COMPANY_ENERGY_DAILY) {
                             return daily(request, meters);
                         }
@@ -112,7 +113,12 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
             return Mono.error(new ObservationUnavailableException("计量报告时间窗口无效"));
         }
         List<AuthorizedDevice> selected = selectMeters(meters, p);
-        if (selected.isEmpty()) return Mono.error(new ObservationUnavailableException("计量范围内没有授权电表"));
+        if (selected.isEmpty()) {
+            if (!"all".equals(p.getOrDefault("scopeLevel", "all"))) {
+                throw new BusinessException("FORBIDDEN", "所选计量范围不在当前授权范围内", 403);
+            }
+            throw new ObservationUnavailableException("计量范围内没有授权电表");
+        }
         boolean comparison = "comparison".equalsIgnoreCase(p.getOrDefault("kind", "statistics"));
         Instant baseFrom = null, baseTo = null;
         if (comparison) {
@@ -324,7 +330,10 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         payload.put("params", comparisonParams(request, meters, from, to, baseFrom, baseTo));
         payload.put("sides", Map.of("a", sideA, "b", sideB));
         Map<String, Object> diffView = new LinkedHashMap<>();
-        diffView.put("value", diff); diffView.put("pct", bTotal == null || bTotal == 0 || diff == null ? null : round(diff / bTotal * 100));
+        diffView.put("value", diff);
+        diffView.put("pct", bTotal == null || bTotal == 0 || diff == null ? null : round(diff / bTotal * 100));
+        if (bTotal == null) diffView.put("pctNote", "缺少可比较的基期数据");
+        else if (bTotal == 0) diffView.put("pctNote", "基期为零，比例不可计算");
         diffView.put("basis", "total"); diffView.put("unit", "度");
         payload.put("diff", diffView);
         payload.put("meters", comparisonMeters);
@@ -490,6 +499,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         if (raw instanceof Map<?, ?> map) raw = map.get("content");
         if (raw == null) raw = payload.get("rows");
         if (raw == null) raw = payload.get("items");
+        if (raw == null) raw = payload.get("samples");
         if (raw == null) return List.of();
         if (!(raw instanceof List<?> rows)) throw new IllegalArgumentException("计量历史内容不是数组");
         List<Sample> result = new ArrayList<>();
@@ -501,6 +511,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
             String readTime = text(row.get("readTime"));
             if (readTime == null || text(row.get("id")) == null) throw new IllegalArgumentException("计量历史行缺少身份或时间");
             Object rawValue = row.get("epf");
+            if (rawValue == null && row.get("values") instanceof Map<?, ?> values) rawValue = values.get("epf");
             if (rawValue == null) continue;
             double value = number(rawValue);
             result.add(new Sample(text(row.get("id")), instant(readTime), value));

@@ -12,4 +12,14 @@ public interface ActionCommandGateway {
 
     ActionDispatchResult dispatch(RequestIdentity identity, AuthorizedDeviceScope scope, String selectedActionsJson);
 
+    /**
+     * Dispatches actions after the confirmation path has performed its fresh
+     * pre-dispatch state read. Implementations that do not need that evidence
+     * retain the original seam.
+     */
+    default ActionDispatchResult dispatch(RequestIdentity identity, AuthorizedDeviceScope scope,
+                                          String selectedActionsJson, java.util.Map<String, Object> observedStates) {
+        return dispatch(identity, scope, selectedActionsJson);
+    }
+
 }

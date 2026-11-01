@@ -12,6 +12,12 @@ public final class ActionCommandGatewayFactory {
 
     public static ActionCommandGateway webClient(ObjectMapper mapper, WebClient client, IotAdapter iot,
                                                    Duration timeout, String lightingPath, String accessPath, String acPath) {
-        return new WebClientActionCommandGateway(mapper, client, iot, timeout, lightingPath, accessPath, acPath);
+        return webClient(mapper, client, iot, timeout, lightingPath, accessPath, acPath, Duration.ofSeconds(6));
+    }
+
+    public static ActionCommandGateway webClient(ObjectMapper mapper, WebClient client, IotAdapter iot,
+                                                   Duration timeout, String lightingPath, String accessPath, String acPath,
+                                                   Duration readbackWait) {
+        return new WebClientActionCommandGateway(mapper, client, iot, timeout, lightingPath, accessPath, acPath, readbackWait);
     }
 }

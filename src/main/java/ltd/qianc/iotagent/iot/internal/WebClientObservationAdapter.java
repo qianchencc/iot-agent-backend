@@ -2,6 +2,7 @@ package ltd.qianc.iotagent.iot.internal;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
@@ -157,8 +158,11 @@ public final class WebClientObservationAdapter implements ObservationAdapter {
         if (content == null || content.isNull()) {
             return Mono.error(unavailable(operation, "客户观察上游内容格式无效"));
         }
-        if (operation == ObservationOperation.REGION_LIST) {
-            return parseRegions(content, operation);
+        if (operation == ObservationOperation.ENVIRONMENT_HISTORY) {
+            return parseEnvironment(content, operation, parameters);
+        }
+        if (operation == ObservationOperation.ENERGY_HISTORY) {
+            return parseEnergy(content, operation, parameters);
         }
         if (operation == ObservationOperation.SAFETY_EVENTS || operation == ObservationOperation.SAFETY_EVENT) {
             if (!content.isObject()) {
@@ -241,6 +245,28 @@ public final class WebClientObservationAdapter implements ObservationAdapter {
         payload.put("nextCursor", null);
         return Mono.just(ObservationResponse.available(payload));
     }
+
+    private Mono<ObservationResponse> parseEnvironment(JsonNode content, ObservationOperation op, Map<String,String> p) {
+        JsonNode rows=pageRows(content); if(rows==null||!rows.isArray()) return Mono.error(unavailable(op,"环境历史上游分页格式无效"));
+        List<Map<String,Object>> samples=new ArrayList<>(); long from=p.get("from")==null?Long.MIN_VALUE:instantMillis(p.get("from")); long to=p.get("to")==null?Long.MAX_VALUE:instantMillis(p.get("to"));
+        for(JsonNode row:rows){String at=observationTime(row.get("createdAt")); if(at==null)return Mono.error(unavailable(op,"环境历史样本时间格式无效")); if(instantMillis(at)<from||instantMillis(at)>to)continue; String id=text(row,"id"); String device=text(row,"deviceCode"); if(id==null)id=at+":"+(device==null?"site":device); Map<String,Object> values=new LinkedHashMap<>(); values.put("temp",numberOrNull(row.get("tem"))); values.put("humidity",numberOrNull(row.get("hum"))); values.put("pm25",numberOrNull(row.get("pm25"))); values.put("pm10",numberOrNull(row.get("pm101"))); values.put("pm1",numberOrNull(row.get("pm10"))); Map<String,Object> sample=new LinkedHashMap<>(); sample.put("id",id);sample.put("recordedAt",at);sample.put("deviceCode",device);sample.put("values",values);samples.add(sample);}
+        samples.sort(java.util.Comparator.comparing(x->String.valueOf(x.get("recordedAt")))); boolean complete=pageComplete(content,p); boolean last=pageLast(content,p); Map<String,Object> out=new LinkedHashMap<>(); out.put("source","company");out.put("timezone","Asia/Shanghai");out.put("attribution","site");out.put("observedAt",Instant.now().toString()); Map<String,Object> window=new LinkedHashMap<>();window.put("from",p.getOrDefault("from","1970-01-01T00:00:00.000Z"));window.put("to",p.getOrDefault("to","9999-12-31T23:59:59.999Z"));out.put("window",window);out.put("samples",samples);out.put("metrics",environmentMetrics(samples)); Map<String,Object> coverage=new LinkedHashMap<>();coverage.put("complete",complete);coverage.put("readSamples",samples.size());coverage.put("from",samples.isEmpty()?null:samples.get(0).get("recordedAt"));coverage.put("to",samples.isEmpty()?null:samples.get(samples.size()-1).get("recordedAt"));out.put("coverage",coverage);out.put("nextPage",last?null:nextPage(p)); return last?Mono.just(ObservationResponse.available(out)):Mono.just(ObservationResponse.partial(out,List.of(new ltd.qianc.iotagent.iot.ObservationFailure("environment","HISTORY_PARTIAL","环境历史仅读取到当前页")),false));
+    }
+    private Mono<ObservationResponse> parseEnergy(JsonNode content, ObservationOperation op, Map<String,String> p) {
+        JsonNode rows=pageRows(content); if(rows==null||!rows.isArray())return Mono.error(unavailable(op,"计量历史上游分页格式无效")); String equipment=p.getOrDefault("equipmentId",""); List<Map<String,Object>> samples=new ArrayList<>(); long from=p.get("from")==null?Long.MIN_VALUE:instantMillis(p.get("from"));long to=p.get("to")==null?Long.MAX_VALUE:instantMillis(p.get("to"));
+        for(JsonNode row:rows){String rid=text(row,"equipmentId");if(equipment.isBlank()&&rid!=null)equipment=rid;if(rid!=null&&!equipment.isBlank()&&!equipment.equals(rid))continue;String at=observationTime(row.get("readTime"));if(at==null)return Mono.error(unavailable(op,"计量历史样本时间格式无效"));if(instantMillis(at)<from||instantMillis(at)>to)continue;Map<String,Object> values=new LinkedHashMap<>();values.put("epf",numberOrNull(row.get("epf")));values.put("epz",numberOrNull(row.get("epz")));values.put("totalElectric",numberOrNull(row.get("totalElectric")));Map<String,Object> sample=new LinkedHashMap<>();sample.put("id",text(row,"id")==null?at:text(row,"id"));sample.put("equipmentId",rid==null?equipment:rid);sample.put("readTime",at);sample.put("values",values);samples.add(sample);}
+        samples.sort(java.util.Comparator.comparing(x->String.valueOf(x.get("readTime"))));boolean complete=pageComplete(content,p);boolean last=pageLast(content,p);Map<String,Object> meter=new LinkedHashMap<>();meter.put("id",equipment);meter.put("name",firstText(rows,"equipmentName","name"));meter.put("location",firstText(rows,"areaName","installAddress","location"));Map<String,Object> out=new LinkedHashMap<>();out.put("source","company");out.put("timezone","Asia/Shanghai");out.put("observedAt",Instant.now().toString());out.put("meter",meter);out.put("window",Map.of("from",p.getOrDefault("from","1970-01-01T00:00:00.000Z"),"to",p.getOrDefault("to","9999-12-31T23:59:59.999Z")));out.put("fields",List.of(field("epf","反向有功累计示数（epf）"),field("epz","正向有功累计示数（epz）"),field("totalElectric","平台总电量示数（totalElectric）")));out.put("multiplier",null);out.put("samples",samples);out.put("coverage",Map.of("complete",complete,"returned",samples.size()));out.put("nextPage",last?null:nextPage(p));Map<String,Object> latest=samples.isEmpty()?null:samples.get(samples.size()-1);out.put("latestReadTime",latest==null?null:latest.get("readTime"));out.put("latestSample",latest);return last?Mono.just(ObservationResponse.available(out)):Mono.just(ObservationResponse.partial(out,List.of(new ltd.qianc.iotagent.iot.ObservationFailure("energy","HISTORY_PARTIAL","计量历史仅读取到当前页")),false));
+    }
+    private static Map<String,Object> field(String k,String label){Map<String,Object>x=new LinkedHashMap<>();x.put("key",k);x.put("label",label);x.put("unit",null);return x;}
+    private static JsonNode pageRows(JsonNode c){if(c==null||c.isNull())return null;if(c.isArray())return c;JsonNode r=c.get("content");return r!=null&&r.isArray()?r:null;}
+    private static boolean pageComplete(JsonNode c,Map<String,String> p){int page=nextPage(p)-1;if(c!=null&&c.has("last")&&c.get("last").isBoolean())return c.get("last").asBoolean()&&page==0;if(c!=null&&c.has("totalElements")&&c.get("totalElements").isIntegralNumber())return (page+1)*100>=c.get("totalElements").asLong()&&page==0;JsonNode r=pageRows(c);return page==0&&r!=null&&r.size()<100;}
+    private static boolean pageLast(JsonNode c,Map<String,String> p){ if(c!=null&&c.has("last")&&c.get("last").isBoolean())return c.get("last").asBoolean(); if(c!=null&&c.has("totalElements")&&c.get("totalElements").isIntegralNumber())return (nextPage(p))*100>=c.get("totalElements").asLong(); JsonNode r=pageRows(c); return r!=null&&r.size()<100; }
+    private static int nextPage(Map<String,String> p){try{return Math.max(0,Integer.parseInt(p.getOrDefault("page","0")))+1;}catch(NumberFormatException e){return 1;}}
+    private static String firstText(JsonNode rows,String...keys){if(rows==null||!rows.isArray())return "";for(JsonNode row:rows){String v=text(row,keys);if(v!=null)return v;}return "";}
+    private static List<Map<String,Object>> environmentMetrics(List<Map<String,Object>> samples){List<Map<String,Object>>x=new ArrayList<>();metric(samples,x,"temp","温度","°C");metric(samples,x,"humidity","湿度","%");metric(samples,x,"pm25","PM2.5",null);metric(samples,x,"pm10","PM10",null);metric(samples,x,"pm1","PM1.0",null);return x;}
+    private static void metric(List<Map<String,Object>> samples,List<Map<String,Object>> out,String k,String label,String unit){List<Map<String,Object>>v=samples.stream().filter(x->((Map<?,?>)x.get("values")).get(k) instanceof Number).toList();Map<String,Object>m=new LinkedHashMap<>();m.put("key",k);m.put("label",label);m.put("unit",unit);m.put("count",v.size());if(v.isEmpty()){m.put("min",null);m.put("peak",null);}else{double min=v.stream().mapToDouble(x->((Number)((Map<?,?>)x.get("values")).get(k)).doubleValue()).min().orElseThrow();Map<String,Object>peak=v.stream().max(java.util.Comparator.comparingDouble(x->((Number)((Map<?,?>)x.get("values")).get(k)).doubleValue())).orElseThrow();m.put("min",min);m.put("peak",Map.of("value",((Map<?,?>)peak.get("values")).get(k),"at",peak.get("recordedAt")));}out.add(m);}
+    private static Double numberOrNull(JsonNode v){if(v==null||v.isNull())return null;try{double n=v.isNumber()?v.asDouble():Double.parseDouble(v.asText().trim());return Double.isFinite(n)?n:null;}catch(RuntimeException e){return null;}}
+    private static String observationTime(JsonNode v){if(v==null||v.isNull()||!v.isValueNode())return null;String raw=v.asText();try{return OffsetDateTime.parse(raw).toInstant().toString();}catch(RuntimeException e){try{return java.time.LocalDateTime.parse(raw.replace(' ','T'),DateTimeFormatter.ISO_LOCAL_DATE_TIME).toInstant(ZoneOffset.ofHours(8)).toString();}catch(RuntimeException x){return null;}}}
 
     private static int parseLimit(String value) {
         try {

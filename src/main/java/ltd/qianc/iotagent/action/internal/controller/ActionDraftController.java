@@ -11,6 +11,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /** Runtime-compatible action draft routes; control execution remains behind the facade. */
@@ -24,22 +25,26 @@ public final class ActionDraftController {
     }
 
     @GetMapping("/{id}")
-    public Map<String, Object> current(@PathVariable String id) {
-        return facade.view(facade.current(PrincipalContext.getPrincipalInfo(), id));
+    public Map<String, Object> current(@PathVariable String id, @RequestParam(required = false) String source) {
+        return facade.view(source == null ? facade.current(PrincipalContext.getPrincipalInfo(), id)
+                : facade.current(PrincipalContext.getPrincipalInfo(), id, source));
     }
     @GetMapping("/{id}/device-states")
-    public Map<String, Object> deviceStates(@PathVariable String id) {
-        return facade.deviceStates(PrincipalContext.getPrincipalInfo(), id);
+    public Map<String, Object> deviceStates(@PathVariable String id, @RequestParam(required = false) String source) {
+        return source == null ? facade.deviceStates(PrincipalContext.getPrincipalInfo(), id)
+                : facade.deviceStates(PrincipalContext.getPrincipalInfo(), id, source);
     }
 
     @GetMapping("/{id}/summary")
-    public Map<String, Object> summary(@PathVariable String id) {
-        return facade.summary(PrincipalContext.getPrincipalInfo(), id);
+    public Map<String, Object> summary(@PathVariable String id, @RequestParam(required = false) String source) {
+        return source == null ? facade.summary(PrincipalContext.getPrincipalInfo(), id)
+                : facade.summary(PrincipalContext.getPrincipalInfo(), id, source);
     }
 
     @PostMapping("/{id}/summary")
-    public Map<String, Object> regenerateSummary(@PathVariable String id) {
-        return facade.summary(PrincipalContext.getPrincipalInfo(), id);
+    public Map<String, Object> regenerateSummary(@PathVariable String id, @RequestParam(required = false) String source) {
+        return source == null ? facade.summary(PrincipalContext.getPrincipalInfo(), id)
+                : facade.summary(PrincipalContext.getPrincipalInfo(), id, source);
     }
 
 
@@ -70,8 +75,12 @@ public final class ActionDraftController {
     }
 
     @PostMapping("/{id}/confirm")
-    public ResponseEntity<Map<String, Object>> confirm(@PathVariable String id, @RequestBody(required = false) Map<String, Object> body) {
-        var draft = facade.confirm(PrincipalContext.getPrincipalInfo(), id, optionalRevision(body));
+    public ResponseEntity<Map<String, Object>> confirm(@PathVariable String id,
+                                                       @RequestParam(required = false) String source,
+                                                       @RequestBody(required = false) Map<String, Object> body) {
+        var principal = PrincipalContext.getPrincipalInfo();
+        var draft = source == null ? facade.confirm(principal, id, optionalRevision(body))
+                : facade.confirm(principal, id, source, optionalRevision(body));
         int status = "REJECTED".equals(draft.status()) || "INTERRUPTED".equals(draft.status()) ? 502 : 200;
         return ResponseEntity.status(status).body(facade.view(draft));
     }

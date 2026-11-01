@@ -83,6 +83,16 @@ class CompanyEnergyObservationComposerContractTest {
     }
 
     @Test
+    void selectedMeterOutsideCurrentScopeIsForbidden() {
+        CompanyEnergyObservationComposer composer = composer((request, pageNumber) -> Mono.just(ObservationResponse.empty(Map.of())));
+        assertThatThrownBy(() -> composer.read(new ObservationRequest(COMPANY, ObservationOperation.COMPANY_METER_REPORT,
+                Map.of("kind", "statistics", "scopeLevel", "selection", "meterIds", "meter-outside",
+                        "from", "2026-10-02T08:00:00+08:00", "to", "2026-10-03T08:00:00+08:00"))).block())
+                .isInstanceOfSatisfying(ltd.qianc.iotagent.error.BusinessException.class,
+                        error -> assertThat(error.httpStatus()).isEqualTo(403));
+    }
+
+    @Test
     void malformedSampleFailsClosed() {
         CompanyEnergyObservationComposer composer = composer((request, pageNumber) -> Mono.just(ObservationResponse.available(
                 page(List.of(row("1", "not-a-time", 100)), true))));
@@ -109,6 +119,20 @@ class CompanyEnergyObservationComposerContractTest {
         assertThat(((Map<?, ?>) all.get("params")).get("scope").toString()).contains("meterCount=2");
         assertThat(((Map<?, ?>) one.get("params")).get("scope").toString()).contains("meterCount=1");
         assertThat(((Map<?, ?>) one.get("total")).get("value")).isEqualTo(5.0d);
+    }
+
+    @Test
+    void comparisonKeepsAbsoluteDiffAndExplainsZeroBaseline() {
+        CompanyEnergyObservationComposer composer = composer((request, pageNumber) -> Mono.just(ObservationResponse.available(page(List.of(
+                row("a", "2026-10-01 08:00:00", 100), row("b", "2026-10-02 08:00:00", 100), row("c", "2026-10-03 08:00:00", 110)), true))));
+        Map<String, Object> payload = composer.read(new ObservationRequest(COMPANY, ObservationOperation.COMPANY_METER_REPORT,
+                Map.of("kind", "comparison", "scopeLevel", "location", "meterId", "meter-1",
+                        "from", "2026-10-02T08:00:00+08:00", "to", "2026-10-03T08:00:00+08:00",
+                        "baseFrom", "2026-10-01T08:00:00+08:00", "baseTo", "2026-10-02T08:00:00+08:00"))).block().payload();
+        Map<?, ?> diff = (Map<?, ?>) payload.get("diff");
+        assertThat(diff.get("value")).isEqualTo(10.0d);
+        assertThat(diff.get("pct")).isNull();
+        assertThat(diff.get("pctNote")).isEqualTo("基期为零，比例不可计算");
     }
 
     private static CompanyEnergyObservationComposer composer(PageFixture fixture) {
