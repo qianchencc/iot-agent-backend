@@ -49,6 +49,8 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
     private static final long FRESH_MILLIS = 15_000L;
     private static final long STALE_MILLIS = 5 * 60_000L;
     private static final long REGION_CATALOG_MILLIS = 5_000L;
+    /** Energy is read-only and changes at sampling boundaries, so one minute of reuse is safe. */
+    private static final long ENERGY_CACHE_MILLIS = 60_000L;
     private static final Pattern FLOOR_PATTERN = Pattern.compile("(?:^|[^\\d])(\\d+)(?:楼|层)");
 
     private final ObservationAdapter upstream;
@@ -61,6 +63,8 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
     private final ConcurrentMap<String, Mono<ObservationResponse>> dashboardJobs = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, RegionCatalogEntry> regionCatalogCache = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Mono<List<Map<String, Object>>>> regionCatalogJobs = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, CacheEntry> energyCache = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, Mono<ObservationResponse>> energyJobs = new ConcurrentHashMap<>();
 
     public CompanyOfficeObservationAdapter(
             ObservationAdapter upstream,
@@ -97,13 +101,64 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
             case REGION_SEEN -> regionSeen(request);
             case SAFETY_EVENT_CAMERAS -> safetyEventCameras(request);
             case COMPANY_ENERGY_DAILY, COMPANY_ENERGY_REPORT, ENERGY_COMPARISON, COMPANY_METER_REPORT ->
-                    energyComposer == null ? upstream.read(request) : energyComposer.read(request);
-            case ENERGY_REPORT ->
-                    energyComposer == null ? upstream.read(request) : energyComposer.readEnergyReport(request);
+                    energy(request);
+            case ENERGY_REPORT -> energy(request);
             default -> upstream.read(request);
         };
 
     }
+
+    /**
+     * Energy results are the most expensive read in the product: a company-wide daily window
+     * walks the whole tenant sample stream. Reuse the last successful composition for a minute
+     * and merge concurrent callers, so opening the page never repeats that work.
+     */
+    private Mono<ObservationResponse> energy(ObservationRequest request) {
+        String key = energyCacheKey(request);
+        long now = clock.millis();
+        energyCache.forEach((cacheKey, entry) -> {
+            if (now - entry.at() > ENERGY_CACHE_MILLIS) energyCache.remove(cacheKey, entry);
+        });
+        CacheEntry cached = energyCache.get(key);
+        if (cached != null && now - cached.at() <= ENERGY_CACHE_MILLIS) {
+            return Mono.just(cached.response());
+        }
+        Mono<ObservationResponse> fresh = composeEnergy(request)
+                .doOnNext(response -> {
+                    // Partial or truncated results are deliberately not reused.
+                    if (response.status() == ObservationStatus.AVAILABLE
+                            && response.payload().get("errors") == null) {
+                        energyCache.put(key, new CacheEntry(response, clock.millis()));
+                    }
+                })
+                .doOnError(error -> {
+                    if (isAuthorizationFailure(error)) energyCache.remove(key);
+                })
+                .doFinally(signal -> energyJobs.remove(key))
+                .cache();
+        Mono<ObservationResponse> prior = energyJobs.putIfAbsent(key, fresh);
+        return prior == null ? fresh : prior;
+    }
+
+    private Mono<ObservationResponse> composeEnergy(ObservationRequest request) {
+        if (energyComposer == null) return upstream.read(request);
+        return request.operation() == ObservationOperation.ENERGY_REPORT
+                ? energyComposer.readEnergyReport(request)
+                : energyComposer.read(request);
+    }
+
+    private static String energyCacheKey(ObservationRequest request) {
+        RequestIdentity identity = request.identity();
+        StringBuilder key = new StringBuilder()
+                .append(identity.tenantCode()).append('\u0000')
+                .append(identity.ownerKey()).append('\u0000')
+                .append(identity.source()).append('\u0000')
+                .append(request.operation());
+        new java.util.TreeMap<>(request.parameters())
+                .forEach((name, value) -> key.append('\u0001').append(name).append('=').append(value));
+        return key.toString();
+    }
+
     private Mono<ObservationResponse> safetyEventCameras(ObservationRequest request) {
         requireSource(request.identity(), IotSource.COMPANY, "SAFETY_SOURCE_UNAVAILABLE",
                 "安全记录监控复盘仅支持公司来源");
