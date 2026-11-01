@@ -1,7 +1,7 @@
 # 43: 已验证授权目录读取短时复用
 
 **Type:** task
-**Status:** implemented-locally-pending-real-smoke
+**Status:** resolved
 **Blocked by:** 41, 42
 
 ## Goal
@@ -19,4 +19,4 @@
 - Office `/regions` 和 Office 区域设备/状态连续读取共享成功目录；Company 控制/候选目录保持 fresh 读取。
 - 不同 tenant、ownerKey、source 不互相命中。
 - 上游失败不产生成功缓存；过期后重新读取。
-- 目标测试已通过；待本地真实接口补充冷热请求证据。
+- 本地真实接口已补充：Office `/regions` 连续请求约 4.19s → 0.04s；后端全量测试和打包通过。
