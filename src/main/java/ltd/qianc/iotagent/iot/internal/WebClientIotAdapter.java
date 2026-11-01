@@ -48,6 +48,10 @@ import reactor.core.publisher.Mono;
 public final class WebClientIotAdapter implements IotAdapter {
 
     private static final ObjectMapper JSON = new ObjectMapper();
+    private static final Set<String> GENERIC_SCOPE_TERMS = Set.of(
+            "公司", "company", "企业", "当前公司", "公司授权范围", "公司授权范围内",
+            "公司范围", "公司范围内", "授权范围", "授权区域", "不限位置",
+            "全部", "全部设备", "所有", "所有设备", "all", "all devices");
     private static final long READ_SCOPE_REUSE_MILLIS = 5_000L;
     private final WebClient webClient;
     private final IotGatewayRoutes routes;
@@ -1117,8 +1121,10 @@ public final class WebClientIotAdapter implements IotAdapter {
 
     private static boolean genericScopeTerm(String value) {
         String normalized = value == null ? "" : value.replaceAll("\\s+", "").trim().toLowerCase();
-        return Set.of("公司", "company", "企业", "当前公司", "公司授权范围", "授权范围",
-                "全部", "全部设备", "all", "all devices").contains(normalized);
+        return GENERIC_SCOPE_TERMS.contains(normalized)
+                || normalized.matches("^(?:当前)?公司(?:授权)?(?:范围|目录|区域)(?:内)?(?:全部|所有)?(?:环境设备)?$")
+                || normalized.matches("^(?:当前)?公司(?:全部|所有)(?:授权)?(?:范围|目录|区域)(?:内)?(?:环境设备)?$")
+                || normalized.matches("^(?:全部|所有|不限位置)(?:公司|环境设备|公司区域)?$");
     }
 
     private static Map<String, String> withPage(Map<String, String> params, int page) {
