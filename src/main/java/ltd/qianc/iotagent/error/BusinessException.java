@@ -8,18 +8,26 @@ package ltd.qianc.iotagent.error;
 public class BusinessException extends RuntimeException {
 
     private final String code;
-    private final String recovery;
+    private final Object recovery;
     private final int httpStatus;
 
     public BusinessException(String code, String message) {
-        this(code, message, null, 400);
+        this(code, message, (String) null, 400);
     }
 
     public BusinessException(String code, String message, int httpStatus) {
-        this(code, message, null, httpStatus);
+        this(code, message, (String) null, httpStatus);
     }
 
     public BusinessException(String code, String message, String recovery, int httpStatus) {
+        this(code, message, (Object) recovery, httpStatus);
+    }
+
+    public BusinessException(String code, String message, java.util.Map<String, Object> recovery, int httpStatus) {
+        this(code, message, (Object) recovery, httpStatus);
+    }
+
+    private BusinessException(String code, String message, Object recovery, int httpStatus) {
         super(message);
         this.code = code;
         this.recovery = recovery;
@@ -30,7 +38,7 @@ public class BusinessException extends RuntimeException {
         return code;
     }
 
-    public String recovery() {
+    public Object recovery() {
         return recovery;
     }
 

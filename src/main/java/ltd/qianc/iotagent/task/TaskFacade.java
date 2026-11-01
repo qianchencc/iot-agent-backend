@@ -706,16 +706,16 @@ public final class TaskFacade {
     private TaskFact taskForProposal(PrincipalInfo principal, String proposalId, String expectedSource) {
         TaskFact task = tasks.findByIdempotencyKey("task:" + proposalId)
                 .orElseThrow(() -> new BusinessException("TASK_RECOVERY_REQUIRED", "任务确认已记账，正在恢复任务事实",
-                        "请稍后重试或刷新任务状态", 503));
+                        Map.of("kind", "confirmation_blocked", "message", "请稍后重试或刷新任务状态"), 503));
         if (!owns(task.payloadJson(), principal)) {
             throw new BusinessException("TASK_RECOVERY_REQUIRED", "任务确认已记账，正在恢复任务事实",
-                    "请稍后重试或刷新任务状态", 503);
+                    Map.of("kind", "confirmation_blocked", "message", "请稍后重试或刷新任务状态"), 503);
         }
         try {
             assertSource(task.payloadJson(), expectedSource);
         } catch (BusinessException mismatch) {
             throw new BusinessException("TASK_RECOVERY_REQUIRED", "任务确认已记账，正在恢复任务事实",
-                    "请稍后重试或刷新任务状态", 503);
+                    Map.of("kind", "confirmation_blocked", "message", "请稍后重试或刷新任务状态"), 503);
         }
         return task;
     }
