@@ -23,7 +23,7 @@
 - backend cache 与 frontend cache 已明确分层：前者负责 upstream 访问复用/后端最新快照，后者负责 UI 使用期间减少 backend 请求；frontend 手动刷新不强制 upstream refresh。
 - 当前数据的“实时”是更新/读取策略，不等于每个请求全量读取；backend 约 5 秒更新能力与 frontend 约 1 分钟使用策略必须分别建模。
 - [Backend 最新快照刷新机制](issues/39-backend-refresh-mechanism.md)：采用组合策略；高频核心当前数据按业务能力定时刷新，低频/带查询条件读取按请求触发并在约 5 秒内合并在途或复用最近结果。
-- [物联 Agent 业务性能 SLA 与缓存地图校正](issues/40-business-performance-slas.md)：缓存地图必须以首屏 3 秒、子页面 1 秒、设备查询工具 1 秒、手动刷新 2 秒为业务约束；常规交互不能等待上游全量读取。
+- [物联 Agent 业务性能 SLA 与缓存地图校正](issues/40-business-performance-slas.md)：首屏 3 秒按首屏可见数据验收；主要子页面通常不超过 1 秒；设备查询工具 1 秒只计 Tool Bridge/Java 执行；手动刷新不超过 2 秒。SLA 优先于后端实现结构，普通交互不得等待上游全量读取。
 - 权限撤销不作为独立缓存设计票；现有认证/授权校验作为业务不变量保留，避免为低概率边缘扩张缓存体系。
 
 ## Not yet specified
