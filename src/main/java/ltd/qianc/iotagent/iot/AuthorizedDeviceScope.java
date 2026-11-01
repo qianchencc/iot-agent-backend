@@ -50,4 +50,22 @@ public interface AuthorizedDeviceScope {
     default Optional<AuthorizedDevice> device(String id) {
         return devices().stream().filter(device -> device.id().equals(id)).findFirst();
     }
+
+    /** Narrows the server-verified scope without creating a second authorization convention. */
+    default AuthorizedDeviceScope retain(java.util.function.Predicate<AuthorizedDevice> predicate) {
+        return of(identity(), source(), devices().stream().filter(predicate).toList());
+    }
+
+    static AuthorizedDeviceScope of(RequestIdentity identity, IotSource source, List<AuthorizedDevice> devices) {
+        return new ScopedAuthorizedDevices(identity, source, devices);
+    }
+}
+
+record ScopedAuthorizedDevices(RequestIdentity identity, IotSource source, List<AuthorizedDevice> devices)
+        implements AuthorizedDeviceScope {
+    ScopedAuthorizedDevices {
+        java.util.Objects.requireNonNull(identity, "identity");
+        java.util.Objects.requireNonNull(source, "source");
+        devices = List.copyOf(devices == null ? List.of() : devices);
+    }
 }

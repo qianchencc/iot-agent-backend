@@ -20,6 +20,15 @@ public final class IotAdapterFactory {
         return new WebClientIotAdapter(webClient, routes, callTimeout, callPolicy);
     }
 
+    public static IotAdapter webClient(
+            WebClient webClient,
+            IotGatewayRoutes routes,
+            Duration callTimeout,
+            IotCallPolicy callPolicy,
+            DeviceCandidateSetStore candidateStore) {
+        return new WebClientIotAdapter(webClient, routes, callTimeout, callPolicy, candidateStore);
+    }
+
     public static IotAdapter failClosed(String reason) {
         return new FailClosedIotAdapter(Objects.requireNonNull(reason, "reason"));
     }

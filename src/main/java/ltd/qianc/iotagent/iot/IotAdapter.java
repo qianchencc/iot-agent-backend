@@ -16,14 +16,40 @@ public interface IotAdapter {
         return loadAuthorizedDeviceScope(identity);
     }
 
-    /** Runtime-compatible Office candidate discovery, always intersected with server scope. */
+    /** Runtime-compatible candidate discovery, always intersected with server scope. */
     default Mono<DeviceCandidateSet> findDeviceCandidates(RequestIdentity identity, DeviceCandidateQuery query) {
         return Mono.error(new UpstreamUnavailableException("物联设备发现适配器未接入"));
+    }
+
+    /**
+     * Discovers and persists a candidate set bound to the current conversation.
+     * Implementations must fail closed rather than return an unpersisted set.
+     */
+    default Mono<DeviceCandidateSet> findDeviceCandidates(
+            RequestIdentity identity, DeviceCandidateQuery query, DeviceCandidateBinding binding) {
+        return findDeviceCandidates(identity, query);
+    }
+
+    /** Real Office membership used to validate a server-bound focus region. */
+    default Mono<List<OfficeRegion>> loadOfficeRegions(RequestIdentity identity) {
+        return Mono.error(new UpstreamUnavailableException("Office 区域目录适配器未接入"));
     }
 
     /** Runtime-compatible read-only state operation. */
     default Mono<DeviceStateReadResult> readDeviceStates(RequestIdentity identity, List<String> deviceIds) {
         return Mono.error(new UpstreamUnavailableException("物联设备状态适配器未接入"));
+    }
+
+    /**
+     * State read bound to the candidate sets the model actually received. Every
+     * requested device must be a fixed member of its referenced, persisted set --
+     * an authorized intersection alone is not enough.
+     */
+    default Mono<DeviceStateReadResult> readDeviceStates(
+            RequestIdentity identity, DeviceCapabilityRequest request, String conversationId) {
+        List<String> ids = request.candidateSets().stream()
+                .flatMap(selection -> selection.deviceIds().stream()).toList();
+        return readDeviceStates(identity, ids);
     }
 
     /**
@@ -42,6 +68,15 @@ public interface IotAdapter {
     default Mono<DeviceCapabilityInspection> inspectDeviceCapabilities(
             RequestIdentity identity, DeviceCapabilityRequest request) {
         return Mono.error(new UpstreamUnavailableException("物联设备能力适配器未接入"));
+    }
+
+    /**
+     * Capability inspection bound to the discovering conversation. Implementations
+     * must reject candidate-set references that do not belong to that conversation.
+     */
+    default Mono<DeviceCapabilityInspection> inspectDeviceCapabilities(
+            RequestIdentity identity, DeviceCapabilityRequest request, String conversationId) {
+        return inspectDeviceCapabilities(identity, request);
     }
     /** Opens a short-lived live stream from the current authorized video scope. */
     default Mono<VideoStream> openVideoStream(RequestIdentity identity, String deviceId) {
