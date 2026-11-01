@@ -439,6 +439,8 @@ public final class ActionDraftFacade {
             actions.add(next);
             if (previousSelected.containsKey(action.path("id").asText())) selected.add(next.path("id").asText());
         }
+        Set<String> selectedIds = new HashSet<>();
+        for (JsonNode selectedId : selected) selectedIds.add(selectedId.asText());
         ArrayNode inventory = mapper.createArrayNode();
         int operate = selected.size(), excluded = 0, satisfied = 0, standby = 0, untouched = 0;
         Set<String> actionDevices = new HashSet<>();
@@ -455,7 +457,7 @@ public final class ActionDraftFacade {
             } else if (previous != null) {
                 JsonNode nextAction = null;
                 for (JsonNode candidate : actions) if (candidate.path("deviceId").asText().equals(deviceId)) nextAction = candidate;
-                boolean isSelected = nextAction != null && selected.contains(nextAction.path("id").asText());
+                boolean isSelected = nextAction != null && selectedIds.contains(nextAction.path("id").asText());
                 inventory.add(inventoryRow(device, state, previous.path("command"),
                         isSelected ? "operate" : "standby", false));
                 if (!isSelected) standby++;

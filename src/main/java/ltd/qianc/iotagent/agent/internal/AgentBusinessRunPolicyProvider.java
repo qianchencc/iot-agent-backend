@@ -184,8 +184,8 @@ public final class AgentBusinessRunPolicyProvider implements AgentRunPolicyProvi
         definition.put("maxTurns", integerSetting(settings, "maxAgentTurns", fallbackMaxTurns, 1, 32));
         Integer maxToolCalls = optionalIntegerSetting(settings, "maxToolCalls", 1, 1000);
         if (maxToolCalls != null) definition.put("maxToolCalls", maxToolCalls);
-        Integer runTimeoutMs = optionalIntegerSetting(settings, "runTimeoutMs", 1000, 1_800_000);
-        if (runTimeoutMs != null) definition.put("runTimeoutMs", Math.min(runTimeoutMs, 600_000));
+        Integer runTimeoutMs = optionalIntegerSetting(settings, "runTimeoutMs", 1000, 600_000);
+        if (runTimeoutMs != null) definition.put("runTimeoutMs", runTimeoutMs);
         Map<String, Object> model = model(settings);
         if (!model.isEmpty()) definition.put("model", model);
         return definition;

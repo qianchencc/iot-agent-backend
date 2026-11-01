@@ -65,6 +65,9 @@ final class AgentToolCatalog {
 
     private static Map<String, Definition> build() {
         Map<String, Definition> tools = new LinkedHashMap<>();
+        add(tools, definition("list_office_regions", "查询可用办公室区域",
+                "只读列出当前账号真实有权选择的办公室关注区域，回答有哪些办公室可切换；不切换区域，不创建任务。当前区域仍由用户界面选择。",
+                object(required(), props()), OFFICE, Confirmation.NONE));
         add(tools, definition("find_device_candidates", "查询设备候选",
                 "按当前来源、当前关注区域和当前授权目录检索设备候选。位置条件放 scopeText/scopeTerms，设备名称或型号放 deviceText/nameHints；不要把地点拼进设备名称。返回真实候选及 candidateSetId；候选不是用户已选择的操作范围，空候选必须如实处理，不得发明设备。",
                 object(required("kind"), props(

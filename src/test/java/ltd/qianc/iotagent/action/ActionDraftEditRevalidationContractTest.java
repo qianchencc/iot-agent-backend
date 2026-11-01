@@ -49,10 +49,10 @@ class ActionDraftEditRevalidationContractTest {
 
         ActionDraftFact at16 = facade.parameters(PRINCIPAL, draft.draftId(), 1,
                 List.of(Map.of("actionId", "ac-1", "patch", Map.of("temperature", 16))));
-        assertThat(commandOf(at16, "ac-1")).containsEntry("temperature", 16);
+        assertThat(commandOf(at16, "ac-1").get("temperature")).isEqualTo(16);
         ActionDraftFact at30 = facade.parameters(PRINCIPAL, draft.draftId(), at16.revision(),
                 List.of(Map.of("actionId", "ac-1", "patch", Map.of("temperature", 30))));
-        assertThat(commandOf(at30, "ac-1")).containsEntry("temperature", 30);
+        assertThat(commandOf(at30, "ac-1").get("temperature")).isEqualTo(30);
     }
 
     @Test
@@ -64,13 +64,13 @@ class ActionDraftEditRevalidationContractTest {
         ActionDraftFact bulk = facade.parameters(PRINCIPAL, draft.draftId(), 1, List.of(
                 Map.of("actionId", "ac-1", "patch", Map.of("temperature", 22)),
                 Map.of("actionId", "ac-2", "patch", Map.of("temperature", 22))));
-        assertThat(commandOf(bulk, "ac-1")).containsEntry("temperature", 22);
-        assertThat(commandOf(bulk, "ac-2")).containsEntry("temperature", 22);
+        assertThat(commandOf(bulk, "ac-1").get("temperature")).isEqualTo(22);
+        assertThat(commandOf(bulk, "ac-2").get("temperature")).isEqualTo(22);
 
         ActionDraftFact overridden = facade.parameters(PRINCIPAL, draft.draftId(), bulk.revision(),
                 List.of(Map.of("actionId", "ac-2", "patch", Map.of("temperature", 18))));
-        assertThat(commandOf(overridden, "ac-1")).containsEntry("temperature", 22);
-        assertThat(commandOf(overridden, "ac-2")).containsEntry("temperature", 18);
+        assertThat(commandOf(overridden, "ac-1").get("temperature")).isEqualTo(22);
+        assertThat(commandOf(overridden, "ac-2").get("temperature")).isEqualTo(18);
         assertThat((List<?>) facade.view(overridden).get("selectedActionIds")).hasSize(2);
     }
 
@@ -118,11 +118,13 @@ class ActionDraftEditRevalidationContractTest {
         Map<String, Object> view = facade.view(fresh);
         assertThat(view).containsEntry("status", "PENDING_CONFIRMATION");
         @SuppressWarnings("unchecked")
-        List<Map<String, Object>> actions = (List<Map<String, Object>>) view.get("actions");
-        assertThat(actions).hasSize(1);
-        assertThat(actions.get(0)).containsEntry("deviceId", "light-2");
-        assertThat((Map<?, ?>) view.get("counts")).containsEntry("operate", 1)
-                .containsEntry("satisfied", 1).containsEntry("total", 2);
+        List<Map<String, Object>> refreshedActions = (List<Map<String, Object>>) view.get("actions");
+        assertThat(refreshedActions).hasSize(1);
+        assertThat(refreshedActions.get(0)).containsEntry("deviceId", "light-2");
+        Map<?, ?> counts = (Map<?, ?>) view.get("counts");
+        assertThat(counts.get("operate")).isEqualTo(1);
+        assertThat(counts.get("satisfied")).isEqualTo(1);
+        assertThat(counts.get("total")).isEqualTo(2);
 
         ActionDraftFact consumed = store.find(old.draftId()).orElseThrow();
         assertThat(consumed.status()).isEqualTo("EXPIRED");

@@ -58,11 +58,12 @@ class ActionDraftProposalContractTest {
         Map<String, Object> view = facade.view(draft);
         assertThat(view).containsEntry("summary", "打开当前位置的灯")
                 .containsEntry("question", "是否打开这些灯？");
-        assertThat((Map<?, ?>) view.get("counts")).containsEntry("total", 3)
-                .containsEntry("operate", 1)
-                .containsEntry("excluded", 1)
-                .containsEntry("satisfied", 1)
-                .containsEntry("untouched", 0);
+        Map<?, ?> counts = (Map<?, ?>) view.get("counts");
+        assertThat(counts.get("total")).isEqualTo(3);
+        assertThat(counts.get("operate")).isEqualTo(1);
+        assertThat(counts.get("excluded")).isEqualTo(1);
+        assertThat(counts.get("satisfied")).isEqualTo(1);
+        assertThat(counts.get("untouched")).isEqualTo(0);
         List<Map<String, Object>> actions = actions(view);
         assertThat(actions).extracting(action -> action.get("deviceId"))
                 .containsExactly("light-1", "light-2");
@@ -72,7 +73,7 @@ class ActionDraftProposalContractTest {
         assertThat(on.get("command")).isEqualTo(Map.of("closeOrOpen", 1));
         Map<String, Object> off = actions.get(1);
         assertThat(off).containsEntry("beforeState", false).containsEntry("satisfied", false);
-        assertThat((List<?>) view.get("selectedActionIds")).containsExactly(off.get("id"));
+        assertThat(view.get("selectedActionIds")).isEqualTo(List.of(off.get("id")));
 
         List<Map<String, Object>> inventory = inventory(view);
         assertThat(inventory).extracting(row -> row.get("disposition"))

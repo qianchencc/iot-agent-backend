@@ -91,6 +91,7 @@ public final class AgentBusinessToolDispatcher implements AgentToolBridge {
         Map<String, Object> arguments = normalizeArguments(definition, request.get("arguments"), context,
                 turnId, toolCallId);
         return switch (definition.name()) {
+            case "list_office_regions" -> officeRegions(principal);
             case "find_device_candidates" -> findCandidates(principal, source, conversationId,
                     context.focusRegionId(), arguments);
             case "get_device_details" -> findCandidates(principal, source, conversationId,
@@ -126,6 +127,12 @@ public final class AgentBusinessToolDispatcher implements AgentToolBridge {
             case "get_task" -> getTask(principal, source, arguments);
             default -> throw new BusinessException("AGENT_TOOL_UNAVAILABLE", "工具未接入", 404);
         };
+    }
+
+    private Map<String, Object> officeRegions(PrincipalInfo principal) {
+        var regions = iot.loadOfficeRegions(identity(principal, IotSource.OFFICE)).block(TIMEOUT);
+        if (regions == null) throw new BusinessException("REGION_UNAVAILABLE", "办公室授权区域暂不可用", 503);
+        return Map.of("regions", regions, "source", "office");
     }
 
     private AgentToolContext resolveContext(String toolContextId, String conversationId, String turnId, String runId) {

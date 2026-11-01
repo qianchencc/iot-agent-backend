@@ -294,8 +294,8 @@ public final class JdbcAdminConfigurationStore implements AdminConfigurationStor
         integer(settings, issues, "contextWindow", 8192, 2_000_000);
         integer(settings, issues, "maxOutputTokens", 256, 128_000);
         integer(settings, issues, "maxAgentTurns", 1, 30);
-        integer(settings, issues, "maxToolCalls", 1, 100);
-        integer(settings, issues, "runTimeoutMs", 10_000, 1_800_000);
+        integer(settings, issues, "maxToolCalls", 1, 1000);
+        integer(settings, issues, "runTimeoutMs", 1000, 600_000);
         integer(settings, issues, "draftTtlMs", 30_000, 3_600_000);
         integer(settings, issues, "heartbeatMs", 0, 60_000);
         integer(settings, issues, "readbackWaitMs", 0, 120_000);
