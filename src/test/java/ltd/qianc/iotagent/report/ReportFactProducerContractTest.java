@@ -50,6 +50,38 @@ class ReportFactProducerContractTest {
         assertThat(report.toString()).doesNotContain("model-authored 999");
     }
 
+
+    @Test
+    void acInspectionUsesPersistedServerEvidenceAndLabelsEstimateAsAssumption() throws Exception {
+        MemoryStore store = new MemoryStore();
+        ReportFactProducer producer = producer(store);
+        String payload = """
+                {"reportRequest":{"kind":"ac_inspection","title":"空调巡检报告",
+                  "period":{"kind":"absolute","from":"2026-10-01T08:00:00+08:00","to":"2026-10-02T08:00:00+08:00"}},
+                 "inspectionEvidence":{"taskId":"task-1","generatedAt":"2026-10-12T01:00:00Z","taskOutcome":"COMPLETED",
+                  "checkpoints":[{"phaseId":"phase-1","at":"2026-10-12T01:00:00Z","status":"COMPLETED","outcome":"COMPLETED",
+                    "mode":"adjust_to_26","target":26,"criteria":{"power":"on","mode":"cool"},
+                    "devices":[{"deviceId":"meter-1","name":"空调","location":"26楼","power":"on","mode":"cool",
+                      "setpoint":25.0,"disposition":"adjusted","outcome":"verified","afterSetpoint":26.0}],
+                    "energyEstimate":{"status":"estimated","basis":"assumption","value":3.2,"unit":"度",
+                      "costValue":2.1,"costUnit":"元","reason":"按调前设定温度估算，非电表实测"}}],
+                  "coverage":{"checkpoints":1,"devices":["meter-1"],"adjusted":1,"unconfirmed":0}}}
+                """;
+
+        Optional<ReportFact> result = producer.produce(checkpoint(payload, "COMPLETED"), identity);
+
+        assertThat(result).isPresent();
+        JsonNode report = mapper.readTree(result.orElseThrow().payloadJson());
+        assertThat(report.path("status").asText()).isEqualTo("completed");
+        assertThat(report.path("taskId").asText()).isEqualTo("task-1");
+        assertThat(report.path("blocks").get(0).path("type").asText()).isEqualTo("ac_inspection");
+        JsonNode estimate = report.path("blocks").get(0).path("energyEstimate");
+        assertThat(estimate.path("status").asText()).isEqualTo("estimated");
+        assertThat(estimate.path("measured").asBoolean()).isFalse();
+        assertThat(estimate.path("label").asText()).contains("非电表实测");
+        assertThat(store.find(result.orElseThrow().reportId())).isPresent();
+    }
+
     @Test
     void checkpointWithoutReportRequestIsNotAnArtifact() {
         MemoryStore store = new MemoryStore();

@@ -210,6 +210,27 @@ class CompanyEnergyObservationComposerContractTest {
         assertThat(((Map<?, ?>) ((List<?>) payload.get("meters")).get(0)).get("night")).isNotNull();
     }
 
+
+    @Test
+    void nightComparisonUsesOnlyCompleteTwentyToEightWindows() {
+        CompanyEnergyObservationComposer composer = composer(page(List.of(
+                row("a", "2026-09-30 20:00:00", "meter-1", 80),
+                row("b", "2026-10-01 08:00:00", "meter-1", 90),
+                row("c", "2026-10-01 20:00:00", "meter-1", 100),
+                row("d", "2026-10-02 08:00:00", "meter-1", 112)), true)));
+
+        Map<String, Object> payload = composer.read(new ObservationRequest(COMPANY, ObservationOperation.COMPANY_METER_REPORT,
+                Map.of("kind", "comparison", "axis", "time", "scopeLevel", "all",
+                        "windowFrom", "20:00", "windowTo", "08:00",
+                        "from", "2026-10-01T08:00:00+08:00", "to", "2026-10-02T08:00:00+08:00",
+                        "baseFrom", "2026-09-30T08:00:00+08:00", "baseTo", "2026-10-01T08:00:00+08:00"))).block().payload();
+
+        assertThat(((Map<?, ?>) ((Map<?, ?>) payload.get("params")).get("dailyWindow")).get("from")).isEqualTo("20:00");
+        assertThat(((Map<?, ?>) payload.get("diff")).get("value")).isEqualTo(2.0d);
+        assertThat(((Map<?, ?>) payload.get("diff")).get("basis")).isEqualTo("total");
+        assertThat(((Map<?, ?>) ((Map<?, ?>) payload.get("sides")).get("a")).get("dataMeters")).isEqualTo(1);
+    }
+
     @Test
     void arbitraryRangeAndWeekGrainAreServerCalculated() {
         CompanyEnergyObservationComposer composer = composer(page(List.of(

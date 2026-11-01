@@ -383,10 +383,10 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
             }
             PeriodFact baseline = periods.get(0);
             List<Map<String, Object>> weeks = new ArrayList<>();
-            for (int index = periods.size() - 1; index >= 1; index--) {
+            for (int index = 1; index < periods.size(); index++) {
                 PeriodFact period = periods.get(index);
                 Map<String, Object> week = periodMap(period);
-                PeriodFact previous = index > 1 ? periods.get(index - 1) : baseline;
+                PeriodFact previous = periods.get(index - 1);
                 if (!"comparable".equals(period.status()) || period.usage() == null) {
                     week.put("ratioNote", "缺少可比较的完整基期");
                 } else if (!"comparable".equals(previous.status()) || previous.usage() == null) {
@@ -631,10 +631,9 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
                     "一次只能改变一个参数：同时改变时间与范围请先澄清要对比什么", 400));
         }
         boolean hasDailyWindow = p.containsKey("windowFrom") || p.containsKey("windowTo");
-        if (hasDailyWindow && (!"statistics".equals(kind)
-                || !"20:00".equals(p.get("windowFrom")) || !"08:00".equals(p.get("windowTo")))) {
+        if (hasDailyWindow && (!"20:00".equals(p.get("windowFrom")) || !"08:00".equals(p.get("windowTo")))) {
             return Mono.error(new BusinessException("INVALID_ENERGY_WINDOW",
-                    "每日时段统计目前仅支持20:00至次日08:00，且不接受对比参数", 400));
+                    "每日时段统计目前仅支持20:00至次日08:00", 400));
         }
         Scope scope;
         try {
@@ -674,6 +673,10 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         } else if (p.containsKey("baseFrom") || p.containsKey("baseTo") || hasOtherScope(p)) {
             return Mono.error(new BusinessException("INVALID_ENERGY_WINDOW", "统计报告不接受基期或对照范围", 400));
         }
+        if (hasDailyWindow && "comparison".equals(kind) && !"time".equals(axis)) {
+            return Mono.error(new BusinessException("INVALID_ENERGY_WINDOW",
+                    "夜间对比仅支持同一范围的时间对比", 400));
+        }
         String grain = p.get("grain");
         if (grain != null && !GRAINS.contains(grain)) {
             return Mono.error(new BusinessException("INVALID_ENERGY_WINDOW", "分段粒度仅支持时/日/周/月", 400));
@@ -686,7 +689,10 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         String finalAxis = axis;
         return readStream(request.identity(), ids(meters), stopBefore, endAt).map(stream -> {
             Map<String, Object> payload;
-            if (hasDailyWindow) {
+            if (hasDailyWindow && "comparison".equals(kind)) {
+                payload = nightTimeComparison(request.identity(), finalScope, meters, stream,
+                        from, to, finalBaseFrom, finalBaseTo);
+            } else if (hasDailyWindow) {
                 payload = nightStatistics(request.identity(), finalScope, meters, stream, from, to);
             } else if ("comparison".equals(kind) && "region".equals(finalAxis)) {
                 payload = regionComparison(request.identity(), finalScope, finalOther, meters, stream, from, to);
@@ -1073,6 +1079,167 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         return payload;
     }
 
+    private static List<NightWindow> nightWindows(Instant from, Instant to) {
+        List<NightWindow> windows = new ArrayList<>();
+        long start = ceilDiv(from.toEpochMilli() - 12 * HOUR_MS, DAY_MS) * DAY_MS + 12 * HOUR_MS;
+        for (; start + 12 * HOUR_MS <= to.toEpochMilli(); start += DAY_MS) {
+            windows.add(new NightWindow(Instant.ofEpochMilli(start), Instant.ofEpochMilli(start + 12 * HOUR_MS)));
+        }
+        return windows;
+    }
+
+    private Map<String, Object> nightTimeComparison(RequestIdentity identity, Scope scope,
+            List<AuthorizedDevice> all, StreamResult stream, Instant from, Instant to,
+            Instant baseFrom, Instant baseTo) {
+        Map<String, List<Sample>> byMeter = stream.byMeter();
+        List<NightWindow> windowsA = nightWindows(from, to);
+        List<NightWindow> windowsB = nightWindows(baseFrom, baseTo);
+        List<ComparisonRow> combined = new ArrayList<>();
+        for (AuthorizedDevice device : all) {
+            combined.add(new ComparisonRow(device.id(), device.name(), device.installAddress(),
+                    floorOf(device.installAddress()),
+                    nightSideStatus(identity, device, byMeter, windowsA),
+                    nightSideStatus(identity, device, byMeter, windowsB)));
+        }
+        List<ComparisonRow> scopeRows = combined.stream().filter(row -> scope.ids().contains(row.id())).toList();
+        List<ComparisonRow> cohort = scopeRows.stream()
+                .filter(row -> "ok".equals(row.a().status()) && "ok".equals(row.b().status())).toList();
+        List<ComparisonRow> aOk = cohort.isEmpty()
+                ? scopeRows.stream().filter(row -> "ok".equals(row.a().status())).toList() : cohort;
+        List<ComparisonRow> bOk = cohort.isEmpty()
+                ? scopeRows.stream().filter(row -> "ok".equals(row.b().status())).toList() : cohort;
+        double totalA = round(aOk.stream().mapToDouble(row -> row.a().value()).sum());
+        double totalB = round(bOk.stream().mapToDouble(row -> row.b().value()).sum());
+        Double avgA = windowsA.isEmpty() ? null : round(totalA / windowsA.size());
+        Double avgB = windowsB.isEmpty() ? null : round(totalB / windowsB.size());
+        boolean unequal = windowsA.size() != windowsB.size();
+        Map<String, Object> diff = new LinkedHashMap<>();
+        if (cohort.isEmpty()) {
+            diff.put("value", null);
+            diff.put("pct", null);
+            diff.put("pctNote", aOk.isEmpty() && !bOk.isEmpty() ? "本期无有效采样"
+                    : !aOk.isEmpty() && bOk.isEmpty() ? "基期无有效采样" : "数据不足");
+        } else if (unequal) {
+            double value = round(((Number) avgA).doubleValue() - ((Number) avgB).doubleValue());
+            diff.put("value", value);
+            diff.put("pct", ((Number) avgB).doubleValue() > 0
+                    ? round(value / ((Number) avgB).doubleValue() * 100) : null);
+            if (((Number) avgB).doubleValue() <= 0) diff.put("pctNote", "基期为零");
+            diff.put("basis", "nightlyAvg");
+            diff.put("unit", "度/夜");
+        } else {
+            double value = round(totalA - totalB);
+            diff.put("value", value);
+            diff.put("pct", totalB > 0 ? round(value / totalB * 100) : null);
+            if (totalB <= 0) diff.put("pctNote", "基期为零");
+            diff.put("basis", "total");
+            diff.put("unit", "度");
+        }
+        List<Map<String, Object>> metrics = new ArrayList<>();
+        metrics.add(metricComparison("nightTotal", "度", totalA, totalB));
+        metrics.add(metricComparison("nightlyAvg", "度/夜",
+                avgA == null ? null : avgA.doubleValue(), avgB == null ? null : avgB.doubleValue()));
+        Map<String, Object> contributionView = contribution(scope, combined, cohort, unequal,
+                Math.max(1, windowsA.size()), Math.max(1, windowsB.size()));
+        contributionView.put("unit", unequal ? "度/夜" : "度");
+        Aggregate sideA = new Aggregate(totalA, aOk.size(), 0, null,
+                avgA == null ? null : avgA.doubleValue(), totalA, null, null,
+                null, null, List.of(), List.of());
+        Map<String, Object> context = comparisonContext(scope, scopeRows, combined, cohort, sideA,
+                Math.max(1, windowsA.size()));
+        List<String> noData = scopeRows.stream()
+                .filter(row -> "noData".equals(row.a().status()) || "noData".equals(row.b().status()))
+                .map(ComparisonRow::id).toList();
+        List<Map<String, Object>> partial = scopeRows.stream()
+                .filter(row -> !cohort.contains(row) && !noData.contains(row.id()))
+                .map(row -> {
+                    Map<String, Object> value = new LinkedHashMap<>();
+                    value.put("id", row.id());
+                    value.put("through", windowsA.isEmpty() ? null : format(windowsA.get(windowsA.size() - 1).to()));
+                    return value;
+                }).toList();
+        Map<String, Object> coverage = new LinkedHashMap<>();
+        coverage.put("meters", scopeRows.size());
+        coverage.put("dataMeters", cohort.size());
+        coverage.put("noData", noData);
+        coverage.put("partial", partial);
+        coverage.put("addedMeterIds", scopeRows.stream()
+                .filter(row -> "ok".equals(row.a().status()) && "noData".equals(row.b().status()))
+                .map(ComparisonRow::id).toList());
+        coverage.put("removedMeterIds", scopeRows.stream()
+                .filter(row -> "ok".equals(row.b().status()) && "noData".equals(row.a().status()))
+                .map(ComparisonRow::id).toList());
+        coverage.put("truncated", stream.truncated());
+        coverage.put("expectedNights", Map.of("current", windowsA.size(), "base", windowsB.size()));
+        Map<String, Object> params = new LinkedHashMap<>();
+        params.put("axis", "time");
+        Map<String, Object> span = new LinkedHashMap<>();
+        span.put("requested", Map.of("from", format(from), "to", format(to)));
+        span.put("observed", observed(scopeRows.stream().map(ComparisonRow::a).toList()));
+        params.put("span", span);
+        Map<String, Object> baseline = new LinkedHashMap<>();
+        baseline.put("requested", Map.of("from", format(baseFrom), "to", format(baseTo)));
+        baseline.put("observed", observed(scopeRows.stream().map(ComparisonRow::b).toList()));
+        params.put("baseline", baseline);
+        params.put("scope", scopeMap(scope));
+        params.put("dailyWindow", Map.of("from", "20:00", "to", "08:00", "timezone", "Asia/Shanghai"));
+        Map<String, Object> sideAView = new LinkedHashMap<>();
+        sideAView.put("total", totalView(totalA));
+        sideAView.put("dataMeters", aOk.size());
+        sideAView.put("effectiveNights", windowsA.size());
+        sideAView.put("nightlyAvg", avgA);
+        Map<String, Object> sideBView = new LinkedHashMap<>();
+        sideBView.put("total", totalView(totalB));
+        sideBView.put("dataMeters", bOk.size());
+        sideBView.put("effectiveNights", windowsB.size());
+        sideBView.put("nightlyAvg", avgB);
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("reportId", "local-meter-night-comparison-" + Integer.toHexString(Objects.hash(
+                identity.ownerKey(), scope.level(), from, to, baseFrom, baseTo)));
+        payload.put("type", "meter-report");
+        payload.put("kind", "comparison");
+        payload.put("source", "company");
+        payload.put("observedAt", clock.instant().toString());
+        payload.put("params", params);
+        payload.put("sides", Map.of("a", sideAView, "b", sideBView));
+        payload.put("diff", diff);
+        payload.put("metrics", metrics);
+        payload.put("contribution", contributionView);
+        payload.put("context", context);
+        payload.put("coverage", coverage);
+        payload.put("meters", scopeRows.stream().map(this::comparisonRowMap).toList());
+        payload.put("authorizationMeterIds", all.stream().map(AuthorizedDevice::id).toList());
+        return payload;
+    }
+
+    private StatisticsRow nightSideStatus(RequestIdentity identity, AuthorizedDevice device,
+            Map<String, List<Sample>> byMeter, List<NightWindow> windows) {
+        List<Sample> samples = samples(byMeter, device.id());
+        boolean inSpan = false;
+        double sum = 0;
+        int valid = 0;
+        for (NightWindow window : windows) {
+            Double value = completeWindowEnergy(samples, window.from(), window.to());
+            if (value != null) {
+                valid++;
+                sum += scaled(device, value, identity);
+            }
+        }
+        for (Sample sample : samples) {
+            for (NightWindow window : windows) {
+                if (!sample.readTime().isBefore(window.from()) && sample.readTime().isBefore(window.to())) {
+                    inSpan = true;
+                    break;
+                }
+            }
+        }
+        String status = valid == windows.size() && !windows.isEmpty() ? "ok"
+                : valid > 0 || inSpan ? "partial" : "noData";
+        return new StatisticsRow(device.id(), device.name(), device.installAddress(),
+                floorOf(device.installAddress()), status.equals("ok") ? round(sum) : 0,
+                status, null, null);
+    }
+
     // ------------------------------------------------------------------
     // Time comparison.
     // ------------------------------------------------------------------
@@ -1148,6 +1315,12 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         coverage.put("dataMeters", cohort.size());
         coverage.put("noData", noData);
         coverage.put("partial", partial);
+        coverage.put("addedMeterIds", scopeRows.stream()
+                .filter(row -> "ok".equals(row.a().status()) && "noData".equals(row.b().status()))
+                .map(ComparisonRow::id).toList());
+        coverage.put("removedMeterIds", scopeRows.stream()
+                .filter(row -> "ok".equals(row.b().status()) && "noData".equals(row.a().status()))
+                .map(ComparisonRow::id).toList());
         coverage.put("truncated", stream.truncated());
         coverage.put("latestSampleAt", stream.latest() == null ? null : format(stream.latest()));
         Map<String, Object> span = new LinkedHashMap<>();
