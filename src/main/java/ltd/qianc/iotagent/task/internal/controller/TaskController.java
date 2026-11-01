@@ -51,8 +51,8 @@ public final class TaskController {
     public Map<String, Object> confirm(@PathVariable String id, @RequestParam(required = false) String source,
                                        @RequestBody(required = false) Map<String, Object> body) {
         var principal = PrincipalContext.getPrincipalInfo();
-        return facade.view(source == null ? facade.confirm(principal, id, version(body))
-                : facade.confirm(principal, id, version(body), source));
+        return source == null ? facade.confirmProposal(principal, id, version(body))
+                : facade.confirmProposal(principal, id, version(body), source);
     }
     @PostMapping("/task-proposals/{id}/discard")
     public Map<String, Object> discard(@PathVariable String id, @RequestParam(required = false) String source,
@@ -66,8 +66,8 @@ public final class TaskController {
     public Map<String, Object> confirmTask(@PathVariable String id, @RequestParam(required = false) String source,
                                            @RequestBody(required = false) Map<String, Object> body) {
         var principal = PrincipalContext.getPrincipalInfo();
-        return facade.view(source == null ? facade.confirm(principal, id, version(body))
-                : facade.confirm(principal, id, version(body), source));
+        return source == null ? facade.confirmProposal(principal, id, version(body))
+                : facade.confirmProposal(principal, id, version(body), source);
     }
     /** Runtime alias for clients that identify the pending proposal as a task. */
     @PostMapping("/tasks/{id}/discard")
@@ -218,6 +218,12 @@ public final class TaskController {
     public Map<String, Object> seen(@PathVariable String id, @RequestParam(defaultValue = "office") String source) {
         return facade.seenNotification(PrincipalContext.getPrincipalInfo(), source, id);
     }
+
+    @GetMapping("/notifications/{id}")
+    public Map<String, Object> openNotification(@PathVariable String id,
+                                                @RequestParam(defaultValue = "office") String source) {
+        return facade.openNotification(PrincipalContext.getPrincipalInfo(), source, id);
+    }
     @PostMapping("/notifications/seen-all")
     public Map<String, Object> seenAll(@RequestParam(defaultValue = "office") String source) {
         return facade.seenAllNotifications(PrincipalContext.getPrincipalInfo(), source);
@@ -260,7 +266,8 @@ public final class TaskController {
         return projections;
     }
     private static DateRange dateTimeRange(String from, String to) {
-        Instant start = instant(from), end = instant(to);
+        Instant end = to == null || to.isBlank() ? Instant.now() : instant(to);
+        Instant start = from == null || from.isBlank() ? end.minus(Duration.ofDays(31)) : instant(from);
         if (!end.isAfter(start) || Duration.between(start, end).compareTo(Duration.ofDays(62)) > 0) {
             throw new BusinessException("INVALID_DATE_RANGE", "请选择62天以内的时间范围", 400);
         }

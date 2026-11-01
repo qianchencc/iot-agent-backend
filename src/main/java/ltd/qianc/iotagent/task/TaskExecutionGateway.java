@@ -10,7 +10,12 @@ public interface TaskExecutionGateway {
     TaskExecutionResult execute(TaskExecutionRequest request);
 
     record TaskExecutionRequest(String taskId, String phaseId, String source,
-                                String payloadJson, Instant dueAt) {
+                                String payloadJson, Instant dueAt, String taskPayloadJson) {
+        public TaskExecutionRequest(String taskId, String phaseId, String source,
+                                    String payloadJson, Instant dueAt) {
+            this(taskId, phaseId, source, payloadJson, dueAt, "{}");
+        }
+
         public TaskExecutionRequest {
             if (taskId == null || taskId.isBlank() || phaseId == null || phaseId.isBlank()) {
                 throw new IllegalArgumentException("task and phase are required");
@@ -18,6 +23,7 @@ public interface TaskExecutionGateway {
             if (source == null || source.isBlank() || payloadJson == null || payloadJson.isBlank() || dueAt == null) {
                 throw new IllegalArgumentException("execution request is incomplete");
             }
+            taskPayloadJson = taskPayloadJson == null || taskPayloadJson.isBlank() ? "{}" : taskPayloadJson;
         }
     }
 

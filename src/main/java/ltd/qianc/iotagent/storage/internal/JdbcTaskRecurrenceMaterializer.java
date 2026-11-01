@@ -2,6 +2,7 @@ package ltd.qianc.iotagent.storage.internal;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.nio.charset.StandardCharsets;
 import java.sql.Timestamp;
@@ -16,6 +17,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import ltd.qianc.iotagent.task.TaskExecutionIdentityStore;
 import ltd.qianc.iotagent.task.TaskOccurrenceMaterializer;
 import ltd.qianc.iotagent.task.TaskPayloadSafety;
 import ltd.qianc.iotagent.task.TaskRecurrence;
@@ -33,15 +35,23 @@ public final class JdbcTaskRecurrenceMaterializer implements TaskOccurrenceMater
     private final ObjectMapper mapper;
     private final Clock clock;
     private final int batchSize;
+    private final TaskExecutionIdentityStore identities;
 
     public JdbcTaskRecurrenceMaterializer(JdbcTemplate jdbc, TransactionTemplate transactions,
                                           ObjectMapper mapper, Clock clock, int batchSize) {
+        this(jdbc, transactions, mapper, clock, batchSize, null);
+    }
+
+    public JdbcTaskRecurrenceMaterializer(JdbcTemplate jdbc, TransactionTemplate transactions,
+                                          ObjectMapper mapper, Clock clock, int batchSize,
+                                          TaskExecutionIdentityStore identities) {
         if (batchSize < 1 || batchSize > 100) throw new IllegalArgumentException("recurrence batch size must be 1..100");
         this.jdbc = jdbc;
         this.transactions = transactions;
         this.mapper = mapper;
         this.clock = clock;
         this.batchSize = batchSize;
+        this.identities = identities;
     }
 
     public int materializeOnce() {
@@ -65,11 +75,22 @@ public final class JdbcTaskRecurrenceMaterializer implements TaskOccurrenceMater
                             rs.getTimestamp(4).toInstant(), rs.getString(5), rs.getString(6), rs.getString(7)), planId)
                     .stream().findFirst().orElse(null);
             if (row == null || !"ENABLED".equals(row.status()) || row.nextAt().isAfter(now) || row.nextDate() == null) return false;
+            LocalDate date = LocalDate.parse(row.nextDate());
+            // The scheduler polls within seconds; an occurrence older than the bounded
+            // grace window is never replayed on restart. It is recorded as skipped so
+            // the next occurrence can be computed without losing the decision.
+            if (row.nextAt().isBefore(now.minus(Duration.ofMinutes(10)))) {
+                TaskRecurrence.RepeatRule rule = repeat(row.repeatJson(), TaskRecurrence.localDate(anchor(mapper.readTree(row.payloadJson()))));
+                Pointer pointer = nextPointer(row, rule, anchor(mapper.readTree(row.payloadJson())), date, now);
+                jdbc.update("INSERT IGNORE INTO task_plan_occurrences(plan_id,occurrence_date,status,create_time,update_time) "
+                                + "VALUES (?,?, 'SKIPPED',?,?)",
+                        row.planId(), date.toString(), Timestamp.from(now), Timestamp.from(now));
+                return advance(row, pointer, now, status);
+            }
             try {
                 JsonNode payload = mapper.readTree(row.payloadJson());
                 Instant anchor = anchor(payload);
                 LocalDate anchorDate = TaskRecurrence.localDate(anchor);
-                LocalDate date = LocalDate.parse(row.nextDate());
                 TaskRecurrence.RepeatRule repeat = repeat(row.repeatJson(), anchorDate);
                 if (date.isBefore(anchorDate) || !TaskRecurrence.matches(repeat, date)) return false;
 
@@ -105,6 +126,24 @@ public final class JdbcTaskRecurrenceMaterializer implements TaskOccurrenceMater
                         : shifted(payload, date, anchorDate, occurrenceId);
                 if (!snapshot.isObject()) throw new IllegalArgumentException("周期任务内容无效");
                 ((ObjectNode) snapshot).put("sourcePlanId", row.planId()).put("occurrenceDate", date.toString());
+                if (snapshot.path("interval").isObject() && snapshot.path("phases").size() > 1) {
+                    Instant intervalStart = Instant.parse(snapshot.path("interval").path("startsAt").asText());
+                    if (!intervalStart.isAfter(now)) {
+                        ArrayNode remaining = mapper.createArrayNode();
+                        for (JsonNode phase : snapshot.path("phases")) {
+                            Instant at = Instant.parse(phase.path("at").asText());
+                            if (!at.isBefore(now.minus(Duration.ofMinutes(10)))) remaining.add(phase);
+                        }
+                        if (remaining.isEmpty()) {
+                            jdbc.update("INSERT IGNORE INTO task_plan_occurrences(plan_id,occurrence_date,status,create_time,update_time) "
+                                            + "VALUES (?,?, 'SKIPPED',?,?)",
+                                    row.planId(), date.toString(), Timestamp.from(now), Timestamp.from(now));
+                            Pointer skipped = nextPointer(row, repeat, anchor, date, now);
+                            return advance(row, skipped, now, status);
+                        }
+                        ((ObjectNode) snapshot).set("phases", remaining);
+                    }
+                }
                 JsonNode phases = snapshot.path("phases");
                 for (int index = 0; index < phases.size(); index++) {
                     if (phases.get(index).isObject()) ((ObjectNode) phases.get(index)).put("phaseId",
@@ -113,6 +152,7 @@ public final class JdbcTaskRecurrenceMaterializer implements TaskOccurrenceMater
                 String taskPayload = TaskPayloadSafety.withoutCredentials(mapper, snapshot).toString();
                 jdbc.update("INSERT IGNORE INTO task_facts(task_id,version,status,payload_json,idempotency_key,create_time,update_time) VALUES (?,?,?,?,?,?,?)",
                         taskId, 1, "SCHEDULED", taskPayload, occurrenceId, Timestamp.from(now), Timestamp.from(now));
+                if (identities != null) identities.copyPlanIdentityToTask(row.planId(), taskId);
                 insertPhases(snapshot, taskId, text(snapshot, "source", "office"), now);
                 int inserted = jdbc.update("INSERT IGNORE INTO task_plan_occurrences(plan_id,occurrence_date,task_id,status,create_time,update_time) "
                                 + "VALUES (?,?,?,'MATERIALIZED',?,?)",
@@ -151,7 +191,10 @@ public final class JdbcTaskRecurrenceMaterializer implements TaskOccurrenceMater
             if (state != null && (state.taskId() != null
                     || Set.of("SKIPPED", "CLAIMED", "MATERIALIZED").contains(state.status()))) continue;
             Instant at = state != null && "OVERRIDDEN".equals(state.status())
-                    ? effectiveAt(mapper.readTree(requiredOverride(state))) : TaskRecurrence.occurrenceAt(anchor, date);
+                    ? firstFutureAt(mapper.readTree(requiredOverride(state)), now, anchor, date)
+                    : firstFutureAt(shifted(mapper.readTree(row.payloadJson()), date,
+                            TaskRecurrence.localDate(anchor), TaskRecurrence.occurrenceId(row.planId(), date)),
+                            now, anchor, date);
             selected = new Pointer(at, date);
             break;
         }
@@ -160,13 +203,33 @@ public final class JdbcTaskRecurrenceMaterializer implements TaskOccurrenceMater
             OccurrenceState state = entry.getValue();
             if (!"OVERRIDDEN".equals(state.status()) || state.taskId() != null
                     || !entry.getKey().isAfter(completedDate) || !TaskRecurrence.matches(repeat, entry.getKey())) continue;
-            Instant at = effectiveAt(mapper.readTree(requiredOverride(state)));
+            Instant at = firstFutureAt(mapper.readTree(requiredOverride(state)), now, anchor, entry.getKey());
             if (selected == null || at.isBefore(selected.at())
                     || at.equals(selected.at()) && entry.getKey().isBefore(selected.date())) {
                 selected = new Pointer(at, entry.getKey());
             }
         }
         return selected == null ? new Pointer(null, null) : selected;
+    }
+
+    private Instant firstFutureAt(JsonNode effective, Instant now, Instant anchor, LocalDate date) {
+        Instant fallback = TaskRecurrence.occurrenceAt(anchor, date);
+        JsonNode interval = effective.path("interval");
+        JsonNode phases = effective.path("phases");
+        if (!interval.isObject() || !phases.isArray() || phases.size() <= 1) return fallback;
+        try {
+            Instant start = Instant.parse(interval.path("startsAt").asText());
+            Instant end = Instant.parse(interval.path("endsAt").asText());
+            if (start.isAfter(now) || !now.isBefore(end)) return fallback;
+            Instant first = null;
+            for (JsonNode phase : phases) {
+                Instant at = Instant.parse(phase.path("at").asText());
+                if (at.isAfter(now) && (first == null || at.isBefore(first))) first = at;
+            }
+            return first == null ? fallback : first;
+        } catch (RuntimeException ignored) {
+            return fallback;
+        }
     }
 
     private boolean advance(PlanRow row, Pointer pointer, Instant now,
@@ -206,8 +269,8 @@ public final class JdbcTaskRecurrenceMaterializer implements TaskOccurrenceMater
             if (at.isBlank()) throw new IllegalArgumentException("周期任务阶段时间无效");
             Instant due = Instant.parse(at);
             String body = TaskPayloadSafety.withoutCredentials(mapper, phase).toString();
-            jdbc.update("INSERT IGNORE INTO task_phases(phase_id,task_id,source,version,status,due_at,payload_json,create_time,update_time) VALUES (?,?,?,1,'PENDING',?,?,?,?)",
-                    phaseId, taskId, source, Timestamp.from(due), body, Timestamp.from(now), Timestamp.from(now));
+            jdbc.update("INSERT IGNORE INTO task_phases(phase_id,task_id,source,version,status,due_at,payload_json,definition_json,create_time,update_time) VALUES (?,?,?,1,'PENDING',?,?,?,?,?)",
+                    phaseId, taskId, source, Timestamp.from(due), body, body, Timestamp.from(now), Timestamp.from(now));
         }
     }
 

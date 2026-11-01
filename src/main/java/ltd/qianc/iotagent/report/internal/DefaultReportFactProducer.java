@@ -10,6 +10,7 @@ import java.util.UUID;
 import ltd.qianc.iotagent.report.ReportFact;
 import ltd.qianc.iotagent.report.ReportFactProducer;
 import ltd.qianc.iotagent.report.ReportFactStore;
+import ltd.qianc.iotagent.iot.RequestIdentity;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.stereotype.Component;
 
@@ -23,6 +24,11 @@ public final class DefaultReportFactProducer implements ReportFactProducer {
     public DefaultReportFactProducer(ReportFactStore store, ObjectMapper mapper) {
         this.store = store;
         this.mapper = mapper;
+    }
+
+    @Override
+    public java.util.Optional<ReportFact> produce(ReportCheckpoint checkpoint, RequestIdentity identity) {
+        return produce(checkpoint);
     }
 
     @Override
