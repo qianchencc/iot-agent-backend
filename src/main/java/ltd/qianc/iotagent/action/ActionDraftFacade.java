@@ -120,8 +120,7 @@ public final class ActionDraftFacade {
         if (idempotencyKey == null || idempotencyKey.isBlank()) {
             throw new BusinessException("INVALID_IDEMPOTENCY_KEY", "Idempotency key is required");
         }
-        String scopedKey = principal.tenantCode() + "\u0000" + ownerKey(principal)
-                + "\u0000" + iotSource.wireValue() + "\u0000" + idempotencyKey;
+        String scopedKey = scopedIdempotencyKey(principal, iotSource, idempotencyKey);
         Optional<ActionDraftFact> prior = store.findByIdempotencyKey(scopedKey);
         if (prior.isPresent() && tenantOf(prior.get()).equals(principal.tenantCode())
                 && ownerKey(principal).equals(payload(prior.get()).path("ownerKey").asText(""))
@@ -1452,6 +1451,26 @@ public final class ActionDraftFacade {
     private void audit(ActionDraftFact draft, String type) {
         if (audit == null) return;
         audit.append(new AuditEventFact(UUID.randomUUID().toString(), tenantOf(draft), type, draft.payloadJson()));
+    }
+
+    /**
+     * The durable idempotency column is bounded. A readable composite key over
+     * tenant + owner + source + caller key exceeds it for real identities, so the
+     * stored binding is a fixed-length SHA-256 of those exact components. The hash
+     * is canonical, not a fallback: equality and isolation semantics are unchanged.
+     */
+    private static String scopedIdempotencyKey(PrincipalInfo principal, IotSource source, String idempotencyKey) {
+        String material = principal.tenantCode() + "\u0000" + ownerKey(principal)
+                + "\u0000" + source.wireValue() + "\u0000" + idempotencyKey;
+        try {
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(material.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder result = new StringBuilder(70).append("draft:");
+            for (byte value : digest) result.append(String.format("%02x", value));
+            return result.toString();
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is unavailable", impossible);
+        }
     }
 
     private static Duration requirePositive(Duration value, String name) {

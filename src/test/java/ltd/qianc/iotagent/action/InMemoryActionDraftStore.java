@@ -9,13 +9,23 @@ import java.util.Optional;
 /** Public-seam fixture: same CAS and conversation lookup contract as the JDBC store. */
 final class InMemoryActionDraftStore implements ActionDraftStore {
     private final Map<String, ActionDraftFact> drafts = new LinkedHashMap<>();
+    private final int maxIdempotencyKeyLength;
 
     InMemoryActionDraftStore(ActionDraftFact... initial) {
+        this(0, initial);
+    }
+
+    /** Non-zero max mirrors the durable VARCHAR limit so oversized keys fail like MySQL. */
+    InMemoryActionDraftStore(int maxIdempotencyKeyLength, ActionDraftFact... initial) {
+        this.maxIdempotencyKeyLength = maxIdempotencyKeyLength;
         for (ActionDraftFact draft : initial) drafts.put(draft.draftId(), draft);
     }
 
     @Override
     public ActionDraftFact create(ActionDraftFact draft) {
+        if (maxIdempotencyKeyLength > 0 && draft.idempotencyKey().length() > maxIdempotencyKeyLength) {
+            throw new IllegalStateException("Data too long for column 'idempotency_key'");
+        }
         for (ActionDraftFact existing : drafts.values()) {
             if (existing.idempotencyKey().equals(draft.idempotencyKey())) return existing;
         }

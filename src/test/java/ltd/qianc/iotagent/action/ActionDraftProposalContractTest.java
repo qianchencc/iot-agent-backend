@@ -82,6 +82,33 @@ class ActionDraftProposalContractTest {
     }
 
     @Test
+    void realisticTenantAndTurnFitTheBoundedDurableIdempotencyColumn() throws Exception {
+        PrincipalInfo realPrincipal = new PrincipalInfo("Bearer fixture",
+                "tenant-0123456789abcdef0123456789abcdef01234567");
+        RequestIdentity identity = new RequestIdentity(realPrincipal.authorization(), realPrincipal.tenantCode(),
+                IotSource.OFFICE, realPrincipal.ownerKey());
+        String fingerprint = AuthorizedDeviceScope.of(identity, IotSource.OFFICE, LIGHTS).catalogFingerprint();
+        DeviceCandidateRecord realSet = new DeviceCandidateRecord("set-real", CONVERSATION, realPrincipal.tenantCode(),
+                realPrincipal.ownerKey(), IotSource.OFFICE, fingerprint,
+                new DeviceCandidateQuery("lighting", List.of(), null, List.of(), List.of(), null, null),
+                LIGHTS.subList(0, 3), true, 3, CLOCK.instant().toString());
+        InMemoryActionDraftStore drafts = new InMemoryActionDraftStore(128);
+        ActionDraftFacade facade = facade(drafts, new InMemoryCandidateStore(realSet),
+                new TestIotAdapter(LIGHTS, identityValue -> states));
+
+        String payload = payload(Map.of("candidateSetIds", List.of("set-real"), "summary", "打开当前位置的灯",
+                "actions", List.of(Map.of("deviceId", "light-2", "kind", "lighting",
+                        "closeOrOpen", 1, "selected", true))));
+        String turnKey = "turn-12345678-1234-1234-1234-123456789abc";
+        ActionDraftFact created = facade.propose(realPrincipal, "office", CONVERSATION, "turn-1", payload, turnKey);
+        ActionDraftFact retried = facade.propose(realPrincipal, "office", CONVERSATION, "turn-1", payload, turnKey);
+
+        assertThat(created.idempotencyKey()).hasSizeLessThanOrEqualTo(128);
+        assertThat(created.idempotencyKey()).startsWith("draft:");
+        assertThat(retried.draftId()).isEqualTo(created.draftId());
+    }
+
+    @Test
     void rejectsStaleOrCrossConversationCandidateSets() throws Exception {
         TestIotAdapter iot = new TestIotAdapter(LIGHTS, identity -> states);
         String payload = payload(Map.of(
