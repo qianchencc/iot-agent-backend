@@ -22,7 +22,7 @@ export interface AgentRunTrace {
 }
 
 export interface Observability {
-  startAgentRun(input: { conversationId: string; tenantCode: string; content: string }): AgentRunTrace | null;
+  startAgentRun(input: { conversationId: string; content: string }): AgentRunTrace | null;
   flush(): Promise<void>;
   shutdown(): Promise<void>;
 }
@@ -44,9 +44,9 @@ export function createObservability(env: Record<string, string | undefined> = pr
   sdk.start();
 
   return {
-    startAgentRun({ conversationId, tenantCode, content }) {
+    startAgentRun({ conversationId, content }) {
       const root = propagateAttributes(
-        { traceName: "agent-run", sessionId: conversationId, tags: ["agent", tenantCode] },
+        { traceName: "agent-run", sessionId: conversationId, tags: ["agent"] },
         () => startObservation("agent-run", { input: content }),
       );
       const openTools = new Map<string, LangfuseTool[]>();

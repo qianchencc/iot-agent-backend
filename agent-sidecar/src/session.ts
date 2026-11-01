@@ -1,6 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { chmodSync, cpSync, existsSync, mkdirSync, renameSync, rmSync, statSync, statfsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { buildSessionContext, type AgentMessage } from "@earendil-works/pi-agent-core";
 import { NodeExecutionEnv, type Session } from "@earendil-works/pi-agent-core/node";
 import {
   createNodeSqliteFactory,
@@ -38,16 +39,23 @@ export class PiSessionStore {
     await this.initialized;
   }
 
-  async openOrCreate(id: string, metadata: Record<string, unknown>): Promise<Session<SqliteSessionMetadata>> {
+  async openOrCreate(sessionScope: string): Promise<Session<SqliteSessionMetadata>> {
     await this.init();
-    const current = this.openSessions.get(id);
+    const current = this.openSessions.get(sessionScope);
     if (current) return current;
-    const existing = (await this.repository.list()).find(item => item.id === id);
+    const existing = (await this.repository.list()).find(item => item.id === sessionScope);
     const session = existing
       ? await this.repository.open(existing)
-      : await this.repository.create({ id, cwd: process.cwd(), metadata });
-    this.openSessions.set(id, session);
+      : await this.repository.create({ id: sessionScope, cwd: process.cwd(), metadata: {} });
+    this.openSessions.set(sessionScope, session);
     return session;
+  }
+
+  /** Rebuilds the exact Pi context for a scope, including compaction and branch summaries. */
+  async history(sessionScope: string): Promise<AgentMessage[]> {
+    const session = await this.openOrCreate(sessionScope);
+    const entries = await session.findEntriesOnBranch({ order: "oldestFirst" });
+    return buildSessionContext(entries).messages;
   }
 
   async capacity(): Promise<Record<string, unknown>> {

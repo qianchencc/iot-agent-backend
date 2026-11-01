@@ -199,7 +199,9 @@ public class AdminModuleConfiguration {
     static Set<String> locked(Environment environment) {
         Set<String> result = new java.util.LinkedHashSet<>();
         Map<String, String> fields = Map.of("modelBaseUrl", "MODEL_BASE_URL", "modelId", "MODEL_ID", "modelApiKey", "MODEL_API_KEY", "thinkingLevel", "AGENT_THINKING_LEVEL", "catalogTtlMs", "IOT_CATALOG_TTL_MS", "heartbeatMs", "HEARTBEAT_MS", "langfuseBaseUrl", "LANGFUSE_BASE_URL", "langfusePublicKey", "LANGFUSE_PUBLIC_KEY", "langfuseSecretKey", "LANGFUSE_SECRET_KEY");
-        fields.forEach((name, variable) -> { if (environment.getProperty(variable) != null) result.add(name); });
+        fields.forEach((name, variable) -> {
+            if (environment.getProperty(variable) != null && !LiveAgentSettings.contains(name)) result.add(name);
+        });
         return result;
     }
 

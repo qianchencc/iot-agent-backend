@@ -9,6 +9,7 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import ltd.qianc.iotagent.conversation.AgentEngineBridge;
+import ltd.qianc.iotagent.conversation.AgentRunPolicyProvider;
 import ltd.qianc.iotagent.conversation.ConversationEventStore;
 import ltd.qianc.iotagent.conversation.ConversationFacade;
 import ltd.qianc.iotagent.conversation.ConversationStore;
@@ -51,9 +52,10 @@ public class ConversationConfiguration {
             @Qualifier("conversationScheduler") ScheduledExecutorService conversationScheduler,
             @Value("${agent.bridge.base-url:}") String baseUrl,
             @Value("${agent.bridge.token:}") String bridgeToken,
-            @Value("${agent.bridge.run-timeout-ms:120000}") long timeoutMs) {
+            @Value("${agent.bridge.run-timeout-ms:120000}") long timeoutMs,
+            AgentRunPolicyProvider policies) {
         return new HttpAgentEngineBridge(mapper, baseUrl, bridgeToken, executor,
-                java.time.Duration.ofMillis(timeoutMs), conversationScheduler);
+                java.time.Duration.ofMillis(timeoutMs), conversationScheduler, policies);
     }
     @Bean
     ConversationFacade conversationFacade(ObjectMapper mapper, ConversationStore conversations,

@@ -10,7 +10,10 @@ import ltd.qianc.iotagent.auth.PrincipalContext;
 import ltd.qianc.iotagent.error.BusinessException;
 import ltd.qianc.iotagent.iot.AuthorizedDevice;
 import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
+import ltd.qianc.iotagent.iot.DeviceCandidateBinding;
 import ltd.qianc.iotagent.iot.DeviceCandidateQuery;
+import ltd.qianc.iotagent.iot.DeviceCandidateSet;
+import ltd.qianc.iotagent.iot.DeviceCapabilityInspection;
 import ltd.qianc.iotagent.iot.DeviceCapabilityRequest;
 import ltd.qianc.iotagent.iot.IotAdapter;
 import ltd.qianc.iotagent.iot.IotSource;
@@ -25,7 +28,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-/** Private Agent-tool HTTP boundary for read-only Office device operations. */
+/** Private Agent-tool HTTP boundary for read-only Office and Company device operations. */
 @RestController
 @RequestMapping("/api/agent")
 public final class IotDeviceController {
@@ -35,6 +38,7 @@ public final class IotDeviceController {
     public IotDeviceController(IotAdapter adapter) {
         this.adapter = adapter;
     }
+
     @GetMapping("/company-devices")
     public ResponseEntity<?> companyDevices(HttpServletRequest request) {
         ResponseEntity<?> source = requireCompanySource(request);
@@ -42,8 +46,8 @@ public final class IotDeviceController {
         var principal = PrincipalContext.getPrincipalInfo();
         try {
             AuthorizedDeviceScope scope = adapter.loadAuthorizedDeviceScope(
-                    new RequestIdentity(principal.authorization(), principal.tenantCode(), IotSource.COMPANY))
-                    .block(ADAPTER_TIMEOUT);
+                    new RequestIdentity(principal.authorization(), principal.tenantCode(), IotSource.COMPANY,
+                            principal.ownerKey())).block(ADAPTER_TIMEOUT);
             if (scope == null || scope.source() != IotSource.COMPANY) {
                 throw new BusinessException("AUTHORIZED_SCOPE_UNAVAILABLE", "读取当前设备目录失败", 503);
             }
@@ -60,37 +64,66 @@ public final class IotDeviceController {
         }
     }
 
-
     @GetMapping({"/devices/candidates", "/tools/find_device_candidates"})
     public ResponseEntity<?> candidates(
             @RequestParam(required = false, defaultValue = "office") String source,
             @RequestParam String kind,
+            @RequestParam(required = false) String conversationId,
+            @RequestParam(required = false) String regionId,
             @RequestParam(required = false) String scopeText,
             @RequestParam(required = false, name = "scopeTerms") List<String> scopeTerms,
             @RequestParam(required = false, name = "nameHints") List<String> nameHints,
             @RequestParam(required = false) String deviceText) {
-        requireOffice(source);
+        if (conversationId == null || conversationId.isBlank()) {
+            throw new BusinessException("INVALID_AGENT_TOOL", "conversationId is required for candidate discovery");
+        }
         DeviceCandidateQuery query = new DeviceCandidateQuery(kind, List.of(), scopeText,
                 scopeTerms == null ? List.of() : scopeTerms,
-                nameHints == null ? List.of() : nameHints, deviceText);
-        return ResponseEntity.ok(adapter.findDeviceCandidates(identity(), query).block(ADAPTER_TIMEOUT));
+                nameHints == null ? List.of() : nameHints, deviceText, regionId);
+        DeviceCandidateSet set = adapter.findDeviceCandidates(identity(source), query,
+                new DeviceCandidateBinding(conversationId)).block(ADAPTER_TIMEOUT);
+        if (set == null) throw new BusinessException("IOT_SCOPE_UNAVAILABLE", "设备候选范围暂不可用", 503);
+        Map<String, Object> view = new LinkedHashMap<>();
+        view.put("candidateSetId", set.candidateSetId());
+        view.put("query", set.query());
+        view.put("devices", set.devices().stream().map(IotDeviceController::candidateDeviceView).toList());
+        view.put("complete", set.complete());
+        view.put("totalMatches", set.totalMatches());
+        view.put("groups", set.groups());
+        view.put("nameHintMatches", set.nameHintMatches());
+        view.put("unmatchedNameHints", set.unmatchedNameHints());
+        view.put("resolution", set.resolution());
+        return ResponseEntity.ok(view);
     }
 
     @PostMapping({"/devices/states", "/devices/status", "/tools/read_device_states"})
     public ResponseEntity<?> states(
             @RequestParam(required = false, defaultValue = "office") String source,
+            @RequestParam(required = false) String conversationId,
             @RequestBody Map<String, Object> body) {
-        requireOffice(source);
+        if (body != null && body.containsKey("candidateSets")) {
+            if (conversationId == null || conversationId.isBlank()) {
+                throw new BusinessException("INVALID_AGENT_TOOL", "conversationId is required for candidate-set state reads");
+            }
+            return ResponseEntity.ok(adapter.readDeviceStates(identity(source),
+                    parseCapabilityRequest(body), conversationId).block(ADAPTER_TIMEOUT));
+        }
         List<String> ids = strings(body == null ? null : body.get("deviceIds"));
-        return ResponseEntity.ok(adapter.readDeviceStates(identity(), ids).block(ADAPTER_TIMEOUT));
+        return ResponseEntity.ok(adapter.readDeviceStates(identity(source), ids).block(ADAPTER_TIMEOUT));
     }
 
     @PostMapping({"/devices/capabilities", "/tools/inspect_device_capabilities"})
     public ResponseEntity<?> capabilities(
             @RequestParam(required = false, defaultValue = "office") String source,
+            @RequestParam(required = false) String conversationId,
             @RequestBody Map<String, Object> body) {
-        requireOffice(source);
-        return ResponseEntity.ok(adapter.inspectDeviceCapabilities(identity(), parseCapabilityRequest(body)).block(ADAPTER_TIMEOUT));
+        if (conversationId == null || conversationId.isBlank()) {
+            throw new BusinessException("INVALID_AGENT_TOOL", "conversationId is required for capability inspection");
+        }
+        DeviceCapabilityRequest request = parseCapabilityRequest(body);
+        DeviceCapabilityInspection inspection = adapter.inspectDeviceCapabilities(identity(source), request, conversationId)
+                .block(ADAPTER_TIMEOUT);
+        return ResponseEntity.ok(inspection);
     }
 
     private static ResponseEntity<?> requireCompanySource(HttpServletRequest request) {
@@ -112,13 +145,26 @@ public final class IotDeviceController {
         return view;
     }
 
-    private RequestIdentity identity() {
-        var principal = PrincipalContext.getPrincipalInfo();
-        return new RequestIdentity(principal.authorization(), principal.tenantCode(), IotSource.OFFICE);
+    private static Map<String, Object> candidateDeviceView(AuthorizedDevice device) {
+        Map<String, Object> view = new LinkedHashMap<>();
+        view.put("id", device.id());
+        view.put("kind", device.kind());
+        view.put("name", device.name());
+        view.put("location", device.installAddress());
+        view.put("observationOnly", device.observationOnly());
+        view.put("locationPaths", device.locationPaths());
+        return view;
     }
 
-    private static void requireOffice(String source) {
-        if (!"office".equals(source)) throw new BusinessException("IOT_SOURCE_UNAVAILABLE", "设备只读工具仅支持 Office 来源", 404);
+    private RequestIdentity identity(String source) {
+        var principal = PrincipalContext.getPrincipalInfo();
+        IotSource iotSource;
+        try {
+            iotSource = IotSource.parse(source == null || source.isBlank() ? "office" : source);
+        } catch (RuntimeException invalid) {
+            throw new BusinessException("INVALID_AGENT_SOURCE", "Agent 来源无效");
+        }
+        return new RequestIdentity(principal.authorization(), principal.tenantCode(), iotSource, principal.ownerKey());
     }
 
     private static List<String> strings(Object value) {

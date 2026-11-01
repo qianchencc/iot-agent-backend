@@ -1,6 +1,7 @@
 package ltd.qianc.iotagent.conversation;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -15,6 +16,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import ltd.qianc.iotagent.auth.PrincipalInfo;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import ltd.qianc.iotagent.error.BusinessException;
 import org.junit.jupiter.api.Test;
 
 class ConversationFacadeContractTest {
@@ -84,6 +86,30 @@ class ConversationFacadeContractTest {
         assertThat(conversations.turns(id)).hasSize(1);
     }
 
+    @Test
+    void callbacksRequireTheExactActiveRunAndAreRevokedOnCancel() {
+        RecordingBridge bridge = new RecordingBridge(true);
+        ConversationFacade facade = new ConversationFacade(new ObjectMapper(), new MemoryConversationStore(),
+                new MemoryEventStore(), bridge, Runnable::run);
+        String id = (String) facade.create(PRINCIPAL, "company").get("id");
+        facade.message(PRINCIPAL, id, "查询", "bound-run", "company", "region-1", null);
+        AgentRunRequest run = bridge.request.get();
+        facade.toolContext(run.toolContextId(), id, run.turnId(), run.runId());
+
+        assertContextRejected(() -> facade.toolContext("unknown-context", id, run.turnId(), run.runId()));
+        assertContextRejected(() -> facade.toolContext(run.toolContextId(), "other-conversation", run.turnId(), run.runId()));
+        assertContextRejected(() -> facade.toolContext(run.toolContextId(), id, "other-turn", run.runId()));
+        assertContextRejected(() -> facade.toolContext(run.toolContextId(), id, run.turnId(), "other-run"));
+
+        facade.cancel(PRINCIPAL, id, "company");
+        assertContextRejected(() -> facade.toolContext(run.toolContextId(), id, run.turnId(), run.runId()));
+    }
+
+    private static void assertContextRejected(org.assertj.core.api.ThrowableAssert.ThrowingCallable request) {
+        assertThatThrownBy(request).isInstanceOfSatisfying(BusinessException.class,
+                error -> assertThat(error.code()).isEqualTo("AGENT_TOOL_RUN_UNAVAILABLE"));
+    }
+
     private static final class RecordingBridge implements AgentEngineBridge {
         private final boolean holdOpen;
         private final Runnable beforeMessage;
@@ -104,6 +130,8 @@ class ConversationFacadeContractTest {
         public CompletionStage<Void> start(AgentRunRequest request, Consumer<AgentEngineEvent> events) {
             startCount.incrementAndGet();
             this.request.set(request);
+            events.accept(new AgentEngineEvent(request.runId(), request.conversationId(), request.turnId(),
+                    "run.started", Map.of("createdAt", Instant.now().toString())));
             beforeMessage.run();
             events.accept(new AgentEngineEvent(request.runId(), request.conversationId(), request.turnId(),
                     "message.delta", Map.of("sequence", 99, "content", "状态")));
