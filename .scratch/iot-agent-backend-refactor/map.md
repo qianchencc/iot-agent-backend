@@ -21,8 +21,12 @@
 
 - [缓存需求与 Redis 架构审计](issues/30-cache-architecture-audit.md)：当前 Redis 尚未成为实际业务缓存层，Runtime 多类缓存尚未完整迁移；先盘点和决策，不直接把所有内容搬入 Redis。
 - backend cache 与 frontend cache 已明确分层：前者负责 upstream 访问复用/后端最新快照，后者负责 UI 使用期间减少 backend 请求；frontend 手动刷新不强制 upstream refresh。
+- [冻结缓存新鲜度与固定模板](issues/31-cache-freshness-templates.md)：Backend 分历史快照、当前数据、查询结果三类；Frontend 使用约 1 分钟读快照；事实/事务不进入普通 cache；不设计统一 TTL/统一 Redis cache。
 - 当前数据的“实时”是更新/读取策略，不等于每个请求全量读取；backend 约 5 秒更新能力与 frontend 约 1 分钟使用策略必须分别建模。
 - [Backend 最新快照刷新机制](issues/39-backend-refresh-mechanism.md)：采用组合策略；高频核心当前数据按业务能力定时刷新，低频/带查询条件读取按请求触发并在约 5 秒内合并在途或复用最近结果。
+- [全业务能力缓存分类矩阵](issues/33-business-capability-cache-matrix.md)：首批必要 backend 矫正覆盖首屏当前数据、常用目录/状态、Agent 候选查询和低频查询在途合并；事务/事实、视频 URL、确认/执行/readback、执行态与详情不进入普通读快照。
+- [前后端缓存责任与失效协作](issues/34-frontend-backend-cache-ownership.md)：Frontend 只对显式只读路径复用快照；手动刷新只 bypass frontend；Backend 逐步提供当前结果和在途合并；写操作局部失效，不改变 MySQL 事实/CAS。
+- [当天实时数据 1 分钟模板与强制现读例外](issues/36-realtime-one-minute-exceptions.md)：当天读请求纳入当前数据范围但不统一复杂化；控制、readback、执行态/详情、视频短地址、会话保持实时/事实语义。
 - [物联 Agent 业务性能目标与缓存地图校正](issues/40-business-performance-slas.md)：时间目标用于发现明显等待并做必要的局部 backend/frontend 逻辑矫正；首屏按可见数据、工具只计 Tool Bridge/Java 执行，不为达成数字强行引入复杂预热、索引或缓存分层。
 - 权限撤销不作为独立缓存设计票；现有认证/授权校验作为业务不变量保留，避免为低概率边缘扩张缓存体系。
 
