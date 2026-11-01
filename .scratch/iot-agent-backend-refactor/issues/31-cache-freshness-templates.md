@@ -4,6 +4,11 @@
 **Status:** resolved
 **Blocked by:** None
 
+## 2026-11-02 执行修订
+
+本票是设计结论，不是实现完成证明。普通前端查询立即返回backend已持有结果；缺数返回准备中，后台更新不阻塞请求。当前数据默认约60秒、完整历史日窗口上海深夜更新；5秒不是通用过期或逐请求上游读取条件。实现以[整改规格](../cache-current-read-spec.md)及47–50号票为准。
+
+
 ## Question
 
 不要把 backend cache 与 frontend cache 合并成一个 TTL 模板。本票据只冻结两层各自的固定模板：

@@ -53,6 +53,30 @@ class AdminConfigurationContractTest {
         assertThat(result.code()).isEqualTo("CONFIG_ENV_LOCKED");
     }
 
+    @Test
+    void ineffectiveCacheSettingsCannotPretendToApplyAndDoNotBreakHistoricalRestore(
+            @org.junit.jupiter.api.io.TempDir Path directory) {
+        AdminConfigurationStore store = AdminConfigurationFactory.encryptedFile(
+                new ObjectMapper(), directory.resolve("config.bin"), new byte[32],
+                validSettings("secret"), Set.of());
+        var deployment = new AdminConfigurationStore.DeploymentInfo(
+                "127.0.0.1", 3200, "test", "test", "UTC");
+        Set<String> retired = Set.of(
+                "catalogTtlMs", "authoritativeStateTtlMs", "actionIdTtlMs", "energyReadTtlMs");
+        assertThat(store.view(deployment).saved()).doesNotContainKeys(retired.toArray(String[]::new));
+        assertThat(store.view(deployment).active()).doesNotContainKeys(retired.toArray(String[]::new));
+        for (String field : retired) {
+            var rejected = store.save(1, Map.of(field, 1000), "operator");
+            assertThat(rejected.status()).isEqualTo(400);
+            assertThat(rejected.code()).isEqualTo("CONFIG_UNSUPPORTED");
+            assertThat(rejected.issues()).containsExactly(field);
+        }
+        assertThat(store.save(1, Map.of("modelId", "changed-model"), "operator").status()).isEqualTo(200);
+        assertThat(store.restore(2, 1, "operator").status()).isEqualTo(200);
+        assertThat(store.view(deployment).saved()).containsEntry("modelId", "test-model");
+        store.close();
+    }
+
     private static Map<String, Object> validSettings(String apiKey) {
         Map<String, Object> settings = new LinkedHashMap<>();
         settings.put("modelBaseUrl", "https://model.example.test/v1");

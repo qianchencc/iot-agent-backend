@@ -22,6 +22,7 @@ import ltd.qianc.iotagent.iot.ObservationResponse;
 import ltd.qianc.iotagent.iot.ObservationStatus;
 import ltd.qianc.iotagent.iot.ObservationUnavailableException;
 import ltd.qianc.iotagent.iot.RequestIdentity;
+import ltd.qianc.iotagent.readmodel.ReadSnapshots;
 import ltd.qianc.iotagent.iot.VideoPlaybackWindow;
 import ltd.qianc.iotagent.iot.VideoStream;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -42,17 +43,16 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/agent")
 public final class ObservationController {
     private static final Duration ADAPTER_TIMEOUT = Duration.ofSeconds(30);
+    private static final Duration SNAPSHOT_REBUILD_TIMEOUT = Duration.ofSeconds(150);
     private final ObservationAdapter adapter;
     private final IotAdapter iotAdapter;
-
-    public ObservationController(ObservationAdapter adapter) {
-        this(adapter, null);
-    }
+    private final ReadSnapshots snapshots;
 
     @Autowired
-    public ObservationController(ObservationAdapter adapter, IotAdapter iotAdapter) {
+    public ObservationController(ObservationAdapter adapter, IotAdapter iotAdapter, ReadSnapshots snapshots) {
         this.adapter = adapter;
         this.iotAdapter = iotAdapter;
+        this.snapshots = snapshots;
     }
 
     @GetMapping("/dashboard")
@@ -204,7 +204,6 @@ public final class ObservationController {
         }
         VideoPlaybackWindow playback = mode.equals("playback")
                 ? normalizedPlaybackWindow(request.getParameter("beginTime"), request.getParameter("endTime")) : null;
-        if (iotAdapter == null) return read(request, ObservationOperation.VIDEO_STREAM, Map.of("id", id));
         IotSource parsedSource = IotSource.parse(source);
         RequestIdentity identity = identity(request, parsedSource);
         try {
@@ -249,8 +248,17 @@ public final class ObservationController {
     }
 
     private ResponseEntity<?> read(HttpServletRequest request, ObservationOperation operation, Map<String, String> extras) {
-        ObservationResponse result = readAdapter(new ObservationRequest(identity(request, sourceFor(request)), operation,
-                parameters(request, operation, extras)));
+        RequestIdentity identity = identity(request, sourceFor(request));
+        Map<String, String> query = parameters(request, operation, extras);
+        ObservationRequest captured = new ObservationRequest(identity, operation, query);
+        if (operation != ObservationOperation.REGION_SEEN && operation != ObservationOperation.VIDEO_STREAM
+                && operation != ObservationOperation.REPORT && operation != ObservationOperation.REPORT_DOWNLOAD) {
+            ReadSnapshots.Identity scope = new ReadSnapshots.Identity(identity.tenantCode(), identity.authorization(),
+                    identity.source().name(), identity.ownerKey());
+            return ResponseEntity.ok(snapshots.read(scope, operation.name(), query,
+                    ReadSnapshots.Policy.forQuery(query, java.time.Clock.systemUTC()), () -> snapshotBody(captured)));
+        }
+        ObservationResponse result = readAdapter(captured);
         if (result.status() == ObservationStatus.UNAVAILABLE) throw new ObservationUnavailableException("只读观察读取失败");
         Map<String, Object> body = new LinkedHashMap<>(result.payload());
         if (result.status() != ObservationStatus.AVAILABLE && !body.containsKey("status")) {
@@ -264,9 +272,36 @@ public final class ObservationController {
         return ResponseEntity.ok(body);
     }
 
+    private Map<String, Object> snapshotBody(ObservationRequest request) {
+        ObservationResponse result = readAdapter(request, SNAPSHOT_REBUILD_TIMEOUT);
+        Object errors = result.payload().get("errors");
+        boolean page = (request.operation() == ObservationOperation.ENVIRONMENT_HISTORY
+                || request.operation() == ObservationOperation.ENERGY_HISTORY)
+                && result.status() == ObservationStatus.PARTIAL && result.payload().get("nextPage") instanceof Number
+                && !result.failures().isEmpty()
+                && result.failures().stream().allMatch(failure -> failure.code().equals("HISTORY_PARTIAL"));
+        boolean complete = (result.status() == ObservationStatus.AVAILABLE || result.status() == ObservationStatus.EMPTY)
+                && result.coverageComplete() && result.failures().isEmpty();
+        if ((!complete && !page) || errors instanceof java.util.Collection<?> values && !values.isEmpty()
+                || errors != null && !(errors instanceof java.util.Collection<?>)) {
+            throw new BusinessException("OBSERVATION_INCOMPLETE", "只读观察同步未取得完整结果，请稍后重试", 503);
+        }
+        Map<String, Object> body = new LinkedHashMap<>(result.payload());
+        if (result.status() != ObservationStatus.AVAILABLE && !body.containsKey("status")) {
+            body.put("status", result.status().name().toLowerCase(java.util.Locale.ROOT));
+        }
+        if (!result.failures().isEmpty()) body.put("failures", result.failures());
+        if (!result.coverageComplete()) body.put("coverageComplete", false);
+        return body;
+    }
+
     private ObservationResponse readAdapter(ObservationRequest request) {
+        return readAdapter(request, ADAPTER_TIMEOUT);
+    }
+
+    private ObservationResponse readAdapter(ObservationRequest request, Duration timeout) {
         try {
-            ObservationResponse result = adapter.read(request).block(ADAPTER_TIMEOUT);
+            ObservationResponse result = adapter.read(request).block(timeout);
             if (result == null) throw new ObservationUnavailableException("只读观察适配器返回空结果");
             return result;
         } catch (BusinessException failure) {
@@ -278,7 +313,7 @@ public final class ObservationController {
 
     private RequestIdentity identity(HttpServletRequest request, IotSource source) {
         PrincipalInfo principal = PrincipalContext.getPrincipalInfo();
-        return new RequestIdentity(principal.authorization(), principal.tenantCode(), source);
+        return new RequestIdentity(principal.authorization(), principal.tenantCode(), source, principal.ownerKey());
     }
 
     private IotSource sourceFor(HttpServletRequest request) {

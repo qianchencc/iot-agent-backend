@@ -219,7 +219,7 @@ class TaskManagementContractTest {
                 "{\"id\":\"report-1\",\"generatedAt\":\"2026-10-12T01:00:00Z\",\"title\":\"巡检报告\",\"blocks\":[]}")));
         TaskFacade facade = new TaskFacade(new ObjectMapper(), tasks, proposals, plans,
                 org.mockito.Mockito.mock(TaskNotificationStore.class), org.mockito.Mockito.mock(TaskScheduler.class),
-                null, null, reports, Clock.fixed(NOW, ZoneOffset.UTC));
+                null, null, reports, null, Clock.fixed(NOW, ZoneOffset.UTC));
 
         Map<String, Object> view = facade.view(new TaskFact("task-report", 2, "COMPLETED",
                 "{\"tenantCode\":\"LOCAL\",\"ownerKey\":\"" + PRINCIPAL.ownerKey()

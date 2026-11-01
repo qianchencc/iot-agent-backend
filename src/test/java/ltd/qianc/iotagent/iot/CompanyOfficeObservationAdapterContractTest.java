@@ -99,7 +99,7 @@ class CompanyOfficeObservationAdapterContractTest {
     }
 
     @Test
-    void reusesOfficeContextAcrossRegionReadsWithinShortWindow() {
+    void regionCompositionAlwaysLoadsItsOwnCurrentContextWithoutAnInnerSnapshotGate() {
         AtomicInteger scopeReads = new AtomicInteger();
         AtomicInteger regionReads = new AtomicInteger();
         ObservationAdapter upstream = request -> {
@@ -126,7 +126,7 @@ class CompanyOfficeObservationAdapterContractTest {
                 Map.of("regionId", "office-a"))).block();
 
         assertThat(scopeReads).hasValue(2);
-        assertThat(regionReads).hasValue(1);
+        assertThat(regionReads).hasValue(2);
     }
 
     @Test
@@ -177,7 +177,7 @@ class CompanyOfficeObservationAdapterContractTest {
     }
 
     @Test
-    void repeatedEnergyReadsReuseOneComposition() {
+    void energyCompositionDoesNotResetOuterSnapshotFreshnessWithAnInnerCache() {
         AtomicInteger compositions = new AtomicInteger();
         CompanyEnergyObservationComposer composer = request -> {
             compositions.incrementAndGet();
@@ -193,7 +193,22 @@ class CompanyOfficeObservationAdapterContractTest {
         adapter.read(energy).block();
         adapter.read(energy).block();
 
-        assertThat(compositions).hasValue(1);
+        assertThat(compositions).hasValue(2);
+    }
+
+    @Test
+    void publicCandidateProjectionNeverSerializesControlProviderBindingsOrRawMetadata() throws Exception {
+        AuthorizedDevice device = new AuthorizedDevice("device-a", "ac", "空调 A", "一楼", false,
+                "control-secret", "office-binding", "hub-secret", "area-secret",
+                List.of(List.of("一号楼", "一楼")), List.of("office-secret"),
+                Map.of("rawPayload", Map.of("token", "metadata-secret")));
+        DeviceCandidateSet candidates = new DeviceCandidateSet("candidate-a",
+                new DeviceCandidateQuery("ac", List.of(), "一楼", List.of(), List.of(), null), List.of(device), true, 1);
+        String json = new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(candidates.publicView());
+        assertThat(json).contains("device-a", "空调 A", "一楼", "candidate-a", "observationOnly");
+        assertThat(json).doesNotContain("controlRef", "officeDeviceRef", "hubDeviceId", "smartAreaCode", "officeIds", "metadata",
+                "control-secret", "office-binding", "hub-secret", "area-secret", "office-secret", "metadata-secret");
+        assertThat(device.controlRef()).isEqualTo("control-secret");
     }
 
     private static IotAdapter iot(RequestIdentity expected, List<AuthorizedDevice> devices) {

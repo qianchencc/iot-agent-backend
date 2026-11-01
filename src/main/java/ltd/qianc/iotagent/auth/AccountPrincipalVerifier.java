@@ -1,6 +1,46 @@
 package ltd.qianc.iotagent.auth;
 
+import java.time.Clock;
+import java.time.Duration;
+import java.util.function.Consumer;
+import ltd.qianc.iotagent.auth.internal.CachedAccountPrincipalVerifier;
+import ltd.qianc.iotagent.auth.internal.WebClientAccountPrincipalVerifier;
+import org.springframework.web.reactive.function.client.WebClient;
+
 /** Verifies the existing customer login token and returns the stable upstream principal. */
-public interface AccountPrincipalVerifier {
+public interface AccountPrincipalVerifier extends AutoCloseable {
     PrincipalInfo verify(PrincipalInfo presented);
+
+    /** Production gateway authentication, with a bounded nonblocking verified-identity cache. */
+    static AccountPrincipalVerifier gateway(WebClient client, String baseUrl, Duration timeout) {
+        return gateway(client, baseUrl, AccountIdentityCachePolicy.defaults(timeout), Clock.systemUTC());
+    }
+
+    /** Clock is explicit so expiration and failure boundaries can be exercised through this public seam. */
+    static AccountPrincipalVerifier gateway(
+            WebClient client, String baseUrl, AccountIdentityCachePolicy policy, Clock clock) {
+        return gateway(client, baseUrl, policy, clock, credential -> { });
+    }
+
+    /** Called on the managed worker after explicit rejection, before the credential can regain admission. */
+    static AccountPrincipalVerifier gateway(
+            WebClient client, String baseUrl, AccountIdentityCachePolicy policy, Clock clock,
+            Consumer<PrincipalInfo> onDenied) {
+        return gateway(client, baseUrl, policy, clock, onDenied, credential -> { });
+    }
+
+    /**
+     * Called on the managed worker after every genuine verification. It must only clear an existing
+     * denial (a no-op otherwise). A failure keeps admission closed so the barrier update is retried.
+     */
+    static AccountPrincipalVerifier gateway(
+            WebClient client, String baseUrl, AccountIdentityCachePolicy policy, Clock clock,
+            Consumer<PrincipalInfo> onDenied, Consumer<PrincipalInfo> onVerified) {
+        return new CachedAccountPrincipalVerifier(
+                new WebClientAccountPrincipalVerifier(client, baseUrl, policy.timeout()),
+                baseUrl, policy, clock, onDenied, onVerified);
+    }
+
+    @Override
+    default void close() { }
 }

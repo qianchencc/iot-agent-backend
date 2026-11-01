@@ -25,6 +25,7 @@ import ltd.qianc.iotagent.error.BusinessException;
 import ltd.qianc.iotagent.report.ReportFact;
 import ltd.qianc.iotagent.report.ReportFactStore;
 
+import ltd.qianc.iotagent.readmodel.ReadSnapshots;
 /**
  * Public task boundary. It performs proposal/plan/task CAS and idempotency while
  * execution, scheduling and durable facts stay behind injected adapters.
@@ -44,26 +45,28 @@ public final class TaskFacade {
     private final IotAdapter iot;
     private final ReportFactStore reports;
     private final Clock clock;
+    private final ReadSnapshots snapshots;
 
     public TaskFacade(ObjectMapper mapper, TaskFactStore tasks, TaskProposalStore proposals,
                       TaskPlanStore plans, TaskNotificationStore notifications,
                       TaskScheduler scheduler, Clock clock) {
-        this(mapper, tasks, proposals, plans, notifications, scheduler, null, null, null, clock);
+        this(mapper, tasks, proposals, plans, notifications, scheduler, null, null, null, null, clock);
     }
     public TaskFacade(ObjectMapper mapper, TaskFactStore tasks, TaskProposalStore proposals,
                       TaskPlanStore plans, TaskNotificationStore notifications,
                       TaskScheduler scheduler, TaskPhaseStore phases, Clock clock) {
-        this(mapper, tasks, proposals, plans, notifications, scheduler, phases, null, null, clock);
-    }
-    public TaskFacade(ObjectMapper mapper, TaskFactStore tasks, TaskProposalStore proposals,
-                      TaskPlanStore plans, TaskNotificationStore notifications,
-                      TaskScheduler scheduler, TaskPhaseStore phases, IotAdapter iot, Clock clock) {
-        this(mapper, tasks, proposals, plans, notifications, scheduler, phases, iot, null, clock);
+        this(mapper, tasks, proposals, plans, notifications, scheduler, phases, null, null, null, clock);
     }
     public TaskFacade(ObjectMapper mapper, TaskFactStore tasks, TaskProposalStore proposals,
                       TaskPlanStore plans, TaskNotificationStore notifications,
                       TaskScheduler scheduler, TaskPhaseStore phases, IotAdapter iot,
-                      ReportFactStore reports, Clock clock) {
+                      ReadSnapshots snapshots, Clock clock) {
+        this(mapper, tasks, proposals, plans, notifications, scheduler, phases, iot, null, snapshots, clock);
+    }
+    public TaskFacade(ObjectMapper mapper, TaskFactStore tasks, TaskProposalStore proposals,
+                      TaskPlanStore plans, TaskNotificationStore notifications,
+                      TaskScheduler scheduler, TaskPhaseStore phases, IotAdapter iot,
+                      ReportFactStore reports, ReadSnapshots snapshots, Clock clock) {
         this.mapper = Objects.requireNonNull(mapper, "mapper");
         this.tasks = Objects.requireNonNull(tasks, "tasks");
         this.proposals = Objects.requireNonNull(proposals, "proposals");
@@ -74,6 +77,7 @@ public final class TaskFacade {
         this.iot = iot;
         this.reports = reports;
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.snapshots = iot == null ? snapshots : Objects.requireNonNull(snapshots, "snapshots");
     }
 
     public TaskProposalFact propose(PrincipalInfo principal, String source, String conversationId,
@@ -610,7 +614,7 @@ public final class TaskFacade {
         checkPrincipal(principal);
         String normalizedSource = source(source);
         if (limit < 1 || limit > 100) throw new BusinessException("INVALID_LIMIT", "请选择有效分页大小");
-        AuthorizedDeviceScope scope = iot == null ? null : authorizedScope(principal, normalizedSource, "TASK_NOTIFICATION_UNAVAILABLE");
+        Set<String> scope = iot == null ? null : readableDeviceIds(principal, normalizedSource, "TASK_NOTIFICATION_UNAVAILABLE");
         return notifications.list(principal.tenantCode(), ownerKey(principal), normalizedSource, limit, before)
                 .stream()
                 .filter(item -> principal.tenantCode().equals(item.tenantCode())
@@ -621,7 +625,7 @@ public final class TaskFacade {
     public long unreadNotificationCount(PrincipalInfo principal, String source) {
         checkPrincipal(principal);
         String normalizedSource = source(source);
-        if (iot != null) authorizedScope(principal, normalizedSource, "TASK_NOTIFICATION_UNAVAILABLE");
+        if (iot != null) readableDeviceIds(principal, normalizedSource, "TASK_NOTIFICATION_UNAVAILABLE");
         return notifications.unreadCount(principal.tenantCode(), ownerKey(principal), normalizedSource);
     }
 
@@ -629,7 +633,7 @@ public final class TaskFacade {
     public Map<String, Object> seenNotification(PrincipalInfo principal, String source, String id) {
         checkPrincipal(principal);
         String normalizedSource = source(source);
-        if (iot != null) authorizedScope(principal, normalizedSource, "TASK_NOTIFICATION_UNAVAILABLE");
+        if (iot != null) readableDeviceIds(principal, normalizedSource, "TASK_NOTIFICATION_UNAVAILABLE");
         TaskNotificationFact fact = notifications.markSeen(principal.tenantCode(), ownerKey(principal), normalizedSource, id, clock.instant());
         if (!principal.tenantCode().equals(fact.tenantCode()) || !ownerKey(principal).equals(fact.recipientKey())
                 || !normalizedSource.equals(source(fact.source()))) {
@@ -641,7 +645,7 @@ public final class TaskFacade {
     public Map<String, Object> seenAllNotifications(PrincipalInfo principal, String source) {
         checkPrincipal(principal);
         String normalizedSource = source(source);
-        if (iot != null) authorizedScope(principal, normalizedSource, "TASK_NOTIFICATION_UNAVAILABLE");
+        if (iot != null) readableDeviceIds(principal, normalizedSource, "TASK_NOTIFICATION_UNAVAILABLE");
         Instant at = clock.instant();
         return Map.of("readAt", at.toString(), "marked", notifications.markAllSeen(principal.tenantCode(), ownerKey(principal), normalizedSource, at));
     }
@@ -680,30 +684,42 @@ public final class TaskFacade {
         view.putIfAbsent("reportAt", report.isObject() ? report.path("generatedAt").asText(null) : null);
         return view;
     }
-    private AuthorizedDeviceScope authorizedScope(PrincipalInfo principal, String requestedSource, String errorCode) {
+    private Set<String> readableDeviceIds(PrincipalInfo principal, String requestedSource, String errorCode) {
         IotSource requested;
         try { requested = IotSource.parse(source(requestedSource)); }
         catch (RuntimeException invalid) { throw new BusinessException("INVALID_AGENT_SOURCE", "Agent 来源无效", 400); }
-        try {
-            AuthorizedDeviceScope scope = iot.loadAuthorizedDeviceScope(new RequestIdentity(
-                    principal.authorization(), principal.tenantCode(), requested, ownerKey(principal)))
-                    .block(Duration.ofSeconds(30));
-            if (scope == null || scope.source() != requested) throw new BusinessException(errorCode, "任务报告当前不可读取", 503);
-            return scope;
-        } catch (BusinessException failure) {
-            throw failure;
-        } catch (RuntimeException failure) {
-            throw new BusinessException(errorCode, "任务报告当前不可读取", 503);
+        RequestIdentity identity = new RequestIdentity(
+                principal.authorization(), principal.tenantCode(), requested, ownerKey(principal));
+        Map<String, Object> held = snapshots.read(new ReadSnapshots.Identity(identity.tenantCode(),
+                        identity.authorization(), requested.name(), identity.ownerKey()),
+                "TASK_READ_SCOPE", Map.of(), ReadSnapshots.Policy.HISTORICAL, () -> {
+                    AuthorizedDeviceScope scope = iot.loadAuthorizedDeviceScope(identity).block(Duration.ofSeconds(30));
+                    if (scope == null || scope.source() != requested || !identity.equals(scope.identity())) {
+                        throw new BusinessException(errorCode, "任务读取范围暂不可用", 503);
+                    }
+                    return Map.of("deviceIds", scope.devices().stream().map(AuthorizedDevice::id).toList());
+                });
+        if ("preparing".equals(held.get("status"))) {
+            throw new BusinessException("TASK_READ_PREPARING", "任务读取数据准备中，请稍后重试", 503);
         }
     }
     public Map<String, Object> view(PrincipalInfo principal, TaskFact task, String requestedSource) {
         checkPrincipal(principal);
         Map<String, Object> view = view(task);
         if (iot == null || !(view.get("report") instanceof Map<?, ?> reportMap)) return view;
-        AuthorizedDeviceScope scope = authorizedScope(principal, requestedSource, "TASK_REPORT_UNAVAILABLE");
-        view.put("report", filterReport(reportMap, scope));
+        Set<String> scope = readableDeviceIds(principal, requestedSource, "TASK_REPORT_UNAVAILABLE");
+        exposeReport(view, filterReport(reportMap, scope));
         return view;
     }
+        if (!(held.get("deviceIds") instanceof List<?> ids)) {
+            throw new BusinessException(errorCode, "任务读取范围暂不可用", 503);
+        }
+        Set<String> allowed = new java.util.HashSet<>();
+        for (Object id : ids) {
+            if (!(id instanceof String value)) throw new BusinessException(errorCode, "任务读取范围暂不可用", 503);
+            allowed.add(value);
+        }
+        return allowed;
     public List<Map<String, Object>> plans(PrincipalInfo principal, String source) {
         return plans.list(principal.tenantCode(), ownerKey(principal), source(source)).stream()
                 .filter(item -> owns(item.payloadJson(), principal)).map(this::planView).toList();
@@ -1234,7 +1250,7 @@ public final class TaskFacade {
         result.remove("ownerKey");
         return result;
     }
-    private Map<String, Object> filterReport(Map<?, ?> raw, AuthorizedDeviceScope scope) {
+    private Map<String, Object> filterReport(Map<?, ?> raw, Set<String> scope) {
         Map<String, Object> report = new LinkedHashMap<>();
         raw.forEach((key, value) -> { if (key instanceof String name) report.put(name, value); });
         Object phases = report.get("phases");
@@ -1247,7 +1263,7 @@ public final class TaskFacade {
                 Object devices = safePhase.get("devices");
                 if (devices instanceof List<?> deviceList) {
                     safePhase.put("devices", deviceList.stream().filter(item -> item instanceof Map<?, ?> device
-                            && scope.device(String.valueOf(device.get("id"))).isPresent()).toList());
+                            && scope.contains(String.valueOf(device.get("id")))).toList());
                 }
                 filteredPhases.add(safePhase);
             }
@@ -1255,7 +1271,7 @@ public final class TaskFacade {
         }
         Object meterIds = report.get("meterIds");
         if (meterIds instanceof List<?> ids) {
-            report.put("meterIds", ids.stream().filter(id -> scope.device(String.valueOf(id)).isPresent()).toList());
+            report.put("meterIds", ids.stream().filter(id -> scope.contains(String.valueOf(id))).toList());
         }
         return report;
     }
@@ -1267,7 +1283,16 @@ public final class TaskFacade {
     private Map<String, Object> notificationView(TaskNotificationFact fact) {
         return notificationView(fact, null);
     }
-    private Map<String, Object> notificationView(TaskNotificationFact fact, AuthorizedDeviceScope scope) {
+    private Map<String, Object> notificationView(TaskNotificationFact fact, Set<String> scope) {
+
+    @SuppressWarnings("unchecked")
+    private void exposeReport(Map<String, Object> view, Map<String, Object> report) {
+        view.put("report", report);
+        // Both objects were created by this facade's ObjectMapper; keep the public copies identical.
+        if (view.get("payload") instanceof Map<?, ?> payload && payload.containsKey("report")) {
+            ((Map<String, Object>) payload).put("report", report);
+        }
+    }
         Map<String, Object> view = new LinkedHashMap<>();
         view.put("id", fact.notificationId());
         view.put("taskId", fact.taskId());
@@ -1280,7 +1305,7 @@ public final class TaskFacade {
         JsonNode report = payload.path("report");
         if (report.isObject()) {
             Map<String, Object> value = mapper.convertValue(publicPayload(report), Map.class);
-            view.put("report", scope == null ? value : filterReport(value, scope));
+            exposeReport(view, scope == null ? value : filterReport(value, scope));
         }
         return view;
     }

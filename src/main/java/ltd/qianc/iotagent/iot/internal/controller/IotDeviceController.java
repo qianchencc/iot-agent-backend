@@ -1,5 +1,7 @@
 package ltd.qianc.iotagent.iot.internal.controller;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -16,6 +18,7 @@ import ltd.qianc.iotagent.iot.IotAdapter;
 import ltd.qianc.iotagent.iot.IotSource;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.iot.UpstreamUnavailableException;
+import ltd.qianc.iotagent.readmodel.ReadSnapshots;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -31,20 +34,28 @@ import org.springframework.web.bind.annotation.RestController;
 public final class IotDeviceController {
     private static final Duration ADAPTER_TIMEOUT = Duration.ofSeconds(120);
     private final IotAdapter adapter;
+    private final ReadSnapshots snapshots;
+    private final ObjectMapper mapper;
 
-    public IotDeviceController(IotAdapter adapter) {
+    public IotDeviceController(IotAdapter adapter, ReadSnapshots snapshots, ObjectMapper mapper) {
         this.adapter = adapter;
+        this.snapshots = snapshots;
+        this.mapper = mapper;
     }
     @GetMapping("/company-devices")
     public ResponseEntity<?> companyDevices(HttpServletRequest request) {
         ResponseEntity<?> source = requireCompanySource(request);
         if (source != null) return source;
         var principal = PrincipalContext.getPrincipalInfo();
+        RequestIdentity identity = new RequestIdentity(principal.authorization(), principal.tenantCode(), IotSource.COMPANY, principal.ownerKey());
+        return ResponseEntity.ok(snapshots.read(snapshotIdentity(identity), "COMPANY_DEVICES", Map.of(),
+                ReadSnapshots.Policy.CURRENT, () -> companyDirectory(identity)));
+    }
+
+    private Map<String, Object> companyDirectory(RequestIdentity identity) {
         try {
-            AuthorizedDeviceScope scope = adapter.loadAuthorizedDeviceScope(
-                    new RequestIdentity(principal.authorization(), principal.tenantCode(), IotSource.COMPANY))
-                    .block(ADAPTER_TIMEOUT);
-            if (scope == null || scope.source() != IotSource.COMPANY) {
+            AuthorizedDeviceScope scope = adapter.loadAuthorizedDeviceScope(identity).block(ADAPTER_TIMEOUT);
+            if (scope == null || scope.source() != IotSource.COMPANY || !identity.equals(scope.identity())) {
                 throw new BusinessException("AUTHORIZED_SCOPE_UNAVAILABLE", "读取当前设备目录失败", 503);
             }
             List<Map<String, Object>> devices = scope.devices().stream().map(IotDeviceController::deviceView).toList();
@@ -52,7 +63,7 @@ public final class IotDeviceController {
             body.put("source", "company");
             body.put("observedAt", Instant.now().toString());
             body.put("devices", devices);
-            return ResponseEntity.ok(body);
+            return body;
         } catch (BusinessException failure) {
             throw failure;
         } catch (RuntimeException failure) {
@@ -63,6 +74,7 @@ public final class IotDeviceController {
 
     @GetMapping({"/devices/candidates", "/tools/find_device_candidates"})
     public ResponseEntity<?> candidates(
+            HttpServletRequest request,
             @RequestParam(required = false, defaultValue = "office") String source,
             @RequestParam String kind,
             @RequestParam(required = false) String scopeText,
@@ -73,16 +85,28 @@ public final class IotDeviceController {
         DeviceCandidateQuery query = new DeviceCandidateQuery(kind, List.of(), scopeText,
                 scopeTerms == null ? List.of() : scopeTerms,
                 nameHints == null ? List.of() : nameHints, deviceText);
-        return ResponseEntity.ok(adapter.findDeviceCandidates(identity(), query).block(ADAPTER_TIMEOUT));
+        RequestIdentity identity = identity();
+        if (request.getRequestURI().contains("/tools/")) {
+            return ResponseEntity.ok(adapter.findDeviceCandidates(identity, query).block(ADAPTER_TIMEOUT));
+        }
+        Map<String, Object> key = mapper.convertValue(query, new TypeReference<>() { });
+        return ResponseEntity.ok(snapshots.read(snapshotIdentity(identity), "DEVICE_CANDIDATES", key,
+                ReadSnapshots.Policy.CURRENT, () -> candidateView(adapter.findDeviceCandidates(identity, query).block(ADAPTER_TIMEOUT))));
     }
 
     @PostMapping({"/devices/states", "/devices/status", "/tools/read_device_states"})
     public ResponseEntity<?> states(
+            HttpServletRequest request,
             @RequestParam(required = false, defaultValue = "office") String source,
             @RequestBody Map<String, Object> body) {
         requireOffice(source);
         List<String> ids = strings(body == null ? null : body.get("deviceIds"));
-        return ResponseEntity.ok(adapter.readDeviceStates(identity(), ids).block(ADAPTER_TIMEOUT));
+        RequestIdentity identity = identity();
+        if (request.getRequestURI().contains("/tools/")) {
+            return ResponseEntity.ok(adapter.readDeviceStates(identity, ids).block(ADAPTER_TIMEOUT));
+        }
+        return ResponseEntity.ok(snapshots.read(snapshotIdentity(identity), "DEVICE_STATES", Map.of("deviceIds", ids),
+                ReadSnapshots.Policy.CURRENT, () -> json(adapter.readDeviceStates(identity, ids).block(ADAPTER_TIMEOUT))));
     }
 
     @PostMapping({"/devices/capabilities", "/tools/inspect_device_capabilities"})
@@ -114,7 +138,21 @@ public final class IotDeviceController {
 
     private RequestIdentity identity() {
         var principal = PrincipalContext.getPrincipalInfo();
-        return new RequestIdentity(principal.authorization(), principal.tenantCode(), IotSource.OFFICE);
+        return new RequestIdentity(principal.authorization(), principal.tenantCode(), IotSource.OFFICE, principal.ownerKey());
+    }
+
+    private static ReadSnapshots.Identity snapshotIdentity(RequestIdentity identity) {
+        return new ReadSnapshots.Identity(identity.tenantCode(), identity.authorization(), identity.source().name(), identity.ownerKey());
+    }
+
+    private Map<String, Object> candidateView(ltd.qianc.iotagent.iot.DeviceCandidateSet value) {
+        if (value == null) throw new UpstreamUnavailableException("设备候选数据为空");
+        return value.publicView();
+    }
+
+    private Map<String, Object> json(Object value) {
+        if (value == null) throw new UpstreamUnavailableException("设备只读数据为空");
+        return mapper.convertValue(value, new TypeReference<>() { });
     }
 
     private static void requireOffice(String source) {

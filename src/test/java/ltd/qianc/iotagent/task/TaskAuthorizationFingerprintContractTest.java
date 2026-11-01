@@ -48,7 +48,7 @@ class TaskAuthorizationFingerprintContractTest {
         IotAdapter iot = adapter(scope(current));
         TaskFacade facade = new TaskFacade(new ObjectMapper(), mock(TaskFactStore.class), mock(TaskProposalStore.class),
                 plans, mock(TaskNotificationStore.class), mock(TaskScheduler.class), null, iot,
-                Clock.fixed(NOW, ZoneOffset.UTC));
+                mock(ltd.qianc.iotagent.readmodel.ReadSnapshots.class), Clock.fixed(NOW, ZoneOffset.UTC));
 
         assertThatThrownBy(() -> facade.updatePlan(PRINCIPAL, "plan-1", 1, "resume", null, true))
                 .isInstanceOf(BusinessException.class)
@@ -65,7 +65,7 @@ class TaskAuthorizationFingerprintContractTest {
         when(plans.updateIfVersion(any(), anyLong())).thenAnswer(invocation -> Optional.of(invocation.getArgument(0)));
         TaskFacade facade = new TaskFacade(new ObjectMapper(), mock(TaskFactStore.class), mock(TaskProposalStore.class),
                 plans, mock(TaskNotificationStore.class), mock(TaskScheduler.class), null, adapter(scope(current)),
-                Clock.fixed(NOW, ZoneOffset.UTC));
+                mock(ltd.qianc.iotagent.readmodel.ReadSnapshots.class), Clock.fixed(NOW, ZoneOffset.UTC));
 
         TaskPlanFact resumed = facade.updatePlan(PRINCIPAL, "plan-1", 1, "resume", null, true);
 

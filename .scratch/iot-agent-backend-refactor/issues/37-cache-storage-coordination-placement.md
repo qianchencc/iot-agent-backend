@@ -4,6 +4,11 @@
 **Status:** resolved
 **Blocked by:** 32, 34, 35, 36
 
+## 2026-11-02 执行修订
+
+反复重启导致读取结果全部丢失已构成实际问题。本轮明确使用现有Redis存可重建页面快照，内存提供即时返回，Redis恢复/读写在后台执行；不是引入全局统一缓存平台。MySQL Business Fact与sidecar SQLite不变。原“当前不接Redis”仅为此前阶段选择，不再阻止这次已证明必要的接入。实施见[整改规格](../cache-current-read-spec.md)与47号票。
+
+
 ## Question
 
 在缓存模板和能力矩阵冻结后，决定每类内容使用 frontend memory、backend memory、Redis、MySQL 派生快照还是 Business Fact；定义 Redis key/namespace/身份摘要/TTL/容量/指标、跨实例 lease、Redis 故障降级，以及哪些内容绝不能进入 Redis。

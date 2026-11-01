@@ -13,6 +13,7 @@ import ltd.qianc.iotagent.report.ReportFactStore;
 import ltd.qianc.iotagent.region.RegionSeenStore;
 import ltd.qianc.iotagent.region.internal.JdbcRegionSeenStore;
 import ltd.qianc.iotagent.storage.RedisCoordinationStore;
+import ltd.qianc.iotagent.readmodel.ReadSnapshots;
 import ltd.qianc.iotagent.task.TaskFactStore;
 import ltd.qianc.iotagent.task.TaskNotificationStore;
 import ltd.qianc.iotagent.task.TaskPhaseStore;
@@ -62,7 +63,12 @@ public class StorageConfiguration {
         RedisStandaloneConfiguration configuration = new RedisStandaloneConfiguration(uri.getHost(), uri.getPort() > 0 ? uri.getPort() : 6379);
         if (uri.getPath() != null && uri.getPath().length() > 1) configuration.setDatabase(Integer.parseInt(uri.getPath().substring(1)));
         if (uri.getUserInfo() != null && uri.getUserInfo().contains(":")) configuration.setPassword(uri.getUserInfo().substring(uri.getUserInfo().indexOf(':') + 1));
-        return new LettuceConnectionFactory(configuration);
+        var client = org.springframework.data.redis.connection.lettuce.LettuceClientConfiguration.builder()
+                .commandTimeout(java.time.Duration.ofSeconds(2))
+                .shutdownTimeout(java.time.Duration.ofMillis(100))
+                .clientOptions(io.lettuce.core.ClientOptions.builder().socketOptions(io.lettuce.core.SocketOptions.builder()
+                        .connectTimeout(java.time.Duration.ofSeconds(2)).build()).build()).build();
+        return new LettuceConnectionFactory(configuration, client);
     }
 
     @Bean
@@ -156,6 +162,36 @@ public class StorageConfiguration {
     @ConditionalOnProperty(name = "agent.storage.redis.enabled", havingValue = "true")
     @ConditionalOnMissingBean(RedisCoordinationStore.class)
     LettuceRedisCoordinationStore lettuceRedisCoordinationStore(StringRedisTemplate redis) { return new LettuceRedisCoordinationStore(redis); }
+
+    @Bean
+    @org.springframework.context.annotation.DependsOn("storageSchemaInitializer")
+    @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
+    @ConditionalOnMissingBean(ReadSnapshots.Barrier.class)
+    ReadSnapshots.Barrier readSnapshotBarrier(JdbcTemplate jdbc, TransactionTemplate transactions,
+            org.springframework.core.env.Environment environment) {
+        return new JdbcCredentialBarrier(jdbc, transactions, readModelNamespace(environment));
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "agent.storage.redis.enabled", havingValue = "true")
+    ReadSnapshots.Persistence readSnapshotPersistence(RedisCoordinationStore store, org.springframework.core.env.Environment environment) {
+        final String namespace = readModelNamespace(environment);
+        return new ReadSnapshots.Persistence() {
+            @Override public java.util.Optional<String> get(String key) { return store.get(namespace + key); }
+            @Override public void put(String key, String value, java.time.Duration retention) { store.put(namespace + key, value, retention); }
+            @Override public void delete(String key) { store.delete(namespace + key); }
+        };
+    }
+
+    private static String readModelNamespace(org.springframework.core.env.Environment environment) {
+        String origin = environment.getProperty("iot.gateway.base-url", "").strip().replaceAll("/+$", "");
+        try {
+            return "readmodel:gateway:" + java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(origin.getBytes(java.nio.charset.StandardCharsets.UTF_8))) + ":";
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException(impossible);
+        }
+    }
 
     private static String required(org.springframework.core.env.Environment environment, String name) {
         String value = environment.getProperty(name);

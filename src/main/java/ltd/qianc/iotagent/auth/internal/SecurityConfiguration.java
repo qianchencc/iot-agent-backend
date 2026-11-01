@@ -1,8 +1,11 @@
 package ltd.qianc.iotagent.auth.internal;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.Clock;
 import java.time.Duration;
+import ltd.qianc.iotagent.auth.AccountIdentityCachePolicy;
 import ltd.qianc.iotagent.auth.AccountPrincipalVerifier;
+import ltd.qianc.iotagent.readmodel.ReadSnapshots;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
@@ -18,21 +21,33 @@ import org.springframework.web.reactive.function.client.WebClient;
 @Configuration
 public class SecurityConfiguration {
 
-    @Bean
+    @Bean(destroyMethod = "close")
     @ConditionalOnMissingBean(AccountPrincipalVerifier.class)
     AccountPrincipalVerifier accountPrincipalVerifier(
             WebClient.Builder builder,
+            ReadSnapshots snapshots,
             @Value("${iot.gateway.base-url:}") String baseUrl,
-            @Value("${iot.identity.verify-timeout-ms:10000}") long timeoutMs) {
+            @Value("${iot.identity.verify-timeout-ms:10000}") long timeoutMs,
+            @Value("${iot.identity.refresh-interval-ms:60000}") long refreshIntervalMs,
+            @Value("${iot.identity.max-validation-age-ms:86400000}") long maxValidationAgeMs,
+            @Value("${iot.identity.retry-cooldown-ms:60000}") long retryCooldownMs) {
         if (baseUrl == null || baseUrl.isBlank()) {
             return new FailClosedAccountPrincipalVerifier("物联身份核验上游未配置");
         }
         try {
-            return new WebClientAccountPrincipalVerifier(
-                    builder.build(), baseUrl, Duration.ofMillis(timeoutMs));
+            return AccountPrincipalVerifier.gateway(builder.build(), baseUrl,
+                    new AccountIdentityCachePolicy(Duration.ofMillis(timeoutMs), Duration.ofMillis(refreshIntervalMs),
+                            Duration.ofMillis(maxValidationAgeMs), Duration.ofMillis(retryCooldownMs)),
+                    Clock.systemUTC(),
+                    credential -> snapshots.discard(snapshotIdentity(credential)),
+                    credential -> snapshots.admit(snapshotIdentity(credential)));
         } catch (RuntimeException invalidConfiguration) {
             return new FailClosedAccountPrincipalVerifier("物联身份核验配置无效");
         }
+    }
+
+    private static ReadSnapshots.Identity snapshotIdentity(ltd.qianc.iotagent.auth.PrincipalInfo credential) {
+        return new ReadSnapshots.Identity(credential.tenantCode(), credential.authorization(), "company", "");
     }
 
     @Bean

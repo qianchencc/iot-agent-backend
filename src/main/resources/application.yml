@@ -69,3 +69,7 @@ iot:
   identity:
     verify: ${IOT_IDENTITY_VERIFY:true}
     verify-timeout-ms: ${IOT_IDENTITY_VERIFY_TIMEOUT_MS:10000}
+    # Verified identities refresh in the background. Outages never extend the last successful check.
+    refresh-interval-ms: ${IOT_IDENTITY_REFRESH_INTERVAL_MS:60000}
+    max-validation-age-ms: ${IOT_IDENTITY_MAX_VALIDATION_AGE_MS:86400000}
+    retry-cooldown-ms: ${IOT_IDENTITY_RETRY_COOLDOWN_MS:60000}

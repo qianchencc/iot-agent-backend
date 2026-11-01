@@ -185,10 +185,6 @@ public class AdminModuleConfiguration {
         values.put("readbackWaitMs", integer(environment, "READBACK_WAIT_MS", 6000));
         values.put("controlTimeoutMs", integer(environment, "CONTROL_TIMEOUT_MS", 25000));
         values.put("scanIntervalMs", integer(environment, "SCAN_INTERVAL_MS", 15000));
-        values.put("catalogTtlMs", integer(environment, "IOT_CATALOG_TTL_MS", 60000));
-        values.put("authoritativeStateTtlMs", integer(environment, "AUTHORITATIVE_STATE_TTL_MS", 3000));
-        values.put("actionIdTtlMs", integer(environment, "ACTION_ID_TTL_MS", 600000));
-        values.put("energyReadTtlMs", integer(environment, "ENERGY_READ_TTL_MS", 30000));
         values.put("langfuseEnabled", bool(environment, "LANGFUSE_ENABLED", false));
         values.put("langfuseBaseUrl", environment.getProperty("LANGFUSE_BASE_URL", ""));
         values.put("langfusePublicKey", environment.getProperty("LANGFUSE_PUBLIC_KEY", ""));
@@ -198,7 +194,7 @@ public class AdminModuleConfiguration {
 
     static Set<String> locked(Environment environment) {
         Set<String> result = new java.util.LinkedHashSet<>();
-        Map<String, String> fields = Map.of("modelBaseUrl", "MODEL_BASE_URL", "modelId", "MODEL_ID", "modelApiKey", "MODEL_API_KEY", "thinkingLevel", "AGENT_THINKING_LEVEL", "catalogTtlMs", "IOT_CATALOG_TTL_MS", "heartbeatMs", "HEARTBEAT_MS", "langfuseBaseUrl", "LANGFUSE_BASE_URL", "langfusePublicKey", "LANGFUSE_PUBLIC_KEY", "langfuseSecretKey", "LANGFUSE_SECRET_KEY");
+        Map<String, String> fields = Map.of("modelBaseUrl", "MODEL_BASE_URL", "modelId", "MODEL_ID", "modelApiKey", "MODEL_API_KEY", "thinkingLevel", "AGENT_THINKING_LEVEL", "heartbeatMs", "HEARTBEAT_MS", "langfuseBaseUrl", "LANGFUSE_BASE_URL", "langfusePublicKey", "LANGFUSE_PUBLIC_KEY", "langfuseSecretKey", "LANGFUSE_SECRET_KEY");
         fields.forEach((name, variable) -> { if (environment.getProperty(variable) != null) result.add(name); });
         return result;
     }

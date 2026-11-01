@@ -4,6 +4,11 @@
 **Status:** resolved
 **Blocked by:** 31
 
+## 2026-11-02 执行修订
+
+矩阵中的普通页面/只读资料统一遵循“立即返回backend已有结果；缺数准备中；后台同步不阻塞”的接口契约。身份/来源/完整查询隔离仍保留，但不为构造缓存键逐请求读取范围；视频短地址、下载、控制与执行回读、会话、Task/Plan/通知事实按原事务规则。详情中纯观察资料可复用，真正业务事实详情不套缓存。以[整改规格](../cache-current-read-spec.md)及47–50号票验收。
+
+
 ## Question
 
 逐项覆盖身份、Company/Office dashboard、设备目录、区域设备、设备状态、环境、能耗历史/统计/报告、安全台账、视频地址、Action Draft、Task/Plan、通知、会话、Pi Session、Admin 和 Langfuse：对每项标注“可缓存/只能合并在途/必须实时/Business Fact”，真实数据的来源、权限敏感度、前后端责任和失效动作。

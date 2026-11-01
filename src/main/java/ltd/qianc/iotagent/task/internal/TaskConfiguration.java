@@ -77,9 +77,10 @@ public class TaskConfiguration {
     @Bean
     TaskFacade taskFacade(ObjectMapper mapper, TaskFactStore tasks, TaskProposalStore proposals, TaskPlanStore plans,
                           TaskNotificationStore notifications, TaskScheduler scheduler, TaskPhaseStore phases, IotAdapter iot,
-                          org.springframework.beans.factory.ObjectProvider<ReportFactStore> reports) {
+                          org.springframework.beans.factory.ObjectProvider<ReportFactStore> reports,
+                          ltd.qianc.iotagent.readmodel.ReadSnapshots snapshots) {
         return new TaskFacade(mapper, tasks, proposals, plans, notifications, scheduler, phases, iot,
-                reports.getIfAvailable(), Clock.systemUTC());
+                reports.getIfAvailable(), snapshots, Clock.systemUTC());
     }
     @Bean
     TaskScanner taskScanner(TaskPhaseStore phases, TaskFactStore tasks, TaskExecutionGateway gateway,

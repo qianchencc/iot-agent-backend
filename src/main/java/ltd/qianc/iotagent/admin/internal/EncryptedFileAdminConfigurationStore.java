@@ -71,6 +71,8 @@ public final class EncryptedFileAdminConfigurationStore implements AdminConfigur
         if (changes == null || changes.keySet().stream().anyMatch(name -> locked.contains(name))) {
             return new SaveResult(409, "CONFIG_ENV_LOCKED", List.of());
         }
+        List<String> unsupported = changes.keySet().stream().filter(RetiredCacheSettings.NAMES::contains).toList();
+        if (!unsupported.isEmpty()) return new SaveResult(400, "CONFIG_UNSUPPORTED", unsupported);
         Map<String, Object> previous = state.revisions.get(state.revisions.size() - 1).settings;
         Map<String, Object> next = new LinkedHashMap<>(previous);
         for (Map.Entry<String, Object> change : changes.entrySet()) {
@@ -93,6 +95,7 @@ public final class EncryptedFileAdminConfigurationStore implements AdminConfigur
         Revision target = state.revisions.stream().filter(item -> item.revision == revision).findFirst().orElse(null);
         if (target == null) return new SaveResult(404, "CONFIG_REVISION_NOT_FOUND", List.of());
         Map<String, Object> changes = new LinkedHashMap<>(target.settings);
+        RetiredCacheSettings.NAMES.forEach(changes::remove);
         locked.forEach(changes::remove);
         return save(expectedRevision, changes, actor);
     }
@@ -193,6 +196,7 @@ public final class EncryptedFileAdminConfigurationStore implements AdminConfigur
     private static Map<String, Object> publicSettings(Map<String, Object> value) {
         Map<String, Object> result = new LinkedHashMap<>(value);
         SECRET_KEYS.forEach(result::remove);
+        RetiredCacheSettings.NAMES.forEach(result::remove);
         return result;
     }
 
@@ -232,10 +236,6 @@ public final class EncryptedFileAdminConfigurationStore implements AdminConfigur
         integer(settings, issues, "readbackWaitMs", 0, 120_000);
         integer(settings, issues, "controlTimeoutMs", 1_000, 120_000);
         integer(settings, issues, "scanIntervalMs", 1_000, 60_000);
-        integer(settings, issues, "catalogTtlMs", 0, 3_600_000);
-        integer(settings, issues, "authoritativeStateTtlMs", 0, 60_000);
-        integer(settings, issues, "actionIdTtlMs", 0, 86_400_000);
-        integer(settings, issues, "energyReadTtlMs", 0, 86_400_000);
         for (String key : List.of("reasoning", "supportsDeveloperRole", "supportsReasoningEffort", "supportsUsageInStreaming", "langfuseEnabled")) if (!(settings.get(key) instanceof Boolean)) issues.add(key);
         String thinking = string(settings.get("thinkingLevel"));
         if (thinking != null && !Set.of("off", "low", "medium", "high").contains(thinking)) issues.add("thinkingLevel");

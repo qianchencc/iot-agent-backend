@@ -13,8 +13,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Objects;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import ltd.qianc.iotagent.iot.AuthorizedDevice;
@@ -41,16 +39,11 @@ import reactor.core.publisher.Mono;
  * <p>This adapter deliberately never calls the upstream DASHBOARD operation. It
  * obtains the current authorization catalog from {@link IotAdapter}, then reads
  * each observation area independently through the existing observation boundary.
- * The small public ObservationAdapter interface therefore remains the only route
- * contract while composition, caching and authorization details stay internal.</p>
+ * Composition always reads its source facts; ordinary HTTP snapshot ownership is
+ * outside this adapter, so internal tools and controls keep their live semantics.</p>
  */
 public final class CompanyOfficeObservationAdapter implements ObservationAdapter {
     private static final String REGION_UNAVAILABLE = "当前用户区域暂不可用，请稍后重试";
-    private static final long FRESH_MILLIS = 15_000L;
-    private static final long STALE_MILLIS = 5 * 60_000L;
-    private static final long REGION_CATALOG_MILLIS = 5_000L;
-    /** Energy is read-only and changes at sampling boundaries, so one minute of reuse is safe. */
-    private static final long ENERGY_CACHE_MILLIS = 60_000L;
     private static final Pattern FLOOR_PATTERN = Pattern.compile("(?:^|[^\\d])(\\d+)(?:楼|层)");
 
     private final ObservationAdapter upstream;
@@ -59,12 +52,6 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
     private final RegionSeenStore regionSeen;
     private final CompanyEnergyObservationComposer energyComposer;
     private final Clock clock;
-    private final ConcurrentMap<String, CacheEntry> dashboardCache = new ConcurrentHashMap<>();
-    private final ConcurrentMap<String, Mono<ObservationResponse>> dashboardJobs = new ConcurrentHashMap<>();
-    private final ConcurrentMap<String, RegionCatalogEntry> regionCatalogCache = new ConcurrentHashMap<>();
-    private final ConcurrentMap<String, Mono<List<Map<String, Object>>>> regionCatalogJobs = new ConcurrentHashMap<>();
-    private final ConcurrentMap<String, CacheEntry> energyCache = new ConcurrentHashMap<>();
-    private final ConcurrentMap<String, Mono<ObservationResponse>> energyJobs = new ConcurrentHashMap<>();
 
     public CompanyOfficeObservationAdapter(
             ObservationAdapter upstream,
@@ -100,44 +87,11 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
             case REGION_STATES -> regionStates(request);
             case REGION_SEEN -> regionSeen(request);
             case SAFETY_EVENT_CAMERAS -> safetyEventCameras(request);
-            case COMPANY_ENERGY_DAILY, COMPANY_ENERGY_REPORT, ENERGY_COMPARISON, COMPANY_METER_REPORT ->
-                    energy(request);
-            case ENERGY_REPORT -> energy(request);
+            case COMPANY_ENERGY_DAILY, COMPANY_ENERGY_REPORT, ENERGY_COMPARISON, COMPANY_METER_REPORT, ENERGY_REPORT ->
+                    composeEnergy(request);
             default -> upstream.read(request);
         };
 
-    }
-
-    /**
-     * Energy results are the most expensive read in the product: a company-wide daily window
-     * walks the whole tenant sample stream. Reuse the last successful composition for a minute
-     * and merge concurrent callers, so opening the page never repeats that work.
-     */
-    private Mono<ObservationResponse> energy(ObservationRequest request) {
-        String key = energyCacheKey(request);
-        long now = clock.millis();
-        energyCache.forEach((cacheKey, entry) -> {
-            if (now - entry.at() > ENERGY_CACHE_MILLIS) energyCache.remove(cacheKey, entry);
-        });
-        CacheEntry cached = energyCache.get(key);
-        if (cached != null && now - cached.at() <= ENERGY_CACHE_MILLIS) {
-            return Mono.just(cached.response());
-        }
-        Mono<ObservationResponse> fresh = composeEnergy(request)
-                .doOnNext(response -> {
-                    // Partial or truncated results are deliberately not reused.
-                    if (response.status() == ObservationStatus.AVAILABLE
-                            && response.payload().get("errors") == null) {
-                        energyCache.put(key, new CacheEntry(response, clock.millis()));
-                    }
-                })
-                .doOnError(error -> {
-                    if (isAuthorizationFailure(error)) energyCache.remove(key);
-                })
-                .doFinally(signal -> energyJobs.remove(key))
-                .cache();
-        Mono<ObservationResponse> prior = energyJobs.putIfAbsent(key, fresh);
-        return prior == null ? fresh : prior;
     }
 
     private Mono<ObservationResponse> composeEnergy(ObservationRequest request) {
@@ -145,18 +99,6 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
         return request.operation() == ObservationOperation.ENERGY_REPORT
                 ? energyComposer.readEnergyReport(request)
                 : energyComposer.read(request);
-    }
-
-    private static String energyCacheKey(ObservationRequest request) {
-        RequestIdentity identity = request.identity();
-        StringBuilder key = new StringBuilder()
-                .append(identity.tenantCode()).append('\u0000')
-                .append(identity.ownerKey()).append('\u0000')
-                .append(identity.source()).append('\u0000')
-                .append(request.operation());
-        new java.util.TreeMap<>(request.parameters())
-                .forEach((name, value) -> key.append('\u0001').append(name).append('=').append(value));
-        return key.toString();
     }
 
     private Mono<ObservationResponse> safetyEventCameras(ObservationRequest request) {
@@ -337,45 +279,7 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
 
     private Mono<ObservationResponse> dashboard(ObservationRequest request) {
         requireSource(request.identity(), IotSource.COMPANY, "DASHBOARD_SOURCE_UNAVAILABLE", "仪表盘仅支持公司来源");
-        String section = request.parameters().get("section");
-        String key = cacheKey(request.identity(), section);
-        // Every request rechecks the current Company authorization. A cached
-        // dashboard can never survive a revoked scope or a failed revalidation.
-        return iot.loadAuthorizedDeviceScope(request.identity()).flatMap(scope -> {
-            long now = clock.millis();
-            CacheEntry existing = dashboardCache.get(key);
-            if (existing != null && now - existing.at < FRESH_MILLIS) return Mono.just(existing.response);
-            Mono<ObservationResponse> running = dashboardJobs.get(key);
-            if (existing != null && now - existing.at < STALE_MILLIS) {
-                if (running == null) startDashboardRefresh(key, request, scope);
-                return Mono.just(existing.response);
-            }
-            if (running != null) return running;
-            return startDashboardRefresh(key, request, scope);
-        }).doOnError(error -> {
-            if (isAuthorizationFailure(error)) invalidateDashboard(key);
-        });
-    }
-
-    private Mono<ObservationResponse> startDashboardRefresh(
-            String key, ObservationRequest request, AuthorizedDeviceScope scope) {
-        Mono<ObservationResponse> fresh = loadDashboard(request, scope)
-                .doOnNext(response -> {
-                    // Partial facts and explicit errors are intentionally not cached.
-                    Object errors = response.payload().get("errors");
-                    boolean complete = !(errors instanceof Collection<?> values) || values.isEmpty();
-                    if (complete && response.failures().isEmpty() && response.status() == ObservationStatus.AVAILABLE) {
-                        dashboardCache.put(key, new CacheEntry(response, clock.millis()));
-                    }
-                })
-                .doOnError(error -> {
-                    if (isAuthorizationFailure(error)) invalidateDashboard(key);
-                })
-                .cache();
-        Mono<ObservationResponse> prior = dashboardJobs.putIfAbsent(key, fresh);
-        if (prior != null) return prior;
-        fresh.doFinally(signal -> dashboardJobs.remove(key, fresh)).subscribe(null, ignored -> { });
-        return fresh;
+        return iot.loadAuthorizedDeviceScope(request.identity()).flatMap(scope -> loadDashboard(request, scope));
     }
 
     private Mono<ObservationResponse> loadDashboard(ObservationRequest request, AuthorizedDeviceScope scope) {
@@ -568,23 +472,12 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
 
     private Mono<OfficeContext> officeContext(RequestIdentity identity) {
         return iot.loadAuthorizedDeviceScope(identity)
-                .flatMap(scope -> regionCatalog(identity, scope)
+                .flatMap(scope -> regionCatalog(identity)
                         .map(regions -> new OfficeContext(scope, regions)));
     }
 
-    private Mono<List<Map<String, Object>>> regionCatalog(
-            RequestIdentity identity, AuthorizedDeviceScope scope) {
-        String key = regionCatalogKey(identity, scope);
-        long now = clock.millis();
-        regionCatalogCache.forEach((cacheKey, entry) -> {
-            if (now - entry.at() > REGION_CATALOG_MILLIS) regionCatalogCache.remove(cacheKey, entry);
-        });
-        RegionCatalogEntry cached = regionCatalogCache.get(key);
-        if (cached != null && now - cached.at() <= REGION_CATALOG_MILLIS) {
-            return Mono.just(cached.regions());
-        }
-        if (cached != null) regionCatalogCache.remove(key, cached);
-        Mono<List<Map<String, Object>>> fresh = upstream.read(new ObservationRequest(
+    private Mono<List<Map<String, Object>>> regionCatalog(RequestIdentity identity) {
+        return upstream.read(new ObservationRequest(
                         identity, ObservationOperation.REGION_LIST, Map.of()))
                 .flatMap(response -> {
                     if (response.status() != ObservationStatus.AVAILABLE) {
@@ -592,13 +485,7 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
                                 "AUTHORIZED_SCOPE_UNAVAILABLE", REGION_UNAVAILABLE, 503));
                     }
                     return Mono.just(parseRegions(response.payload()));
-                })
-                .doOnNext(regions -> regionCatalogCache.put(
-                        key, new RegionCatalogEntry(regions, clock.millis())))
-                .doFinally(signal -> regionCatalogJobs.remove(key))
-                .cache();
-        Mono<List<Map<String, Object>>> prior = regionCatalogJobs.putIfAbsent(key, fresh);
-        return prior == null ? fresh : prior;
+                });
     }
 
     private static List<Map<String, Object>> parseRegions(Map<String, Object> payload) {
@@ -729,19 +616,6 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
         if (identity.source() != expected) throw new BusinessException(code, message, 404);
     }
 
-    private static String cacheKey(RequestIdentity identity, String section) {
-        return identity.tenantCode() + "\u0000" + identity.ownerKey() + "\u0000" + (section == null ? "all" : section);
-    }
-
-    private static String regionCatalogKey(RequestIdentity identity, AuthorizedDeviceScope scope) {
-        return identity.tenantCode() + "\u0000" + identity.ownerKey() + "\u0000"
-                + identity.source() + "\u0000" + scope.catalogFingerprint();
-    }
-
-    private void invalidateDashboard(String key) {
-        dashboardCache.remove(key);
-    }
-
     private static boolean isAuthorizationFailure(Throwable error) {
         Throwable current = error;
         while (current != null) {
@@ -756,8 +630,6 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
         return Map.of("area", area, "message", message);
     }
 
-    private record CacheEntry(ObservationResponse response, long at) { }
-    private record RegionCatalogEntry(List<Map<String, Object>> regions, long at) { }
     private record OfficeContext(AuthorizedDeviceScope scope, List<Map<String, Object>> regions) { }
     private record AreaRead(Map<String, Object> values, List<Map<String, Object>> errors) {
         static AreaRead empty() { return new AreaRead(Map.of(), List.of()); }

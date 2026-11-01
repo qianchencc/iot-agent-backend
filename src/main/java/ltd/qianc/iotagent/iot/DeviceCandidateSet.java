@@ -33,6 +33,24 @@ public record DeviceCandidateSet(
         resolution = resolution == null ? new Resolution("exact", query.scopeText(), List.of(), List.of()) : resolution;
     }
 
+    /** HTTP read projection: control/provider bindings and adapter metadata never cross this seam. */
+    public java.util.Map<String, Object> publicView() {
+        java.util.Map<String, Object> body = new java.util.LinkedHashMap<>();
+        body.put("candidateSetId", candidateSetId);
+        body.put("query", query);
+        body.put("devices", devices.stream().map(device -> java.util.Map.<String, Object>of(
+                "id", device.id(), "kind", device.kind(), "name", device.name(),
+                "installAddress", device.installAddress(), "location", device.installAddress(),
+                "observationOnly", device.observationOnly(), "locationPaths", device.locationPaths())).toList());
+        body.put("complete", complete);
+        body.put("totalMatches", totalMatches);
+        body.put("groups", groups);
+        body.put("nameHintMatches", nameHintMatches);
+        body.put("unmatchedNameHints", unmatchedNameHints);
+        body.put("resolution", resolution);
+        return java.util.Collections.unmodifiableMap(body);
+    }
+
     public record Groups(boolean complete, List<Group> locations, List<Group> baseNames) {
         public Groups {
             locations = List.copyOf(locations == null ? List.of() : locations);
