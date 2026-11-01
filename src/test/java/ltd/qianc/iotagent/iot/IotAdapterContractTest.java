@@ -270,6 +270,70 @@ class IotAdapterContractTest {
     }
 
     @Test
+    void companyCandidateMeterStateReadUsesOnlyTheEnergyFamily() {
+        java.util.List<String> requests = new java.util.ArrayList<>();
+        ExchangeFunction fixture = candidate -> {
+            var url = candidate.url();
+            synchronized (requests) { requests.add(url.getPath() + "?" + (url.getQuery() == null ? "" : url.getQuery())); }
+            String path = url.getPath();
+            if (path.endsWith("/energy/equipment/page")) {
+                return Mono.just(json("{\"code\":200,\"content\":{\"content\":[{\"id\":\"meter-1\",\"equipmentName\":\"总电表\",\"areaName\":\"配电房\"}],\"last\":true}}"));
+            }
+            if (path.endsWith("/energy/realTimeRead/page")) {
+                return Mono.just(json("{\"code\":200,\"content\":{\"content\":[{\"equipmentId\":\"meter-1\",\"readTime\":\"2026-10-30 04:00:00\",\"totalActivePower\":\"12.5\"}],\"last\":true}}"));
+            }
+            return Mono.just(json("{\"code\":204,\"content\":null}"));
+        };
+        java.util.Map<String, DeviceCandidateRecord> saved = new java.util.concurrent.ConcurrentHashMap<>();
+        DeviceCandidateSetStore store = new DeviceCandidateSetStore() {
+            @Override public DeviceCandidateRecord save(DeviceCandidateRecord record) {
+                saved.put(record.candidateSetId(), record);
+                return record;
+            }
+            @Override public java.util.Optional<DeviceCandidateRecord> find(String id) {
+                return java.util.Optional.ofNullable(saved.get(id));
+            }
+        };
+        IotAdapter adapter = IotAdapterFactory.webClient(
+                WebClient.builder().exchangeFunction(fixture).build(),
+                IotGatewayRoutes.runtimeCompany("/office-scope", null,
+                        "/micro-api/api/iot-center/device/page",
+                        "/micro-api/api/energy/equipment/page",
+                        "/micro-api/api/perception/device/page",
+                        "/micro-api/api/iot-center/device",
+                        "/micro-api/api/office/app/device",
+                        "/micro-api/api/office/app/device/ac/myAreaList",
+                        "/micro-api/api/office/app/device/ac/devicePage",
+                        "/micro-api/api/iot-center/device/page"),
+                Duration.ofSeconds(1), IotCallPolicy.passThrough(), store);
+        RequestIdentity identity = new RequestIdentity("Bearer company-token", "TENANT-1", IotSource.COMPANY,
+                "owner-1");
+        AuthorizedDevice meter = adapter.loadAuthorizedDeviceScope(identity)
+                .block(Duration.ofSeconds(1)).device("meter-1").orElseThrow();
+        DeviceCandidateRecord set = new DeviceCandidateRecord("set-meter", "conversation-meter",
+                "TENANT-1", "owner-1", IotSource.COMPANY, "snapshot",
+                new DeviceCandidateQuery("energy", List.of(), null, List.of(), List.of(), null, null),
+                List.of(meter), true, 1, "2026-10-30T09:00:00Z");
+        store.save(set);
+        synchronized (requests) { requests.clear(); }
+
+        DeviceStateReadResult states = adapter.readDeviceStates(identity,
+                        new DeviceCapabilityRequest(List.of(new DeviceCapabilityRequest.DeviceCapabilitySelection(
+                                "set-meter", List.of("meter-1")))), "conversation-meter")
+                .block(Duration.ofSeconds(1));
+
+        assertThat(states.states().get("meter-1")).isNotNull();
+        assertThat((Map<?, ?>) states.states().get("meter-1")).containsEntry("totalActivePower", 12.5);
+        synchronized (requests) {
+            assertThat(requests).allMatch(request -> request.contains("/energy/"));
+            assertThat(requests).anyMatch(request -> request.contains("/energy/equipment/page"));
+            assertThat(requests).anyMatch(request -> request.contains("/energy/realTimeRead/page"));
+            assertThat(requests).noneMatch(request -> request.contains("/perception")
+                    || request.contains("/myAreaList") || request.contains("/ac/") || request.contains("/iot-center"));
+        }
+    }
+
+    @Test
     void companyCatalogUsesRuntimeShapesAndMergesAcLocations() {
         AtomicReference<java.util.List<String>> requests = new AtomicReference<>(new java.util.ArrayList<>());
         java.util.concurrent.atomic.AtomicBoolean validBinding = new java.util.concurrent.atomic.AtomicBoolean(true);

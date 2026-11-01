@@ -55,6 +55,12 @@ public final class WebClientIotAdapter implements IotAdapter {
 
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final long READ_SCOPE_REUSE_MILLIS = 5_000L;
+    /**
+     * The tool bridge blocks state reads for 30s. Keep a business-owned deadline
+     * below it so a slow read becomes an explicit 503 instead of an unclassified
+     * blocking-get IllegalStateException that looks like an unknown failure.
+     */
+    private static final Duration STATE_READ_DEADLINE = Duration.ofSeconds(25);
     private final WebClient webClient;
     private final IotGatewayRoutes routes;
     private final Duration callTimeout;
@@ -199,6 +205,11 @@ public final class WebClientIotAdapter implements IotAdapter {
             return Mono.error(new BusinessException("CANDIDATE_SET_STORE_UNAVAILABLE", "设备候选集事实存储未配置", 503));
         }
         validateCapabilitySelections(request);
+        if (identity.source() == IotSource.COMPANY) {
+            return stateReadDeadline(execute("read authorized state for candidate sets",
+                    resolveCompanyCandidateDevices(identity, request, conversationId)
+                            .flatMap(devices -> readAuthorizedCompanyStates(identity, devices))));
+        }
         return execute("read authorized state for candidate sets", loadAuthorizedDeviceScope(identity).map(scope -> {
             Set<String> ids = new java.util.LinkedHashSet<>();
             for (DeviceCapabilityRequest.DeviceCapabilitySelection selection : request.candidateSets()) {
@@ -280,42 +291,91 @@ public final class WebClientIotAdapter implements IotAdapter {
     }
 
     private Mono<DeviceStateReadResult> readCompanyDeviceStates(RequestIdentity identity, List<String> ids) {
-        return execute("read authorized Company device states", loadCompanyScope(identity)
+        return stateReadDeadline(execute("read authorized Company device states", loadCompanyScope(identity)
                 .flatMap(scope -> {
                     List<AuthorizedDevice> requested = ids.stream()
                             .map(id -> scope.device(id).orElseThrow(() -> new BusinessException(
                                     "DEVICE_OUTSIDE_SCOPE", "设备不在当前授权范围内", 403)))
                             .toList();
-                    List<AuthorizedDevice> observed = requested.stream()
-                            .filter(device -> "environment".equalsIgnoreCase(device.kind())
-                                    || "energy".equalsIgnoreCase(device.kind()))
-                            .toList();
-                    Mono<Map<String, Object>> observationStates = observed.isEmpty()
-                            ? Mono.just(Map.of())
-                            : readObservationStates(identity, observed).map(DeviceStateReadResult::states);
-                    Mono<Map<String, Object>> smartStates = Flux.fromIterable(requested.stream()
-                                    .filter(device -> !observed.contains(device)).toList())
-                            .concatMap(device -> {
-                                if ("lighting".equals(device.kind()) || "video".equals(device.kind())) {
-                                    String family = "video".equals(device.kind()) ? "monitor" : device.kind();
-                                    return page(routes.companySmartBasePath() + "/" + family + "/devicePage",
-                                                    Map.of("areaFullCode", device.smartAreaCode()), identity)
-                                            .map(rows -> entry(device.id(), companySmartState(device, rows)));
-                                }
-                                if ("ac".equals(device.kind())) {
-                                    return companyAcState(identity, device).map(state -> entry(device.id(), state));
-                                }
-                                return Mono.just(entry(device.id(), (Object) null));
-                            })
-                            .collectMap(Map.Entry::getKey, Map.Entry::getValue, LinkedHashMap::new);
-                    return Mono.zip(observationStates, smartStates).map(tuple -> {
-                        Map<String, Object> states = new LinkedHashMap<>(tuple.getT1());
-                        states.putAll(tuple.getT2());
-                        for (AuthorizedDevice device : requested) states.putIfAbsent(device.id(), null);
-                        String observedAt = Instant.now().toString();
-                        return new DeviceStateReadResult(states, observedAt, companyObservationBlocks(requested, states));
-                    });
-                }));
+                    return readAuthorizedCompanyStates(identity, requested);
+                })));
+    }
+
+    private static Mono<DeviceStateReadResult> stateReadDeadline(Mono<DeviceStateReadResult> read) {
+        return read.timeout(STATE_READ_DEADLINE)
+                .onErrorMap(TimeoutException.class, timeout ->
+                        new UpstreamUnavailableException("读取设备当前状态"));
+    }
+
+    /**
+     * Reads states for already-authorized Company devices without rebuilding the
+     * seven-family catalog. The caller has just revalidated each device against its
+     * own family catalog; unrelated families must not dominate the read timeout.
+     */
+    private Mono<DeviceStateReadResult> readAuthorizedCompanyStates(
+            RequestIdentity identity, List<AuthorizedDevice> requested) {
+        List<AuthorizedDevice> observed = requested.stream()
+                .filter(device -> "environment".equalsIgnoreCase(device.kind())
+                        || "energy".equalsIgnoreCase(device.kind()))
+                .toList();
+        Mono<Map<String, Object>> observationStates = observed.isEmpty()
+                ? Mono.just(Map.of())
+                : readObservationStates(identity, observed).map(DeviceStateReadResult::states);
+        Mono<Map<String, Object>> smartStates = Flux.fromIterable(requested.stream()
+                        .filter(device -> !observed.contains(device)).toList())
+                .concatMap(device -> {
+                    if ("lighting".equals(device.kind()) || "video".equals(device.kind())) {
+                        String family = "video".equals(device.kind()) ? "monitor" : device.kind();
+                        return page(routes.companySmartBasePath() + "/" + family + "/devicePage",
+                                        Map.of("areaFullCode", device.smartAreaCode()), identity)
+                                .map(rows -> entry(device.id(), companySmartState(device, rows)));
+                    }
+                    if ("ac".equals(device.kind())) {
+                        return companyAcState(identity, device).map(state -> entry(device.id(), state));
+                    }
+                    return Mono.just(entry(device.id(), (Object) null));
+                })
+                .collectMap(Map.Entry::getKey, Map.Entry::getValue, LinkedHashMap::new);
+        return Mono.zip(observationStates, smartStates).map(tuple -> {
+            Map<String, Object> states = new LinkedHashMap<>(tuple.getT1());
+            states.putAll(tuple.getT2());
+            for (AuthorizedDevice device : requested) states.putIfAbsent(device.id(), null);
+            String observedAt = Instant.now().toString();
+            return new DeviceStateReadResult(states, observedAt, companyObservationBlocks(requested, states));
+        });
+    }
+
+    private Mono<List<AuthorizedDevice>> resolveCompanyCandidateDevices(
+            RequestIdentity identity, DeviceCapabilityRequest request, String conversationId) {
+        validateCapabilitySelections(request);
+        Map<String, AuthorizedDevice> stored = new LinkedHashMap<>();
+        for (DeviceCapabilityRequest.DeviceCapabilitySelection selection : request.candidateSets()) {
+            DeviceCandidateRecord set = requiredCandidateSet(identity, selection.candidateSetId(), conversationId);
+            Map<String, AuthorizedDevice> members = membersById(set);
+            for (String id : selection.deviceIds()) {
+                AuthorizedDevice member = members.get(id);
+                if (member == null) throw new BusinessException(
+                        "INVALID_DEVICE_REFERENCE", "设备不属于引用的候选集", 403);
+                stored.put(id, member);
+            }
+        }
+        Set<String> kinds = stored.values().stream().map(AuthorizedDevice::kind)
+                .collect(java.util.stream.Collectors.toSet());
+        return loadCompanyScopeForKinds(identity, kinds).map(scope -> {
+            List<AuthorizedDevice> current = new ArrayList<>();
+            for (String id : stored.keySet()) {
+                AuthorizedDevice member = stored.get(id);
+                AuthorizedDevice device = scope.device(id)
+                        .filter(candidate -> candidate.kind().equals(member.kind()))
+                        .orElseThrow(() -> new BusinessException(
+                                "CANDIDATE_SET_STALE", "设备候选集已过期，请重新检索", 409));
+                if (!device.catalogFingerprint().equals(member.catalogFingerprint())) {
+                    throw new BusinessException("CANDIDATE_SET_STALE", "设备候选集已过期，请重新检索", 409);
+                }
+                current.add(device);
+            }
+            return List.copyOf(current);
+        });
     }
 
     private static List<Map<String, Object>> companyObservationBlocks(
@@ -560,6 +620,13 @@ public final class WebClientIotAdapter implements IotAdapter {
         if (conversationId != null && !conversationId.isBlank() && candidateStore == null) {
             return Mono.error(new BusinessException("CANDIDATE_SET_STORE_UNAVAILABLE", "设备候选集事实存储未配置", 503));
         }
+        if (conversationId != null && !conversationId.isBlank() && identity.source() == IotSource.COMPANY) {
+            return execute("inspect authorized Company device capabilities",
+                    resolveCompanyCandidateDevices(identity, request, conversationId).map(devices ->
+                            new DeviceCapabilityInspection(request.candidateSets().stream()
+                                    .map(DeviceCapabilityRequest.DeviceCapabilitySelection::candidateSetId).toList(),
+                                    devices.stream().map(this::capability).toList())));
+        }
         return execute("inspect authorized " + identity.source().wireValue() + " device capabilities",
                 loadAuthorizedDeviceScope(identity).map(scope -> {
                     validateCapabilitySelections(request);
@@ -751,6 +818,38 @@ public final class WebClientIotAdapter implements IotAdapter {
                     String key = device.kind() + ":" + device.id();
                     unique.putIfAbsent(key, device);
                 }
+            }
+            return (AuthorizedDeviceScope) new AuthorizedDeviceScopeSnapshot(identity, List.copyOf(unique.values()));
+        });
+    }
+
+    /**
+     * Loads only the Company families needed to reauthorize the requested devices.
+     * A meter read must not pay for safety detail, area trees and AC bindings it
+     * never consults; the runtime reads states from the already-discovered catalog.
+     */
+    private Mono<AuthorizedDeviceScope> loadCompanyScopeForKinds(
+            RequestIdentity identity, Set<String> kinds) {
+        List<Mono<List<AuthorizedDevice>>> jobs = new ArrayList<>();
+        if (kinds.contains("environment")) {
+            jobs.add(page(routes.companyEnvironmentPath(), Map.of("modelCode", "YQ-ENV-SENSOR"), identity)
+                    .map(rows -> rows.stream().map(this::parseEnvironmentObservation).toList()));
+        }
+        if (kinds.contains("energy")) {
+            jobs.add(page(routes.companyEnergyPath(), Map.of(), identity)
+                    .map(rows -> rows.stream().map(this::parseEnergyObservation).toList()));
+        }
+        if (kinds.contains("safety")) jobs.add(collectCompanySafety(identity));
+        if (kinds.contains("lighting")) jobs.add(collectCompanySmart(identity, "lighting"));
+        if (kinds.contains("access")) jobs.add(collectCompanySmart(identity, "access"));
+        if (kinds.contains("video")) jobs.add(collectCompanySmart(identity, "monitor"));
+        if (kinds.contains("ac")) jobs.add(collectCompanyAc(identity));
+        if (jobs.isEmpty()) return Mono.error(new BusinessException(
+                "INVALID_DEVICE_REFERENCE", "设备候选集不包含可读取的设备类型", 403));
+        return Flux.merge(jobs).collectList().map(groups -> {
+            Map<String, AuthorizedDevice> unique = new LinkedHashMap<>();
+            for (List<AuthorizedDevice> group : groups) {
+                for (AuthorizedDevice device : group) unique.putIfAbsent(device.kind() + ":" + device.id(), device);
             }
             return (AuthorizedDeviceScope) new AuthorizedDeviceScopeSnapshot(identity, List.copyOf(unique.values()));
         });
