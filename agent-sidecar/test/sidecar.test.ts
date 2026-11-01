@@ -3,16 +3,20 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createServer, type Server } from "node:http";
-import { TOOL_CAPABILITY_MATRIX } from "../src/agent.js";
+import { createServer, type IncomingMessage, type Server } from "node:http";
 import { buildApp } from "../src/app.js";
 import { defaultConfigForTests, type SidecarConfig } from "../src/config.js";
+import type { Observability } from "../src/observability.js";
 
 const servers: Server[] = [];
 const directories: string[] = [];
 
 afterEach(async () => {
-  for (const server of servers.splice(0)) await new Promise<void>(resolve => server.close(() => resolve()));
+  for (const server of servers.splice(0)) {
+    const closed = Promise.withResolvers<void>();
+    server.close(() => closed.resolve());
+    await closed.promise;
+  }
   for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true });
 });
 
@@ -26,8 +30,229 @@ function auth(): Record<string, string> {
   return { authorization: "Bearer test-bridge" };
 }
 
+const LOOKUP_TOOL: Record<string, unknown> = {
+  name: "lookup_records",
+  label: "Lookup records",
+  description: "Look up records using a query.",
+  parameters: {
+    type: "object",
+    properties: { query: { type: "string" } },
+    required: ["query"],
+    additionalProperties: false,
+  },
+};
+
+function runBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    protocolVersion: 1,
+    runId: "run-1",
+    toolContextId: "context-1",
+    conversationId: "conversation-1",
+    turnId: "turn-1",
+    content: "hello",
+    sessionScope: "scope-1",
+    definition: {
+      instructions: "Use a tool only when it provides evidence needed for the request.",
+      tools: [],
+      maxTurns: 4,
+    },
+    ...overrides,
+  };
+}
+
+function definition(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    instructions: "Use a tool only when it provides evidence needed by the request.",
+    tools: [],
+    maxTurns: 4,
+    ...overrides,
+  };
+}
+
+function modelSettings(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    modelId: "snapshot-model",
+    modelBaseUrl: "http://127.0.0.1:9/v1",
+    modelApiKey: "snapshot-secret-key",
+    contextWindow: 32_768,
+    maxOutputTokens: 4_096,
+    reasoning: true,
+    thinkingLevel: "medium",
+    supportsDeveloperRole: true,
+    supportsReasoningEffort: true,
+    supportsUsageInStreaming: true,
+    maxTokensField: "max_tokens",
+    ...overrides,
+  };
+}
+
+function events(body: string): Array<Record<string, unknown>> {
+  return body.trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>);
+}
+
+const PUBLIC_EVENT_TYPES: Record<string, true> = {
+  "run.started": true,
+  "run.progress": true,
+  "run.completed": true,
+  "run.failed": true,
+  "run.aborted": true,
+  "message.delta": true,
+  "message.completed": true,
+  "message.reclassified": true,
+  "tool.started": true,
+  "tool.progress": true,
+  "tool.completed": true,
+  "tool.result": true,
+  heartbeat: true,
+};
+
+function assertGenericEvents(observed: Array<Record<string, unknown>>): void {
+  for (const event of observed) assert.equal(PUBLIC_EVENT_TYPES[String(event.type)], true, `unexpected event ${String(event.type)}`);
+}
+
+function recordingObservability(): { observability: Observability; seen: unknown[] } {
+  const seen: unknown[] = [];
+  return {
+    seen,
+    observability: {
+      startAgentRun(input: unknown) {
+        seen.push(input);
+        return {
+          observeEvent(event: unknown) { seen.push(event); },
+          beginGeneration(input: unknown) {
+            seen.push(input);
+            return { finish(output: unknown) { seen.push(output); } };
+          },
+          finish(input: unknown) { seen.push(input); },
+        };
+      },
+      async flush() {},
+      async shutdown() {},
+    },
+  };
+}
+
+function openHangingModel(): Promise<{ server: Server; url: string; started: Promise<void> }> {
+  const started = Promise.withResolvers<void>();
+  const listening = Promise.withResolvers<{ server: Server; url: string; started: Promise<void> }>();
+  const server = createServer((_request, response) => {
+    started.resolve();
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    response.write(`data: ${JSON.stringify({ id: "hanging", choices: [{ delta: { role: "assistant", content: "working" }, finish_reason: null }] })}\n\n`);
+  });
+  server.once("error", listening.reject);
+  server.listen(0, "127.0.0.1", () => {
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      listening.reject(new Error("hanging model address unavailable"));
+      return;
+    }
+    listening.resolve({ server, url: `http://127.0.0.1:${address.port}/v1`, started: started.promise });
+  });
+  return listening.promise;
+}
+
+interface ModelStep {
+  content?: string;
+  tool?: { name: string; arguments: Record<string, unknown> };
+}
+
+interface FakeModel {
+  server: Server;
+  url: string;
+  requests: unknown[];
+  authorizations: string[];
+}
+
+function openModel(script: (index: number) => ModelStep): Promise<FakeModel> {
+  const requests: unknown[] = [];
+  const authorizations: string[] = [];
+  const listening = Promise.withResolvers<FakeModel>();
+  const server = createServer(async (request: IncomingMessage, response) => {
+    let raw = "";
+    for await (const chunk of request) raw += chunk;
+    let body: unknown = null;
+    try { body = raw ? JSON.parse(raw) as unknown : null; } catch { body = null; }
+    requests.push(body);
+    authorizations.push(typeof request.headers.authorization === "string" ? request.headers.authorization : "");
+    const step = script(requests.length - 1);
+    const id = `completion-${requests.length}`;
+    response.writeHead(200, { "content-type": "text/event-stream" });
+    if (step.tool) {
+      response.write(`data: ${JSON.stringify({ id, choices: [{ delta: { role: "assistant", tool_calls: [{
+        index: 0,
+        id: `call-${requests.length}`,
+        type: "function",
+        function: { name: step.tool.name, arguments: JSON.stringify(step.tool.arguments) },
+      }] }, finish_reason: null }] })}\n\n`);
+      response.write(`data: ${JSON.stringify({ id, choices: [{ delta: {}, finish_reason: "tool_calls" }] })}\n\n`);
+    } else {
+      response.write(`data: ${JSON.stringify({ id, choices: [{ delta: { role: "assistant", content: step.content ?? "" }, finish_reason: null }] })}\n\n`);
+      response.write(`data: ${JSON.stringify({ id, choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+    }
+    response.end("data: [DONE]\n\n");
+  });
+  server.once("error", listening.reject);
+  server.listen(0, "127.0.0.1", () => {
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      listening.reject(new Error("fake model address unavailable"));
+      return;
+    }
+    listening.resolve({ server, url: `http://127.0.0.1:${address.port}/v1`, requests, authorizations });
+  });
+  return listening.promise;
+}
+
+interface JavaReply {
+  status: number;
+  payload: unknown;
+}
+
+interface FakeJava {
+  server: Server;
+  url: string;
+  calls: Array<Record<string, unknown>>;
+}
+
+function openJava(reply: (call: Record<string, unknown>) => JavaReply = () => ({
+  status: 200,
+  payload: { protocolVersion: 1, result: { records: [{ id: "record-1" }] }, halt: false },
+})): Promise<FakeJava> {
+  const calls: Array<Record<string, unknown>> = [];
+  const listening = Promise.withResolvers<FakeJava>();
+  const server = createServer(async (request, response) => {
+    let raw = "";
+    for await (const chunk of request) raw += chunk;
+    if (request.headers.authorization !== "Bearer test-java"
+        || request.headers["x-agent-bridge-token"] !== "test-java") {
+      response.writeHead(401);
+      response.end();
+      return;
+    }
+    const call = JSON.parse(raw) as Record<string, unknown>;
+    calls.push(call);
+    const result = reply(call);
+    response.writeHead(result.status, { "content-type": "application/json" });
+    response.end(JSON.stringify(result.payload));
+  });
+  server.once("error", listening.reject);
+  server.listen(0, "127.0.0.1", () => {
+    servers.push(server);
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      listening.reject(new Error("fake Java address unavailable"));
+      return;
+    }
+    listening.resolve({ server, url: `http://127.0.0.1:${address.port}/internal/agent/tools`, calls });
+  });
+  return listening.promise;
+}
+
 describe("private sidecar HTTP contract", () => {
-  it("rejects missing and invalid bearer credentials on every route", async () => {
+  it("rejects missing and invalid bearer credentials on registered routes", async () => {
     const app = buildApp(await config());
     const missing = await app.inject({ method: "GET", url: "/healthz" });
     assert.equal(missing.statusCode, 401);
@@ -36,13 +261,41 @@ describe("private sidecar HTTP contract", () => {
     await app.close();
   });
 
-  it("returns only safe health fields and rejects malformed run requests", async () => {
+  it("returns only safe health fields and rejects malformed v1 run requests", async () => {
     const app = buildApp(await config());
     const health = await app.inject({ method: "GET", url: "/healthz", headers: auth() });
     assert.equal(health.statusCode, 200);
     assert.deepEqual(Object.keys(health.json()).sort(), ["activeRuns", "node", "service", "status"]);
-    const malformed = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: { content: "missing identity" } });
-    assert.equal(malformed.statusCode, 400);
+
+    const malformed = [
+      { content: "missing identity" },
+      runBody({ protocolVersion: 2 }),
+      runBody({ source: "unsupported" }),
+      runBody({ definition: definition({ maxTurns: 0 }) }),
+      runBody({ definition: definition({ maxTurns: 33 }) }),
+      runBody({ definition: definition({ instructions: 4 }) }),
+      runBody({ definition: definition({ tools: [{ ...LOOKUP_TOOL, parameters: [] }] }) }),
+      runBody({ definition: definition({ tools: [LOOKUP_TOOL, LOOKUP_TOOL] }) }),
+      runBody({ sessionScope: "" }),
+      runBody({ definition: definition({ extra: true }) }),
+      runBody({ definition: definition({ maxToolCalls: 0 }) }),
+      runBody({ definition: definition({ maxToolCalls: 1_001 }) }),
+      runBody({ definition: definition({ runTimeoutMs: 999 }) }),
+      runBody({ definition: definition({ runTimeoutMs: 600_001 }) }),
+      runBody({ definition: definition({ model: modelSettings({ modelApiKey: undefined }) }) }),
+      runBody({ definition: definition({ model: modelSettings({ extra: true }) }) }),
+      runBody({ definition: definition({ model: modelSettings({ contextWindow: 0 }) }) }),
+      runBody({ definition: definition({ model: modelSettings({ maxOutputTokens: 32_768 }) }) }),
+      runBody({ definition: definition({ model: modelSettings({ thinkingLevel: "xhigh" }) }) }),
+      runBody({ definition: definition({ model: modelSettings({ maxTokensField: "max_output_tokens" }) }) }),
+      runBody({ definition: definition({ model: modelSettings({ supportsDeveloperRole: "yes" }) }) }),
+      runBody({ definition: definition({ model: modelSettings({ modelBaseUrl: "not-a-url" }) }) }),
+      runBody({ definition: definition({ model: modelSettings({ modelBaseUrl: "http://user:pass@127.0.0.1/v1" }) }) }),
+    ];
+    for (const payload of malformed) {
+      const response = await app.inject({ method: "POST", url: "/run", headers: auth(), payload });
+      assert.equal(response.statusCode, 400);
+    }
     await app.close();
   });
 
@@ -69,47 +322,19 @@ describe("private sidecar HTTP contract", () => {
     await app.close();
   });
 
-  it("requires supervisor identity and an accepted handoff", async () => {
+  it("does not expose a fake supervisor handoff", async () => {
     const app = buildApp(await config());
-    const denied = await app.inject({ method: "POST", url: "/internal/admin/apply", headers: auth(), payload: { handoff: "restart" } });
-    assert.equal(denied.statusCode, 401);
-    const incomplete = await app.inject({ method: "POST", url: "/internal/admin/apply", headers: { ...auth(), "x-admin-supervisor-token": "test-supervisor" }, payload: {} });
-    assert.equal(incomplete.statusCode, 409);
-    const accepted = await app.inject({ method: "POST", url: "/internal/admin/apply", headers: { "x-admin-supervisor-token": "test-supervisor" }, payload: { handoff: "restart" } });
-    assert.deepEqual(accepted.json(), { accepted: true });
+    const supervisorOnly = await app.inject({
+      method: "POST",
+      url: "/internal/admin/apply",
+      headers: { "x-admin-supervisor-token": "unused" },
+      payload: { handoff: "restart" },
+    });
+    assert.equal(supervisorOnly.statusCode, 404);
+    const withBridge = await app.inject({ method: "POST", url: "/internal/admin/apply", headers: auth(), payload: { handoff: "restart" } });
+    assert.equal(withBridge.statusCode, 404);
     await app.close();
   });
-});
-
-it("publishes an explicit capability matrix", () => {
-  const byName = new Map(TOOL_CAPABILITY_MATRIX.map(capability => [capability.name, capability]));
-  assert.equal(byName.get("read_device_states")?.status, "java");
-  assert.equal(byName.get("get_device_details")?.status, "java");
-  assert.equal(byName.get("query_alerts")?.status, "java");
-  assert.equal(byName.get("query_environment_history")?.status, "java");
-  assert.equal(byName.get("query_energy_history")?.status, "java");
-  assert.equal(byName.get("summarize_energy")?.status, "java");
-  assert.equal(byName.get("compare_energy")?.status, "java");
-  assert.equal(byName.get("create_energy_report")?.event, "report.generated");
-  assert.equal(byName.get("propose_action_draft")?.event, "action.proposed");
-  assert.equal(byName.get("confirm_action")?.status, "java");
-  assert.equal(byName.get("read_action_draft")?.status, "java");
-  assert.equal(byName.get("read_action_device_states")?.status, "java");
-  assert.equal(byName.get("read_action_summary")?.status, "java");
-  assert.equal(byName.get("propose_task")?.event, "task.proposed");
-  assert.equal(byName.get("propose_task_change")?.status, "java");
-  assert.equal(byName.get("propose_task_cancellation")?.status, "java");
-  assert.equal(byName.get("confirm_task")?.status, "java");
-  assert.equal(byName.get("confirm_task_change")?.status, "java");
-  assert.equal(byName.get("confirm_task_cancellation")?.status, "java");
-  assert.equal(byName.get("list_tasks")?.status, "java");
-  assert.equal(byName.get("list_task_plans")?.status, "java");
-  assert.equal(byName.get("get_task")?.status, "java");
-  assert.equal(byName.get("prepare_video_playback")?.status, "java");
-  assert.equal(byName.get("propose_company_night_closure")?.status, "unavailable");
-  assert.equal(byName.get("continue_company_night_closure")?.status, "unavailable");
-  assert.equal(byName.get("readback_device_states")?.javaToolName, "read_device_states");
-  assert.ok(TOOL_CAPABILITY_MATRIX.every(capability => capability.event));
 });
 
 it("reopens the SQLite session store after close", async () => {
@@ -125,200 +350,294 @@ it("reopens the SQLite session store after close", async () => {
   await second.close();
 });
 
-function openFakeModel(): Promise<{ server: Server; url: string }> {
-  return new Promise((resolve, reject) => {
-    const server = createServer((_request, response) => {
-      response.writeHead(200, { "content-type": "text/event-stream" });
-      response.write(`data: ${JSON.stringify({ id: "x", choices: [{ delta: { role: "assistant", content: "收到" }, finish_reason: null }] })}\n\n`);
-      response.write(`data: ${JSON.stringify({ id: "x", choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
-      response.end("data: [DONE]\n\n");
-    });
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      servers.push(server);
-      const address = server.address();
-      if (!address || typeof address === "string") return reject(new Error("fake server address unavailable"));
-      resolve({ server, url: `http://127.0.0.1:${address.port}/v1` });
-    });
-  });
-}
-function openHangingModel(): Promise<{ server: Server; url: string; started: Promise<void> }> {
-  let resolveStarted!: () => void;
-  const started = new Promise<void>(resolve => { resolveStarted = resolve; });
-  return new Promise((resolve, reject) => {
-    const server = createServer((_request, response) => {
-      resolveStarted();
-      response.writeHead(200, { "content-type": "text/event-stream" });
-      response.write(`data: ${JSON.stringify({ id: "hanging", choices: [{ delta: { role: "assistant", content: "处理中" }, finish_reason: null }] })}\n\n`);
-    });
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      servers.push(server);
-      const address = server.address();
-      if (!address || typeof address === "string") return reject(new Error("hanging model address unavailable"));
-      resolve({ server, url: `http://127.0.0.1:${address.port}/v1`, started });
-    });
-  });
-}
-function openToolModel(toolName = "read_device_states"): Promise<{ server: Server; url: string }> {
-  let requests = 0;
-  const argumentsValue = toolName === "read_device_states"
-    ? JSON.stringify({ candidateSets: [{ candidateSetId: "set-1", deviceIds: ["device-1"] }] })
-    : toolName === "propose_action_draft"
-      ? JSON.stringify({ candidateSetIds: ["set-1"], summary: "开灯", actions: [{ deviceId: "device-1", kind: "lighting", closeOrOpen: 1, selected: true }] })
-      : toolName === "prepare_video_playback"
-        ? JSON.stringify({ deviceId: "camera-1", beginTime: "2026-10-16T10:57:00+08:00", endTime: "2026-10-16T11:27:00+08:00" })
-        : "{}";
-  return new Promise((resolve, reject) => {
-    const server = createServer((_request, response) => {
-      requests++;
-      response.writeHead(200, { "content-type": "text/event-stream" });
-      if (requests === 1) {
-        response.write(`data: ${JSON.stringify({ id: "tool-1", choices: [{ delta: { role: "assistant", tool_calls: [{ index: 0, id: "call-1", type: "function", function: { name: toolName, arguments: argumentsValue } }] }, finish_reason: null }] })}\n\n`);
-        response.write(`data: ${JSON.stringify({ id: "tool-1", choices: [{ delta: {}, finish_reason: "tool_calls" }] })}\n\n`);
-      } else {
-        response.write(`data: ${JSON.stringify({ id: "tool-2", choices: [{ delta: { role: "assistant", content: "工具结果已收到" }, finish_reason: null }] })}\n\n`);
-        response.write(`data: ${JSON.stringify({ id: "tool-2", choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
-      }
-      response.end("data: [DONE]\n\n");
-    });
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      servers.push(server);
-      const address = server.address();
-      if (!address || typeof address === "string") return reject(new Error("fake tool model address unavailable"));
-      resolve({ server, url: `http://127.0.0.1:${address.port}/v1` });
-    });
-  });
-}
-function openFakeJavaTool(result: Record<string, unknown> = { status: "ok", devices: [] }): Promise<{ server: Server; url: string; calls: Record<string, unknown>[] }> {
-  const calls: Record<string, unknown>[] = [];
-  return new Promise((resolve, reject) => {
-    const server = createServer(async (request, response) => {
-      let body = "";
-      for await (const chunk of request) body += chunk;
-      if (request.headers.authorization !== "Bearer test-java"
-          || request.headers["x-agent-bridge-token"] !== "test-java") {
-        response.writeHead(401);
-        response.end();
-        return;
-      }
-      calls.push(JSON.parse(body) as Record<string, unknown>);
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify(result));
-    });
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      servers.push(server);
-      const address = server.address();
-      if (!address || typeof address === "string") return reject(new Error("fake Java tool address unavailable"));
-      resolve({ server, url: `http://127.0.0.1:${address.port}/internal/agent/tools`, calls });
-    });
-  });
-}
-
-it("streams public NDJSON and supports cancellation", async () => {
-  const model = await openFakeModel();
-  const current = await config({ modelBaseUrl: model.url });
-  const app = buildApp(current);
-  const run = await app.inject({ method: "POST", url: "/run", headers: { ...auth(), accept: "application/x-ndjson" }, payload: {
-    runId: "r1", toolContextId: "ctx", conversationId: "c1", turnId: "t1", source: "office", tenantCode: "tenant", content: "你好",
-  } });
+it("streams generic NDJSON and supports cancellation", async () => {
+  const model = await openModel(() => ({ content: "收到" }));
+  const app = buildApp(await config({ modelBaseUrl: model.url }));
+  const run = await app.inject({ method: "POST", url: "/run", headers: { ...auth(), accept: "application/x-ndjson" }, payload: runBody() });
   assert.equal(run.statusCode, 200);
-  const events = run.body.trim().split("\n").map(line => JSON.parse(line) as { type: string });
-  assert.equal(events[0]?.type, "run.started");
-  assert.ok(events.some(event => event.type === "message.completed"));
-  assert.ok(events.some(event => event.type === "run.completed"));
+  const observed = events(run.body);
+  assert.equal(observed[0]?.type, "run.started");
+  assert.ok(observed.some(event => event.type === "message.completed"));
+  assert.ok(observed.some(event => event.type === "run.completed"));
+  assertGenericEvents(observed);
   const cancel = await app.inject({ method: "POST", url: "/cancel/unknown", headers: auth() });
   assert.equal(cancel.statusCode, 404);
   await app.close();
 });
+
+it("uses the per-run model snapshot without exposing its key", async () => {
+  const model = await openModel(() => ({ content: "snapshot ok" }));
+  const current = await config({ modelBaseUrl: "http://127.0.0.1:9/not-the-fake", modelApiKey: "config-key" });
+  const recording = recordingObservability();
+  const app = buildApp(current, recording.observability);
+  const run = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
+    sessionScope: "model-snapshot",
+    definition: definition({ model: modelSettings({ modelBaseUrl: model.url }) }),
+  }) });
+  assert.equal(run.statusCode, 200);
+  const observed = events(run.body);
+  assert.ok(observed.some(event => event.type === "message.completed" && event.content === "snapshot ok"));
+  assert.ok(observed.some(event => event.type === "run.completed"));
+  assert.ok(model.authorizations[0]?.includes("snapshot-secret-key"));
+  assert.equal(model.authorizations[0]?.includes("config-key"), false);
+  const sent = JSON.stringify(model.requests[0]);
+  assert.ok(sent.includes('"model":"snapshot-model"'));
+  assert.ok(sent.includes('"max_tokens":4096'));
+  assert.ok(sent.includes('"reasoning_effort":"medium"'));
+  assert.equal(sent.includes("snapshot-secret-key"), false);
+  assert.equal(run.body.includes("snapshot-secret-key"), false);
+  assert.ok(recording.seen.length > 0);
+  assert.equal(JSON.stringify(recording.seen).includes("snapshot-secret-key"), false);
+  await app.close();
+});
+
+it("enforces the cumulative tool-call budget before calling Java", async () => {
+  const model = await openModel(index => index < 2
+    ? { tool: { name: "lookup_records", arguments: { query: "north" } } }
+    : { content: "done" });
+  const java = await openJava();
+  const app = buildApp(await config({ modelBaseUrl: model.url, javaToolsUrl: java.url }));
+  const run = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
+    sessionScope: "tool-budget",
+    definition: definition({ tools: [LOOKUP_TOOL], maxToolCalls: 1 }),
+  }) });
+  const observed = events(run.body);
+  assert.equal(java.calls.length, 1);
+  assert.equal(observed.filter(event => event.type === "tool.result").length, 1);
+  assert.equal(observed.filter(event => event.type === "tool.completed" && event.status === "failed").length, 1);
+  assert.ok(model.requests.length >= 3);
+  assert.ok(JSON.stringify(model.requests[2]).includes("budget exhausted"));
+  assert.ok(observed.some(event => event.type === "run.completed"));
+  await app.close();
+});
+
+it("uses the per-request run timeout override", async () => {
+  const model = await openHangingModel();
+  const app = buildApp(await config({ modelBaseUrl: model.url, runTimeoutMs: 120_000 }));
+  const started = Date.now();
+  const run = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
+    sessionScope: "request-timeout",
+    definition: definition({ runTimeoutMs: 1_000 }),
+  }) });
+  const observed = events(run.body);
+  assert.ok(observed.some(event => event.type === "run.failed" && event.code === "AGENT_ENGINE_TIMEOUT"));
+  assert.ok(Date.now() - started >= 900);
+  await app.close();
+});
+
 it("aborts an active run and fails a timed-out run", async () => {
   const model = await openHangingModel();
   const app = buildApp(await config({ modelBaseUrl: model.url, runTimeoutMs: 500 }));
-  const pending = app.inject({ method: "POST", url: "/run", headers: auth(), payload: {
-    runId: "cancel-run", toolContextId: "ctx", conversationId: "cancel-conversation",
-    turnId: "t1", source: "office", tenantCode: "tenant", content: "等待",
-  } });
+  const pending = app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
+    runId: "cancel-run", conversationId: "cancel-conversation", sessionScope: "cancel-scope", content: "wait",
+  }) });
   await model.started;
-  const duplicate = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: {
-    runId: "cancel-run", toolContextId: "ctx", conversationId: "cancel-conversation",
-    turnId: "t2", source: "office", tenantCode: "tenant", content: "重复",
-  } });
+  const duplicate = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
+    runId: "cancel-run", conversationId: "cancel-conversation", turnId: "turn-2", sessionScope: "cancel-scope", content: "repeat",
+  }) });
   assert.equal(duplicate.statusCode, 409);
   const cancel = await app.inject({ method: "POST", url: "/cancel/cancel-run", headers: auth() });
   assert.equal(cancel.statusCode, 202);
   const cancelled = await pending;
-  const cancelledEvents = cancelled.body.trim().split("\n").map(line => JSON.parse(line) as { type: string });
-  assert.ok(cancelledEvents.some(event => event.type === "run.aborted"));
+  assert.ok(events(cancelled.body).some(event => event.type === "run.aborted"));
   await app.close();
 
   // This intentionally uses the platform timer to verify the production timeout abort path.
   const timeoutApp = buildApp(await config({ modelBaseUrl: model.url, runTimeoutMs: 20 }));
-  const timedOut = await timeoutApp.inject({ method: "POST", url: "/run", headers: auth(), payload: {
-    runId: "timeout-run", toolContextId: "ctx", conversationId: "timeout-conversation",
-    turnId: "t1", source: "office", tenantCode: "tenant", content: "超时",
-  } });
-  const timeoutEvents = timedOut.body.trim().split("\n").map(line => JSON.parse(line) as { type: string });
-  assert.ok(timeoutEvents.some(event => event.type === "run.failed"));
+  const timedOut = await timeoutApp.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
+    runId: "timeout-run", conversationId: "timeout-conversation", sessionScope: "timeout-scope", content: "wait",
+  }) });
+  assert.ok(events(timedOut.body).some(event => event.type === "run.failed"));
   await timeoutApp.close();
 });
-it("forwards a pi-agent tool call to the authenticated Java bridge", async () => {
-  const model = await openToolModel();
-  const java = await openFakeJavaTool();
-  const current = await config({ modelBaseUrl: model.url, javaToolsUrl: java.url });
-  const app = buildApp(current);
-  const run = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: {
-    runId: "tool-run", toolContextId: "tool-context", conversationId: "tool-conversation",
-    turnId: "tool-turn", source: "office", tenantCode: "tenant", content: "查询设备",
-  } });
-  const events = run.body.trim().split("\n").map(line => JSON.parse(line) as { type: string; tool?: string });
-  assert.ok(events.some(event => event.type === "tool.started" && event.tool === "read_device_states"));
-  assert.ok(events.some(event => event.type === "observation.reported"));
-  assert.ok(events.some(event => event.type === "run.completed"));
+
+it("forwards a tool call to Java with protocol data only and publishes the raw result", async () => {
+  const model = await openModel(index => index === 0
+    ? { tool: { name: "lookup_records", arguments: { query: "north" } } }
+    : { content: "done" });
+  const java = await openJava();
+  const app = buildApp(await config({ modelBaseUrl: model.url, javaToolsUrl: java.url }));
+  const run = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
+    runId: "tool-run",
+    toolContextId: "tool-context",
+    conversationId: "tool-conversation",
+    turnId: "tool-turn",
+    sessionScope: "tool-scope",
+    content: "look something up",
+    definition: definition({ tools: [LOOKUP_TOOL] }),
+  }) });
+  assert.equal(run.statusCode, 200);
+  const observed = events(run.body);
+  assert.ok(observed.some(event => event.type === "tool.started" && event.tool === "lookup_records"));
+  const result = observed.find(event => event.type === "tool.result");
+  assert.ok(result);
+  assert.deepEqual(result?.result, { records: [{ id: "record-1" }] });
+  assert.ok(observed.some(event => event.type === "tool.completed" && event.status === "completed"));
+  assert.ok(observed.some(event => event.type === "message.completed"));
+  assert.ok(observed.some(event => event.type === "run.completed"));
+  assertGenericEvents(observed);
+
   assert.equal(java.calls.length, 1);
-  assert.equal(java.calls[0]?.toolName, "read_device_states");
-  assert.equal((java.calls[0]?.arguments as Record<string, unknown>)?.source, "office");
-  assert.equal(java.calls[0]?.toolContextId, "tool-context");
+  assert.deepEqual(java.calls[0], {
+    protocolVersion: 1,
+    runId: "tool-run",
+    toolContextId: "tool-context",
+    conversationId: "tool-conversation",
+    turnId: "tool-turn",
+    toolName: "lookup_records",
+    toolCallId: "call-1",
+    arguments: { query: "north" },
+  });
   await app.close();
 });
 
-it("forwards video playback preparation to Java without issuing the stream", async () => {
-  const model = await openToolModel("prepare_video_playback");
-  const java = await openFakeJavaTool({ videoPlayback: {
-    source: "company", deviceId: "camera-1", name: "大堂摄像头",
-    location: "一层大堂", beginTime: "2026-10-16T10:57:00.000+08:00", endTime: "2026-10-16T11:27:00.000+08:00",
-  } });
-  const current = await config({ modelBaseUrl: model.url, javaToolsUrl: java.url });
-  const app = buildApp(current);
-  const run = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: {
-    runId: "video-run", toolContextId: "ctx", conversationId: "video-conversation",
-    turnId: "t1", source: "company", tenantCode: "tenant", content: "回放大堂摄像头",
-  } });
-  const events = run.body.trim().split("\n").map(line => JSON.parse(line) as { type: string; blocks?: Array<Record<string, unknown>>; details?: Record<string, unknown> });
-  const observation = events.find(event => event.type === "observation.reported");
-  assert.ok(observation);
-  assert.equal(observation?.blocks?.[0]?.type, "video_playback");
-  assert.ok(events.some(event => event.type === "run.completed"));
-  assert.equal(java.calls.length, 1);
-  assert.equal(java.calls[0]?.toolName, "prepare_video_playback");
-  assert.equal((java.calls[0]?.arguments as Record<string, unknown>)?.source, "company");
+it("forwards the Java business result without lossy redaction", async () => {
+  const longResult = {
+    records: Array.from({ length: 60 }, (_, index) => ({
+      id: `record-${index}`,
+      note: "n".repeat(600),
+    })),
+  };
+  const model = await openModel(index => index === 0
+    ? { tool: { name: "lookup_records", arguments: { query: "north" } } }
+    : { content: "done" });
+  const java = await openJava(() => ({
+    status: 200,
+    payload: { protocolVersion: 1, result: longResult, halt: false },
+  }));
+  const app = buildApp(await config({ modelBaseUrl: model.url, javaToolsUrl: java.url }));
+  const run = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
+    sessionScope: "result-fidelity",
+    definition: definition({ tools: [LOOKUP_TOOL] }),
+  }) });
+  const result = events(run.body).find(event => event.type === "tool.result");
+  assert.deepEqual(result?.result, longResult);
   await app.close();
 });
 
-it("maps pending action proposals to awaiting-confirmation terminal events", async () => {
-  const model = await openToolModel("propose_action_draft");
-  const java = await openFakeJavaTool({ status: "PENDING_CONFIRMATION", draftId: "draft-1" });
-  const current = await config({ modelBaseUrl: model.url, javaToolsUrl: java.url });
-  const app = buildApp(current);
-  const run = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: {
-    runId: "proposal-run", toolContextId: "ctx", conversationId: "proposal-conversation",
-    turnId: "t1", source: "office", tenantCode: "tenant", content: "开灯",
-  } });
-  const events = run.body.trim().split("\n").map(line => JSON.parse(line) as { type: string });
-  assert.ok(events.some(event => event.type === "action.proposed"));
-  assert.ok(events.some(event => event.type === "run.awaiting_confirmation"));
-  assert.equal(typeof (java.calls[0]?.arguments as Record<string, unknown>)?.idempotencyKey, "string");
-  assert.equal(events.some(event => event.type === "run.completed"), false);
+it("uses the Pi validator before calling Java for malformed tool arguments", async () => {
+  const model = await openModel(index => index === 0
+    ? { tool: { name: "lookup_records", arguments: {} } }
+    : { content: "done" });
+  const java = await openJava();
+  const app = buildApp(await config({ modelBaseUrl: model.url, javaToolsUrl: java.url }));
+  const run = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
+    sessionScope: "invalid-args",
+    definition: definition({ tools: [LOOKUP_TOOL] }),
+  }) });
+  const observed = events(run.body);
+  assert.equal(java.calls.length, 0);
+  assert.ok(observed.some(event => event.type === "tool.completed" && event.status === "failed"));
+  assert.equal(observed.some(event => event.type === "tool.result"), false);
+  assert.ok(observed.some(event => event.type === "run.completed"));
+  await app.close();
+});
+
+it("turns Java HTTP failures into tool errors without fabricating a result", async () => {
+  const model = await openModel(index => index === 0
+    ? { tool: { name: "lookup_records", arguments: { query: "north" } } }
+    : { content: "done" });
+  const java = await openJava(() => ({ status: 403, payload: { code: "DENIED", message: "not authorized" } }));
+  const app = buildApp(await config({ modelBaseUrl: model.url, javaToolsUrl: java.url }));
+  const run = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
+    sessionScope: "java-error",
+    definition: definition({ tools: [LOOKUP_TOOL] }),
+  }) });
+  const observed = events(run.body);
+  assert.equal(java.calls.length, 1);
+  assert.ok(observed.some(event => event.type === "tool.completed" && event.status === "failed"));
+  assert.equal(observed.some(event => event.type === "tool.result"), false);
+  assert.ok(observed.some(event => event.type === "run.completed"));
+  await app.close();
+});
+
+it("rejects a callback with a mismatched protocol version", async () => {
+  const model = await openModel(index => index === 0
+    ? { tool: { name: "lookup_records", arguments: { query: "north" } } }
+    : { content: "done" });
+  const java = await openJava(() => ({ status: 200, payload: { protocolVersion: 2, result: {}, halt: false } }));
+  const app = buildApp(await config({ modelBaseUrl: model.url, javaToolsUrl: java.url }));
+  const run = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
+    sessionScope: "callback-protocol",
+    definition: definition({ tools: [LOOKUP_TOOL] }),
+  }) });
+  const observed = events(run.body);
+  assert.ok(observed.some(event => event.type === "tool.completed" && event.status === "failed"));
+  assert.equal(observed.some(event => event.type === "tool.result"), false);
+  assert.ok(observed.some(event => event.type === "run.completed"));
+  await app.close();
+});
+
+it("stops after the current turn when Java halts and still completes generically", async () => {
+  const model = await openModel(index => index === 0
+    ? { tool: { name: "lookup_records", arguments: { query: "north" } } }
+    : { content: "unexpected second turn" });
+  const java = await openJava(() => ({
+    status: 200,
+    payload: { protocolVersion: 1, result: { status: "PENDING_CONFIRMATION", draftId: "draft-1" }, halt: true },
+  }));
+  const app = buildApp(await config({ modelBaseUrl: model.url, javaToolsUrl: java.url }));
+  const run = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
+    sessionScope: "halt-scope",
+    definition: definition({ tools: [LOOKUP_TOOL] }),
+  }) });
+  const observed = events(run.body);
+  assert.equal(model.requests.length, 1);
+  assert.ok(observed.some(event => event.type === "tool.result"));
+  assert.ok(observed.some(event => event.type === "run.completed"));
+  assertGenericEvents(observed);
+  await app.close();
+});
+
+it("honors the supplied maxTurns", async () => {
+  const model = await openModel(index => index === 0
+    ? { tool: { name: "lookup_records", arguments: { query: "north" } } }
+    : { content: "unexpected second turn" });
+  const java = await openJava();
+  const app = buildApp(await config({ modelBaseUrl: model.url, javaToolsUrl: java.url }));
+  const run = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
+    sessionScope: "turn-limit",
+    definition: definition({ tools: [LOOKUP_TOOL], maxTurns: 1 }),
+  }) });
+  assert.equal(model.requests.length, 1);
+  assert.ok(events(run.body).some(event => event.type === "run.completed"));
+  await app.close();
+});
+
+it("restores prior Pi messages for a follow-up in the same session scope", async () => {
+  const model = await openModel(index => ({ content: index === 0 ? "first answer" : "second answer" }));
+  const app = buildApp(await config({ modelBaseUrl: model.url }));
+  const first = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
+    runId: "follow-1", turnId: "turn-1", content: "first question", sessionScope: "follow-scope",
+  }) });
+  assert.ok(events(first.body).some(event => event.type === "run.completed"));
+  const second = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
+    runId: "follow-2", turnId: "turn-2", content: "second question", sessionScope: "follow-scope",
+  }) });
+  const observed = events(second.body);
+  assert.ok(observed.some(event => event.type === "message.completed" && event.content === "second answer"));
+  assert.equal(model.requests.length, 2);
+  const serialized = JSON.stringify(model.requests[1]);
+  assert.ok(serialized.includes("first question"));
+  assert.ok(serialized.includes("first answer"));
+  assert.ok(serialized.includes("second question"));
+  assert.equal(serialized.split("first question").length - 1, 1);
+  await app.close();
+});
+
+it("binds history to the opaque session scope", async () => {
+  const model = await openModel(index => ({ content: index === 0 ? "first answer" : "second answer" }));
+  const app = buildApp(await config({ modelBaseUrl: model.url }));
+  const first = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
+    runId: "scope-1", turnId: "turn-1", content: "first question", sessionScope: "scope-a",
+  }) });
+  assert.ok(events(first.body).some(event => event.type === "run.completed"));
+  const second = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
+    runId: "scope-2", turnId: "turn-2", content: "second question", sessionScope: "scope-b",
+  }) });
+  assert.ok(events(second.body).some(event => event.type === "run.completed"));
+  const serialized = JSON.stringify(model.requests[1]);
+  assert.equal(serialized.includes("first question"), false);
+  assert.ok(serialized.includes("second question"));
   await app.close();
 });

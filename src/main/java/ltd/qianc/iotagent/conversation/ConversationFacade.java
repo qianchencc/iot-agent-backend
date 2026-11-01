@@ -18,9 +18,9 @@ import ltd.qianc.iotagent.error.BusinessException;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseBodyEmitter;
 
 public final class ConversationFacade {
- // Node/Pi bridge event contract includes message.delta; unknown bridge event types are forwarded without reinterpretation.
+ // Business-owned Java projection converts private engine events before they reach this facade.
  private static final Set<String> TERMINALS=Set.of("run.completed","run.awaiting_confirmation","run.failed","run.aborted");
- private final ObjectMapper mapper; private final ConversationStore store; private final ConversationEventStore events; private final AgentEngineBridge bridge; private final Executor executor; private final ScheduledExecutorService scheduler; private final long heartbeatMs; private final Map<String,Run> active=new ConcurrentHashMap<>(); private final Map<String,Run> toolContexts=new ConcurrentHashMap<>(); private final Map<String,Run> toolContextsById=new ConcurrentHashMap<>();
+ private final ObjectMapper mapper; private final ConversationStore store; private final ConversationEventStore events; private final AgentEngineBridge bridge; private final Executor executor; private final ScheduledExecutorService scheduler; private final long heartbeatMs; private final Map<String,Run> active=new ConcurrentHashMap<>(); private final Map<String,Run> toolContextsById=new ConcurrentHashMap<>();
  public ConversationFacade(ObjectMapper m,ConversationStore s,ConversationEventStore e,AgentEngineBridge b,Executor x){this(m,s,e,b,x,null,0);}
  public ConversationFacade(ObjectMapper m,ConversationStore s,ConversationEventStore e,AgentEngineBridge b,Executor x,ScheduledExecutorService scheduler,long heartbeatMs){mapper=m;store=s;events=e;bridge=b;executor=x;this.scheduler=scheduler;this.heartbeatMs=heartbeatMs;}
  public Map<String,Object> create(PrincipalInfo p,String source){String s=source==null?"office":source; validSource(s); ConversationRecord c=store.create(p.tenantCode(),owner(p),s,Instant.now());return Map.of("id",c.id(),"source",c.source(),"createdAt",c.createdAt().toString());}
@@ -45,43 +45,68 @@ public final class ConversationFacade {
   }
   ConversationTurn turn=store.startTurn(id,content,Instant.now(),key);
   String tid=turn.id(),rid=UUID.randomUUID().toString(),tcid=UUID.randomUUID().toString();
-  Run r=new Run(id,tid,rid,tcid,p,conversation.source(),out);
+  Run r=new Run(id,tid,rid,tcid,p,conversation.source(),focusRegionId,reference,out);
   toolContextsById.put(tcid,r);
   if(active.putIfAbsent(id,r)!=null){toolContextsById.remove(tcid,r);store.discardTurn(id,tid);throw new BusinessException("CONVERSATION_BUSY","当前会话正在处理请求，请等待完成或停止",409);}
-  try{emit(r,"run.started",Map.of("createdAt",Instant.now().toString()));scheduleHeartbeat(r);}
+  try{scheduleHeartbeat(r);}
   catch(RuntimeException error){active.remove(id,r);toolContextsById.remove(tcid,r);try{store.discardTurn(id,tid);}catch(RuntimeException ignored){}throw error;}
   try {
    executor.execute(()->{
    try{
-    bridge.start(new AgentRunRequest(rid,id,tid,conversation.source(),content,p.tenantCode(),focusRegionId,reference,tcid),e->{if(!r.terminal.get()&&!"run.started".equals(e.type()))emit(r,e.type(),e.fields());}).whenComplete((v,x)->{
-     if(x!=null&&!r.terminal.get()){Throwable cause=x instanceof CompletionException&&x.getCause()!=null?x.getCause():x;String message=cause instanceof BusinessException be&&"AGENT_ENGINE_TIMEOUT".equals(be.code())?"运行超时":"Agent Engine 暂不可用";finish(r,"run.failed",Map.of("message",message));}
-     else if(!r.terminal.get())finish(r,"run.failed",Map.of("message","运行未返回终态"));
+    bridge.start(new AgentRunRequest(rid,id,tid,conversation.source(),content,p.tenantCode(),focusRegionId,reference,tcid),e->{if(!r.terminal.get())emit(r,e.type(),e.fields());}).whenComplete((v,x)->{
+     if(x!=null&&!r.terminal.get())fail(r,x);
+     else if(!r.terminal.get())fail(r,new BusinessException("AGENT_ENGINE_INCOMPLETE","运行未返回终态",502));
     });
-   }catch(Exception e){finish(r,"run.failed",Map.of("message","Agent Engine 暂不可用"));}
+   }catch(Exception e){fail(r,e);}
   });
   } catch (RejectedExecutionException e) {
-   finish(r,"run.failed",Map.of("message","当前运行数量已达上限，请稍后重试"));
+   fail(r,new BusinessException("AGENT_CAPACITY_EXCEEDED","当前运行数量已达上限，请稍后重试",429));
   }
   return out;
  }
  public Map<String,Object> cancel(PrincipalInfo p,String id){return cancel(p,id,null);}
  public Map<String,Object> cancel(PrincipalInfo p,String id,String source){verify(p,id,source);Run r=active.get(id);if(r==null)throw new BusinessException("NO_ACTIVE_RUN","当前没有正在处理的请求",409);finish(r,"run.aborted",Map.of("message","已停止"));bridge.cancel(r.runId);return Map.of("cancelled",true);}
- public PrincipalInfo toolPrincipal(String toolContextId,String conversationId,String turnId){
-  Run r=toolContextsById.get(toolContextId);
-  if(r==null)r=active.get(conversationId);
-  if(r==null)throw new BusinessException("AGENT_TOOL_RUN_UNAVAILABLE","Agent 运行上下文不可用",409);
-  return r.principal;
+ public AgentToolContext toolContext(String toolContextId,String conversationId,String turnId,String runId){
+  Run r=toolContextId==null?null:toolContextsById.get(toolContextId);
+  if(r==null||r.terminal.get()||!r.conversationId.equals(conversationId)||!r.turnId.equals(turnId)||!r.runId.equals(runId))
+   throw new BusinessException("AGENT_TOOL_RUN_UNAVAILABLE","Agent 运行上下文不可用或不匹配",409);
+  return r.context;
+ }
+ private void fail(Run r,Throwable failure){
+  synchronized(r){
+   if(r.terminal.get())return;
+   if(r.sequence==0)emit(r,"run.started",Map.of("createdAt",Instant.now().toString()));
+   Throwable cause=failure instanceof CompletionException&&failure.getCause()!=null?failure.getCause():failure;
+   if(cause instanceof BusinessException business)finish(r,"run.failed",Map.of("code",business.code(),"message",business.getMessage()));
+   else finish(r,"run.failed",Map.of("code","AGENT_ENGINE_UNAVAILABLE","message","Agent Engine 暂不可用"));
+  }
  }
  private void emit(Run r,String type,Map<String,Object> f){
   if("heartbeat".equals(type)){sendHeartbeat(r);return;}
   if(TERMINALS.contains(type)){finish(r,type,f);return;}
-  synchronized(r){if(r.terminal.get())return;synchronized(events){ObjectNode n=node(r,type,f);long next=events.read(r.conversationId).stream().filter(e->r.turnId.equals(e.turnId())).mapToLong(ConversationEventFact::sequence).max().orElse(0)+1;r.sequence=Math.max(r.sequence,next);n.put("sequence",r.sequence);append(r,n);send(r,n);}}
+  synchronized(r){if(r.terminal.get())return;synchronized(events){flushRecordedEvents(r);ObjectNode n=node(r,type,f);append(r,n);send(r,n);}}
  }
  private void finish(Run r,String type,Map<String,Object> f){
   synchronized(r){
    if(!r.terminal.compareAndSet(false,true))return;
-   try{synchronized(events){ObjectNode n=node(r,type,f);long next=events.read(r.conversationId).stream().filter(e->r.turnId.equals(e.turnId())).mapToLong(ConversationEventFact::sequence).max().orElse(0)+1;r.sequence=Math.max(r.sequence,next);n.put("sequence",r.sequence);append(r,n);send(r,n);}}catch(RuntimeException ignored){}
-   finally{if(r.heartbeat!=null)r.heartbeat.cancel(false);try{r.out.complete();}catch(Exception ignored){}active.remove(r.conversationId,r);toolContexts.put(r.conversationId,r);if(scheduler!=null){scheduler.schedule(()->toolContexts.remove(r.conversationId,r),60,TimeUnit.SECONDS);scheduler.schedule(()->toolContextsById.remove(r.toolContextId,r),60,TimeUnit.SECONDS);}}
+   try{synchronized(events){flushRecordedEvents(r);ObjectNode n=node(r,type,f);append(r,n);send(r,n);}}
+   catch(RuntimeException error){send(r,node(r,"run.failed",Map.of("code","CONVERSATION_PERSISTENCE_UNAVAILABLE","message","会话记录未能保存，请稍后重试")));}
+   finally{if(r.heartbeat!=null)r.heartbeat.cancel(false);try{r.out.complete();}catch(Exception ignored){}active.remove(r.conversationId,r);toolContextsById.remove(r.toolContextId,r);}
+  }
+ }
+ private void flushRecordedEvents(Run r){
+  for(ConversationEventFact fact:events.read(r.conversationId).stream()
+    .filter(event->r.turnId.equals(event.turnId())&&event.sequence()>r.sequence)
+    .sorted(Comparator.comparingLong(ConversationEventFact::sequence)).toList()){
+   try{
+    if(!(mapper.readTree(fact.payloadJson()) instanceof ObjectNode recorded))
+     throw new IllegalStateException("Conversation event must be an object");
+    recorded.put("type",fact.type());recorded.put("sequence",fact.sequence());
+    recorded.put("conversationId",r.conversationId);recorded.put("turnId",r.turnId);
+    r.sequence=fact.sequence();send(r,recorded);
+   }catch(com.fasterxml.jackson.core.JsonProcessingException error){
+    throw new BusinessException("CONVERSATION_EVENT_INVALID","会话记录不可读取",503);
+   }
   }
  }
  private void scheduleHeartbeat(Run r){
@@ -107,7 +132,7 @@ public final class ConversationFacade {
  private static void validSource(String s){if(!s.equals("office")&&!s.equals("company"))throw new BusinessException("INVALID_AGENT_SOURCE","Agent 来源无效");}
  private static String owner(PrincipalInfo p){return p.ownerKey();}
  private static final class Run{
-  final String conversationId,turnId,runId,toolContextId,source;final PrincipalInfo principal;final ResponseBodyEmitter out;final AtomicBoolean terminal=new AtomicBoolean();final AtomicBoolean disconnected=new AtomicBoolean();long sequence;ScheduledFuture<?> heartbeat;
-  Run(String c,String t,String r,String tc,PrincipalInfo p,String s,ResponseBodyEmitter o){conversationId=c;turnId=t;runId=r;toolContextId=tc;principal=p;source=s;out=o;o.onError(x->disconnected.set(true));o.onCompletion(()->disconnected.set(true));}
+  final String conversationId,turnId,runId,toolContextId;final AgentToolContext context;final ResponseBodyEmitter out;final AtomicBoolean terminal=new AtomicBoolean();final AtomicBoolean disconnected=new AtomicBoolean();long sequence;ScheduledFuture<?> heartbeat;
+  Run(String c,String t,String r,String tc,PrincipalInfo p,String s,String focus,Map<String,Object> reference,ResponseBodyEmitter o){conversationId=c;turnId=t;runId=r;toolContextId=tc;context=new AgentToolContext(p,r,c,t,s,focus,reference);out=o;o.onError(x->disconnected.set(true));o.onCompletion(()->disconnected.set(true));}
  }
 }

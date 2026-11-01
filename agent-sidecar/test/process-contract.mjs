@@ -9,7 +9,6 @@ const root = await mkdtemp(join(tmpdir(), "iot-agent-sidecar-process-"));
 const sessionPath = join(root, "sessions.sqlite");
 const backupDir = join(root, "backups");
 const token = "process-bridge";
-const supervisor = "process-supervisor";
 
 async function freePort() {
   const server = createServer();
@@ -21,15 +20,30 @@ async function freePort() {
 }
 
 const port = await freePort();
+const modelServer = createServer(async (request, response) => {
+  for await (const _chunk of request) { /* drain the model request */ }
+  const id = "process-completion";
+  response.writeHead(200, { "content-type": "text/event-stream" });
+  response.write(`data: ${JSON.stringify({ id, choices: [{ delta: { role: "assistant", content: "process ok" }, finish_reason: null }] })}\n\n`);
+  response.write(`data: ${JSON.stringify({ id, choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`);
+  response.end("data: [DONE]\n\n");
+});
+await new Promise((resolve, reject) => {
+  modelServer.once("error", reject);
+  modelServer.listen(0, "127.0.0.1", resolve);
+});
+const modelAddress = modelServer.address();
+if (!modelAddress || typeof modelAddress === "string") throw new Error("fake model address unavailable");
+const modelUrl = `http://127.0.0.1:${modelAddress.port}/v1`;
+
 const env = {
   ...process.env,
   SIDECAR_HOST: "127.0.0.1",
   SIDECAR_PORT: String(port),
   AGENT_BRIDGE_TOKEN: token,
-  SIDECAR_SUPERVISOR_TOKEN: supervisor,
   JAVA_AGENT_TOOLS_URL: "http://127.0.0.1:9/internal/agent/tools",
   JAVA_AGENT_TOOLS_TOKEN: token,
-  MODEL_BASE_URL: "http://127.0.0.1:9/v1",
+  MODEL_BASE_URL: modelUrl,
   MODEL_ID: "process-test-model",
   MODEL_API_KEY: "process-test-key",
   SIDECAR_SESSION_PATH: sessionPath,
@@ -68,10 +82,8 @@ let childProcess = launch();
 try {
   const health = await waitForHealth();
   assert.equal(health.service, "agent-sidecar");
-  const denied = await post("/internal/admin/apply", { handoff: "restart" }, { authorization: `Bearer wrong` });
-  assert.equal(denied.status, 401);
-  const accepted = await post("/internal/admin/apply", { handoff: "restart" }, { "x-admin-supervisor-token": supervisor });
-  assert.deepEqual(accepted.body, { accepted: true });
+  const handoff = await post("/internal/admin/apply", { handoff: "restart" }, { "x-admin-supervisor-token": "process-supervisor" });
+  assert.equal(handoff.status, 404);
   const backup = await post("/internal/pi-session/backup", { destination: join(backupDir, "process.sqlite"), force: false }, { authorization: `Bearer ${token}` });
   assert.equal(backup.status, 200);
   assert.equal(backup.body.destination, "[sidecar-path]");
@@ -82,8 +94,60 @@ try {
   const capacity = await post("/internal/pi-session/capacity", {}, { authorization: `Bearer ${token}` });
   assert.equal(capacity.status, 200);
   assert.equal(typeof capacity.body.freeBytes, "number");
+
+  const runResponse = await fetch(`http://127.0.0.1:${port}/run`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+      accept: "application/x-ndjson",
+    },
+    body: JSON.stringify({
+      protocolVersion: 1,
+      runId: "process-run",
+      toolContextId: "process-context",
+      conversationId: "process-conversation",
+      turnId: "process-turn",
+      content: "process hello",
+      sessionScope: "process-scope",
+      definition: {
+        instructions: "Answer using the supplied request.",
+        tools: [],
+        maxTurns: 2,
+        maxToolCalls: 1,
+        runTimeoutMs: 5000,
+        model: {
+          modelId: "process-model",
+          modelBaseUrl: modelUrl,
+          modelApiKey: "process-model-key",
+          contextWindow: 32768,
+          maxOutputTokens: 4096,
+          reasoning: true,
+          thinkingLevel: "low",
+          supportsDeveloperRole: false,
+          supportsReasoningEffort: true,
+          supportsUsageInStreaming: true,
+          maxTokensField: "max_completion_tokens",
+        },
+      },
+    }),
+  });
+  assert.equal(runResponse.status, 200);
+  const runEvents = (await runResponse.text()).trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
+  const allowed = {
+    "run.started": true, "run.progress": true, "run.completed": true, "run.failed": true,
+    "run.aborted": true, heartbeat: true, "message.delta": true, "message.completed": true,
+    "message.reclassified": true, "tool.started": true, "tool.progress": true,
+    "tool.completed": true, "tool.result": true,
+  };
+  assert.ok(runEvents.some(event => event.type === "run.started"));
+  assert.ok(runEvents.some(event => event.type === "run.completed"));
+  assert.ok(runEvents.every(event => allowed[event.type] === true));
+  assert.ok(runEvents.some(event => event.type === "message.completed" && event.content === "process ok"));
+  assert.equal(JSON.stringify(runEvents).includes("process-model-key"), false);
   console.log("sidecar process contract: ok");
 } finally {
   if (childProcess.exitCode === null) await stop(childProcess);
+  await new Promise(resolve => modelServer.close(resolve));
   await rm(root, { recursive: true, force: true });
 }

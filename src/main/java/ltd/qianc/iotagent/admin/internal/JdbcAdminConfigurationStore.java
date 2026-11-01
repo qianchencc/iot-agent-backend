@@ -62,14 +62,14 @@ public final class JdbcAdminConfigurationStore implements AdminConfigurationStor
         Revision latest = latest();
         Revision active = revision(activeRevision);
         Map<String, Object> saved = latest.settings;
-        Map<String, Object> running = active.settings;
+        Map<String, Object> running = LiveAgentSettings.effective(active.settings, saved);
         List<String> changed = changedFields(saved, running);
         Map<String, Map<String, Boolean>> secrets = new LinkedHashMap<>();
         for (String secret : SECRET_KEYS) {
             secrets.put(secret, Map.of("configured", hasValue(saved.get(secret)),
                     "activeConfigured", hasValue(running.get(secret))));
         }
-        return new ConfigurationView(latest.revision, active.revision, publicSettings(saved), publicSettings(running),
+        return new ConfigurationView(latest.revision, changed.isEmpty() ? latest.revision : active.revision, publicSettings(saved), publicSettings(running),
                 secrets, List.copyOf(locked), !changed.isEmpty(), changed, false, deployment);
     }
 
@@ -154,12 +154,13 @@ public final class JdbcAdminConfigurationStore implements AdminConfigurationStor
 
     @Override
     public synchronized Map<String, Object> active() {
-        return new LinkedHashMap<>(revision(activeRevision).settings);
+        return LiveAgentSettings.effective(revision(activeRevision).settings, latest().settings);
     }
 
     @Override
     public synchronized boolean pendingRestart() {
-        return latest().revision != activeRevision;
+        Revision saved = latest();
+        return !changedFields(saved.settings, LiveAgentSettings.effective(revision(activeRevision).settings, saved.settings)).isEmpty();
     }
 
     private void ensureSchema() {

@@ -175,7 +175,7 @@ public final class AdminController {
     @GetMapping("/prompts")
     public Map<String, Object> prompts() {
         Map<String, Object> active = store.active();
-        return Map.of("revision", view().activeRevision(), "office", active.getOrDefault("officeInstructions", ""), "company", active.getOrDefault("companyInstructions", ""));
+        return Map.of("revision", view().revision(), "office", active.getOrDefault("officeInstructions", ""), "company", active.getOrDefault("companyInstructions", ""));
     }
 
     @PostMapping("/restore")

@@ -2,7 +2,6 @@ package ltd.qianc.iotagent.agent;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ltd.qianc.iotagent.action.ActionDraftFacade;
-import ltd.qianc.iotagent.agent.internal.controller.AgentToolBridgeController;
 import ltd.qianc.iotagent.conversation.ConversationFacade;
 import ltd.qianc.iotagent.conversation.ReportGenerationPort;
 import ltd.qianc.iotagent.iot.IotAdapter;
@@ -22,8 +21,7 @@ public final class AgentToolBridgeFactory {
     public static AgentToolBridge local(ConversationFacade conversations, IotAdapter iot,
             ObservationAdapter observations, TaskProjectionStore projections,
             ActionDraftFacade actions, TaskFacade tasks, ObjectMapper mapper, ReportGenerationPort reports) {
-        AgentToolBridgeController controller = new AgentToolBridgeController(
-                conversations, iot, observations, projections, actions, tasks, mapper, reports);
-        return controller::execute;
+        return AgentBusinessEngineFactory.toolBridge(conversations, iot, observations, projections, actions,
+                tasks, mapper, reports);
     }
 }

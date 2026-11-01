@@ -1,20 +1,58 @@
-import { Agent, type AgentEvent, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
-import { Type, type Model, type TSchema } from "@earendil-works/pi-ai";
+import {
+  Agent,
+  type AgentEvent,
+  type AgentMessage,
+  type AgentTool,
+  type StreamFn,
+} from "@earendil-works/pi-agent-core";
+import type { Model, TSchema } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/api/openai-completions";
 import type { SidecarConfig } from "./config.js";
 import { traceStreamFn, type Observability } from "./observability.js";
 import type { PiSessionStore } from "./session.js";
 
+/** Plain JSON Schema supplied by Java. The sidecar never interprets business meaning. */
+export type JsonSchema = Record<string, unknown>;
+
+export interface ToolDefinition {
+  name: string;
+  label: string;
+  description: string;
+  parameters: JsonSchema;
+}
+
+export interface ModelSettings {
+  modelId: string;
+  modelBaseUrl: string;
+  modelApiKey: string;
+  contextWindow: number;
+  maxOutputTokens: number;
+  reasoning: boolean;
+  thinkingLevel: "off" | "low" | "medium" | "high";
+  supportsDeveloperRole: boolean;
+  supportsReasoningEffort: boolean;
+  supportsUsageInStreaming: boolean;
+  maxTokensField: "max_completion_tokens" | "max_tokens";
+}
+
+export interface RunDefinition {
+  instructions: string;
+  tools: ToolDefinition[];
+  maxTurns: number;
+  maxToolCalls?: number;
+  runTimeoutMs?: number;
+  model?: ModelSettings;
+}
+
 export interface RunRequest {
+  protocolVersion: 1;
   runId: string;
-  toolContextId: string;
   conversationId: string;
   turnId: string;
-  source: string;
+  toolContextId: string;
   content: string;
-  tenantCode: string;
-  focusRegionId?: string;
-  reference?: Record<string, unknown>;
+  sessionScope: string;
+  definition: RunDefinition;
 }
 
 export interface PublicEvent {
@@ -22,284 +60,212 @@ export interface PublicEvent {
   [key: string]: unknown;
 }
 
-export type ToolCapabilityStatus = "java" | "unavailable";
-export type ToolCapabilityCategory = "observation" | "report" | "action" | "task" | "confirmation" | "resolution" | "readback";
-
-export interface ToolCapability {
-  name: string;
-  category: ToolCapabilityCategory;
-  status: ToolCapabilityStatus;
-  javaToolName?: string;
-  event: "observation.reported" | "report.generated" | "action.proposed" | "action.resolved" | "task.proposed" | "task.resolved"
-    | "task.confirmation" | "task.change.proposed" | "task.change.resolved" | "task.cancellation.proposed" | "task.cancellation.resolved";
+export interface RunOutcome {
+  terminal: "completed";
 }
 
-/**
- * The sidecar exposes the full contract so model/tool negotiation remains stable.
- * Java-backed entries are the only entries allowed to claim business success.
- */
-export const TOOL_CAPABILITY_MATRIX: readonly ToolCapability[] = [
-  { name: "find_device_candidates", category: "observation", status: "java", event: "observation.reported" },
-  { name: "read_device_states", category: "observation", status: "java", event: "observation.reported" },
-  { name: "inspect_device_capabilities", category: "observation", status: "java", event: "observation.reported" },
-  { name: "read_device_readback", category: "readback", status: "java", javaToolName: "read_device_states", event: "observation.reported" },
-  { name: "readback_device_states", category: "readback", status: "java", javaToolName: "read_device_states", event: "observation.reported" },
-  { name: "get_device_details", category: "readback", status: "java", event: "observation.reported" },
-  { name: "query_alerts", category: "observation", status: "java", event: "observation.reported" },
-  { name: "query_environment_history", category: "observation", status: "java", event: "observation.reported" },
-  { name: "query_energy_history", category: "observation", status: "java", event: "observation.reported" },
-  { name: "prepare_video_playback", category: "readback", status: "java", event: "observation.reported" },
-  { name: "review_safety_event", category: "observation", status: "java", event: "observation.reported" },
-  { name: "summarize_energy", category: "report", status: "java", event: "report.generated" },
-  { name: "compare_energy", category: "report", status: "java", event: "report.generated" },
-  { name: "create_energy_report", category: "report", status: "java", event: "report.generated" },
-  { name: "create_report", category: "report", status: "java", javaToolName: "create_energy_report", event: "report.generated" },
-  { name: "generate_report", category: "report", status: "java", javaToolName: "create_energy_report", event: "report.generated" },
-  { name: "propose_action_draft", category: "action", status: "java", event: "action.proposed" },
-  { name: "propose_lighting_draft", category: "action", status: "java", javaToolName: "propose_action_draft", event: "action.proposed" },
-  { name: "confirm_action", category: "confirmation", status: "java", event: "action.resolved" },
-  { name: "resolve_action", category: "resolution", status: "java", event: "action.resolved" },
-  { name: "read_action_draft", category: "readback", status: "java", event: "action.resolved" },
-  { name: "read_action_device_states", category: "readback", status: "java", event: "action.resolved" },
-  { name: "read_action_summary", category: "readback", status: "java", event: "action.resolved" },
-  { name: "propose_task", category: "task", status: "java", event: "task.proposed" },
-  { name: "propose_task_change", category: "task", status: "java", event: "task.change.proposed" },
-  { name: "propose_task_cancellation", category: "task", status: "java", event: "task.cancellation.proposed" },
-  { name: "propose_company_night_closure", category: "task", status: "unavailable", event: "task.proposed" },
-  { name: "continue_company_night_closure", category: "task", status: "unavailable", event: "task.proposed" },
-  { name: "list_tasks", category: "readback", status: "java", event: "task.resolved" },
-  { name: "list_task_plans", category: "readback", status: "java", event: "task.resolved" },
-  { name: "get_task", category: "readback", status: "java", event: "task.resolved" },
-  { name: "confirm_task", category: "confirmation", status: "java", event: "task.confirmation" },
-  { name: "confirm_task_change", category: "confirmation", status: "java", event: "task.change.resolved" },
-  { name: "confirm_task_cancellation", category: "confirmation", status: "java", event: "task.cancellation.resolved" },
-  { name: "resolve_task", category: "resolution", status: "unavailable", event: "task.resolved" },
-  { name: "resolve_task_change", category: "resolution", status: "unavailable", event: "task.change.resolved" },
-  { name: "resolve_task_cancellation", category: "resolution", status: "unavailable", event: "task.cancellation.resolved" },
-];
+const RUN_FIELDS: Record<string, true> = {
+  protocolVersion: true, runId: true, conversationId: true, turnId: true,
+  toolContextId: true, content: true, sessionScope: true, definition: true,
+};
+const DEFINITION_FIELDS: Record<string, true> = {
+  instructions: true, tools: true, maxTurns: true, maxToolCalls: true, runTimeoutMs: true, model: true,
+};
+const TOOL_FIELDS: Record<string, true> = { name: true, label: true, description: true, parameters: true };
+const MODEL_FIELDS: Record<string, true> = {
+  modelId: true, modelBaseUrl: true, modelApiKey: true, contextWindow: true, maxOutputTokens: true,
+  reasoning: true, thinkingLevel: true, supportsDeveloperRole: true, supportsReasoningEffort: true,
+  supportsUsageInStreaming: true, maxTokensField: true,
+};
+const PROTOCOL_VERSION = 1;
 
-
-function modelFor(config: SidecarConfig): Model<"openai-completions"> {
+function modelFor(config: SidecarConfig, settings?: ModelSettings): Model<"openai-completions"> {
   return {
-    id: config.modelId,
-    name: config.modelId,
+    id: settings?.modelId ?? config.modelId,
+    name: settings?.modelId ?? config.modelId,
     api: "openai-completions",
-    provider: "iot-agent-sidecar",
-    baseUrl: config.modelBaseUrl,
-    reasoning: true,
+    provider: "agent-sidecar",
+    baseUrl: settings?.modelBaseUrl ?? config.modelBaseUrl,
+    reasoning: settings?.reasoning ?? true,
     input: ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 128_000,
-    maxTokens: 16_384,
-    samplingParams: {
-      instructions: "Use IoT tools only when they provide evidence needed for the current request. Answer, ask for needed information, or create a confirmable draft, then stop.",
-    },
-    compat: {
-      supportsDeveloperRole: false,
-      supportsReasoningEffort: true,
-      supportsUsageInStreaming: true,
-      maxTokensField: "max_completion_tokens",
-    },
+    contextWindow: settings?.contextWindow ?? 128_000,
+    maxTokens: settings?.maxOutputTokens ?? 16_384,
+    compat: settings
+      ? {
+        supportsDeveloperRole: settings.supportsDeveloperRole,
+        supportsReasoningEffort: settings.supportsReasoningEffort,
+        supportsUsageInStreaming: settings.supportsUsageInStreaming,
+        maxTokensField: settings.maxTokensField,
+      }
+      : {
+        supportsDeveloperRole: false,
+        supportsReasoningEffort: true,
+        supportsUsageInStreaming: true,
+        maxTokensField: "max_completion_tokens",
+      },
   };
 }
 
 function messageText(message: unknown): string {
-  if (!message || typeof message !== "object") return "";
-  const content = (message as { content?: unknown }).content;
+  if (!message || typeof message !== "object" || !("content" in message)) return "";
+  const content = message.content;
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
-  return content.filter(item => item && typeof item === "object" && (item as { type?: unknown }).type === "text")
-    .map(item => String((item as { text?: unknown }).text ?? "")).join("");
+  const parts: string[] = [];
+  for (const item of content) {
+    if (!item || typeof item !== "object" || !("type" in item) || item.type !== "text") continue;
+    if ("text" in item && typeof item.text === "string") parts.push(item.text);
+  }
+  return parts.join("");
 }
 
 function jsonText(value: unknown): string {
   try { return JSON.stringify(value); } catch { return "[unserializable]"; }
 }
 
-function validateRequest(input: unknown): RunRequest {
-  if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("request body must be an object");
-  const body = input as Record<string, unknown>;
-  const text = (name: string): string => {
-    const value = body[name];
-    if (typeof value !== "string" || value.trim() === "") throw new Error(`${name} is required`);
-    if (value.length > 16_000) throw new Error(`${name} is too long`);
-    return value;
-  };
-  const result: RunRequest = {
-    runId: text("runId"), toolContextId: text("toolContextId"), conversationId: text("conversationId"),
-    turnId: text("turnId"), source: text("source"), content: text("content"), tenantCode: text("tenantCode"),
-  };
-  if (typeof body.focusRegionId === "string") result.focusRegionId = body.focusRegionId;
-  if (body.reference && typeof body.reference === "object" && !Array.isArray(body.reference)) result.reference = body.reference as Record<string, unknown>;
-  return result;
-}
-
-export interface RunOutcome {
-  terminal: "completed" | "awaiting_confirmation";
-  confirmation?: Record<string, unknown>;
-}
-
-function unsupportedResult(capability: ToolCapability): Record<string, unknown> {
-  return {
-    ok: false,
-    status: "unavailable",
-    supported: false,
-    code: "AGENT_TOOL_UNAVAILABLE",
-    toolName: capability.name,
-    capability: capability.category,
-    message: "Agent capability is unavailable",
-  };
-}
-
-function isPendingConfirmation(value: unknown): boolean {
-  if (!value || typeof value !== "object") return false;
-  const status = String((value as { status?: unknown }).status ?? "").toUpperCase();
-  return status === "PENDING_CONFIRMATION" || status === "AWAITING_CONFIRMATION" || status === "AWAITING_CONFIRM";
-}
-
-const DEVICE_KIND = Type.Union([
-  Type.Literal("lighting"), Type.Literal("ac"), Type.Literal("access"), Type.Literal("video"),
-  Type.Literal("environment"), Type.Literal("energy"), Type.Literal("safety"), Type.Literal("unknown"),
-]);
-
-const CANDIDATE_SET = Type.Object({
-  candidateSetId: Type.String({ minLength: 1 }),
-  deviceIds: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 50 }),
-}, { additionalProperties: false });
-
-const CONTROL_ACTION = Type.Object({
-  deviceId: Type.String({ minLength: 1 }),
-  kind: Type.Union([
-    Type.Literal("lighting", { description: "照明；必须使用 closeOrOpen" }),
-    Type.Literal("ac", { description: "空调；必须使用 ac" }),
-    Type.Literal("access", { description: "门禁；必须使用 controlType=2" }),
-  ]),
-  closeOrOpen: Type.Optional(Type.Union([Type.Literal(0), Type.Literal(1)], {
-    description: "仅照明：0关闭、1打开；不可与 controlType 或 ac 混用",
-  })),
-  controlType: Type.Optional(Type.Literal(2, { description: "仅门禁：一次开门；照明不可使用" })),
-  ac: Type.Optional(Type.Object({
-    power: Type.Optional(Type.Union([Type.Literal("on"), Type.Literal("off")])),
-    temperature: Type.Optional(Type.Number({ minimum: 16, maximum: 30 })),
-    mode: Type.Optional(Type.Union([Type.Literal("cool"), Type.Literal("heat"), Type.Literal("dry"), Type.Literal("fan")])),
-    fanSpeed: Type.Optional(Type.Union([Type.Literal("low"), Type.Literal("high")])),
-  }, { additionalProperties: false, description: "仅空调；只传用户要求改变的参数" })),
-  selected: Type.Boolean(),
-}, { additionalProperties: false });
-const METER_SCOPE = Type.Object({
-  level: Type.Union([Type.Literal("all"), Type.Literal("floor"), Type.Literal("location"), Type.Literal("selection")]),
-  floor: Type.Optional(Type.String()),
-  meterId: Type.Optional(Type.String()),
-  meterIds: Type.Optional(Type.Array(Type.String(), { minItems: 1, maxItems: 100 })),
-}, { additionalProperties: false });
-const TASK_ACTION = Type.Object({
-  deviceId: Type.String({ minLength: 1 }),
-  closeOrOpen: Type.Optional(Type.Union([Type.Literal(0), Type.Literal(1)])),
-  ac: Type.Optional(Type.Object({
-    power: Type.Optional(Type.Union([Type.Literal("on"), Type.Literal("off")])),
-    temperature: Type.Optional(Type.Number({ minimum: 16, maximum: 30 })),
-    mode: Type.Optional(Type.Union([Type.Literal("cool"), Type.Literal("heat"), Type.Literal("dry"), Type.Literal("fan")])),
-    fanSpeed: Type.Optional(Type.Union([Type.Literal("low"), Type.Literal("high")])),
-  }, { additionalProperties: false })),
-}, { additionalProperties: false });
-
-function toolParameters(name: string): TSchema {
-  switch (name) {
-    case "find_device_candidates":
-      return Type.Object({
-        kind: DEVICE_KIND,
-        scopeText: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })),
-        deviceText: Type.Optional(Type.String({ minLength: 1, maxLength: 80 })),
-        scopeTerms: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 8 })),
-        nameHints: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 8 })),
-      }, { additionalProperties: false });
-    case "get_device_details":
-      return Type.Object({
-        candidateSetId: Type.String({ minLength: 1 }),
-        deviceIds: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 50 }),
-      }, { additionalProperties: false });
-    case "read_device_states":
-    case "inspect_device_capabilities":
-      return Type.Object({ candidateSets: Type.Array(CANDIDATE_SET, { minItems: 1, maxItems: 10 }) },
-        { additionalProperties: false });
-    case "propose_action_draft":
-      return Type.Object({
-        candidateSetIds: Type.Array(Type.String({ minLength: 1 }), { maxItems: 10 }),
-        summary: Type.String({ minLength: 1 }),
-        question: Type.Optional(Type.String({ minLength: 1 })),
-        excludedDeviceIds: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 50 })),
-        actions: Type.Array(CONTROL_ACTION, { minItems: 1, maxItems: 50 }),
-      }, { additionalProperties: false });
-    case "confirm_action":
-      return Type.Object({
-        draftId: Type.String({ minLength: 1 }),
-        expectedRevision: Type.Optional(Type.Number({ minimum: 1 })),
-        revision: Type.Optional(Type.Number({ minimum: 1 })),
-      }, { additionalProperties: false });
-    case "resolve_action":
-      return Type.Object({ draftId: Type.String({ minLength: 1 }) }, { additionalProperties: false });
-    case "query_alerts":
-      return Type.Object({
-        types: Type.Optional(Type.Array(Type.Union([Type.Literal("smoke"), Type.Literal("water"), Type.Literal("gas")]), { minItems: 1, maxItems: 3 })),
-        days: Type.Optional(Type.Number({ minimum: 1, maximum: 365 })),
-        from: Type.Optional(Type.String()),
-        to: Type.Optional(Type.String()),
-        unreportedOnly: Type.Optional(Type.Boolean()),
-      }, { additionalProperties: false });
-    case "prepare_video_playback":
-      return Type.Object({
-        deviceId: Type.String({ minLength: 1 }),
-        beginTime: Type.String({ minLength: 1 }),
-        endTime: Type.String({ minLength: 1 }),
-      }, { additionalProperties: false });
-    case "review_safety_event":
-      return Type.Object({
-        eventId: Type.String({ minLength: 1 }),
-        deviceId: Type.String({ minLength: 1 }),
-        ledger: Type.Union([Type.Literal("gas"), Type.Literal("smoke"), Type.Literal("flooding")]),
-        cameraDeviceId: Type.Optional(Type.String({ minLength: 1 })),
-      }, { additionalProperties: false });
-    case "propose_task":
-      return Type.Object({
-        label: Type.String({ minLength: 1, maxLength: 80 }),
-        title: Type.Optional(Type.String({ minLength: 1, maxLength: 20 })),
-        candidateSetIds: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 10 }),
-        interval: Type.Optional(Type.Object({
-          startsAt: Type.String(),
-          endsAt: Type.String(),
-        }, { additionalProperties: false })),
-        repeat: Type.Optional(Type.Object({
-          frequency: Type.Union([Type.Literal("daily"), Type.Literal("weekdays"), Type.Literal("weekly"), Type.Literal("monthly")]),
-          weekdays: Type.Optional(Type.Array(Type.Integer({ minimum: 1, maximum: 7 }), { minItems: 1, maxItems: 7 })),
-          dayOfMonth: Type.Optional(Type.Integer({ minimum: 1, maximum: 31 })),
-          until: Type.Optional(Type.String()),
-        }, { additionalProperties: false })),
-        phases: Type.Array(Type.Object({
-          at: Type.String(),
-          actions: Type.Array(TASK_ACTION, { maxItems: 50 }),
-          read: Type.Optional(Type.Object({}, { additionalProperties: true })),
-        }, { additionalProperties: false }), { minItems: 1 }),
-      }, { additionalProperties: false });
-    case "summarize_energy":
-      return Type.Object({
-        scope: METER_SCOPE,
-        from: Type.String(),
-        to: Type.String(),
-        grain: Type.Optional(Type.Union([Type.Literal("hour"), Type.Literal("day"), Type.Literal("week"), Type.Literal("month")])),
-        dailyWindow: Type.Optional(Type.Object({ from: Type.Literal("20:00"), to: Type.Literal("08:00") })),
-      }, { additionalProperties: false });
-    case "compare_energy":
-      return Type.Object({
-        axis: Type.Union([Type.Literal("time"), Type.Literal("region")]),
-        scope: METER_SCOPE,
-        other: Type.Optional(METER_SCOPE),
-        from: Type.String(),
-        to: Type.String(),
-        baseline: Type.Optional(Type.Object({ from: Type.String(), to: Type.String() })),
-      }, { additionalProperties: false });
-    default:
-      return Type.Object({}, { additionalProperties: true });
+function rejectUnknownFields(value: Record<string, unknown>, allowed: Record<string, true>, where: string): void {
+  for (const key of Object.keys(value)) {
+    if (allowed[key] !== true) throw new Error(`${where} contains unsupported field ${key}`);
   }
+}
+
+function asObject(value: unknown, where: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${where} must be an object`);
+  return value as Record<string, unknown>;
+}
+
+function boundedText(value: unknown, where: string, maximum: number, allowEmpty = false): string {
+  if (typeof value !== "string") throw new Error(`${where} must be a string`);
+  if (!allowEmpty && value.trim() === "") throw new Error(`${where} is required`);
+  if (value.length > maximum) throw new Error(`${where} is too long`);
+  return value;
+}
+
+function assertJsonData(value: unknown, where: string, depth = 0): void {
+  if (depth > 32) throw new Error(`${where} is nested too deeply`);
+  if (value === null || typeof value === "string" || typeof value === "boolean") return;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error(`${where} contains a non-finite number`);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) assertJsonData(item, where, depth + 1);
+    return;
+  }
+  if (typeof value !== "object") throw new Error(`${where} contains non-JSON data`);
+  for (const item of Object.values(value)) assertJsonData(item, where, depth + 1);
+}
+
+function integerInRange(value: unknown, where: string, minimum: number, maximum: number): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < minimum || value > maximum) {
+    throw new Error(`${where} must be an integer between ${minimum} and ${maximum}`);
+  }
+  return value;
+}
+
+function booleanValue(value: unknown, where: string): boolean {
+  if (typeof value !== "boolean") throw new Error(`${where} must be a boolean`);
+  return value;
+}
+
+function thinkingLevelValue(value: unknown): ModelSettings["thinkingLevel"] {
+  if (value === "off" || value === "low" || value === "medium" || value === "high") return value;
+  throw new Error("definition.model.thinkingLevel must be one of off|low|medium|high");
+}
+
+function maxTokensFieldValue(value: unknown): ModelSettings["maxTokensField"] {
+  if (value === "max_completion_tokens" || value === "max_tokens") return value;
+  throw new Error("definition.model.maxTokensField must be one of max_completion_tokens|max_tokens");
+}
+
+function parseModel(input: unknown): ModelSettings {
+  const value = asObject(input, "definition.model");
+  rejectUnknownFields(value, MODEL_FIELDS, "definition.model");
+  const modelId = boundedText(value.modelId, "definition.model.modelId", 512);
+  const modelBaseUrl = boundedText(value.modelBaseUrl, "definition.model.modelBaseUrl", 8_192);
+  let url: URL;
+  try {
+    url = new URL(modelBaseUrl);
+  } catch {
+    throw new Error("definition.model.modelBaseUrl must be an absolute HTTP URL");
+  }
+  if ((url.protocol !== "http:" && url.protocol !== "https:")
+      || url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "") {
+    throw new Error("definition.model.modelBaseUrl must be an absolute HTTP URL without credentials, query, or fragment");
+  }
+  const modelApiKey = boundedText(value.modelApiKey, "definition.model.modelApiKey", 8_192);
+  const contextWindow = integerInRange(value.contextWindow, "definition.model.contextWindow", 1, 10_000_000);
+  const maxOutputTokens = integerInRange(value.maxOutputTokens, "definition.model.maxOutputTokens", 1, 10_000_000);
+  if (maxOutputTokens >= contextWindow) {
+    throw new Error("definition.model.maxOutputTokens must be less than definition.model.contextWindow");
+  }
+  return {
+    modelId,
+    modelBaseUrl,
+    modelApiKey,
+    contextWindow,
+    maxOutputTokens,
+    reasoning: booleanValue(value.reasoning, "definition.model.reasoning"),
+    thinkingLevel: thinkingLevelValue(value.thinkingLevel),
+    supportsDeveloperRole: booleanValue(value.supportsDeveloperRole, "definition.model.supportsDeveloperRole"),
+    supportsReasoningEffort: booleanValue(value.supportsReasoningEffort, "definition.model.supportsReasoningEffort"),
+    supportsUsageInStreaming: booleanValue(value.supportsUsageInStreaming, "definition.model.supportsUsageInStreaming"),
+    maxTokensField: maxTokensFieldValue(value.maxTokensField),
+  };
+}
+
+function parseTool(input: unknown, index: number): ToolDefinition {
+  const where = `definition.tools[${index}]`;
+  const value = asObject(input, where);
+  rejectUnknownFields(value, TOOL_FIELDS, where);
+  const name = boundedText(value.name, `${where}.name`, 128);
+  const label = boundedText(value.label, `${where}.label`, 512);
+  const description = boundedText(value.description, `${where}.description`, 16_384, true);
+  const parameters = asObject(value.parameters, `${where}.parameters`);
+  assertJsonData(parameters, `${where}.parameters`);
+  return { name, label, description, parameters };
+}
+
+function parseDefinition(input: unknown): RunDefinition {
+  const value = asObject(input, "definition");
+  rejectUnknownFields(value, DEFINITION_FIELDS, "definition");
+  const instructions = boundedText(value.instructions, "definition.instructions", 65_536, true);
+  if (!Array.isArray(value.tools)) throw new Error("definition.tools must be an array");
+  const tools = value.tools.map(parseTool);
+  const names = new Set<string>();
+  for (const tool of tools) {
+    if (names.has(tool.name)) throw new Error(`definition.tools contains duplicate name ${tool.name}`);
+    names.add(tool.name);
+  }
+  const maxTurns = value.maxTurns;
+  if (typeof maxTurns !== "number" || !Number.isInteger(maxTurns) || maxTurns < 1 || maxTurns > 32) {
+    throw new Error("definition.maxTurns must be an integer between 1 and 32");
+  }
+  const maxToolCalls = value.maxToolCalls === undefined
+    ? undefined
+    : integerInRange(value.maxToolCalls, "definition.maxToolCalls", 1, 1_000);
+  const runTimeoutMs = value.runTimeoutMs === undefined
+    ? undefined
+    : integerInRange(value.runTimeoutMs, "definition.runTimeoutMs", 1_000, 600_000);
+  const model = value.model === undefined ? undefined : parseModel(value.model);
+  return { instructions, tools, maxTurns, maxToolCalls, runTimeoutMs, model };
+}
+
+function validateRequest(input: unknown): RunRequest {
+  const body = asObject(input, "request body");
+  rejectUnknownFields(body, RUN_FIELDS, "request body");
+  if (body.protocolVersion !== PROTOCOL_VERSION) throw new Error("protocolVersion must be 1");
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    runId: boundedText(body.runId, "runId", 512),
+    conversationId: boundedText(body.conversationId, "conversationId", 512),
+    turnId: boundedText(body.turnId, "turnId", 512),
+    toolContextId: boundedText(body.toolContextId, "toolContextId", 512),
+    content: boundedText(body.content, "content", 16_000),
+    sessionScope: boundedText(body.sessionScope, "sessionScope", 512),
+    definition: parseDefinition(body.definition),
+  };
 }
 
 export class AgentRunner {
@@ -312,36 +278,44 @@ export class AgentRunner {
   parseRequest(input: unknown): RunRequest { return validateRequest(input); }
 
   async run(request: RunRequest, emit: (event: PublicEvent) => void, signal: AbortSignal): Promise<RunOutcome> {
-    const session = await this.sessions.openOrCreate(request.conversationId, {
-      tenantCode: request.tenantCode,
-      source: request.source,
-    });
-    await session.appendMessage({ role: "user", content: request.content, timestamp: Date.now() });
-    const model = modelFor(this.config);
+    const session = await this.sessions.openOrCreate(request.sessionScope);
+    const history = await this.sessions.history(request.sessionScope);
+    const initialCount = history.length;
+    // Java-owned snapshot for this run. Never log, trace, or emit this object or its key.
+    const modelSettings = request.definition.model;
+    const model = modelFor(this.config, modelSettings);
+    const modelApiKey = modelSettings?.modelApiKey ?? this.config.modelApiKey;
     const trace = this.observability.startAgentRun({
       conversationId: request.conversationId,
-      tenantCode: request.tenantCode,
       content: request.content,
     });
     const observedEmit = (event: PublicEvent) => {
       trace?.observeEvent(event);
       emit(event);
     };
-    const state: { confirmation?: Record<string, unknown>; heldAssistantText: string; draftPublished: boolean } =
-      { heldAssistantText: "", draftPublished: false };
-    let agentTurns = 0;
+    const state: {
+      halt: boolean;
+      heldAssistantText: string;
+      draftPublished: boolean;
+      finalText: string;
+      toolCalls: number;
+    } = { halt: false, heldAssistantText: "", draftPublished: false, finalText: "", toolCalls: 0 };
+    let turns = 0;
     const tools = this.createTools(request, signal, observedEmit, state);
     const agent = new Agent({
       initialState: {
         model,
-        systemPrompt: `你是一个受控的物联助手。只基于工具返回的事实回答。设备控制必须严格按：find_device_candidates 得到非空候选集 → read_device_states 使用候选集中的真实 candidateSetId/deviceIds → 仅在用户明确要求且设备可控时生成 propose_action_draft 待确认草案；不得发明设备ID、candidateSetId或kind，不得把空候选当作成功。控制动作每项必须显式填写 kind：lighting 只能使用 closeOrOpen，ac 只能使用 ac，access 只能使用 controlType=2，禁止混用；候选为空时先修正检索词或向用户澄清；Company来源没有可控目录时如实说明不可用。检索时scopeText/scopeTerms只放地点条件，deviceText/nameHints只放设备名称或型号，不要把地点拼进设备名称。任何控制都不能在草案阶段直接执行。${request.focusRegionId ? `本轮办公室当前关注区域由服务端传入，focusRegionId=${request.focusRegionId}；用户说“当前位置”或“当前区域”时，必须按该区域检索，不得把这些词作为字面地点查询。` : ""}使用中文，简洁且不暴露内部凭据。`,
-        thinkingLevel: this.config.thinkingLevel,
+        systemPrompt: request.definition.instructions,
+        thinkingLevel: modelSettings?.thinkingLevel ?? this.config.thinkingLevel,
+        messages: history,
         tools,
       },
       streamFn: traceStreamFn(streamSimple as StreamFn, trace),
-      getApiKey: () => this.config.modelApiKey,
-      shouldStopAfterTurn: async ({ toolResults }) =>
-        toolResults.length === 0 || Boolean(state.confirmation) || ++agentTurns >= 8,
+      getApiKey: () => modelApiKey,
+      shouldStopAfterTurn: async ({ toolResults }) => {
+        turns += 1;
+        return toolResults.length === 0 || state.halt || turns >= request.definition.maxTurns;
+      },
     });
     const detachAbort = () => agent.abort();
     signal.addEventListener("abort", detachAbort, { once: true });
@@ -351,20 +325,14 @@ export class AgentRunner {
     });
     try {
       await agent.prompt(request.content);
-      const messages = agent.state.messages.slice(-4);
-      for (const message of messages) {
-        const serialized = JSON.stringify(message);
-        if (!serialized) continue;
-        await session.appendMessage(JSON.parse(serialized));
+      const produced = agent.state.messages.slice(initialCount);
+      for (const message of produced) {
+        await session.appendMessage(JSON.parse(JSON.stringify(message)) as AgentMessage);
       }
-      // Runtime契约：终稿只取助手消息；用户消息文本回显会让前端把输入当答复。
-      const answer = messages
-        .filter(message => message?.role === "assistant")
-        .map(messageText).reverse().find(Boolean) || state.heldAssistantText;
-      if (answer) observedEmit({ type: "message.completed", content: answer, phase: "final" });
-      const outcome = state.confirmation
-        ? { terminal: "awaiting_confirmation" as const, confirmation: state.confirmation }
-        : { terminal: "completed" as const };
+      if (state.finalText) {
+        observedEmit({ type: "message.completed", content: state.finalText, phase: "final" });
+      }
+      const outcome: RunOutcome = { terminal: "completed" };
       trace?.finish({ result: outcome });
       void this.observability.flush().catch(() => undefined);
       return outcome;
@@ -382,60 +350,51 @@ export class AgentRunner {
     request: RunRequest,
     signal: AbortSignal,
     emit: (event: PublicEvent) => void,
-    state: { confirmation?: Record<string, unknown> },
+    state: { halt: boolean; toolCalls: number },
   ): AgentTool[] {
-    return TOOL_CAPABILITY_MATRIX.map(capability => ({
-      name: capability.name,
-      label: capability.name,
-      description: capability.status === "java"
-        ? `调用 Java 业务工具 ${capability.javaToolName ?? capability.name} 获取授权范围内事实或生成待确认草案。`
-        : `能力 ${capability.name} 当前不可用；必须如实返回 AGENT_TOOL_UNAVAILABLE，不得伪造业务成功。`,
-      parameters: toolParameters(capability.name),
-      execute: async (toolCallId: string, argumentsValue: unknown, toolSignal?: AbortSignal) => {
-        const argumentsObject = argumentsValue && typeof argumentsValue === "object" && !Array.isArray(argumentsValue)
-          ? argumentsValue as Record<string, unknown>
-          : {};
-        const bridgeArguments: Record<string, unknown> = { ...argumentsObject, source: request.source };
-        const javaToolName = capability.javaToolName ?? capability.name;
-        if (javaToolName.startsWith("propose_") && !bridgeArguments.idempotencyKey) {
-          bridgeArguments.idempotencyKey = `${request.turnId}:${toolCallId}`;
+    return request.definition.tools.map(tool => ({
+      name: tool.name,
+      label: tool.label,
+      description: tool.description,
+      // Plain JSON Schema is structurally a TSchema; Pi consumes it as data.
+      parameters: tool.parameters as TSchema,
+      execute: async (toolCallId: string, params: unknown, toolSignal?: AbortSignal) => {
+        if (!params || typeof params !== "object" || Array.isArray(params)) {
+          throw new Error("tool arguments must be a JSON object");
         }
-        if (request.focusRegionId && !bridgeArguments.focusRegionId) bridgeArguments.focusRegionId = request.focusRegionId;
-        const result = capability.status === "java"
-          ? await this.callJavaTool(request, capability.javaToolName ?? capability.name,
-              bridgeArguments, toolCallId, toolSignal ?? signal)
-          : unsupportedResult(capability);
-        const eventDetails = capability.name === "prepare_video_playback"
-          && result && typeof result === "object" && !Array.isArray(result)
-          && "videoPlayback" in result
-          ? {
-            ...(result as Record<string, unknown>),
-            blocks: [{
-              type: "video_playback",
-              report: (result as Record<string, unknown>).videoPlayback,
-            }],
-          }
-          : result;
-        const eventPayload: PublicEvent = { type: capability.event, tool: capability.name, details: eventDetails };
-        if (capability.event === "observation.reported" && eventDetails && typeof eventDetails === "object"
-          && !Array.isArray(eventDetails)) {
-          const report = eventDetails as Record<string, unknown>;
-          if (Array.isArray(report.blocks)) eventPayload.blocks = report.blocks;
-          if (typeof report.observedAt === "string") eventPayload.observedAt = report.observedAt;
+        const limit = request.definition.maxToolCalls;
+        if (limit !== undefined && state.toolCalls >= limit) {
+          throw new Error(`AGENT_TOOL_BUDGET_EXHAUSTED: tool call budget exhausted (maxToolCalls=${limit})`);
         }
-        emit(eventPayload);
-        if (capability.status === "java" && isPendingConfirmation(result)) {
-          state.confirmation = { tool: capability.name, details: result };
-        }
-        return { content: [{ type: "text", text: jsonText(result) }], details: result };
+        state.toolCalls += 1;
+        const callback = await this.callJavaTool(
+          request,
+          tool.name,
+          params as Record<string, unknown>,
+          toolCallId,
+          toolSignal ?? signal,
+        );
+        emit({ type: "tool.result", tool: tool.name, toolCallId, result: callback.result });
+        if (callback.halt) state.halt = true;
+        return {
+          content: [{ type: "text" as const, text: jsonText(callback.result) }],
+          details: callback.result,
+        };
       },
     }));
   }
 
-  private async callJavaTool(request: RunRequest, toolName: string, argumentsValue: Record<string, unknown>, toolCallId: string, signal: AbortSignal): Promise<unknown> {
+  private async callJavaTool(
+    request: RunRequest,
+    toolName: string,
+    argumentsValue: Record<string, unknown>,
+    toolCallId: string,
+    signal: AbortSignal,
+  ): Promise<{ result: unknown; halt: boolean }> {
     const controller = new AbortController();
     const onAbort = () => controller.abort();
-    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener("abort", onAbort, { once: true });
     const timer = setTimeout(() => controller.abort(), this.config.javaToolTimeoutMs);
     try {
       const response = await fetch(this.config.javaToolsUrl, {
@@ -447,47 +406,42 @@ export class AgentRunner {
           authorization: `Bearer ${this.config.javaToolsToken}`,
         },
         body: JSON.stringify({
-          toolCallId,
+          protocolVersion: PROTOCOL_VERSION,
+          runId: request.runId,
           toolContextId: request.toolContextId,
           conversationId: request.conversationId,
           turnId: request.turnId,
           toolName,
+          toolCallId,
           arguments: argumentsValue,
         }),
         signal: controller.signal,
       });
-      const result = await response.json().catch(() => null);
+      const payload: unknown = await response.json().catch(() => null);
       if (!response.ok) {
-        if (result && typeof result === "object" && "code" in result) return result;
-        return {
-          ok: false,
-          status: "unavailable",
-          supported: false,
-          code: "AGENT_TOOL_UNAVAILABLE",
-          toolName,
-          message: `Java business tool returned HTTP ${response.status}`,
-        };
+        const message = payload && typeof payload === "object" && !Array.isArray(payload)
+          && "message" in payload && typeof payload.message === "string"
+          ? payload.message.slice(0, 1_000)
+          : `Java tool call failed with HTTP ${response.status}`;
+        throw new Error(message);
       }
-      return result;
+      if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+        throw new Error("Java tool call returned an invalid response");
+      }
+      if (!("protocolVersion" in payload) || payload.protocolVersion !== PROTOCOL_VERSION) {
+        throw new Error("Java tool call returned an unsupported protocol version");
+      }
+      if (!("halt" in payload) || typeof payload.halt !== "boolean") {
+        throw new Error("Java tool call returned an invalid halt flag");
+      }
+      if (!("result" in payload)) throw new Error("Java tool call returned an invalid result");
+      return { result: payload.result, halt: payload.halt };
     } catch (error) {
       if (controller.signal.aborted && !signal.aborted) {
-        return {
-          ok: false,
-          status: "unavailable",
-          supported: false,
-          code: "AGENT_TOOL_TIMEOUT",
-          toolName,
-          message: "Java business tool timed out",
-        };
+        throw new Error("Java tool call timed out");
       }
-      return {
-        ok: false,
-        status: "unavailable",
-        supported: false,
-        code: "AGENT_TOOL_UNAVAILABLE",
-        toolName,
-        message: "Java business tool unavailable",
-      };
+      if (signal.aborted) throw new Error("Java tool call cancelled");
+      throw error instanceof Error ? error : new Error("Java tool call unavailable");
     } finally {
       clearTimeout(timer);
       signal.removeEventListener("abort", onAbort);
@@ -498,7 +452,7 @@ export class AgentRunner {
     request: RunRequest,
     event: AgentEvent,
     emit: (event: PublicEvent) => void,
-    state: { heldAssistantText: string; draftPublished: boolean },
+    state: { heldAssistantText: string; draftPublished: boolean; finalText: string },
     observe?: (event: PublicEvent) => void,
   ): void {
     const publish = (value: PublicEvent) => {
@@ -507,10 +461,8 @@ export class AgentRunner {
     };
     switch (event.type) {
       case "message_update": {
-        // Runtime contract: message.delta carries incremental text only. The SDK emits
-        // message_update with assistantMessageEvent partials for every assistant event;
-        // forwarding messageText(partial) replays the cumulative snapshot and the client
-        // appends it, which renders quadratic garbage. Emit only the text_delta slice.
+        // Publish only the incremental delta. Forwarding the cumulative partial
+        // snapshot makes the client append repeated text.
         if (event.assistantMessageEvent?.type === "text_delta") {
           const delta = event.assistantMessageEvent.delta;
           if (delta) {
@@ -531,15 +483,21 @@ export class AgentRunner {
         publish({ type: "tool.completed", tool: event.toolName, toolCallId: event.toolCallId, status: event.isError ? "failed" : "completed" });
         break;
       case "message_end": {
-        // Only assistant messages carry public text; forwarding tool-result/user ends
-        // echoes the caller's input back as a draft delta.
+        // Only assistant messages carry public text; forwarding tool-result/user
+        // ends echoes the caller's input back as a draft delta.
         if (event.message.role !== "assistant") break;
         const hasToolCall = event.message.content.some(block => block.type === "toolCall");
-        if (hasToolCall && state.draftPublished) {
-          // 草稿随工具调用转为过程证据，前端折叠到处理记录而不是保留正文。
-          publish({ type: "message.reclassified", to: "process", content: state.heldAssistantText });
-        } else if (!hasToolCall && state.heldAssistantText && !state.draftPublished) {
-          publish({ type: "message.delta", content: state.heldAssistantText, phase: "final" });
+        if (hasToolCall) {
+          if (state.draftPublished) {
+            // Assistant prose that precedes tool calls is process evidence.
+            publish({ type: "message.reclassified", to: "process", content: state.heldAssistantText });
+          }
+        } else {
+          const finalText = messageText(event.message);
+          if (finalText) state.finalText = finalText;
+          if (state.heldAssistantText && !state.draftPublished) {
+            publish({ type: "message.delta", content: state.heldAssistantText, phase: "final" });
+          }
         }
         state.heldAssistantText = "";
         state.draftPublished = false;

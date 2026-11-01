@@ -5,7 +5,6 @@ export interface SidecarConfig {
   host: string;
   port: number;
   bridgeToken: string;
-  supervisorToken: string;
   javaToolsUrl: string;
   javaToolsToken: string;
   modelBaseUrl: string;
@@ -44,7 +43,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SidecarConfig 
     host: env.SIDECAR_HOST?.trim() || "127.0.0.1",
     port: positive(env, "SIDECAR_PORT", 8787),
     bridgeToken: required(env, "AGENT_BRIDGE_TOKEN"),
-    supervisorToken: required(env, "SIDECAR_SUPERVISOR_TOKEN"),
     javaToolsUrl: required(env, "JAVA_AGENT_TOOLS_URL"),
     javaToolsToken: required(env, "JAVA_AGENT_TOOLS_TOKEN"),
     modelBaseUrl: required(env, "MODEL_BASE_URL"),
@@ -65,7 +63,6 @@ export function defaultConfigForTests(overrides: Partial<SidecarConfig> = {}): S
     host: "127.0.0.1",
     port: 0,
     bridgeToken: "test-bridge",
-    supervisorToken: "test-supervisor",
     javaToolsUrl: "http://127.0.0.1:9/internal/agent/tools",
     javaToolsToken: "test-java",
     modelBaseUrl: "http://127.0.0.1:9/v1",
