@@ -134,10 +134,10 @@ public interface ReadSnapshots extends AutoCloseable {
     /**
      * Blocking background composition seam. Unlike {@link #read}, a miss is loaded on
      * the calling thread, so snapshot loaders can compose inner date blocks without
-     * occupying the snapshot worker twice. It reuses the same entry, credential
-     * generation, persistence and freshness rules; ordinary HTTP reads must continue
-     * to use {@link #read}. A failed load never replaces a previously good body and is
-     * never reported as a successful fresh snapshot.
+     * occupying the snapshot worker twice. A held body returns immediately, including
+     * while due or refreshing; {@link #refreshActive} owns its background renewal.
+     * Credential generations and persistence remain shared with {@link #read}, which
+     * ordinary HTTP must continue to use. Failed renewal never replaces a good body.
      */
     Map<String, Object> load(Identity identity, String realm, Map<String, ?> fullTypedQuery,
             Policy policy, Supplier<Map<String, Object>> loader);

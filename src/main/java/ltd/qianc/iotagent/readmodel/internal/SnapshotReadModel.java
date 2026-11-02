@@ -137,6 +137,9 @@ public final class SnapshotReadModel implements ReadSnapshots {
                 }
                 if (entry.terminal != null) throw entry.terminal;
             }
+            // Composition consumes the held backend value, not the completion of a
+            // due or already-running upstream refresh. refreshActive owns that work.
+            if (entry.body != null) return new LinkedHashMap<>(entry.body);
             entry.activeLoads++;
         }
         try {
@@ -144,8 +147,7 @@ public final class SnapshotReadModel implements ReadSnapshots {
                 synchronized (this) {
                     checkCredentialState(credential);
                     if (!active(entry)) throw new BusinessException("SNAPSHOT_INVALIDATED", "数据已更新，请重新读取", 503);
-                    if (entry.body != null && entry.error == null && !entry.forcedStale
-                            && clock.instant().isBefore(entry.due)) {
+                    if (entry.body != null) {
                         return new LinkedHashMap<>(entry.body);
                     }
                 }
@@ -160,7 +162,7 @@ public final class SnapshotReadModel implements ReadSnapshots {
                         entry.updated = restored.updated();
                         entry.due = entry.policy.nextRefresh(restored.updated());
                         entry.restoring = false;
-                        if (clock.instant().isBefore(entry.due)) return new LinkedHashMap<>(entry.body);
+                        return new LinkedHashMap<>(entry.body);
                     }
                 }
                 Map<String, Object> body;

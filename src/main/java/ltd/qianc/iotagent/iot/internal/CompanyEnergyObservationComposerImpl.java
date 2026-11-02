@@ -576,8 +576,8 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
     private List<MeterRead> readDailyHistory(
             RequestIdentity identity, List<AuthorizedDevice> meters, Instant from, Instant to, Instant readTo) {
         List<EnergyHistoryStore.Reading> combined = new ArrayList<>();
-        YearMonth first = YearMonth.from(from.atZone(SHANGHAI));
-        YearMonth last = YearMonth.from(to.minusNanos(1).atZone(SHANGHAI));
+        YearMonth first = YearMonth.from(from.plusSeconds(TWELVE_HOURS_SECONDS).atZone(SHANGHAI));
+        YearMonth last = YearMonth.from(to.atZone(SHANGHAI).toLocalDate().minusDays(1));
         for (YearMonth month = first; !month.isAfter(last); month = month.plusMonths(1)) {
             Instant monthStart = month.atDay(1).atStartOfDay(SHANGHAI).toInstant();
             if (monthStart.isAfter(readTo)) break;
@@ -691,38 +691,83 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         if (totalPages > 1 && oldestSample(first).isAfter(monthEnd)) {
             int left = 1, right = totalPages;
             while (left < right) {
-                int middle = left + (right - left) / 2;
-                StreamPage probe = monthPage(identity, middle, pages, deadlineAt);
-                if (probe.samples().isEmpty() || !oldestSample(probe).isAfter(monthEnd)) right = middle;
-                else left = middle + 1;
+                int distance = right - left;
+                int probes = Math.min(4, distance);
+                List<Integer> indices = new ArrayList<>(probes);
+                for (int index = 0; index < probes; index++) {
+                    indices.add(distance <= 4 ? left + index
+                            : left + (index + 1) * distance / (probes + 1));
+                }
+                monthPages(identity, indices, pages, deadlineAt);
+                int previous = left - 1;
+                boolean found = false;
+                for (int index : indices) {
+                    StreamPage probe = pages.get(index);
+                    if (probe.samples().isEmpty() || !oldestSample(probe).isAfter(monthEnd)) {
+                        left = previous + 1;
+                        right = index;
+                        found = true;
+                        break;
+                    }
+                    previous = index;
+                }
+                if (!found) left = previous + 1;
             }
             startPage = left;
             if (startPage == totalPages) return List.of();
         }
         List<List<Map<String, Object>>> chunks = new ArrayList<>();
-        for (int page = startPage; ; page++) {
-            StreamPage current = monthPage(identity, page, pages, deadlineAt);
-            chunks.add(current.samples());
-            if (current.last() || current.samples().isEmpty()
-                    || oldestSample(current).isBefore(monthStart)) break;
+        StreamPage seed = monthPage(identity, startPage, pages, deadlineAt);
+        chunks.add(seed.samples());
+        if (seed.last() || seed.samples().isEmpty()) return readings(chunks);
+        // A timestamp group can straddle two pages. Include the following page when
+        // the first page already crosses the month boundary, rather than re-reading
+        // that missing boundary separately for every meter.
+        boolean crossed = oldestSample(seed).isBefore(monthStart);
+        for (int page = startPage + 1; ; ) {
+            int count = crossed ? 1 : STREAM_PAGE_CONCURRENCY;
+            if (totalPages >= 0) count = Math.min(count, totalPages - page);
+            if (count <= 0) return readings(chunks);
+            count = Math.min(count, Math.max(1, maxPages - pages.size()));
+            List<Integer> indices = new ArrayList<>(count);
+            for (int index = 0; index < count; index++) indices.add(page + index);
+            monthPages(identity, indices, pages, deadlineAt);
+            boolean ended = crossed;
+            for (int index : indices) {
+                StreamPage current = pages.get(index);
+                chunks.add(current.samples());
+                ended |= current.last() || current.samples().isEmpty()
+                        || oldestSample(current).isBefore(monthStart);
+            }
+            if (ended) return readings(chunks);
+            page += count;
         }
-        return readings(chunks);
     }
 
     private StreamPage monthPage(RequestIdentity identity, int page,
             Map<Integer, StreamPage> pages, long deadlineAt) {
-        StreamPage cached = pages.get(page);
-        if (cached != null) return cached;
-        if (pages.size() >= maxPages || System.currentTimeMillis() >= deadlineAt) {
+        monthPages(identity, List.of(page), pages, deadlineAt);
+        return pages.get(page);
+    }
+
+    private void monthPages(RequestIdentity identity, List<Integer> indices,
+            Map<Integer, StreamPage> pages, long deadlineAt) {
+        List<Integer> missing = indices.stream().filter(index -> !pages.containsKey(index)).toList();
+        if (missing.isEmpty()) return;
+        if (pages.size() + missing.size() > maxPages || System.currentTimeMillis() >= deadlineAt) {
             throw new ObservationUnavailableException("计量历史月块读取达到预算");
         }
-        StreamPage loaded = fetchStreamPage(identity, null, null, page).block();
-        if (loaded == null || loaded.partial()) {
-            throw new ObservationUnavailableException("计量历史月块读取未完成");
+        List<Map.Entry<Integer, StreamPage>> loaded = Flux.fromIterable(missing)
+                .flatMapSequential(index -> fetchStreamPage(identity, null, null, index)
+                        .map(page -> Map.entry(index, page)), STREAM_PAGE_CONCURRENCY)
+                .collectList().block();
+        if (loaded == null) throw new ObservationUnavailableException("计量历史月块读取未完成");
+        for (Map.Entry<Integer, StreamPage> entry : loaded) {
+            if (entry.getValue().partial()) {
+                throw new ObservationUnavailableException("计量历史月块读取未完成");
+            }
+            pages.put(entry.getKey(), entry.getValue());
         }
-        pages.put(page, loaded);
-        // The adapter normalizes rows into ascending order; compare page envelopes,
-        // not array positions, to detect an inconsistent global descending stream.
         StreamPage previous = null;
         for (StreamPage current : pages.values()) {
             if (previous != null && !previous.samples().isEmpty() && !current.samples().isEmpty()
@@ -731,7 +776,6 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
             }
             previous = current;
         }
-        return loaded;
     }
 
     private static Instant oldestSample(StreamPage page) {
