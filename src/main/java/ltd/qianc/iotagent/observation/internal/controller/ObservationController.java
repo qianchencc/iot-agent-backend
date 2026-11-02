@@ -255,7 +255,9 @@ public final class ObservationController {
                 && operation != ObservationOperation.REPORT && operation != ObservationOperation.REPORT_DOWNLOAD) {
             ReadSnapshots.Identity scope = new ReadSnapshots.Identity(identity.tenantCode(), identity.authorization(),
                     identity.source().name(), identity.ownerKey());
-            return ResponseEntity.ok(snapshots.read(scope, operation.name(), query,
+            String realm = operation == ObservationOperation.COMPANY_ENERGY_DAILY
+                    ? "COMPANY_ENERGY_DAILY:v3" : operation.name();
+            return ResponseEntity.ok(snapshots.read(scope, realm, query,
                     ReadSnapshots.Policy.forQuery(query, java.time.Clock.systemUTC()), () -> snapshotBody(captured)));
         }
         ObservationResponse result = readAdapter(captured);

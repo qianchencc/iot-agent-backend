@@ -14,6 +14,7 @@ import ltd.qianc.iotagent.iot.ObservationOperation;
 import ltd.qianc.iotagent.iot.CompanyEnergyObservationComposer;
 import ltd.qianc.iotagent.iot.CompanyEnergyObservationComposerFactory;
 import ltd.qianc.iotagent.iot.CompanyEnergyPolicy;
+import ltd.qianc.iotagent.readmodel.ReadSnapshots;
 import ltd.qianc.iotagent.region.RegionSeenStore;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
@@ -43,6 +44,7 @@ public class ObservationAdapterConfiguration {
             ObjectProvider<AutomationSummaryReader> automation,
             ObjectProvider<RegionSeenStore> regionSeen,
             ObjectProvider<CompanyEnergyPolicy> energyPolicy,
+            ObjectProvider<ReadSnapshots> readSnapshots,
             @Value("${iot.gateway.call-timeout-ms:15000}") long timeoutMs,
             @Value("${iot.gateway.base-url:}") String baseUrl) {
         ObservationAdapter delegate;
@@ -101,8 +103,8 @@ public class ObservationAdapterConfiguration {
         Clock clock = Clock.systemUTC();
         CompanyEnergyPolicy configuredPolicy = energyPolicy.getIfAvailable();
         CompanyEnergyObservationComposer energyComposer = configuredPolicy == null
-                ? CompanyEnergyObservationComposerFactory.composed(delegate, iot, clock)
-                : CompanyEnergyObservationComposerFactory.composed(delegate, iot, clock, configuredPolicy);
+                ? CompanyEnergyObservationComposerFactory.composed(delegate, iot, clock, readSnapshots.getIfAvailable())
+                : CompanyEnergyObservationComposerFactory.composed(delegate, iot, clock, configuredPolicy, readSnapshots.getIfAvailable());
         return ObservationAdapterFactory.composed(
                 delegate, iot, automationReader, regionSeen.getIfAvailable(), energyComposer, clock);
     }

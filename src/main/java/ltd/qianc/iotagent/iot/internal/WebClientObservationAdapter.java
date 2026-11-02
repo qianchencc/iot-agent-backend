@@ -300,6 +300,8 @@ public final class WebClientObservationAdapter implements ObservationAdapter {
                 field("epz", "正向有功累计示数（epz）"), field("totalElectric", "平台总电量示数（totalElectric）")));
         out.put("multiplier", null);
         out.put("samples", samples);
+        out.put("totalElements", content.path("totalElements").isIntegralNumber()
+                ? content.path("totalElements").asLong() : null);
         out.put("coverage", Map.of("complete", complete, "returned", samples.size()));
         out.put("nextPage", last ? null : nextPage(p));
         Map<String, Object> latest = samples.isEmpty() ? null : samples.get(samples.size() - 1);

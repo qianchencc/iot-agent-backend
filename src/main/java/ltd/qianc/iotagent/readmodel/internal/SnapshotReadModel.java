@@ -88,7 +88,7 @@ public final class SnapshotReadModel implements ReadSnapshots {
                     if (entry.updated != null && entry.error == null && !entry.forcedStale) entry.due = policy.nextRefresh(entry.updated);
                 }
                 if (entry.terminal != null) throw entry.terminal;
-                if (!entry.busy && !now.isBefore(entry.due)) {
+                if (!entry.busy && entry.activeLoads == 0 && !now.isBefore(entry.due)) {
                     entry.busy = true;
                     load = true;
                 }
@@ -101,6 +101,125 @@ public final class SnapshotReadModel implements ReadSnapshots {
             if (entry.terminal != null) throw entry.terminal;
             if (!active(entry)) return unavailable("SNAPSHOT_INVALIDATED", "数据已更新，请重新读取");
             return view(entry);
+        }
+    }
+
+    @Override
+    public Map<String, Object> load(Identity identity, String realm, Map<String, ?> query,
+            Policy policy, Supplier<Map<String, Object>> loader) {
+        java.util.Objects.requireNonNull(identity, "identity");
+        java.util.Objects.requireNonNull(policy, "policy");
+        java.util.Objects.requireNonNull(loader, "loader");
+        String credential = credential(identity);
+        String key = key(identity, realm, query);
+        Entry entry;
+        synchronized (this) {
+            Instant now = clock.instant();
+            expire(now);
+            checkCredentialState(credential);
+            if (revocationSaturated) throw new BusinessException("SNAPSHOT_CAPACITY", "数据同步繁忙，请稍后重试", 503);
+            if (closed) throw new BusinessException("SNAPSHOT_STOPPED", "数据同步暂不可用", 503);
+            entry = entries.get(key);
+            if (entry == null) {
+                if (entries.size() >= settings.maximumEntries()) {
+                    throw new BusinessException("SNAPSHOT_CAPACITY", "数据同步繁忙，请稍后重试", 503);
+                }
+                entry = new Entry(key, credential, identity.tenantCode(), policy, loader, now);
+                entries.put(key, entry);
+            } else {
+                entry.lastAccess = now;
+                entry.loader = loader;
+                if (entry.policy != policy) {
+                    entry.policy = policy;
+                    if (entry.updated != null && entry.error == null && !entry.forcedStale) {
+                        entry.due = policy.nextRefresh(entry.updated);
+                    }
+                }
+                if (entry.terminal != null) throw entry.terminal;
+            }
+            entry.activeLoads++;
+        }
+        try {
+            synchronized (entry.loadLock) {
+                synchronized (this) {
+                    checkCredentialState(credential);
+                    if (!active(entry)) throw new BusinessException("SNAPSHOT_INVALIDATED", "数据已更新，请重新读取", 503);
+                    if (entry.body != null && entry.error == null && !entry.forcedStale
+                            && clock.instant().isBefore(entry.due)) {
+                        return new LinkedHashMap<>(entry.body);
+                    }
+                }
+                Restored restored = null;
+                if (store != null && barrier != null && recoveryEpoch != null && !restoreBlocked(credential)) {
+                    restored = restoreBlocking(entry);
+                }
+                if (restored != null) {
+                    synchronized (this) {
+                        if (!active(entry)) throw new BusinessException("SNAPSHOT_INVALIDATED", "数据已更新，请重新读取", 503);
+                        entry.body = restored.body();
+                        entry.updated = restored.updated();
+                        entry.due = entry.policy.nextRefresh(restored.updated());
+                        entry.restoring = false;
+                        if (clock.instant().isBefore(entry.due)) return new LinkedHashMap<>(entry.body);
+                    }
+                }
+                Map<String, Object> body;
+                try {
+                    body = cleanMap(java.util.Objects.requireNonNull(loader.get(), "Snapshot body"));
+                } catch (RuntimeException failure) {
+                    failed(entry, failure);
+                    throw failure;
+                }
+                Instant updated = clock.instant();
+                synchronized (this) {
+                    if (!active(entry)) throw new BusinessException("SNAPSHOT_INVALIDATED", "数据已更新，请重新读取", 503);
+                    entry.body = body;
+                    entry.updated = updated;
+                    entry.due = entry.policy.nextRefresh(updated);
+                    entry.error = null;
+                    entry.forcedStale = false;
+                    entry.busy = false;
+                    entry.restoring = false;
+                }
+                persist(entry, body, updated);
+                return new LinkedHashMap<>(body);
+            }
+        } finally {
+            synchronized (this) {
+                if (entry.activeLoads > 0) entry.activeLoads--;
+            }
+        }
+    }
+
+    private Restored restoreBlocking(Entry entry) {
+        java.util.concurrent.FutureTask<Restored> task = new java.util.concurrent.FutureTask<>(() -> {
+            Marker marker = readMarker(entry.credential, entry.tenantCode);
+            if (marker == null) return null;
+            checkDenial(marker);
+            String encoded = store.get(entry.key).orElse(null);
+            if (encoded == null) return null;
+            Map<String, Object> record = mapper.readValue(encoded, MAP);
+            Instant updated = Instant.parse((String) record.get("updatedAt"));
+            if (recoveryEpoch.equals(record.get("epoch")) && marker.generation.equals(record.get("generation"))
+                    && updated.plus(settings.retention()).isAfter(clock.instant())
+                    && !updated.isAfter(clock.instant())
+                    && record.get("body") instanceof Map<?, ?> body) {
+                return new Restored(cleanMap(body), updated);
+            }
+            return null;
+        });
+        try {
+            storageExecutor.execute(task);
+            return task.get(2, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (java.util.concurrent.ExecutionException failure) {
+            Throwable cause = failure.getCause();
+            if (cause instanceof BusinessException business) throw business;
+            return null;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return null;
+        } catch (java.util.concurrent.TimeoutException | RejectedExecutionException unavailable) {
+            return null;
         }
     }
 
@@ -159,22 +278,41 @@ public final class SnapshotReadModel implements ReadSnapshots {
     private void submit(Entry entry) {
         try {
             upstreamExecutor.execute(() -> {
-                Supplier<Map<String, Object>> loader;
-                synchronized (this) { if (!active(entry)) return; loader = entry.loader; }
-                try {
-                    Map<String, Object> result = cleanMap(java.util.Objects.requireNonNull(loader.get(), "Snapshot body"));
-                    Instant updated = clock.instant();
+                synchronized (this) {
+                    if (!active(entry)) return;
+                    if (entry.activeLoads > 0) {
+                        // An inline background load already owns this entry; it publishes once.
+                        entry.busy = false;
+                        return;
+                    }
+                }
+                synchronized (entry.loadLock) {
+                    Supplier<Map<String, Object>> loader;
                     synchronized (this) {
                         if (!active(entry)) return;
-                        entry.body = result;
-                        entry.updated = updated;
-                        entry.due = entry.policy.nextRefresh(updated);
-                        entry.error = null;
-                        entry.forcedStale = false;
-                        entry.busy = false;
+                        if (entry.activeLoads > 0) { entry.busy = false; return; }
+                        if (entry.body != null && entry.error == null && !entry.forcedStale
+                                && clock.instant().isBefore(entry.due)) {
+                            entry.busy = false;
+                            return;
+                        }
+                        loader = entry.loader;
                     }
-                    persist(entry, result, updated);
-                } catch (RuntimeException failure) { failed(entry, failure); }
+                    try {
+                        Map<String, Object> result = cleanMap(java.util.Objects.requireNonNull(loader.get(), "Snapshot body"));
+                        Instant updated = clock.instant();
+                        synchronized (this) {
+                            if (!active(entry)) return;
+                            entry.body = result;
+                            entry.updated = updated;
+                            entry.due = entry.policy.nextRefresh(updated);
+                            entry.error = null;
+                            entry.forcedStale = false;
+                            entry.busy = false;
+                        }
+                        persist(entry, result, updated);
+                    } catch (RuntimeException failure) { failed(entry, failure); }
+                }
             });
         } catch (RejectedExecutionException rejected) { failed(entry, rejected); }
     }
@@ -600,7 +738,7 @@ public final class SnapshotReadModel implements ReadSnapshots {
                 if (entry.restoring && !now.isBefore(entry.restoreUntil)) {
                     entry.restoring = false;
                     jobs.add(entry);
-                } else if (!entry.busy && entry.terminal == null && !now.isBefore(entry.due)) {
+                } else if (!entry.busy && entry.activeLoads == 0 && entry.terminal == null && !now.isBefore(entry.due)) {
                     entry.busy = true;
                     jobs.add(entry);
                 }
@@ -734,12 +872,15 @@ public final class SnapshotReadModel implements ReadSnapshots {
         boolean restoring;
         Instant restoreUntil;
         boolean valid = true;
+        int activeLoads;
+        final Object loadLock = new Object();
         Entry(String key, String credential, String tenantCode, Policy policy,
                 Supplier<Map<String, Object>> loader, Instant now) {
             this.key = key; this.credential = credential; this.tenantCode = tenantCode;
             this.policy = policy; this.loader = loader; this.lastAccess = now;
         }
     }
+    private record Restored(Map<String, Object> body, Instant updated) { }
     private record Revocation(BusinessException failure, Instant until) { }
     private static final class Marker {
         final String credential;

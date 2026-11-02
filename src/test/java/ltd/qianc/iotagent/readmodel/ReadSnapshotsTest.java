@@ -46,6 +46,51 @@ class ReadSnapshotsTest {
         assertTrue(held.containsKey("devices"));
     }
 
+    @Test void backgroundLoadRunsInlineWithoutQueueingASecondSnapshotTask() {
+        ReadSnapshots snapshots = snapshots(null);
+        AtomicInteger calls = new AtomicInteger();
+        Supplier<Map<String, Object>> loader = () -> Map.of("readings", calls.incrementAndGet());
+        Map<String, Object> loaded = snapshots.load(COMPANY, "history", Map.of("month", "2026-10"),
+                ReadSnapshots.Policy.HISTORICAL, loader);
+        assertEquals(1, loaded.get("readings"));
+        assertEquals(1, calls.get());
+        assertEquals(0, upstream.size());
+        Map<String, Object> held = snapshots.load(COMPANY, "history", Map.of("month", "2026-10"),
+                ReadSnapshots.Policy.HISTORICAL, loader);
+        assertEquals(1, held.get("readings"));
+        assertEquals(1, calls.get());
+        assertEquals(0, upstream.size());
+    }
+
+    @Test void refreshActiveDoesNotDuplicateAnInlineBackgroundLoad() throws Exception {
+        ReadSnapshots snapshots = snapshots(null);
+        AtomicInteger calls = new AtomicInteger();
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        Thread loader = new Thread(() -> snapshots.load(COMPANY, "history", Map.of("month", "2026-10"),
+                ReadSnapshots.Policy.CURRENT, () -> {
+                    calls.incrementAndGet();
+                    entered.countDown();
+                    try {
+                        if (!release.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("test release missing");
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException(interrupted);
+                    }
+                    return Map.of("value", 1);
+                }));
+        loader.start();
+        assertTrue(entered.await(1, TimeUnit.SECONDS));
+        snapshots.refreshActive();
+        assertEquals(0, upstream.size());
+        release.countDown();
+        loader.join(2000);
+        assertEquals(1, calls.get());
+        snapshots.refreshActive();
+        assertEquals(0, upstream.size());
+        assertEquals(1, calls.get());
+    }
+
     @Test void heldReadReturnsWhileUpstreamIsSuspendedWithoutHoldingTheStateMonitor() throws Exception {
         ReadSnapshots snapshots = snapshots(null);
         read(snapshots, () -> Map.of("value", 1));

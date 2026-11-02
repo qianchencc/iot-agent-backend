@@ -3,13 +3,20 @@ package ltd.qianc.iotagent.iot;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
+import java.util.HashMap;
+import java.util.function.Supplier;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
+import ltd.qianc.iotagent.readmodel.ReadSnapshots;
 import reactor.core.publisher.Mono;
 
 /** Public package-root contract tests for the local Company energy seam. */
@@ -23,7 +30,11 @@ class CompanyEnergyObservationComposerContractTest {
     @Test
     void dailyAggregatesShanghaiEightHourBucketsWithoutZeroFilling() {
         CompanyEnergyObservationComposer composer = composer((request, pageNumber) -> Mono.just(ObservationResponse.available(
-                pageNumber == 0 ? page(List.of(row("1", "2026-10-02 08:00:00", 100), row("2", "2026-10-03 08:00:00", 125)), true) : empty())));
+                pageNumber == 0 ? page(List.of(
+                        row("previous", "2026-10-02 08:00:00", 0),
+                        row("start", "2026-10-03 08:00:00", 100),
+                        row("evening", "2026-10-03 20:00:00", 110),
+                        row("end", "2026-10-04 08:00:00", 125)), true) : empty())));
 
         Map<String, Object> payload = composer.read(new ObservationRequest(COMPANY,
                 ObservationOperation.COMPANY_ENERGY_DAILY, Map.of("days", "1", "end", "2026-10-03"))).block().payload();
@@ -203,8 +214,8 @@ class CompanyEnergyObservationComposerContractTest {
                         row("recent-" + pageNumber, "2026-10-08 08:00:00", 200)), false)));
             }
             return Mono.just(ObservationResponse.available(page(List.of(
-                    row("start", "2026-10-02 08:00:00", 100),
-                    row("end", "2026-10-03 08:00:00", 125)), true)));
+                    row("start", "2026-10-03 08:00:00", 100),
+                    row("end", "2026-10-04 08:00:00", 125)), true)));
         });
 
         Map<String, Object> payload = composer.read(new ObservationRequest(COMPANY,
@@ -239,10 +250,10 @@ class CompanyEnergyObservationComposerContractTest {
                         .header("Content-Type", "application/json")
                         .body(request.url().getQuery().contains("page=0") ? """
                                 {"code":200,"content":{"last":false,"content":[
-                                  {"id":"a1","equipmentId":"meter-1","readTime":"2026-10-02 08:00:00","epf":100},
-                                  {"id":"a2","equipmentId":"meter-1","readTime":"2026-10-03 08:00:00","epf":125},
-                                  {"id":"b1","equipmentId":"meter-2","readTime":"2026-10-02 08:00:00","epf":200},
-                                  {"id":"b2","equipmentId":"meter-2","readTime":"2026-10-03 08:00:00","epf":240}
+                                  {"id":"a1","equipmentId":"meter-1","readTime":"2026-10-03 08:00:00","epf":100},
+                                  {"id":"a2","equipmentId":"meter-1","readTime":"2026-10-04 08:00:00","epf":125},
+                                  {"id":"b1","equipmentId":"meter-2","readTime":"2026-10-03 08:00:00","epf":200},
+                                  {"id":"b2","equipmentId":"meter-2","readTime":"2026-10-04 08:00:00","epf":240}
                                 ]}}
                                 """ : "{\"code\":200,\"content\":{\"last\":true,\"content\":[]}}")
                         .build());
@@ -326,6 +337,439 @@ class CompanyEnergyObservationComposerContractTest {
         assertThat(((Map<?, ?>) ((List<?>) meter.get("periods")).get(1)).get("usage")).isEqualTo(30.0d);
     }
 
+    @Test
+    void coveredHistoricalSubwindowReusesHeldDaysWithoutUpstreamRead() {
+        java.util.concurrent.atomic.AtomicBoolean fail = new java.util.concurrent.atomic.AtomicBoolean();
+        AtomicInteger calls = new AtomicInteger();
+        ObservationAdapter raw = request -> {
+            calls.incrementAndGet();
+            if (fail.get()) {
+                return Mono.error(new ObservationUnavailableException("已覆盖历史不应重新读取"));
+            }
+            return Mono.just(ObservationResponse.available(page(historicalRows(request), true)));
+        };
+        CompanyEnergyObservationComposer composer = CompanyEnergyObservationComposerFactory.composed(
+                raw, iot(COMPANY, List.of(METER)), CLOCK);
+
+        Map<String, Object> first = composer.read(new ObservationRequest(COMPANY,
+                ObservationOperation.COMPANY_ENERGY_DAILY,
+                Map.of("days", "90", "end", "2026-10-03"))).block().payload();
+        assertThat(first.get("truncated")).isEqualTo(false);
+        int heldCalls = calls.get();
+        fail.set(true);
+
+        Map<String, Object> second = composer.read(new ObservationRequest(COMPANY,
+                ObservationOperation.COMPANY_ENERGY_DAILY,
+                Map.of("days", "30", "end", "2026-10-03"))).block().payload();
+
+        assertThat(calls.get()).isEqualTo(heldCalls);
+        List<?> days = (List<?>) second.get("days");
+        assertThat(days).hasSize(30).allSatisfy(value -> {
+            Map<?, ?> day = (Map<?, ?>) value;
+            assertThat(day.get("complete")).isEqualTo(true);
+            assertThat(day.get("usage")).isEqualTo(10.0d);
+        });
+    }
+
+    @Test
+    void adjacentOlderHistoricalWindowFetchesOnlyTheMissingBoundary() {
+        List<Map<String, String>> requests = new java.util.ArrayList<>();
+        ObservationAdapter raw = request -> {
+            requests.add(Map.copyOf(request.parameters()));
+            return Mono.just(ObservationResponse.available(page(historicalRows(request), true)));
+        };
+        CompanyEnergyObservationComposer composer = CompanyEnergyObservationComposerFactory.composed(
+                raw, iot(COMPANY, List.of(METER)), CLOCK);
+
+        Map<String, Object> first = composer.read(new ObservationRequest(COMPANY,
+                ObservationOperation.COMPANY_ENERGY_DAILY,
+                Map.of("days", "90", "end", "2026-10-03"))).block().payload();
+        String firstWindowFrom = String.valueOf(((Map<?, ?>) first.get("window")).get("from"));
+        int firstCount = requests.size();
+
+        Map<String, Object> second = composer.read(new ObservationRequest(COMPANY,
+                ObservationOperation.COMPANY_ENERGY_DAILY,
+                Map.of("days", "90", "end", "2026-10-02"))).block().payload();
+
+        List<Map<String, String>> incremental = requests.subList(firstCount, requests.size());
+        assertThat(incremental).isNotEmpty().allSatisfy(request -> {
+            assertThat(request.get("from")).as("incremental history must be date-bounded").isNotNull();
+            assertThat(Instant.parse(request.get("from")))
+                    .isBefore(Instant.parse(firstWindowFrom));
+        });
+        List<?> days = (List<?>) second.get("days");
+        assertThat(days).hasSize(90).allSatisfy(value -> {
+            Map<?, ?> day = (Map<?, ?>) value;
+            assertThat(day.get("complete")).isEqualTo(true);
+            assertThat(day.get("usage")).isEqualTo(10.0d);
+        });
+    }
+
+    @Test
+    void snapshotBackedDailyReusesPersistedMonthBlocksForCoveredHistory() {
+        java.util.concurrent.atomic.AtomicBoolean fail = new java.util.concurrent.atomic.AtomicBoolean();
+        AtomicInteger calls = new AtomicInteger();
+        ObservationAdapter raw = request -> {
+            calls.incrementAndGet();
+            if (fail.get()) {
+                return Mono.error(new ObservationUnavailableException("已持久化月块不应重新读取"));
+            }
+            return Mono.just(ObservationResponse.available(page(historicalRows(request), true)));
+        };
+        InMemoryBlocks blocks = new InMemoryBlocks();
+        CompanyEnergyObservationComposer composer = CompanyEnergyObservationComposerFactory.composed(
+                raw, iot(COMPANY, List.of(METER)), CLOCK, blocks);
+
+        Map<String, Object> first = composer.read(new ObservationRequest(COMPANY,
+                ObservationOperation.COMPANY_ENERGY_DAILY,
+                Map.of("days", "90", "end", "2026-10-03"))).block().payload();
+        assertThat(first.get("truncated")).isEqualTo(false);
+        int heldCalls = calls.get();
+        fail.set(true);
+
+        Map<String, Object> second = composer.read(new ObservationRequest(COMPANY,
+                ObservationOperation.COMPANY_ENERGY_DAILY,
+                Map.of("days", "30", "end", "2026-10-03"))).block().payload();
+        assertThat(calls.get()).isEqualTo(heldCalls);
+        assertThat((List<?>) second.get("days")).hasSize(30).allSatisfy(value -> {
+            Map<?, ?> day = (Map<?, ?>) value;
+            assertThat(day.get("complete")).isEqualTo(true);
+            assertThat(day.get("usage")).isEqualTo(10.0d);
+        });
+    }
+
+    @Test
+    void sparseBoundarySampleBeforeMonthStartKeepsDailyUsage() {
+        ObservationAdapter raw = request -> Mono.just(ObservationResponse.available(
+                page(filteredRows(request, List.of(
+                        row("sparse-1", "2026-09-28 08:00:00", 0),
+                        row("sparse-2", "2026-10-01 08:00:00", 40),
+                        row("sparse-3", "2026-10-02 08:00:00", 50))), true)));
+        CompanyEnergyObservationComposer composer = CompanyEnergyObservationComposerFactory.composed(
+                raw, iot(COMPANY, List.of(METER)), CLOCK, snapshots(CLOCK));
+
+        Map<String, Object> payload = composer.read(new ObservationRequest(COMPANY,
+                ObservationOperation.COMPANY_ENERGY_DAILY,
+                Map.of("days", "2", "end", "2026-10-01"))).block().payload();
+
+        List<?> days = (List<?>) payload.get("days");
+        assertThat(((Map<?, ?>) days.get(0)).get("usage")).isEqualTo(40.0d);
+        assertThat(((Map<?, ?>) days.get(1)).get("usage")).isEqualTo(10.0d);
+        assertThat(days).allSatisfy(value -> assertThat(((Map<?, ?>) value).get("complete")).isEqualTo(true));
+    }
+
+    @Test
+    void currentMonthLoaderRecomputesCutoffForNewReadings() {
+        MutableClock clock = new MutableClock(Instant.parse("2026-10-08T02:00:00Z"), ZoneOffset.UTC);
+        ObservationAdapter raw = request -> {
+            List<Map<String, Object>> rows = new java.util.ArrayList<>();
+            rows.add(row("current-1", "2026-10-07 08:00:00", 100));
+            rows.add(row("current-2", "2026-10-08 08:00:00", 110));
+            if (!clock.instant().isBefore(Instant.parse("2026-10-08T03:00:00Z"))) {
+                rows.add(row("current-3", "2026-10-08 11:00:00", 130));
+            }
+            return Mono.just(ObservationResponse.available(page(filteredRows(request, rows), true)));
+        };
+        CompanyEnergyObservationComposer composer = CompanyEnergyObservationComposerFactory.composed(
+                raw, iot(COMPANY, List.of(METER)), clock, snapshots(clock));
+
+        Map<String, Object> first = composer.read(new ObservationRequest(COMPANY,
+                ObservationOperation.COMPANY_ENERGY_DAILY,
+                Map.of("days", "1", "end", "2026-10-07"))).block().payload();
+        assertThat(java.time.OffsetDateTime.parse((String) first.get("latestSampleTime")).toInstant())
+                .isEqualTo(Instant.parse("2026-10-08T00:00:00Z"));
+
+        clock.advance(Duration.ofHours(2));
+        Map<String, Object> second = composer.read(new ObservationRequest(COMPANY,
+                ObservationOperation.COMPANY_ENERGY_DAILY,
+                Map.of("days", "1", "end", "2026-10-07"))).block().payload();
+        assertThat(java.time.OffsetDateTime.parse((String) second.get("latestSampleTime")).toInstant())
+                .isEqualTo(Instant.parse("2026-10-08T03:00:00Z"));
+    }
+
+    @Test
+    void failedAnchorIsNotCachedAndRetriesAfterRecovery() {
+        java.util.concurrent.atomic.AtomicBoolean failAnchor = new java.util.concurrent.atomic.AtomicBoolean(true);
+        AtomicInteger calls = new AtomicInteger();
+        List<Map<String, Object>> monthly = List.of(
+                row("sep-10", "2026-09-10 08:00:00", 100),
+                row("oct-01", "2026-10-01 08:00:00", 200),
+                row("oct-02", "2026-10-02 08:00:00", 210));
+        ObservationAdapter raw = request -> {
+            calls.incrementAndGet();
+            Map<String, String> parameters = request.parameters();
+            if (parameters.get("equipmentId") != null) {
+                if (failAnchor.get()) {
+                    return Mono.error(new ObservationUnavailableException("边界锚点暂不可用"));
+                }
+                return Mono.just(ObservationResponse.available(page(
+                        List.of(row("anchor", "2026-08-31 08:00:00", 0)), true)));
+            }
+            return Mono.just(ObservationResponse.available(page(filteredRows(request, monthly), true)));
+        };
+        CompanyEnergyObservationComposer composer = CompanyEnergyObservationComposerFactory.composed(
+                raw, iot(COMPANY, List.of(METER)), CLOCK, snapshots(CLOCK));
+        ObservationRequest request = new ObservationRequest(COMPANY,
+                ObservationOperation.COMPANY_ENERGY_DAILY,
+                Map.of("days", "30", "end", "2026-10-03"));
+
+        assertThatThrownBy(() -> composer.read(request).block())
+                .isInstanceOf(ObservationUnavailableException.class);
+        int failedCalls = calls.get();
+
+        failAnchor.set(false);
+        Map<String, Object> payload = composer.read(request).block().payload();
+
+        assertThat(calls.get()).isGreaterThan(failedCalls);
+        assertThat(payload.get("truncated")).isEqualTo(false);
+        Map<?, ?> day = ((List<?>) payload.get("days")).stream()
+                .map(value -> (Map<?, ?>) value)
+                .filter(value -> "2026-10-01".equals(value.get("date")))
+                .findFirst().orElseThrow();
+        assertThat(day.get("usage")).isEqualTo(10.0d);
+        assertThat(day.get("complete")).isEqualTo(true);
+    }
+
+    @Test
+    void shiftedHistoricalWindowsReuseCachedMonthAnchorsWithoutFurtherUpstream() {
+        java.util.concurrent.atomic.AtomicBoolean reject = new java.util.concurrent.atomic.AtomicBoolean();
+        AtomicInteger calls = new AtomicInteger();
+        List<Map<String, Object>> monthly = List.of(
+                row("sep-10", "2026-09-10 08:00:00", 100),
+                row("oct-01", "2026-10-01 08:00:00", 200),
+                row("oct-02", "2026-10-02 08:00:00", 210));
+        ObservationAdapter raw = request -> {
+            calls.incrementAndGet();
+            if (reject.get()) {
+                return Mono.error(new ObservationUnavailableException("已缓存月块不应再次读取"));
+            }
+            Map<String, String> parameters = request.parameters();
+            if (parameters.get("equipmentId") != null) {
+                return Mono.just(ObservationResponse.available(page(
+                        List.of(row("anchor", "2026-08-31 08:00:00", 0)), true)));
+            }
+            return Mono.just(ObservationResponse.available(page(filteredRows(request, monthly), true)));
+        };
+        InMemoryBlocks blocks = new InMemoryBlocks();
+        CompanyEnergyObservationComposer composer = CompanyEnergyObservationComposerFactory.composed(
+                raw, iot(COMPANY, List.of(METER)), CLOCK, blocks);
+
+        Map<String, Object> first = composer.read(new ObservationRequest(COMPANY,
+                ObservationOperation.COMPANY_ENERGY_DAILY,
+                Map.of("days", "30", "end", "2026-10-03"))).block().payload();
+        assertThat(first.get("truncated")).isEqualTo(false);
+        int held = calls.get();
+        reject.set(true);
+
+        Map<String, Object> contained = composer.read(new ObservationRequest(COMPANY,
+                ObservationOperation.COMPANY_ENERGY_DAILY,
+                Map.of("days", "29", "end", "2026-10-02"))).block().payload();
+        Map<String, Object> shifted = composer.read(new ObservationRequest(COMPANY,
+                ObservationOperation.COMPANY_ENERGY_DAILY,
+                Map.of("days", "30", "end", "2026-10-02"))).block().payload();
+
+        assertThat(calls.get()).isEqualTo(held);
+        assertThat(contained.get("truncated")).isEqualTo(false);
+        assertThat(shifted.get("truncated")).isEqualTo(false);
+        assertThat((List<?>) contained.get("days")).hasSize(29);
+        assertThat((List<?>) shifted.get("days")).hasSize(30);
+    }
+
+    @Test
+    void historicalWindowKeepsCurrentMonthLatestReadings() {
+        ObservationAdapter raw = request -> Mono.just(ObservationResponse.available(
+                page(filteredRows(request, List.of(
+                        row("sep-29", "2026-09-29 08:00:00", 100),
+                        row("sep-30", "2026-09-30 08:00:00", 110),
+                        row("oct-01", "2026-10-01 08:00:00", 120),
+                        row("oct-07", "2026-10-07 08:00:00", 180))), true)));
+        CompanyEnergyObservationComposer composer = CompanyEnergyObservationComposerFactory.composed(
+                raw, iot(COMPANY, List.of(METER)), CLOCK, snapshots(CLOCK));
+
+        Map<String, Object> payload = composer.read(new ObservationRequest(COMPANY,
+                ObservationOperation.COMPANY_ENERGY_DAILY,
+                Map.of("days", "1", "end", "2026-09-30"))).block().payload();
+
+        assertThat(java.time.OffsetDateTime.parse((String) payload.get("latestSampleTime")).toInstant())
+                .isEqualTo(Instant.parse("2026-10-07T00:00:00Z"));
+        Map<?, ?> meter = (Map<?, ?>) ((List<?>) payload.get("meters")).get(0);
+        assertThat(java.time.OffsetDateTime.parse((String) meter.get("latest")).toInstant())
+                .isEqualTo(Instant.parse("2026-10-07T00:00:00Z"));
+        Map<?, ?> currentDay = (Map<?, ?>) ((Map<?, ?>) payload.get("comparison")).get("currentDay");
+        assertThat(currentDay).isNotNull();
+        assertThat(currentDay.get("date")).isEqualTo("2026-09-30");
+        assertThat(currentDay.get("usage")).isEqualTo(10.0d);
+    }
+
+    @Test
+    void olderMonthUsesUnfilteredHistoryBeyondThePageReadBudget() {
+        Instant latest = Instant.parse("2026-11-02T00:00:00Z");
+        java.time.format.DateTimeFormatter shanghai =
+                java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+        AtomicInteger calls = new AtomicInteger();
+        ObservationAdapter raw = request -> {
+            calls.incrementAndGet();
+            Map<String, String> parameters = request.parameters();
+            // The customer's date parameters select a different population, not readTime.
+            // Returning an empty filtered page must not erase the unfiltered history.
+            if (parameters.containsKey("from") || parameters.containsKey("to")) {
+                return Mono.just(ObservationResponse.empty(Map.of()));
+            }
+            int page = Integer.parseInt(parameters.getOrDefault("page", "0"));
+            int total = 100_000;
+            List<Map<String, Object>> rows = new java.util.ArrayList<>();
+            for (int index = page * 500; index < Math.min(total, (page + 1) * 500); index++) {
+                Instant at = latest.minusSeconds(index * 900L);
+                rows.add(row("sample-" + index, at.atZone(ZoneOffset.ofHours(8)).format(shanghai),
+                        at.toEpochMilli() / 3_600_000.0));
+            }
+            return Mono.just(ObservationResponse.available(Map.of("content", rows,
+                    "last", (page + 1) * 500 >= total, "totalElements", total)));
+        };
+        Clock now = Clock.fixed(latest, ZoneOffset.UTC);
+        CompanyEnergyObservationComposer composer = CompanyEnergyObservationComposerFactory.composed(
+                raw, iot(COMPANY, List.of(METER)), now, snapshots(now));
+
+        ObservationResponse response = composer.read(new ObservationRequest(COMPANY,
+                ObservationOperation.COMPANY_ENERGY_DAILY,
+                Map.of("days", "1", "end", "2025-09-19"))).block();
+
+        Map<?, ?> day = (Map<?, ?>) ((List<?>) response.payload().get("days")).get(0);
+        assertThat(day.get("usage")).isEqualTo(24.0d);
+        assertThat(day.get("complete")).isEqualTo(true);
+        assertThat(response.payload().get("truncated")).isEqualTo(false);
+        int firstWindowCalls = calls.get();
+        composer.read(new ObservationRequest(COMPANY, ObservationOperation.COMPANY_ENERGY_DAILY,
+                Map.of("days", "2", "end", "2025-09-20"))).block();
+        assertThat(calls.get()).isEqualTo(firstWindowCalls);
+    }
+
+    @Test
+    void snapshotBackedDailyCompletesWhenSubscribedOnANonBlockingScheduler() {
+        ObservationAdapter raw = request -> Mono.just(ObservationResponse.available(
+                page(historicalRows(request), true)));
+        IotAdapter async = request -> Mono.<AuthorizedDeviceScope>just(new AuthorizedDeviceScope() {
+            @Override public RequestIdentity identity() { return COMPANY; }
+            @Override public IotSource source() { return IotSource.COMPANY; }
+            @Override public List<AuthorizedDevice> devices() { return List.of(METER); }
+        }).subscribeOn(reactor.core.scheduler.Schedulers.parallel());
+        CompanyEnergyObservationComposer composer = CompanyEnergyObservationComposerFactory.composed(
+                raw, async, CLOCK, snapshots(CLOCK));
+
+        ObservationResponse response = composer.read(new ObservationRequest(COMPANY,
+                        ObservationOperation.COMPANY_ENERGY_DAILY,
+                        Map.of("days", "2", "end", "2026-10-03")))
+                .subscribeOn(reactor.core.scheduler.Schedulers.parallel())
+                .block();
+
+        assertThat(response.status()).isEqualTo(ObservationStatus.AVAILABLE);
+        assertThat(response.payload().get("truncated")).isEqualTo(false);
+        assertThat((List<?>) response.payload().get("days")).hasSize(2).allSatisfy(value -> {
+            Map<?, ?> day = (Map<?, ?>) value;
+            assertThat(day.get("complete")).isEqualTo(true);
+            assertThat(day.get("usage")).isEqualTo(10.0d);
+        });
+    }
+
+    @Test
+    void emptyHistoricalStreamRemainsNotComputableWithoutInventingZero() {
+        ObservationAdapter raw = request -> Mono.just(ObservationResponse.empty(Map.of()));
+        CompanyEnergyObservationComposer composer = CompanyEnergyObservationComposerFactory.composed(
+                raw, iot(COMPANY, List.of(METER)), CLOCK, snapshots(CLOCK));
+
+        ObservationResponse response = composer.read(new ObservationRequest(COMPANY,
+                ObservationOperation.COMPANY_ENERGY_DAILY,
+                Map.of("days", "30", "end", "2025-09-30"))).block();
+
+        assertThat(response.status()).isEqualTo(ObservationStatus.AVAILABLE);
+        assertThat(response.payload().get("truncated")).isEqualTo(false);
+        assertThat((List<?>) response.payload().get("days")).hasSize(30).allSatisfy(value -> {
+            Map<?, ?> day = (Map<?, ?>) value;
+            assertThat(day.get("usage")).isNull();
+            assertThat(day.get("complete")).isEqualTo(false);
+        });
+    }
+
+    @Test
+    void readableMeterProjectionIsReusedAcrossOuterQueriesWithoutControlRefs() {
+        AtomicInteger scopeLoads = new AtomicInteger();
+        IotAdapter counting = request -> {
+            scopeLoads.incrementAndGet();
+            return Mono.just(new AuthorizedDeviceScope() {
+                @Override public RequestIdentity identity() { return COMPANY; }
+                @Override public IotSource source() { return IotSource.COMPANY; }
+                @Override public List<AuthorizedDevice> devices() { return List.of(METER); }
+            });
+        };
+        InMemoryBlocks blocks = new InMemoryBlocks();
+        ObservationAdapter raw = request -> Mono.just(ObservationResponse.available(
+                page(historicalRows(request), true)));
+        CompanyEnergyObservationComposer composer = CompanyEnergyObservationComposerFactory.composed(
+                raw, counting, CLOCK, blocks);
+
+        composer.read(new ObservationRequest(COMPANY, ObservationOperation.COMPANY_ENERGY_DAILY,
+                Map.of("days", "2", "end", "2026-10-03"))).block();
+        composer.read(new ObservationRequest(COMPANY, ObservationOperation.COMPANY_ENERGY_DAILY,
+                Map.of("days", "1", "end", "2026-10-03"))).block();
+
+        assertThat(scopeLoads.get()).isEqualTo(1);
+        assertThat(blocks.bodies().values()).allSatisfy(body -> {
+            String text = String.valueOf(body);
+            assertThat(text).doesNotContain("controlRef").doesNotContain("hubDeviceId")
+                    .doesNotContain("officeDeviceRef");
+        });
+    }
+
+    private static ReadSnapshots snapshots(Clock clock) {
+        return ReadSnapshots.create(clock, Runnable::run, Runnable::run, null, null,
+                new ObjectMapper(), ReadSnapshots.Settings.defaults());
+    }
+
+    private static List<Map<String, Object>> filteredRows(
+            ObservationRequest request, List<Map<String, Object>> rows) {
+        String from = request.parameters().get("from");
+        String to = request.parameters().get("to");
+        Instant lower = from == null ? Instant.MIN : java.time.OffsetDateTime.parse(from).toInstant();
+        Instant upper = to == null ? Instant.MAX : java.time.OffsetDateTime.parse(to).toInstant();
+        List<Map<String, Object>> result = new java.util.ArrayList<>();
+        for (Map<String, Object> row : rows) {
+            Instant at = java.time.LocalDateTime.parse(String.valueOf(row.get("readTime")),
+                    java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
+                    .toInstant(ZoneOffset.ofHours(8));
+            if (!at.isBefore(lower) && !at.isAfter(upper)) result.add(row);
+        }
+        result.sort((left, right) -> String.valueOf(right.get("readTime"))
+                .compareTo(String.valueOf(left.get("readTime"))));
+        return result;
+    }
+
+    private static final class MutableClock extends Clock {
+        private Instant now;
+        private final ZoneId zone;
+        MutableClock(Instant now, ZoneId zone) { this.now = now; this.zone = zone; }
+        void advance(Duration duration) { now = now.plus(duration); }
+        @Override public ZoneId getZone() { return zone; }
+        @Override public Clock withZone(ZoneId target) { return new MutableClock(now, target); }
+        @Override public Instant instant() { return now; }
+    }
+
+    private static List<Map<String, Object>> historicalRows(ObservationRequest request) {
+        String from = request.parameters().get("from");
+        String to = request.parameters().get("to");
+        Instant lower = from == null ? Instant.MIN : java.time.OffsetDateTime.parse(from).toInstant();
+        Instant upper = to == null ? Instant.MAX : java.time.OffsetDateTime.parse(to).toInstant();
+        List<Map<String, Object>> rows = new java.util.ArrayList<>();
+        for (java.time.LocalDate day = java.time.LocalDate.of(2026, 1, 1);
+                !day.isAfter(java.time.LocalDate.of(2026, 10, 9)); day = day.plusDays(1)) {
+            Instant at = day.atTime(8, 0).atZone(ZoneOffset.ofHours(8)).toInstant();
+            if (at.isBefore(lower) || at.isAfter(upper)) continue;
+            rows.add(row("history-" + day, day + " 08:00:00", day.toEpochDay() * 10d));
+        }
+        rows.sort((left, right) -> String.valueOf(right.get("readTime"))
+                .compareTo(String.valueOf(left.get("readTime"))));
+        return rows;
+    }
+
     private static CompanyEnergyObservationComposer composer(PageFixture fixture) {
         return CompanyEnergyObservationComposerFactory.composed(raw(fixture), iot(COMPANY, List.of(METER)), CLOCK);
     }
@@ -354,4 +798,29 @@ class CompanyEnergyObservationComposerContractTest {
 
     @FunctionalInterface
     private interface PageFixture { Mono<ObservationResponse> read(ObservationRequest request, int page); }
+
+    private static final class InMemoryBlocks implements ReadSnapshots {
+        private final Map<String, Map<String, Object>> bodies = new HashMap<>();
+
+        @Override public Map<String, Object> read(ReadSnapshots.Identity identity, String realm, Map<String, ?> query,
+                ReadSnapshots.Policy policy, Supplier<Map<String, Object>> loader) {
+            throw new UnsupportedOperationException("composer only uses the background load seam");
+        }
+
+        @Override public Map<String, Object> load(ReadSnapshots.Identity identity, String realm, Map<String, ?> query,
+                ReadSnapshots.Policy policy, Supplier<Map<String, Object>> loader) {
+            String key = identity.tenantCode() + '\u0000' + identity.authorization() + '\u0000'
+                    + identity.source() + '\u0000' + identity.ownerKey() + '\u0000' + realm + '\u0000' + query;
+            return bodies.computeIfAbsent(key, ignored -> loader.get());
+        }
+
+        @Override public void invalidate(ReadSnapshots.Identity identity) { }
+        @Override public void discard(ReadSnapshots.Identity identity) { }
+        @Override public void revoke(ReadSnapshots.Identity identity, ltd.qianc.iotagent.error.BusinessException failure) { }
+        @Override public void admit(ReadSnapshots.Identity identity) { }
+        Map<String, Map<String, Object>> bodies() { return bodies; }
+
+        @Override public void refreshActive() { }
+        @Override public void close(boolean drainComplete) { }
+    }
 }
