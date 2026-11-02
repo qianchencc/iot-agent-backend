@@ -47,12 +47,15 @@ public final class ObservationController {
     private final ObservationAdapter adapter;
     private final IotAdapter iotAdapter;
     private final ReadSnapshots snapshots;
+    private final CompanyEnergyHistoryPreparation energyHistoryPreparation;
 
     @Autowired
     public ObservationController(ObservationAdapter adapter, IotAdapter iotAdapter, ReadSnapshots snapshots) {
         this.adapter = adapter;
         this.iotAdapter = iotAdapter;
         this.snapshots = snapshots;
+        this.energyHistoryPreparation = new CompanyEnergyHistoryPreparation(
+                adapter, snapshots, java.time.Clock.systemUTC(), SNAPSHOT_REBUILD_TIMEOUT);
     }
 
     @GetMapping("/dashboard")
@@ -259,11 +262,14 @@ public final class ObservationController {
                     && "directory".equals(query.get("section"));
             String realm = operation == ObservationOperation.REGION_LIST
                     ? directory ? "REGION_DIRECTORY" : "REGION_ATTENTION"
-                    : operation == ObservationOperation.COMPANY_ENERGY_DAILY ? "COMPANY_ENERGY_DAILY:v3" : operation.name();
+                    : operation == ObservationOperation.COMPANY_ENERGY_DAILY
+                            ? CompanyEnergyHistoryPreparation.DAILY_REALM : operation.name();
             ReadSnapshots.Policy policy = directory ? ReadSnapshots.Policy.HISTORICAL
                     : ReadSnapshots.Policy.forQuery(query, java.time.Clock.systemUTC());
-            return ResponseEntity.ok(snapshots.read(scope, realm, query,
-                    policy, () -> snapshotBody(captured)));
+            Map<String, Object> body = snapshots.read(scope, realm, query,
+                    policy, () -> snapshotBody(captured));
+            if (operation == ObservationOperation.COMPANY_ENERGY_DAILY) energyHistoryPreparation.observe(identity);
+            return ResponseEntity.ok(body);
         }
         ObservationResponse result = readAdapter(captured);
         if (result.status() == ObservationStatus.UNAVAILABLE) throw new ObservationUnavailableException("只读观察读取失败");

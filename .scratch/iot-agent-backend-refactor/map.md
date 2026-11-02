@@ -11,6 +11,8 @@
 - [51 历史能耗区间复用](issues/51-energy-history-range-reuse.md)已实现，ready-for-human。撤回“带日期空响应可证明历史无数据”的判断：上游时间参数不是可靠的readTime过滤；已沿用Runtime无筛选流定位并复用自然月块。2025-11-29的43表原始边界差120.96度与backend一致，相邻历史窗口约0.5秒可读；实际微信回看由用户验收，见[51证据](evidence/energy-history-range-reuse-2026-11-02.md)。
 - [52 草案当前设备状态](issues/52-draft-current-device-states.md)已实现，ready-for-human。草案状态不再读取执行后的回读列表；普通草案读取不再实时扫描完整范围，确认控制仍保留权威校验。后端已只读取得3灯、2空调当前状态及重启后stale占位，见[52证据](evidence/draft-current-device-state-2026-11-02.md)；页面由用户验收。
 - [53 区域目录就绪](issues/53-region-directory-readiness.md)已实现，ready-for-human。名称不再依赖完整设备范围；名称与动态提示共用日更新基础目录，前端同身份重开先恢复名称。最终3207实例真实授权2区域逐项一致，首次约1.53秒可读、重复2ms；前端6项边界回归通过，页面留待用户验收，见[53证据](evidence/region-directory-readiness-2026-11-02.md)。
+- [54 历史能耗后台准备](issues/54-energy-history-background-preparation.md)已实现，ready-for-human。用户实际在开发者工具翻阅较早能耗日期后反馈“基本没什么问题”；首屏登记后台准备、自然月复用、身份隔离和失败不伪空的设计记录见票据54。后续只对具体新出现的日期/身份问题建缺陷票，不再扩大缓存策略。
+- [55 会话进入与恢复](issues/55-conversation-entry-recovery.md)已实现，ready-for-human。多轮事件一次读取，已验证身份重启复用受持久失效屏障约束；前端已有对话先展示、后端对齐前只读。真实存储无网关恢复、完整重启及组件烟测通过；页面由用户验收，见[55证据](evidence/conversation-entry-recovery-2026-11-02.md)。
 
 
 ## Destination
