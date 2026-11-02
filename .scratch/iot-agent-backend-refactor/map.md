@@ -9,6 +9,7 @@
 - Redis承载可重建读取结果，MySQL持久屏障及恢复代际保证单实例安全恢复；正常退出恢复已有结果，异常退出重新准备。不迁移MySQL/sidecar SQLite业务事实，不建设统一缓存/预热平台。
 - 撤回45号“上游采样不足”和“首屏已稳定解决”结论。43台/30天已有数据；原适配器错滤统一流及不完整测时才是问题。按50重新验收。
 - [51 历史能耗区间复用](issues/51-energy-history-range-reuse.md)已实现，ready-for-human。撤回“带日期空响应可证明历史无数据”的判断：上游时间参数不是可靠的readTime过滤；已沿用Runtime无筛选流定位并复用自然月块。2025-11-29的43表原始边界差120.96度与backend一致，相邻历史窗口约0.5秒可读；实际微信回看由用户验收，见[51证据](evidence/energy-history-range-reuse-2026-11-02.md)。
+- [52 草案当前设备状态](issues/52-draft-current-device-states.md)已实现，ready-for-human。草案状态不再读取执行后的回读列表；普通草案读取不再实时扫描完整范围，确认控制仍保留权威校验。后端已只读取得3灯、2空调当前状态及重启后stale占位，见[52证据](evidence/draft-current-device-state-2026-11-02.md)；页面由用户验收。
 
 
 ## Destination

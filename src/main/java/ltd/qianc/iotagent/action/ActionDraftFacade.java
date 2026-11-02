@@ -32,6 +32,7 @@ import ltd.qianc.iotagent.iot.IotAdapter;
 import ltd.qianc.iotagent.iot.IotSource;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.iot.UpstreamUnavailableException;
+import ltd.qianc.iotagent.readmodel.ReadSnapshots;
 import reactor.core.publisher.Mono;
 
 /**
@@ -41,6 +42,7 @@ import reactor.core.publisher.Mono;
  * and enabled only by the explicit control mode.
  */
 public final class ActionDraftFacade {
+    private static final Duration ORDINARY_STATE_TIMEOUT = Duration.ofSeconds(120);
     private final ObjectMapper mapper;
     private final ActionDraftStore store;
     private final IotAdapter iot;
@@ -49,28 +51,16 @@ public final class ActionDraftFacade {
     private final AuditEventStore audit;
     private final ActionReceiptStore receiptStore;
     private final ActionReadbackStore readbackStore;
+    private final ReadSnapshots snapshots;
     private final Clock clock;
     private final Duration scopeTimeout;
     private final Duration draftTtl;
 
     public ActionDraftFacade(ObjectMapper mapper, ActionDraftStore store, IotAdapter iot,
-                             ActionCommandGateway gateway, Clock clock, Duration scopeTimeout,
-                             Duration draftTtl) {
-        this(mapper, store, iot, gateway, null, null, null, null, clock, scopeTimeout, draftTtl);
-    }
-
-    public ActionDraftFacade(ObjectMapper mapper, ActionDraftStore store, IotAdapter iot,
-                             ActionCommandGateway gateway, ConversationEventStore conversationEvents,
-                             AuditEventStore audit, Clock clock, Duration scopeTimeout,
-                             Duration draftTtl) {
-        this(mapper, store, iot, gateway, conversationEvents, audit, null, null, clock, scopeTimeout, draftTtl);
-    }
-
-    public ActionDraftFacade(ObjectMapper mapper, ActionDraftStore store, IotAdapter iot,
                              ActionCommandGateway gateway, ConversationEventStore conversationEvents,
                              AuditEventStore audit, ActionReceiptStore receiptStore,
-                             ActionReadbackStore readbackStore, Clock clock, Duration scopeTimeout,
-                             Duration draftTtl) {
+                             ActionReadbackStore readbackStore, ReadSnapshots snapshots,
+                             Clock clock, Duration scopeTimeout, Duration draftTtl) {
         this.mapper = Objects.requireNonNull(mapper, "mapper");
         this.store = Objects.requireNonNull(store, "store");
         this.iot = Objects.requireNonNull(iot, "iot");
@@ -79,6 +69,7 @@ public final class ActionDraftFacade {
         this.audit = audit;
         this.receiptStore = receiptStore;
         this.readbackStore = readbackStore;
+        this.snapshots = Objects.requireNonNull(snapshots, "snapshots");
         this.clock = Objects.requireNonNull(clock, "clock");
         this.scopeTimeout = requirePositive(scopeTimeout, "scopeTimeout");
         this.draftTtl = requirePositive(draftTtl, "draftTtl");
@@ -145,22 +136,18 @@ public final class ActionDraftFacade {
 
     public ActionDraftFact current(PrincipalInfo principal, String draftId) {
         ActionDraftFact draft = find(principal, draftId);
-        return currentChecked(draft, principal);
+        return currentChecked(draft);
     }
 
     public ActionDraftFact current(PrincipalInfo principal, String draftId, String source) {
         ActionDraftFact draft = find(principal, draftId, parseSource(source));
-        return currentChecked(draft, principal);
+        return currentChecked(draft);
     }
 
-    private ActionDraftFact currentChecked(ActionDraftFact draft, PrincipalInfo principal) {
+    private ActionDraftFact currentChecked(ActionDraftFact draft) {
         if (draft.status().equals(ActionDraftStatus.PENDING_CONFIRMATION.name()) && expired(draft)) {
             expire(draft);
             return store.find(draft.draftId()).orElse(draft);
-        }
-        if (draft.status().equals(ActionDraftStatus.PENDING_CONFIRMATION.name())
-                || draft.status().equals(ActionDraftStatus.EXECUTING.name())) {
-            verifyScope(principal, payload(draft));
         }
         return draft;
     }
@@ -386,40 +373,41 @@ public final class ActionDraftFacade {
         return view;
     }
 
-    /** Read durable post-dispatch evidence; an empty list means no readback was recorded. */
+    /** Ordinary reads expose held device facts, not evidence from a prior dispatch. */
     public Map<String, Object> deviceStates(PrincipalInfo principal, String draftId) {
-        ActionDraftFact draft = current(principal, draftId);
-        List<Map<String, Object>> stateList = new ArrayList<>();
-        Map<String, String> deviceByAction = actionDevices(draft);
-        Map<String, Object> deviceStates = new LinkedHashMap<>();
-        Map<String, String> readback = new LinkedHashMap<>();
-        Map<String, String> observedAtByAction = new LinkedHashMap<>();
-        String observedAt = null;
-        if (readbackStore != null) {
-            for (ActionReadbackFact fact : readbackStore.findByDraft(draft.draftId())) {
-                Map<String, Object> state = new LinkedHashMap<>();
-                state.put("actionId", fact.actionId());
-                state.put("outcome", fact.outcome());
-                state.put("observedAt", fact.observedAt());
-                Object observedState = parseObject(fact.observedStateJson());
-                state.put("observedState", observedState);
-                stateList.add(state);
-                readback.put(fact.actionId(), fact.outcome());
-                observedAtByAction.put(fact.actionId(), fact.observedAt());
-                observedAt = fact.observedAt();
-                String deviceId = deviceByAction.get(fact.actionId());
-                if (deviceId != null && !deviceId.isBlank()) deviceStates.put(deviceId, observedState);
-            }
+        ActionDraftFact draft = find(principal, draftId);
+        IotSource source = parseSource(payload(draft).path("source").asText(null));
+        RequestIdentity identity = new RequestIdentity(principal.authorization(), principal.tenantCode(), source, principal.ownerKey());
+        List<String> ids = actionDevices(draft).values().stream().distinct().sorted().toList();
+        ReadSnapshots.Identity scope = new ReadSnapshots.Identity(identity.tenantCode(), identity.authorization(),
+                identity.source().name(), identity.ownerKey());
+        return snapshots.read(scope, "DEVICE_STATES", Map.of("deviceIds", ids), ReadSnapshots.Policy.CURRENT, () -> {
+            DeviceStateReadResult result = iot.readDeviceStates(identity, ids).block(ORDINARY_STATE_TIMEOUT);
+            if (result == null) throw new UpstreamUnavailableException("设备状态");
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("states", result.states());
+            body.put("observedAt", result.observedAt());
+            body.put("source", "production");
+            return body;
+        });
+    }
+
+    private List<Map<String, Object>> durableReadbacks(ActionDraftFact draft) {
+        List<Map<String, Object>> facts = new ArrayList<>();
+        if (readbackStore == null) return facts;
+        for (ActionReadbackFact fact : readbackStore.findByDraft(draft.draftId())) {
+            Map<String, Object> state = new LinkedHashMap<>();
+            state.put("actionId", fact.actionId());
+            state.put("outcome", fact.outcome());
+            state.put("observedAt", fact.observedAt());
+            state.put("observedState", parseObject(fact.observedStateJson()));
+            facts.add(state);
         }
-        // `states` is the original durable fact list. The keyed maps are the
-        // Runtime-compatible additive projection consumed by clients.
-        return Map.of("draftId", draft.draftId(), "states", stateList, "deviceStates", deviceStates,
-                "readback", readback, "observedStates", deviceStates, "observedAt", observedAt == null ? "" : observedAt,
-                "observedAtByAction", observedAtByAction);
+        return facts;
     }
 
     public Map<String, Object> deviceStates(PrincipalInfo principal, String draftId, String source) {
-        current(principal, draftId, source);
+        find(principal, draftId, parseSource(source));
         return deviceStates(principal, draftId);
     }
 
@@ -447,7 +435,7 @@ public final class ActionDraftFacade {
             }
         }
         return Map.of("draftId", draft.draftId(), "status", draft.status(), "receipts", receipts,
-                "readbacks", deviceStates(principal, draft.draftId()).get("states"));
+                "readbacks", durableReadbacks(draft));
     }
 
     public Map<String, Object> summary(PrincipalInfo principal, String draftId, String source) {

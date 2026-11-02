@@ -100,7 +100,7 @@ public final class IotDeviceController {
             @RequestParam(required = false, defaultValue = "office") String source,
             @RequestBody Map<String, Object> body) {
         requireOffice(source);
-        List<String> ids = strings(body == null ? null : body.get("deviceIds"));
+        List<String> ids = strings(body == null ? null : body.get("deviceIds")).stream().sorted().toList();
         RequestIdentity identity = identity();
         if (request.getRequestURI().contains("/tools/")) {
             return ResponseEntity.ok(adapter.readDeviceStates(identity, ids).block(ADAPTER_TIMEOUT));

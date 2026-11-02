@@ -10,6 +10,7 @@ import ltd.qianc.iotagent.action.ActionReceiptStore;
 import ltd.qianc.iotagent.audit.AuditEventStore;
 import ltd.qianc.iotagent.conversation.ConversationEventStore;
 import ltd.qianc.iotagent.iot.IotAdapter;
+import ltd.qianc.iotagent.readmodel.ReadSnapshots;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -71,10 +72,11 @@ public class ActionDraftConfiguration {
             ObjectProvider<AuditEventStore> audit,
             ObjectProvider<ActionReceiptStore> receipts,
             ObjectProvider<ActionReadbackStore> readbacks,
+            ReadSnapshots snapshots,
             @Value("${iot.gateway.call-timeout-ms:10000}") long scopeTimeoutMs,
             @Value("${agent.action-draft-ttl-ms:600000}") long draftTtlMs) {
         return new ActionDraftFacade(mapper, store, iot, gateway, events.getIfAvailable(), audit.getIfAvailable(),
-                receipts.getIfAvailable(), readbacks.getIfAvailable(),
+                receipts.getIfAvailable(), readbacks.getIfAvailable(), snapshots,
                 Clock.systemUTC(), Duration.ofMillis(Math.max(1, scopeTimeoutMs)), Duration.ofMillis(Math.max(1, draftTtlMs)));
     }
 }
