@@ -4,6 +4,8 @@ Status: accepted-direction-needs-environment-proof
 Type: research
 Date: 2026-10-28
 
+历史考察记录。2026-11-02 的 Pi Session 后续方向见 [统一 MySQL 规格](../pi-session-mysql/spec.md) 与 [ADR 0005](../../docs/adr/0005-java-owned-mysql-pi-session.md)；下述 SQLite 条款不是新的交付终点。目标方向已改变，运行实例迁移尚未完成。
+
 ## 问题
 
 iot-agent-backend 的会话/事件/任务/审计数据需要从 Runtime 的单 SQLite 事实边界迁移到客户选型要求的 Java 后端。Runtime 使用 `turn_events` 逐事件追加、断线按 sequence 重放、writer lease、报告快照缓存和加密配置修订；客户选型清单要求 MySQL 与 Redis，但 Redis 不能替代事实库。

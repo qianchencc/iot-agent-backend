@@ -10,7 +10,7 @@ _Avoid_: Agent 后端、模型服务
 **Tool Bridge**：Java 主服务与 Agent Engine 之间传递工具调用、工具结果、运行状态和取消信号的内部协作边界。
 _Avoid_: 内部 API、模型接口
 
-**Pi Session**：由 `pi-agent-core` 管理的模型消息、分支、压缩摘要和丢弃记录，用于恢复 Agent 上下文；它不是 Java 业务事实本身。
+**Pi Session**：由模型消息、分支、压缩摘要及引擎操作记录构成的持久上下文，用于恢复 Agent 的推理和工具调用历史；它不同于前端聊天记录和设备控制、任务等 Business Fact。
 _Avoid_: 会话缓存、聊天记录
 
 **Business Agent Definition**：面向一次业务对话的能力定义，包括可用工具及其参数、业务指引和经核验的业务上下文。

@@ -2,6 +2,8 @@
 
 Status: 采纳 · Date: 2026-10-28
 
+2026-11-02 后续方向：[ADR 0005](0005-java-owned-mysql-pi-session.md) 取代下述“Pi Session 保留 SQLite”的交付选择，改为 Java/MySQL 统一持久化。以下保留历史决定；新迁移尚未实施，不代表运行实例已经切换。
+
 Runtime 的单 SQLite 文件同时承载会话、事件、任务、报告和配置；客户选型清单要求 MySQL 与 Redis。用户已确认：Java 重构采用 MySQL 作为长期业务事实库，Redis 只用于缓存、分布式锁、幂等和限流；Pi session 首期保留 Node sidecar 的 SQLite backend，以降低 `pi-agent-core` 行为迁移风险。
 
 ## 决定
