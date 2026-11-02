@@ -255,10 +255,15 @@ public final class ObservationController {
                 && operation != ObservationOperation.REPORT && operation != ObservationOperation.REPORT_DOWNLOAD) {
             ReadSnapshots.Identity scope = new ReadSnapshots.Identity(identity.tenantCode(), identity.authorization(),
                     identity.source().name(), identity.ownerKey());
-            String realm = operation == ObservationOperation.COMPANY_ENERGY_DAILY
-                    ? "COMPANY_ENERGY_DAILY:v3" : operation.name();
+            boolean directory = operation == ObservationOperation.REGION_LIST
+                    && "directory".equals(query.get("section"));
+            String realm = operation == ObservationOperation.REGION_LIST
+                    ? directory ? "REGION_DIRECTORY" : "REGION_ATTENTION"
+                    : operation == ObservationOperation.COMPANY_ENERGY_DAILY ? "COMPANY_ENERGY_DAILY:v3" : operation.name();
+            ReadSnapshots.Policy policy = directory ? ReadSnapshots.Policy.HISTORICAL
+                    : ReadSnapshots.Policy.forQuery(query, java.time.Clock.systemUTC());
             return ResponseEntity.ok(snapshots.read(scope, realm, query,
-                    ReadSnapshots.Policy.forQuery(query, java.time.Clock.systemUTC()), () -> snapshotBody(captured)));
+                    policy, () -> snapshotBody(captured)));
         }
         ObservationResponse result = readAdapter(captured);
         if (result.status() == ObservationStatus.UNAVAILABLE) throw new ObservationUnavailableException("只读观察读取失败");

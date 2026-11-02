@@ -7,6 +7,7 @@ import ltd.qianc.iotagent.iot.internal.CompanyOfficeObservationAdapter;
 import ltd.qianc.iotagent.iot.internal.FailClosedObservationAdapter;
 import ltd.qianc.iotagent.iot.internal.WebClientObservationAdapter;
 import ltd.qianc.iotagent.region.RegionSeenStore;
+import ltd.qianc.iotagent.readmodel.ReadSnapshots;
 import org.springframework.web.reactive.function.client.WebClient;
 
 /** Construction entry point for observation adapters; implementations stay internal. */
@@ -43,5 +44,12 @@ public final class ObservationAdapterFactory {
             CompanyEnergyObservationComposer energyComposer,
             Clock clock) {
         return new CompanyOfficeObservationAdapter(upstream, iot, automation, regionSeen, energyComposer, clock);
+    }
+    public static ObservationAdapter composed(
+            ObservationAdapter upstream, IotAdapter iot, AutomationSummaryReader automation,
+            RegionSeenStore regionSeen, CompanyEnergyObservationComposer energyComposer,
+            ReadSnapshots snapshots, Clock clock) {
+        return new CompanyOfficeObservationAdapter(upstream, iot, automation, regionSeen,
+                energyComposer, snapshots, clock);
     }
 }

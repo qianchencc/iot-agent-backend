@@ -31,7 +31,9 @@ import ltd.qianc.iotagent.iot.ObservationResponse;
 import ltd.qianc.iotagent.iot.ObservationStatus;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.region.RegionSeenStore;
+import ltd.qianc.iotagent.readmodel.ReadSnapshots;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 /**
  * Local Runtime composition for the company dashboard and Office regions.
@@ -39,8 +41,8 @@ import reactor.core.publisher.Mono;
  * <p>This adapter deliberately never calls the upstream DASHBOARD operation. It
  * obtains the current authorization catalog from {@link IotAdapter}, then reads
  * each observation area independently through the existing observation boundary.
- * Composition always reads its source facts; ordinary HTTP snapshot ownership is
- * outside this adapter, so internal tools and controls keep their live semantics.</p>
+ * Office region names may share a daily source snapshot; device observations
+ * and control checks keep their existing live semantics.</p>
  */
 public final class CompanyOfficeObservationAdapter implements ObservationAdapter {
     private static final String REGION_UNAVAILABLE = "当前用户区域暂不可用，请稍后重试";
@@ -51,6 +53,7 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
     private final AutomationSummaryReader automation;
     private final RegionSeenStore regionSeen;
     private final CompanyEnergyObservationComposer energyComposer;
+    private final ReadSnapshots regionSnapshots;
     private final Clock clock;
 
     public CompanyOfficeObservationAdapter(
@@ -69,11 +72,19 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
             RegionSeenStore regionSeen,
             CompanyEnergyObservationComposer energyComposer,
             Clock clock) {
+        this(upstream, iot, automation, regionSeen, energyComposer, null, clock);
+    }
+
+    public CompanyOfficeObservationAdapter(
+            ObservationAdapter upstream, IotAdapter iot, AutomationSummaryReader automation,
+            RegionSeenStore regionSeen, CompanyEnergyObservationComposer energyComposer,
+            ReadSnapshots regionSnapshots, Clock clock) {
         this.upstream = Objects.requireNonNull(upstream, "upstream");
         this.iot = Objects.requireNonNull(iot, "iot");
         this.automation = Objects.requireNonNull(automation, "automation");
         this.regionSeen = regionSeen;
         this.energyComposer = energyComposer;
+        this.regionSnapshots = regionSnapshots;
         this.clock = Objects.requireNonNull(clock, "clock");
     }
 
@@ -417,14 +428,15 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
 
     private Mono<ObservationResponse> regionList(ObservationRequest request) {
         requireSource(request.identity(), IotSource.OFFICE, "SOURCE_UNAVAILABLE", "区域仅支持办公室来源");
-        return officeContext(request.identity()).map(context -> {
+        boolean directory = "directory".equals(request.parameters().get("section"));
+        return regionCatalog(request.identity()).map(catalog -> {
             List<Map<String, Object>> regions = new ArrayList<>();
-            for (Map<String, Object> region : context.regions) {
+            for (Map<String, Object> region : catalog) {
                 Map<String, Object> view = new LinkedHashMap<>();
                 String regionId = (String) region.get("id");
                 view.put("id", regionId);
                 view.put("name", region.get("name"));
-                if (regionSeen != null) {
+                if (!directory && regionSeen != null) {
                     boolean seen = regionSeen.seenAt(
                             request.identity().tenantCode(), request.identity().ownerKey(), regionId).isPresent();
                     view.put("attention", !seen);
@@ -477,6 +489,18 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
     }
 
     private Mono<List<Map<String, Object>>> regionCatalog(RequestIdentity identity) {
+        if (regionSnapshots == null) return readRegionCatalog(identity);
+        ReadSnapshots.Identity scope = new ReadSnapshots.Identity(identity.tenantCode(),
+                identity.authorization(), identity.source().name(), identity.ownerKey());
+        return Mono.fromCallable(() -> parseRegions(regionSnapshots.load(scope, "OFFICE_REGION_CATALOG",
+                Map.of(), ReadSnapshots.Policy.HISTORICAL, () -> {
+                    List<Map<String, Object>> rows = readRegionCatalog(identity).block();
+                    if (rows == null) throw new BusinessException("AUTHORIZED_SCOPE_UNAVAILABLE", REGION_UNAVAILABLE, 503);
+                    return Map.of("regions", rows);
+                }))).subscribeOn(Schedulers.boundedElastic());
+    }
+
+    private Mono<List<Map<String, Object>>> readRegionCatalog(RequestIdentity identity) {
         return upstream.read(new ObservationRequest(
                         identity, ObservationOperation.REGION_LIST, Map.of()))
                 .flatMap(response -> {

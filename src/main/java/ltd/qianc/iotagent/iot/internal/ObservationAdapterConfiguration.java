@@ -102,11 +102,12 @@ public class ObservationAdapterConfiguration {
                 () -> identity -> Mono.error(new IllegalStateException("任务摘要读取适配器未配置")));
         Clock clock = Clock.systemUTC();
         CompanyEnergyPolicy configuredPolicy = energyPolicy.getIfAvailable();
+        ReadSnapshots snapshots = readSnapshots.getIfAvailable();
         CompanyEnergyObservationComposer energyComposer = configuredPolicy == null
-                ? CompanyEnergyObservationComposerFactory.composed(delegate, iot, clock, readSnapshots.getIfAvailable())
-                : CompanyEnergyObservationComposerFactory.composed(delegate, iot, clock, configuredPolicy, readSnapshots.getIfAvailable());
+                ? CompanyEnergyObservationComposerFactory.composed(delegate, iot, clock, snapshots)
+                : CompanyEnergyObservationComposerFactory.composed(delegate, iot, clock, configuredPolicy, snapshots);
         return ObservationAdapterFactory.composed(
-                delegate, iot, automationReader, regionSeen.getIfAvailable(), energyComposer, clock);
+                delegate, iot, automationReader, regionSeen.getIfAvailable(), energyComposer, snapshots, clock);
     }
 
     private static String route(Environment environment, ObservationOperation operation, String fallback) {
