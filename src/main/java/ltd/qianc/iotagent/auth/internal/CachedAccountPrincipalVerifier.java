@@ -29,12 +29,20 @@ public final class CachedAccountPrincipalVerifier implements AccountPrincipalVer
     private final Consumer<PrincipalInfo> onDenied;
     private final Consumer<PrincipalInfo> onVerified;
     private final ThreadPoolExecutor executor;
+    private final PersistedAccountIdentity persistence;
     private final LinkedHashMap<String, Entry> entries = new LinkedHashMap<>(128, 0.75f, true);
     private volatile boolean closed;
 
     public CachedAccountPrincipalVerifier(
             AccountPrincipalVerifier upstream, String realm, AccountIdentityCachePolicy policy, Clock clock,
             Consumer<PrincipalInfo> onDenied, Consumer<PrincipalInfo> onVerified) {
+        this(upstream, realm, policy, clock, onDenied, onVerified, null);
+    }
+
+    public CachedAccountPrincipalVerifier(
+            AccountPrincipalVerifier upstream, String realm, AccountIdentityCachePolicy policy, Clock clock,
+            Consumer<PrincipalInfo> onDenied, Consumer<PrincipalInfo> onVerified, PersistedAccountIdentity persistence) {
+        this.persistence = persistence;
         this.upstream = Objects.requireNonNull(upstream, "upstream");
         this.realm = Objects.requireNonNull(realm, "realm");
         this.policy = Objects.requireNonNull(policy, "policy");
@@ -121,6 +129,20 @@ public final class CachedAccountPrincipalVerifier implements AccountPrincipalVer
     private void refresh(Entry entry, PrincipalInfo credential) {
         try {
             if (entry.invalidationPending && !invalidate(entry, credential)) throw unavailable();
+            if (persistence != null && !entry.restoreAttempted) {
+                entry.restoreAttempted = true;
+                var held = persistence.read(key(credential), credential, clock.instant()).orElse(null);
+                if (held != null) {
+                    synchronized (entry) {
+                        if (closed) return;
+                        entry.principalId = held.principalId();
+                        entry.identityRealm = held.identityRealm();
+                        entry.validatedAt = held.validatedAt();
+                        entry.retryAt = held.validatedAt().plus(policy.refreshInterval());
+                    }
+                    return;
+                }
+            }
             PrincipalInfo verified = upstream.verify(credential);
             if (verified == null || !verified.verified()
                     || !credential.authorization().equals(verified.authorization())
@@ -138,11 +160,16 @@ public final class CachedAccountPrincipalVerifier implements AccountPrincipalVer
                 }
                 return;
             }
+            Instant validatedAt = clock.instant();
+            if (persistence != null) {
+                try { persistence.save(key(credential), verified, validatedAt); }
+                catch (RuntimeException unavailable) { /* Genuine verification remains valid; restart will reverify. */ }
+            }
             synchronized (entry) {
                 if (closed) return;
                 entry.principalId = verified.principalId();
                 entry.identityRealm = verified.identityRealm();
-                entry.validatedAt = clock.instant();
+                entry.validatedAt = validatedAt;
                 entry.retryAt = entry.validatedAt.plus(policy.refreshInterval());
                 entry.denied = false;
                 entry.failed = false;
@@ -239,5 +266,6 @@ public final class CachedAccountPrincipalVerifier implements AccountPrincipalVer
         private boolean denied;
         private boolean failed;
         private boolean invalidationPending;
+        private boolean restoreAttempted;
     }
 }

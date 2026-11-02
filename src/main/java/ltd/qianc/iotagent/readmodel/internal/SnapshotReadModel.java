@@ -827,7 +827,7 @@ public final class SnapshotReadModel implements ReadSnapshots {
                     identity.source(), identity.ownerKey(), realm, canonical(query))));
         } catch (Exception failure) { throw new IllegalArgumentException("Unsupported snapshot query", failure); }
     }
-    private static String credential(Identity identity) { return digest(identity.tenantCode() + "\u0000" + identity.authorization()); }
+    private static String credential(Identity identity) { return ReadSnapshots.credentialHash(identity.tenantCode(), identity.authorization()); }
     private static String digest(String value) {
         try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8))); }
         catch (java.security.NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); }

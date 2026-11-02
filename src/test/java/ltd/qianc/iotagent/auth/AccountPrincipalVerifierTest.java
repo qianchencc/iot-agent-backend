@@ -322,6 +322,94 @@ class AccountPrincipalVerifierTest {
         }
     }
 
+    @Test
+    void restartRestoresVerifiedIdentityWithoutWaitingForGateway() {
+        MutableClock clock = new MutableClock();
+        MemoryBarrier barrier = new MemoryBarrier(clock);
+        MemoryPersistence persistence = new MemoryPersistence(clock);
+        try (AccountPrincipalVerifier first = AccountPrincipalVerifier.gateway(
+                client(request -> Mono.just(success("account"))), "https://realm-a.test", POLICY, clock,
+                credential -> { }, credential -> { }, persistence, barrier, new ObjectMapper())) {
+            assertThat(awaitPrincipal(first, CREDENTIAL).principalId()).isEqualTo("account");
+        }
+        try (AccountPrincipalVerifier restarted = AccountPrincipalVerifier.gateway(
+                client(request -> Mono.never()), "https://realm-a.test", POLICY, clock,
+                credential -> { }, credential -> { }, persistence, barrier, new ObjectMapper())) {
+            assertThat(awaitPrincipal(restarted, CREDENTIAL).principalId()).isEqualTo("account");
+        }
+    }
+
+    @Test
+    void persistedIdentityCannotReadmitARejectedCredential() throws Exception {
+        MutableClock clock = new MutableClock();
+        MemoryBarrier barrier = new MemoryBarrier(clock);
+        MemoryPersistence persistence = new MemoryPersistence(clock);
+        try (ReadSnapshots snapshots = ReadSnapshots.create(clock, Runnable::run, Runnable::run,
+                persistence, barrier, new ObjectMapper(), ReadSnapshots.Settings.defaults())) {
+            try (AccountPrincipalVerifier first = AccountPrincipalVerifier.gateway(
+                    client(request -> Mono.just(success("account"))), "https://realm-a.test", POLICY, clock,
+                    credential -> snapshots.discard(identity(credential)), credential -> snapshots.admit(identity(credential)),
+                    persistence, barrier, new ObjectMapper())) {
+                awaitPrincipal(first, CREDENTIAL);
+            }
+            snapshots.revoke(identity(CREDENTIAL), new BusinessException("DENIED", "denied", 403));
+            CountDownLatch genuineVerification = new CountDownLatch(1);
+            try (AccountPrincipalVerifier restarted = AccountPrincipalVerifier.gateway(
+                    client(request -> { genuineVerification.countDown(); return Mono.never(); }),
+                    "https://realm-a.test", POLICY, clock, credential -> snapshots.discard(identity(credential)),
+                    credential -> snapshots.admit(identity(credential)), persistence, barrier, new ObjectMapper())) {
+                assertThat(failure(restarted, CREDENTIAL).code()).isEqualTo("ACCOUNT_IDENTITY_PREPARING");
+                assertThat(genuineVerification.await(1, TimeUnit.SECONDS)).isTrue();
+                assertThat(failure(restarted, CREDENTIAL).code()).isEqualTo("ACCOUNT_IDENTITY_PREPARING");
+                assertThrows(BusinessException.class, () -> snapshots.read(identity(CREDENTIAL),
+                        "realm", Map.of(), ReadSnapshots.Policy.CURRENT, () -> Map.of("value", "forbidden")));
+            }
+        }
+    }
+
+    @Test
+    void expiredPersistedIdentityMustBeGenuinelyVerifiedAgain() {
+        MutableClock clock = new MutableClock();
+        MemoryBarrier barrier = new MemoryBarrier(clock);
+        MemoryPersistence persistence = new MemoryPersistence(clock);
+        try (AccountPrincipalVerifier first = AccountPrincipalVerifier.gateway(
+                client(request -> Mono.just(success("old-account"))), "https://realm-a.test", POLICY, clock,
+                credential -> { }, credential -> { }, persistence, barrier, new ObjectMapper())) {
+            awaitPrincipal(first, CREDENTIAL);
+        }
+        clock.advance(POLICY.maxValidationAge());
+        try (AccountPrincipalVerifier restarted = AccountPrincipalVerifier.gateway(
+                client(request -> Mono.just(success("new-account"))), "https://realm-a.test", POLICY, clock,
+                credential -> { }, credential -> { }, persistence, barrier, new ObjectMapper())) {
+            assertThat(awaitPrincipal(restarted, CREDENTIAL).principalId()).isEqualTo("new-account");
+        }
+    }
+
+    @Test
+    void persistedIdentityIsolatedByRealmTenantAndCredential() {
+        MutableClock clock = new MutableClock();
+        MemoryBarrier barrier = new MemoryBarrier(clock);
+        MemoryPersistence persistence = new MemoryPersistence(clock);
+        try (AccountPrincipalVerifier first = AccountPrincipalVerifier.gateway(
+                client(request -> Mono.just(success("original"))), "https://realm-a.test", POLICY, clock,
+                credential -> { }, credential -> { }, persistence, barrier, new ObjectMapper())) {
+            awaitPrincipal(first, CREDENTIAL);
+        }
+        for (PrincipalInfo changed : List.of(new PrincipalInfo("Bearer fixture-b", "tenant-a"),
+                new PrincipalInfo(CREDENTIAL.authorization(), "tenant-b"))) {
+            try (AccountPrincipalVerifier other = AccountPrincipalVerifier.gateway(
+                    client(request -> Mono.just(success("different"))), "https://realm-a.test", POLICY, clock,
+                    credential -> { }, credential -> { }, persistence, barrier, new ObjectMapper())) {
+                assertThat(awaitPrincipal(other, changed).principalId()).isEqualTo("different");
+            }
+        }
+        try (AccountPrincipalVerifier otherRealm = AccountPrincipalVerifier.gateway(
+                client(request -> Mono.just(success("different-realm"))), "https://realm-b.test", POLICY, clock,
+                credential -> { }, credential -> { }, persistence, barrier, new ObjectMapper())) {
+            assertThat(awaitPrincipal(otherRealm, CREDENTIAL).principalId()).isEqualTo("different-realm");
+        }
+    }
+
     private static ReadSnapshots.Identity identity(PrincipalInfo credential) {
         return new ReadSnapshots.Identity(credential.tenantCode(), credential.authorization(), "company", "");
     }

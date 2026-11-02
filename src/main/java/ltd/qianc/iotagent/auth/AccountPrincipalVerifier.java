@@ -41,6 +41,21 @@ public interface AccountPrincipalVerifier extends AutoCloseable {
                 baseUrl, policy, clock, onDenied, onVerified);
     }
 
+    /** Restart-safe verified identities; persistence and revocation barriers remain backend-owned. */
+    static AccountPrincipalVerifier gateway(
+            WebClient client, String baseUrl, AccountIdentityCachePolicy policy, Clock clock,
+            Consumer<PrincipalInfo> onDenied, Consumer<PrincipalInfo> onVerified,
+            ltd.qianc.iotagent.readmodel.ReadSnapshots.Persistence persistence,
+            ltd.qianc.iotagent.readmodel.ReadSnapshots.Barrier barrier,
+            com.fasterxml.jackson.databind.ObjectMapper mapper) {
+        return new CachedAccountPrincipalVerifier(
+                new WebClientAccountPrincipalVerifier(client, baseUrl, policy.timeout()),
+                baseUrl, policy, clock, onDenied, onVerified,
+                persistence == null || barrier == null ? null
+                        : new ltd.qianc.iotagent.auth.internal.PersistedAccountIdentity(
+                                persistence, barrier, mapper, policy.maxValidationAge()));
+    }
+
     @Override
     default void close() { }
 }

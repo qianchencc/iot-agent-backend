@@ -83,6 +83,16 @@ public interface ReadSnapshots extends AutoCloseable {
         @Override public String toString() { return "SnapshotIdentity[redacted]"; }
     }
 
+    /** Shared credential namespace for durable cache admission and revocation. */
+    static String credentialHash(String tenantCode, String authorization) {
+        try {
+            return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                    .digest((tenantCode + "\u0000" + authorization).getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException(impossible);
+        }
+    }
+
     enum Policy {
         CURRENT, HISTORICAL;
         private static final ZoneId SHANGHAI = ZoneId.of("Asia/Shanghai");

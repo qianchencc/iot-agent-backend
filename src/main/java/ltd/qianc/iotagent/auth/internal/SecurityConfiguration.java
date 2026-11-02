@@ -26,6 +26,9 @@ public class SecurityConfiguration {
     AccountPrincipalVerifier accountPrincipalVerifier(
             WebClient.Builder builder,
             ReadSnapshots snapshots,
+            org.springframework.beans.factory.ObjectProvider<ReadSnapshots.Persistence> persistence,
+            org.springframework.beans.factory.ObjectProvider<ReadSnapshots.Barrier> barrier,
+            ObjectMapper mapper,
             @Value("${iot.gateway.base-url:}") String baseUrl,
             @Value("${iot.identity.verify-timeout-ms:10000}") long timeoutMs,
             @Value("${iot.identity.refresh-interval-ms:60000}") long refreshIntervalMs,
@@ -40,7 +43,8 @@ public class SecurityConfiguration {
                             Duration.ofMillis(maxValidationAgeMs), Duration.ofMillis(retryCooldownMs)),
                     Clock.systemUTC(),
                     credential -> snapshots.discard(snapshotIdentity(credential)),
-                    credential -> snapshots.admit(snapshotIdentity(credential)));
+                    credential -> snapshots.admit(snapshotIdentity(credential)),
+                    persistence.getIfAvailable(), barrier.getIfAvailable(), mapper);
         } catch (RuntimeException invalidConfiguration) {
             return new FailClosedAccountPrincipalVerifier("物联身份核验配置无效");
         }

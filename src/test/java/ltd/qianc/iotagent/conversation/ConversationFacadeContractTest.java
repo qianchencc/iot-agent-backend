@@ -84,6 +84,38 @@ class ConversationFacadeContractTest {
         assertThat(conversations.turns(id)).hasSize(1);
     }
 
+    @Test
+    void restoresAllTurnsFromOneCoherentEventSnapshot() {
+        MemoryConversationStore conversations = new MemoryConversationStore();
+        AtomicInteger reads = new AtomicInteger();
+        ConversationEventFact first = new ConversationEventFact("conversation-1", "turn-1", 1,
+                "message.delta", "{\"sequence\":1,\"content\":\"第一轮\"}", "first");
+        ConversationEventFact second = new ConversationEventFact("conversation-1", "turn-2", 1,
+                "message.delta", "{\"sequence\":1,\"content\":\"第二轮\"}", "second");
+        ConversationEventFact later = new ConversationEventFact("conversation-1", "turn-2", 2,
+                "message.delta", "{\"sequence\":2,\"content\":\"随后到达\"}", "later");
+        ConversationEventStore events = new ConversationEventStore() {
+            public ConversationEventFact append(ConversationEventFact event) { throw new UnsupportedOperationException(); }
+            public Optional<ConversationEventFact> findByIdempotencyKey(String id, String key) { return Optional.empty(); }
+            public List<ConversationEventFact> read(String id) {
+                return reads.getAndIncrement() == 0 ? List.of(second, first) : List.of(first, second, later);
+            }
+        };
+        ConversationFacade facade = new ConversationFacade(new ObjectMapper(), conversations, events, null, Runnable::run);
+        String id = (String) facade.create(PRINCIPAL, "office").get("id");
+        conversations.startTurn(id, "第一问", Instant.now(), "q1");
+        conversations.startTurn(id, "第二问", Instant.now(), "q2");
+
+        Map<?, ?> result = (Map<?, ?>) facade.current(PRINCIPAL, "office").get("conversation");
+        List<?> turns = (List<?>) result.get("turns");
+        assertThat(turns).hasSize(2);
+        ObjectMapper mapper = new ObjectMapper();
+        assertThat(mapper.valueToTree(((Map<?, ?>) turns.get(0)).get("events")).toString())
+                .isEqualTo("[{\"sequence\":1,\"content\":\"第一轮\"}]");
+        assertThat(mapper.valueToTree(((Map<?, ?>) turns.get(1)).get("events")).toString())
+                .isEqualTo("[{\"sequence\":1,\"content\":\"第二轮\"}]");
+    }
+
     private static final class RecordingBridge implements AgentEngineBridge {
         private final boolean holdOpen;
         private final Runnable beforeMessage;
