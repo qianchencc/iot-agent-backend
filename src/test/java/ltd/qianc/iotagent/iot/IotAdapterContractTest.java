@@ -343,6 +343,51 @@ class IotAdapterContractTest {
     }
 
     @Test
+    void companyEnergyScopeReadsOnlyMetersAndKeepsUnauthorizedEmpty() {
+        java.util.List<String> requests = new java.util.ArrayList<>();
+        ExchangeFunction fixture = candidate -> {
+            var url = candidate.url();
+            synchronized (requests) { requests.add(url.getPath()); }
+            if (url.getPath().endsWith("/energy/equipment/page")) {
+                return Mono.just(json("{\"code\":200,\"content\":{\"content\":["
+                        + "{\"id\":\"meter-1\",\"equipmentName\":\"总电表\",\"areaName\":\"配电房\"},"
+                        + "{\"id\":\"meter-2\",\"equipmentName\":\"分电表\",\"areaName\":\"二层\"}],\"last\":true}}"));
+            }
+            return Mono.just(json("{\"code\":204,\"content\":null}"));
+        };
+        IotAdapter adapter = IotAdapterFactory.webClient(
+                WebClient.builder().exchangeFunction(fixture).build(),
+                IotGatewayRoutes.runtimeCompany("/office-scope", null,
+                        "/micro-api/api/iot-center/device/page",
+                        "/micro-api/api/energy/equipment/page",
+                        "/micro-api/api/perception/device/page",
+                        "/micro-api/api/iot-center/device",
+                        "/micro-api/api/office/app/device",
+                        "/micro-api/api/office/app/device/ac/myAreaList",
+                        "/micro-api/api/office/app/device/ac/devicePage",
+                        "/micro-api/api/iot-center/device/page"),
+                Duration.ofSeconds(1), IotCallPolicy.passThrough());
+        RequestIdentity identity = new RequestIdentity("Bearer company-token", "TENANT-1", IotSource.COMPANY,
+                "owner-1");
+
+        AuthorizedDeviceScope scope = adapter.loadAuthorizedEnergyScope(identity).block(Duration.ofSeconds(1));
+
+        assertThat(scope.identity()).isEqualTo(identity);
+        assertThat(scope.source()).isEqualTo(IotSource.COMPANY);
+        assertThat(scope.devices()).extracting(AuthorizedDevice::kind).containsOnly("energy");
+        assertThat(scope.devices()).extracting(AuthorizedDevice::id).containsExactly("meter-1", "meter-2");
+        assertThat(scope.device("meter-missing")).isEmpty();
+        synchronized (requests) {
+            assertThat(requests).containsExactly("/micro-api/api/energy/equipment/page");
+        }
+        assertThatThrownBy(() -> adapter.loadAuthorizedEnergyScope(
+                        new RequestIdentity("Bearer office-token", "TENANT-1", IotSource.OFFICE, "owner-1"))
+                .block(Duration.ofSeconds(1)))
+                .isInstanceOf(BusinessException.class)
+                .satisfies(error -> assertThat(((BusinessException) error).code()).isEqualTo("IOT_SOURCE_UNAVAILABLE"));
+    }
+
+    @Test
     void companyCatalogUsesRuntimeShapesAndMergesAcLocations() {
         AtomicReference<java.util.List<String>> requests = new AtomicReference<>(new java.util.ArrayList<>());
         java.util.concurrent.atomic.AtomicBoolean validBinding = new java.util.concurrent.atomic.AtomicBoolean(true);

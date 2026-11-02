@@ -733,6 +733,15 @@ public final class WebClientIotAdapter implements IotAdapter {
                 ? execute("load authorized Company video scope", loadCompanyVideoScope(identity))
                 : loadAuthorizedDeviceScope(identity);
     }
+    @Override
+    public Mono<AuthorizedDeviceScope> loadAuthorizedEnergyScope(RequestIdentity identity) {
+        Objects.requireNonNull(identity, "identity");
+        if (identity.source() != IotSource.COMPANY) {
+            return Mono.error(new BusinessException("IOT_SOURCE_UNAVAILABLE", "公司电表授权范围仅支持公司来源", 404));
+        }
+        return execute("load authorized Company energy scope",
+                loadCompanyScopeForKinds(identity, Set.of("energy")));
+    }
 
     @Override
     public Mono<VideoPlaybackPreparation> prepareVideoPlayback(

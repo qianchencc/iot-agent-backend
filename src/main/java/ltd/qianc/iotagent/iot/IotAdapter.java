@@ -15,6 +15,14 @@ public interface IotAdapter {
     default Mono<AuthorizedDeviceScope> loadAuthorizedVideoScope(RequestIdentity identity) {
         return loadAuthorizedDeviceScope(identity);
     }
+    /**
+     * Company meter authorization only. The WebClient implementation reads the
+     * energy family alone so meter history is not blocked by unrelated catalog
+     * families; adapters without a narrower read may reuse the full scope.
+     */
+    default Mono<AuthorizedDeviceScope> loadAuthorizedEnergyScope(RequestIdentity identity) {
+        return loadAuthorizedDeviceScope(identity);
+    }
 
     /** Runtime-compatible candidate discovery, always intersected with server scope. */
     default Mono<DeviceCandidateSet> findDeviceCandidates(RequestIdentity identity, DeviceCandidateQuery query) {
