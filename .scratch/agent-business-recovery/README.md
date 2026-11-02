@@ -4,6 +4,8 @@
 
 先读[规格](spec.md)、[说明书验收矩阵](acceptance.md)和[ADR0004](../../docs/adr/0004-java-business-definition-generic-agent-engine.md)。业务用语见根GLOSSARY。终点是完整Java业务后端与通用Node引擎，并在真实开发者工具跑通约20条代表路径、保留截图；不是全量149条通过、票据数量、请求结果或测试通过。样本可按真实数据与发现调整，不凑数。
 
+2026-11-02 后续已确认「公司全灯任务持有156成员却仅提案2路」的语义迁移缺陷。新增[Runtime业务语义恢复入口](../agent-runtime-semantic-parity/README.md)，含事实核查、补充规格和6张可执行票；Java拥有业务、Node仅提供基础Agent能力的ADR不变。旧票和此前真实修复保留，不因新票发布而关闭；本轮只发布记录/票据，不恢复全部卡片遍历，也不宣称缺陷已修复。
+
 [双轴审查记录](review.md)列出Standards/Spec发现和修正；文档检查与业务验收的证据范围分开记录。
 
 Pi Session 去 SQLite 的后续探索、MySQL 规格和六张执行票见[迁移入口](../pi-session-mysql/README.md)。该方向尚未实现，不能把本入口的历史证据当作迁移已完成。
