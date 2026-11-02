@@ -573,7 +573,10 @@ public final class WebClientIotAdapter implements IotAdapter {
                     for (JsonNode row : rows) {
                         String equipmentId = text(row, "equipmentId");
                         Map<String, Object> reading = energyReading(row);
-                        if (equipmentId != null && reading != null) latest.putIfAbsent(equipmentId, reading);
+                        // Runtime's readEnergyReadings uses Map.set: if upstream repeats a
+                        // meter across pages, the last row wins. Never fall back to another
+                        // meter's reading when this id is absent.
+                        if (equipmentId != null && reading != null) latest.put(equipmentId, reading);
                     }
                     Map<String, Object> states = new LinkedHashMap<>();
                     for (AuthorizedDevice device : devices) {

@@ -277,10 +277,16 @@ class IotAdapterContractTest {
             synchronized (requests) { requests.add(url.getPath() + "?" + (url.getQuery() == null ? "" : url.getQuery())); }
             String path = url.getPath();
             if (path.endsWith("/energy/equipment/page")) {
-                return Mono.just(json("{\"code\":200,\"content\":{\"content\":[{\"id\":\"meter-1\",\"equipmentName\":\"总电表\",\"areaName\":\"配电房\"}],\"last\":true}}"));
+                return Mono.just(json("{\"code\":200,\"content\":{\"content\":["
+                        + "{\"id\":\"meter-1\",\"equipmentName\":\"总电表\",\"areaName\":\"配电房\"},"
+                        + "{\"id\":\"meter-2\",\"equipmentName\":\"分电表\",\"areaName\":\"二层\"}],\"last\":true}}"));
             }
             if (path.endsWith("/energy/realTimeRead/page")) {
-                return Mono.just(json("{\"code\":200,\"content\":{\"content\":[{\"equipmentId\":\"meter-1\",\"readTime\":\"2026-10-30 04:00:00\",\"totalActivePower\":\"12.5\"}],\"last\":true}}"));
+                return Mono.just(json("{\"code\":200,\"content\":{\"content\":["
+                        + "{\"equipmentId\":\"meter-1\",\"readTime\":\"2026-10-30 04:00:00\",\"ia\":6.9,\"ib\":0,\"ic\":0},"
+                        + "{\"equipmentId\":\"meter-2\",\"readTime\":\"2026-10-30 04:00:00\",\"ia\":2.1,\"ib\":1.2,\"ic\":1.3},"
+                        + "{\"equipmentId\":\"meter-1\",\"readTime\":\"2026-10-30 04:05:00\",\"ia\":7.7,\"ib\":0,\"ic\":0}"
+                        + "],\"last\":true}}"));
             }
             return Mono.just(json("{\"code\":204,\"content\":null}"));
         };
@@ -308,22 +314,25 @@ class IotAdapterContractTest {
                 Duration.ofSeconds(1), IotCallPolicy.passThrough(), store);
         RequestIdentity identity = new RequestIdentity("Bearer company-token", "TENANT-1", IotSource.COMPANY,
                 "owner-1");
-        AuthorizedDevice meter = adapter.loadAuthorizedDeviceScope(identity)
-                .block(Duration.ofSeconds(1)).device("meter-1").orElseThrow();
+        AuthorizedDeviceScope catalog = adapter.loadAuthorizedDeviceScope(identity)
+                .block(Duration.ofSeconds(1));
+        AuthorizedDevice meter1 = catalog.device("meter-1").orElseThrow();
+        AuthorizedDevice meter2 = catalog.device("meter-2").orElseThrow();
         DeviceCandidateRecord set = new DeviceCandidateRecord("set-meter", "conversation-meter",
                 "TENANT-1", "owner-1", IotSource.COMPANY, "snapshot",
                 new DeviceCandidateQuery("energy", List.of(), null, List.of(), List.of(), null, null),
-                List.of(meter), true, 1, "2026-10-30T09:00:00Z");
+                List.of(meter1, meter2), true, 2, "2026-10-30T09:00:00Z");
         store.save(set);
         synchronized (requests) { requests.clear(); }
 
         DeviceStateReadResult states = adapter.readDeviceStates(identity,
                         new DeviceCapabilityRequest(List.of(new DeviceCapabilityRequest.DeviceCapabilitySelection(
-                                "set-meter", List.of("meter-1")))), "conversation-meter")
+                                "set-meter", List.of("meter-1", "meter-2")))), "conversation-meter")
                 .block(Duration.ofSeconds(1));
 
-        assertThat(states.states().get("meter-1")).isNotNull();
-        assertThat((Map<?, ?>) states.states().get("meter-1")).containsEntry("totalActivePower", 12.5);
+        assertThat((Map<?, ?>) states.states().get("meter-1")).containsEntry("ia", 7.7);
+        assertThat((Map<?, ?>) states.states().get("meter-2")).containsEntry("ia", 2.1);
+        assertThat(states.states().get("meter-1")).isNotEqualTo(states.states().get("meter-2"));
         synchronized (requests) {
             assertThat(requests).allMatch(request -> request.contains("/energy/"));
             assertThat(requests).anyMatch(request -> request.contains("/energy/equipment/page"));
