@@ -35,6 +35,7 @@ import ltd.qianc.iotagent.task.TaskPlanFact;
 final class AgentReferenceResolver {
 
     private static final Duration TIMEOUT = Duration.ofSeconds(30);
+    private static final java.time.ZoneId SHANGHAI = java.time.ZoneId.of("Asia/Shanghai");
     private static final java.util.Set<String> COMPANY_ONLY = java.util.Set.of(
             "customer_alert", "report", "energy_report", "safety_event", "environment_window");
 
@@ -229,7 +230,41 @@ final class AgentReferenceResolver {
         reference.put("to", to);
         reference.put("label", "环境历史 · " + from + " 至 " + to);
         reference.put("verified", true);
-        return new ReferenceResolution(reference, Map.of("environmentWindow", report));
+        Map<String, Object> facts = new LinkedHashMap<>();
+        facts.put("environmentTimeLabels", environmentTimeLabels(report));
+        facts.put("environmentWindow", report);
+        return new ReferenceResolution(reference, facts);
+    }
+
+    /** Display times are server conversions of the same instants, never model arithmetic. */
+    private static Map<String, Object> environmentTimeLabels(Map<String, Object> report) {
+        Map<String, Object> labels = new LinkedHashMap<>();
+        labels.put("timezone", "Asia/Shanghai");
+        for (String section : List.of("window", "coverage")) {
+            if (report.get(section) instanceof Map<?, ?> values) {
+                for (String key : List.of("from", "to")) {
+                    putShanghaiTime(labels, section + "." + key, values.get(key));
+                }
+            }
+        }
+        if (report.get("metrics") instanceof List<?> metrics) {
+            for (Object item : metrics) {
+                if (item instanceof Map<?, ?> metric && metric.get("peak") instanceof Map<?, ?> peak) {
+                    putShanghaiTime(labels, "peak." + metric.get("key"), peak.get("at"));
+                }
+            }
+        }
+        return labels;
+    }
+
+    private static void putShanghaiTime(Map<String, Object> labels, String key, Object value) {
+        if (!(value instanceof String time)) return;
+        try {
+            labels.put(key, OffsetDateTime.parse(time).atZoneSameInstant(SHANGHAI)
+                    .format(DateTimeFormatter.ISO_OFFSET_DATE_TIME));
+        } catch (java.time.format.DateTimeParseException invalidTime) {
+            labels.put(key, "时间无法核验，不推算");
+        }
     }
 
     private ReferenceResolution report(AgentToolContext context, IotSource source, Map<String, Object> raw, String type) {

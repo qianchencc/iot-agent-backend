@@ -48,12 +48,12 @@ final class TaskTargetResolver {
 
     static void materialize(ObjectMapper mapper, IotAdapter iot, Duration timeout, PrincipalInfo principal,
             String source, ObjectNode request) {
-        if (!request.path("phases").isArray()) return;
         // fixedDeviceIds is a server-authored fact derived from the verified read
         // members; a model-provided copy would forge the report's fixed scope.
         if (request.path("reportRequest").has("fixedDeviceIds")) {
             throw invalid("报告固定成员由服务器按已确认只读范围写入，不能直接提供");
         }
+        if (!request.path("phases").isArray()) return;
         var resolver = new TaskTargetResolver(mapper, iot, timeout, principal, source, request);
         for (JsonNode value : request.path("phases")) {
             if (!(value instanceof ObjectNode phase)) continue;
@@ -174,7 +174,6 @@ final class TaskTargetResolver {
      */
     private void preflight(ObjectNode phase, ArrayNode actions) {
         if (iot == null) throw invalid("当前设备授权范围暂不可用");
-        List<String> ids = new ArrayList<>();
         for (JsonNode action : actions) {
             String id = action.path("deviceId").asText();
             AuthorizedDevice device = scope().device(id)
@@ -183,13 +182,34 @@ final class TaskTargetResolver {
             if (device.controlRef() == null || device.controlRef().isBlank()) {
                 throw invalid("控制目标缺少真实控制绑定：" + id);
             }
-            ids.add(id);
         }
+        // Match Runtime's fixed candidate reads: revalidate only the participating
+        // families, not the entire seven-family catalog again for every phase.
+        requireConversation();
+        Map<String, List<String>> idsByKind = new LinkedHashMap<>();
+        for (JsonNode action : actions) {
+            idsByKind.computeIfAbsent(action.path("kind").asText(), ignored -> new ArrayList<>())
+                    .add(action.path("deviceId").asText());
+        }
+        List<DeviceCapabilityRequest.DeviceCapabilitySelection> selections = new ArrayList<>();
+        for (var group : idsByKind.entrySet()) {
+            var found = iot.findDeviceCandidates(identity,
+                    new DeviceCandidateQuery(group.getKey(), group.getValue(), null, List.of(), List.of(), null, null),
+                    new DeviceCandidateBinding(conversation)).block(timeout);
+            if (found == null) throw invalid("控制目标候选范围暂不可核验");
+            DeviceCandidateRecord record = candidate(found.candidateSetId());
+            if (record.members().size() != group.getValue().size()
+                    || !record.members().stream().map(AuthorizedDevice::id).collect(
+                            java.util.stream.Collectors.toSet()).equals(new LinkedHashSet<>(group.getValue()))) {
+                throw invalid("控制目标候选成员发生变化，请重新准备");
+            }
+            selections.add(new DeviceCapabilityRequest.DeviceCapabilitySelection(
+                    record.candidateSetId(), group.getValue()));
+        }
+        DeviceCapabilityRequest fixed = new DeviceCapabilityRequest(selections);
         DeviceCapabilityInspection inspection;
         try {
-            inspection = iot.inspectDeviceCapabilities(identity,
-                    new DeviceCapabilityRequest(List.of(new DeviceCapabilityRequest.DeviceCapabilitySelection(
-                            "task-targets", ids)))).block(timeout);
+            inspection = iot.inspectDeviceCapabilities(identity, fixed, conversation).block(timeout);
         } catch (RuntimeException failure) {
             throw invalid("控制目标能力暂不可核验，请稍后重试");
         }
@@ -216,22 +236,23 @@ final class TaskTargetResolver {
                 throw invalid("设备类型不可控：" + id);
             }
         }
-        DeviceStateReadResult states;
-        try {
-            states = iot.readDeviceStates(identity, ids).block(timeout);
-        } catch (RuntimeException failure) {
-            throw invalid("设备当前状态暂不可读，请稍后重试");
-        }
-        if (states == null) throw invalid("设备当前状态暂不可读，请稍后重试");
+        // A future action is authorized by its verified binding/capability, not today's
+        // availability. Retain unknown members; authentication and scope errors still fail closed.
+        DeviceStateReadResult states = iot.readDeviceStates(identity, fixed, conversation)
+                .timeout(timeout)
+                .onErrorResume(failure -> failure instanceof ltd.qianc.iotagent.iot.UpstreamUnavailableException
+                                || failure instanceof java.util.concurrent.TimeoutException,
+                        failure -> reactor.core.publisher.Mono.empty())
+                .block();
         int satisfied = 0, unreadable = 0;
         for (JsonNode action : actions) {
-            Object state = states.states().get(action.path("deviceId").asText());
+            Object state = states == null ? null : states.states().get(action.path("deviceId").asText());
             if (!readable(action, state)) unreadable++;
             else if (satisfied(action, state)) satisfied++;
         }
         ObjectNode preflight = phase.putObject("preflight");
         preflight.setAll((ObjectNode) phase.get("scopeFacts"));
-        preflight.put("observedAt", states.observedAt() == null ? "" : states.observedAt());
+        preflight.put("observedAt", states == null || states.observedAt() == null ? "" : states.observedAt());
         preflight.put("targetCount", actions.size());
         preflight.put("alreadySatisfiedCount", satisfied);
         preflight.put("unreadableCount", unreadable);
@@ -380,14 +401,11 @@ final class TaskTargetResolver {
         if (members == null || members.isEmpty()) throw invalid("报告缺少已确认的电表成员");
         JsonNode scope = reportRequest.get("scope");
         if (scope != null && scope.isObject()) {
-            String level = scope.path("level").asText("");
-            Set<String> declared = new LinkedHashSet<>();
-            if (scope.path("meterId").isTextual() && !scope.path("meterId").asText("").isBlank()) {
-                declared.add(scope.path("meterId").asText());
-            }
-            for (JsonNode id : scope.path("meterIds")) if (id.isTextual()) declared.add(id.asText());
-            boolean sameSet = declared.size() == members.size() && declared.containsAll(members);
-            if (!sameSet && !(wholeFamily && "all".equals(level) && declared.isEmpty())) {
+            var declared = ltd.qianc.iotagent.report.ReportMeterScope.resolve(
+                    scope(), mapper.convertValue(scope, Object.class));
+            boolean sameSet = declared.meterIds().size() == members.size()
+                    && new LinkedHashSet<>(declared.meterIds()).containsAll(members);
+            if (!sameSet || (!wholeFamily && "all".equals(declared.level()))) {
                 throw invalid("报告范围与已确认的只读成员不一致，请让两者使用同一电表集合");
             }
         }

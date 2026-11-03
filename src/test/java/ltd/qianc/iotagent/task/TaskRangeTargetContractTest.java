@@ -14,6 +14,7 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import ltd.qianc.iotagent.auth.PrincipalInfo;
 import ltd.qianc.iotagent.error.BusinessException;
@@ -277,6 +278,51 @@ class TaskRangeTargetContractTest {
     }
 
     @Test
+    void rootLevelReadUsesTheSameFixedMemberRules() throws Exception {
+        var saved = facade().propose(PRINCIPAL, "company", "conversation", "turn",
+                """
+                {"label":"根级精确只读","at":"2026-11-02T05:03:00Z","read":{"deviceIds":["meter-3"]},
+                 "reportRequest":{"kind":"energy","period":{"kind":"previous","unit":"day"}}}
+                """, "root-read");
+        var ids = mapper.readTree(saved.payloadJson()).path("reportRequest").path("scope").path("meterIds");
+        assertThat(ids).hasSize(1);
+        assertThat(ids.get(0).asText()).isEqualTo("meter-3");
+        var adapter = new RangeAdapter(
+                new AuthorizedDevice("safe-a", "safety", "烟感A", "26楼", true),
+                new AuthorizedDevice("safe-b", "safety", "烟感B", "27楼", true));
+        assertThatThrownBy(() -> facade(adapter).propose(PRINCIPAL, "company", "conversation", "turn",
+                """
+                {"label":"根级伪造固定成员","at":"2026-11-02T05:03:00Z",
+                 "read":{"alertWindow":"previous_week","deviceIds":["safe-a"]},
+                 "reportRequest":{"kind":"safety","fixedDeviceIds":["safe-b"],
+                   "period":{"kind":"previous","unit":"week"}}}
+                """, "root-forged-safety")).isInstanceOf(BusinessException.class);
+    }
+
+    @Test
+    void equivalentFloorAndNameScopesArePinnedToTheExactReadSet() throws Exception {
+        for (var declared : List.of(
+                Map.of("level", "floor", "floor", "26楼"),
+                Map.of("level", "nameMatch", "floor", "26楼", "text", "电表"))) {
+            var request = mapper.createObjectNode().put("label", "等价范围");
+            var report = request.putObject("reportRequest").put("kind", "energy");
+            report.putObject("period").put("kind", "previous").put("unit", "day");
+            report.set("scope", mapper.valueToTree(declared));
+            var ids = request.putArray("phases").addObject().put("at", "2026-11-02T05:03:00Z")
+                    .putObject("read").putArray("deviceIds");
+            for (int i = 1; i <= 75; i++) ids.add("meter-" + i);
+            var saved = facade().propose(PRINCIPAL, "company", "conversation", "turn",
+                    request.toString(), "equivalent-" + declared.get("level"));
+            var pinned = mapper.readTree(saved.payloadJson()).path("reportRequest").path("scope");
+            assertThat(pinned.path("level").asText()).isEqualTo("selection");
+            assertThat(pinned.path("meterIds")).isEqualTo(ids);
+            ids.remove(0);
+            assertThatThrownBy(() -> facade().propose(PRINCIPAL, "company", "conversation", "turn",
+                    request.toString(), "conflict-" + declared.get("level"))).isInstanceOf(BusinessException.class);
+        }
+    }
+
+    @Test
     void targetPreflightRecordsSatisfiedAndUnreadableWithoutDroppingFutureMembers() throws Exception {
         RangeAdapter adapter = new RangeAdapter();
         adapter.state("light-1", false);
@@ -294,6 +340,38 @@ class TaskRangeTargetContractTest {
         assertThat(preflight.path("alreadySatisfiedCount").asInt()).isEqualTo(1);
         assertThat(preflight.path("unreadableCount").asInt()).isEqualTo(1);
         assertThat(preflight.path("needsDispatchCount").asInt()).isEqualTo(154);
+    }
+
+    @Test
+    void unavailableCurrentStateRetainsEveryVerifiedFutureTarget() throws Exception {
+        RangeAdapter adapter = new RangeAdapter();
+        adapter.stateFailure = new ltd.qianc.iotagent.iot.UpstreamUnavailableException("state");
+        var proposal = facade(adapter).propose(PRINCIPAL, "company", "conversation", "turn",
+                """
+                {"label":"状态未知仍保留未来目标","phases":[{"at":"2026-11-02T05:03:00Z","targets":[
+                  {"kind":"lighting","allAuthorized":true,"command":{"closeOrOpen":0}}
+                ]}]}
+                """, "unavailable-state");
+        JsonNode phase = mapper.readTree(proposal.payloadJson()).path("phases").get(0);
+        assertThat(phase.path("actions")).hasSize(156);
+        assertThat(phase.path("preflight").path("unreadableCount").asInt()).isEqualTo(156);
+        assertThat(phase.path("preflight").path("alreadySatisfiedCount").asInt()).isZero();
+        assertThat(phase.path("preflight").path("needsDispatchCount").asInt()).isZero();
+        assertThat(phase.path("preflight").path("observedAt").asText()).isEmpty();
+    }
+
+    @Test
+    void stateAuthorizationFailureCannotBecomeUnknownPreflight() {
+        RangeAdapter adapter = new RangeAdapter();
+        adapter.stateFailure = new ltd.qianc.iotagent.iot.GatewayAuthorizationException(401);
+        assertThatThrownBy(() -> facade(adapter).propose(PRINCIPAL, "company", "conversation", "turn",
+                """
+                {"label":"鉴权失败不提案","phases":[{"at":"2026-11-02T05:03:00Z","targets":[
+                  {"kind":"lighting","allAuthorized":true,"command":{"closeOrOpen":0}}
+                ]}]}
+                """, "unauthorized-state"))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        failure -> assertThat(failure.code()).isEqualTo("IOT_GATEWAY_UNAUTHORIZED"));
     }
 
     @Test
@@ -368,6 +446,7 @@ class TaskRangeTargetContractTest {
         private final java.util.Set<String> incapable = new java.util.HashSet<>();
         private final java.util.Map<String, Object> stateOverrides = new java.util.HashMap<>();
         private final java.util.Set<String> unreadable = new java.util.HashSet<>();
+        private RuntimeException stateFailure;
 
         void incapable(String id) { incapable.add(id); }
 
@@ -377,6 +456,7 @@ class TaskRangeTargetContractTest {
 
         @Override public Mono<ltd.qianc.iotagent.iot.DeviceStateReadResult> readDeviceStates(
                 RequestIdentity identity, List<String> deviceIds) {
+            if (stateFailure != null) return Mono.error(stateFailure);
             java.util.Map<String, Object> states = new java.util.LinkedHashMap<>();
             for (String id : deviceIds) {
                 if (unreadable.contains(id)) continue;
@@ -429,7 +509,8 @@ class TaskRangeTargetContractTest {
                 ltd.qianc.iotagent.iot.DeviceCandidateQuery query, ltd.qianc.iotagent.iot.DeviceCandidateBinding binding) {
             var scope = loadAuthorizedDeviceScope(identity).block();
             var members = scope.devices().stream().filter(d -> d.kind().equals(query.kind()))
-                    .filter(d -> d.installAddress().contains(query.scopeText())).toList();
+                    .filter(d -> query.deviceIds().isEmpty() || query.deviceIds().contains(d.id()))
+                    .filter(d -> query.scopeText() == null || d.installAddress().contains(query.scopeText())).toList();
             String id = "scope-" + query.kind() + "-" + query.scopeText();
             candidates.put(id, new ltd.qianc.iotagent.iot.DeviceCandidateRecord(id, binding.conversationId(),
                     identity.tenantCode(), identity.ownerKey(), identity.source(), scope.catalogFingerprint(),

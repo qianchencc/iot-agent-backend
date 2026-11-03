@@ -52,7 +52,11 @@ function launch() {
   return spawn(process.execPath, ["dist/server.js"], { env, stdio: ["ignore", "pipe", "pipe"] });
 }
 async function waitForHealth() {
-  for (let attempt = 0; attempt < 50; attempt++) {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    if (childProcess.exitCode !== null) {
+      throw new Error(`sidecar exited before readiness: ${childProcess.exitCode}`);
+    }
     try {
       const response = await fetch(`http://127.0.0.1:${port}/healthz`, { headers: { authorization: `Bearer ${token}` } });
       if (response.ok) return response.json();

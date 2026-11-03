@@ -249,7 +249,7 @@ class SafetyLedgerObservationContractTest {
                 0, List.of(alarm("o1", "smoke-1", "2026-10-16T09:00:00Z"),
                         alarm("c1", "company-smoke-1", "2026-10-16T08:00:00Z"))));
         // Same authorization and tenant as COMPANY: identical owner key, different source.
-        // Both composers share one MAC key so only the source binding can reject a replay.
+        // One composed adapter shares its cursor key across both requesting sources.
         RequestIdentity office = new RequestIdentity("Bearer company", "TENANT-1", IotSource.OFFICE);
         byte[] macKey = new byte[32];
         ObservationAdapter officeLedger = ObservationAdapterFactory.safetyLedger(upstream,
@@ -373,19 +373,6 @@ class SafetyLedgerObservationContractTest {
         };
     }
 
-    private static IotAdapter sourceIot(RequestIdentity identity, IotSource source, AuthorizedDevice... devices) {
-        return new IotAdapter() {
-            @Override
-            public Mono<AuthorizedDeviceScope> loadAuthorizedDeviceScope(RequestIdentity request) {
-                return Mono.just(AuthorizedDeviceScope.of(identity, source, List.of(devices)));
-            }
-
-            @Override
-            public Mono<AuthorizedDeviceScope> loadAuthorizedSafetyScope(RequestIdentity request) {
-                return Mono.just(AuthorizedDeviceScope.of(identity, source, List.of(devices)));
-            }
-        };
-    }
 
     private static AuthorizedDevice device(String id, String name, String hub) {
         return new AuthorizedDevice(id, "safety", name, "", true, null, id, hub, null, List.of(), List.of(), Map.of());

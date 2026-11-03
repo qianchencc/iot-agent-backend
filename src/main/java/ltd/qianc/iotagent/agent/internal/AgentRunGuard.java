@@ -23,7 +23,7 @@ final class AgentRunGuard {
         Run run = run(contextId);
         Map<String, Object> stable = new LinkedHashMap<>(arguments);
         stable.remove("idempotencyKey");
-        String fingerprint = tool.name() + ":" + json(stable);
+        String fingerprint = tool.name() + ":" + json(stable, false);
         synchronized (run) {
             Invocation prior = run.calls.get(callId);
             if (prior != null) {
@@ -54,8 +54,10 @@ final class AgentRunGuard {
                     run.awaitingCameraSelection = true;
                 }
                 if (read) {
-                    Map<String, Object> previous = run.readEvidence.put(fingerprint, result);
-                    if (!sameEvidence(previous, result)) run.failures.clear();
+                    String evidenceKey = tool.name() + ":" + json(stable, true);
+                    Object evidence = canonical(result, true);
+                    Object previous = run.readEvidence.put(evidenceKey, evidence);
+                    if (!java.util.Objects.equals(previous, evidence)) run.failures.clear();
                 } else {
                     run.successes.put(fingerprint, 1);
                     run.failures.remove(fingerprint);
@@ -71,21 +73,9 @@ final class AgentRunGuard {
         }
     }
 
-    private static boolean sameEvidence(Map<String, Object> previous, Map<String, Object> current) {
-        if (previous == null) return false;
-        for (Map.Entry<String, Object> entry : current.entrySet()) {
-            if (transientEvidenceField(entry.getKey())) continue;
-            if (!previous.containsKey(entry.getKey())
-                    || !java.util.Objects.equals(previous.get(entry.getKey()), entry.getValue())) return false;
-        }
-        for (String key : previous.keySet()) {
-            if (!transientEvidenceField(key) && !current.containsKey(key)) return false;
-        }
-        return true;
-    }
 
     private static boolean transientEvidenceField(String key) {
-        return "observedAt".equals(key) || "candidateSetId".equals(key);
+        return "observedAt".equals(key) || "candidateSetId".equals(key) || "candidateSetIds".equals(key);
     }
 
     private synchronized Run run(String id) {
@@ -99,22 +89,25 @@ final class AgentRunGuard {
         return created;
     }
 
-    private String json(Object value) {
-        try { return mapper.writeValueAsString(canonical(value)); }
+    private String json(Object value, boolean evidence) {
+        try { return mapper.writeValueAsString(canonical(value, evidence)); }
         catch (com.fasterxml.jackson.core.JsonProcessingException error) {
             throw failure("INVALID_AGENT_TOOL_ARGUMENTS", "工具参数无法规范化");
         }
     }
 
-    private static Object canonical(Object value) {
+    private static Object canonical(Object value, boolean evidence) {
         if (value instanceof Map<?, ?> map) {
             var sorted = new TreeMap<String, Object>();
-            map.forEach((key, item) -> sorted.put(String.valueOf(key), canonical(item)));
+            map.forEach((key, item) -> {
+                String field = String.valueOf(key);
+                if (!evidence || !transientEvidenceField(field)) sorted.put(field, canonical(item, evidence));
+            });
             return sorted;
         }
         if (value instanceof Iterable<?> list) {
             var result = new ArrayList<>();
-            list.forEach(item -> result.add(canonical(item)));
+            list.forEach(item -> result.add(canonical(item, evidence)));
             return result;
         }
         return value;
@@ -132,7 +125,7 @@ final class AgentRunGuard {
         boolean awaitingCameraSelection;
         final Map<String, Integer> failures = new HashMap<>();
         final Map<String, Integer> successes = new HashMap<>();
-        final Map<String, Map<String, Object>> readEvidence = new HashMap<>();
+        final Map<String, Object> readEvidence = new HashMap<>();
         final Map<String, Invocation> calls = new HashMap<>();
         Run(long created) { this.created = created; }
     }

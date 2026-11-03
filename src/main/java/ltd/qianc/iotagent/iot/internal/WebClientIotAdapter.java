@@ -452,12 +452,12 @@ public final class WebClientIotAdapter implements IotAdapter {
                                 }
                                 int nested = content == null ? 0 : content.path("code").asInt(0);
                                 if (nested == 401 || nested == 403) return Mono.error(new GatewayAuthorizationException(nested));
-                                return Mono.just(companyAcState(content));
+                                return Mono.justOrEmpty(companyAcState(content));
                             });
                 })
                 .timeout(callTimeout)
                 .onErrorResume(error -> error instanceof GatewayAuthorizationException
-                        ? Mono.error(error) : Mono.just((Object) null));
+                        ? Mono.error(error) : Mono.empty());
     }
 
     private static Object companyAcState(JsonNode content) {

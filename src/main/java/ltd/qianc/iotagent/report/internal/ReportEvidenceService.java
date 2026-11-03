@@ -33,6 +33,7 @@ import ltd.qianc.iotagent.iot.ObservationRequest;
 import ltd.qianc.iotagent.iot.ObservationResponse;
 import ltd.qianc.iotagent.iot.ObservationStatus;
 import ltd.qianc.iotagent.iot.RequestIdentity;
+import ltd.qianc.iotagent.report.ReportMeterScope;
 import ltd.qianc.iotagent.report.ReportUnavailableException;
 
 /**
@@ -50,7 +51,6 @@ public final class ReportEvidenceService {
     private static final Set<String> ENERGY_KEYS = Set.of(
             "kind", "title", "period", "comparisons", "scope", "grain", "objective");
     private static final Set<String> SAFETY_KEYS = Set.of("kind", "title", "period", "types", "objective", "fixedDeviceIds");
-    private static final Set<String> SCOPE_KEYS = Set.of("level", "floor", "text", "meterId", "meterIds");
     private static final Set<String> SAFETY_TYPES = Set.of("smoke", "gas", "flooding");
 
     private final IotAdapter iot;
@@ -95,7 +95,7 @@ public final class ReportEvidenceService {
         Instant from = instant(period.get("from"));
         Instant to = instant(period.get("to"));
         List<ComparisonRequest> comparisons = comparisons(root.get("comparisons"), from, to, anchor);
-        Scope scope = scope(identity, root.get("scope"));
+        ReportMeterScope scope = scope(identity, root.get("scope"));
         String grain = optionalText(root.get("grain"));
         if (grain != null && !List.of("day", "week", "month").contains(grain)) {
             throw new BusinessException("INVALID_REPORT", "报告粒度仅支持日/周/月");
@@ -392,59 +392,8 @@ public final class ReportEvidenceService {
         return payload;
     }
 
-    private Scope scope(RequestIdentity identity, Object raw) {
-        AuthorizedDeviceScope authorized = loadScope(identity);
-        List<AuthorizedDevice> all = authorized.devices().stream()
-                .filter(device -> "energy".equalsIgnoreCase(device.kind())).toList();
-        List<String> allIds = all.stream().map(AuthorizedDevice::id).toList();
-        Map<String, Object> request;
-        if (raw == null) {
-            request = new LinkedHashMap<>();
-            request.put("level", "all");
-        } else {
-            request = map(raw);
-        }
-        if (request == null) throw new BusinessException("INVALID_REPORT", "报告范围无效");
-        for (String key : request.keySet()) {
-            if (!SCOPE_KEYS.contains(key)) throw new BusinessException("INVALID_REPORT", "报告范围包含未知字段");
-        }
-        String level = text(request.get("level"));
-        if (level == null) level = "all";
-        List<AuthorizedDevice> selected;
-        switch (level) {
-            case "all" -> selected = all;
-            case "floor" -> {
-                String floor = text(request.get("floor"));
-                if (floor == null) throw new BusinessException("INVALID_REPORT", "楼层报告范围缺少楼层");
-                selected = all.stream().filter(device -> floor.equals(floorOf(device.installAddress()))).toList();
-            }
-            case "location" -> {
-                String id = text(request.get("meterId"));
-                AuthorizedDevice device = id == null ? null : all.stream().filter(item -> item.id().equals(id)).findFirst().orElse(null);
-                if (device == null) throw new BusinessException("REPORT_SCOPE_CHANGED", "报告引用的电表不在当前授权范围内", 404);
-                selected = List.of(device);
-            }
-            case "nameMatch" -> {
-                String text = text(request.get("text"));
-                if (text == null) throw new BusinessException("INVALID_REPORT", "名称匹配范围缺少文本");
-                String floor = text(request.get("floor"));
-                selected = all.stream().filter(device -> (floor == null || floor.equals(floorOf(device.installAddress())))
-                        && (device.installAddress() + " " + device.name()).contains(text)).toList();
-            }
-            case "selection" -> {
-                List<String> ids = strings(request.get("meterIds"));
-                if (ids.isEmpty()) throw new BusinessException("INVALID_REPORT", "选择范围缺少电表");
-                LinkedHashSet<String> unique = new LinkedHashSet<>(ids);
-                selected = unique.stream().map(id -> all.stream().filter(item -> item.id().equals(id)).findFirst().orElse(null)).toList();
-                if (selected.stream().anyMatch(Objects::isNull)) {
-                    throw new BusinessException("REPORT_SCOPE_CHANGED", "报告引用的电表不在当前授权范围内", 404);
-                }
-            }
-            default -> throw new BusinessException("INVALID_REPORT", "报告范围层级无效");
-        }
-        if (selected.isEmpty()) throw new BusinessException("INVALID_REPORT", "报告范围没有授权电表");
-        List<String> meterIds = selected.stream().map(AuthorizedDevice::id).toList();
-        return new Scope(level, meterIds, allIds);
+    private ReportMeterScope scope(RequestIdentity identity, Object raw) {
+        return ReportMeterScope.resolve(loadScope(identity), raw);
     }
 
     private AuthorizedDeviceScope loadScope(RequestIdentity identity) {
@@ -581,7 +530,7 @@ public final class ReportEvidenceService {
         return value.atZone(SHANGHAI).toOffsetDateTime().format(java.time.format.DateTimeFormatter.ISO_OFFSET_DATE_TIME);
     }
 
-    private static String summary(Scope scope, Instant from, Instant to) {
+    private static String summary(ReportMeterScope scope, Instant from, Instant to) {
         return "报告期间 " + format(from) + " 至 " + format(to) + "（上海时间），固定计量范围 "
                 + scope.meterIds().size() + " 台";
     }
@@ -708,13 +657,6 @@ public final class ReportEvidenceService {
         return text(value);
     }
 
-    private static String floorOf(String address) {
-        if (address == null) return null;
-        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("^(\\d+楼)").matcher(address);
-        return matcher.find() ? matcher.group(1) : null;
-    }
-
-    private record Scope(String level, List<String> meterIds, List<String> allMeterIds) { }
 
     private record ExpectedSpan(Instant from, Instant to, ExpectedSpan baseline, List<String> meterIds) { }
 
