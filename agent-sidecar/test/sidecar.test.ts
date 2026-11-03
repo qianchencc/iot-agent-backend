@@ -716,6 +716,33 @@ it("restores prior Pi messages for a follow-up in the same session scope", async
   await app.close();
 });
 
+it("uses current invocation context without persisting it into later conversations", async () => {
+  const model = await openModel(index => ({ content: index === 0 ? "first answer" : "second answer" }));
+  const settings = await config({ modelBaseUrl: model.url });
+  const firstApp = buildApp(settings);
+  const first = await firstApp.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
+    runId: "context-first", turnId: "context-turn-1", content: "first question", sessionScope: "ephemeral-context",
+    definition: definition({ context: "CURRENT_CONTEXT_A" }),
+  }) });
+  assert.ok(events(first.body).some(event => event.type === "run.completed"));
+  await firstApp.close();
+  const secondApp = buildApp(settings);
+  const second = await secondApp.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
+    runId: "context-second", turnId: "context-turn-2", content: "second question", sessionScope: "ephemeral-context",
+    definition: definition({ context: "CURRENT_CONTEXT_B" }),
+  }) });
+  assert.ok(events(second.body).some(event => event.type === "run.completed"));
+  const firstInput = JSON.stringify(model.requests[0]);
+  assert.match(firstInput, /CURRENT_CONTEXT_A[\s\S]*first question/);
+  const secondInput = JSON.stringify(model.requests[1]);
+  assert.equal(secondInput.includes("CURRENT_CONTEXT_A"), false);
+  assert.ok(secondInput.includes("first question"));
+  assert.ok(secondInput.includes("first answer"));
+  assert.match(secondInput, /CURRENT_CONTEXT_B[\s\S]*second question/);
+  assert.equal(secondInput.split("second question").length - 1, 1);
+  await secondApp.close();
+});
+
 it("binds history to the opaque session scope", async () => {
   const model = await openModel(index => ({ content: index === 0 ? "first answer" : "second answer" }));
   const app = buildApp(await config({ modelBaseUrl: model.url }));
