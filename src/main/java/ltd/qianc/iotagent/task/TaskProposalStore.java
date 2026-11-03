@@ -10,7 +10,8 @@ public interface TaskProposalStore {
     default Optional<TaskProposalFact> updateIfVersion(TaskProposalFact replacement, long expectedVersion) {
         throw new UnsupportedOperationException("Task proposal CAS store is not configured");
     }
-    default void retireForConversation(String conversationId) {
+    default java.util.List<TaskProposalFact> retireForConversation(String conversationId, String tenantCode,
+            String ownerKey, String source) {
         throw new UnsupportedOperationException("Task proposal store is not configured");
     }
 }

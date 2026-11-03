@@ -4,9 +4,9 @@
 
 **Blocked by:** [01 新会话经 Java/MySQL 保存并完整重开](01-new-session-mysql-contract.md)
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
-**Execution:** not-started
+**Execution:** checkpoints/fencing/idempotency implemented; generic工程回归通过，真实Node在途终止与后续业务恢复正在验收。
 
 规格：[统一 MySQL 会话持久化](../spec.md)。验收：[预期效果与验收](../acceptance.md)。工程通过不等于业务通过；不修改或关闭原业务恢复父票。
 
@@ -19,6 +19,16 @@
 - [ ] 公开成功终态只能在相应上下文与轮次终态持久化确认后出现；故障界面可解释，不泄露 SQLite/内部 scope/路径等实现细节。
 - [ ] 模型、MySQL、Redis 或私有网络失败均不会通过清空历史或自动创建空会话掩盖；Redis 失效不能丢失已提交会话。
 - [ ] 真实开发者工具完成一次中断后的业务追问；保留故障前、故障说明与新一轮结果截图，禁止执行生产控制或创建生产任务。
+
+## 2026-11-03进展
+
+消息、工具意图/检查点与终态逐步持久化；未知工具结果恢复为明确中断，不重放。真实隔离Node SIGKILL后的界面有“Agent Engine暂不可用”，新Node可继续进入Java授权工具；全公司照明读取仍失败，不能称该查询完整通过。之后Office3灯查询、报告上下文追问已成功；独立Redis停止期间真实报告追问仍保留两楼层数值和模拟补数限制，随后Redis已恢复。各精确崩溃点的全部前端证据仍未齐，保持未验收。
+
+### 长会话压缩发现的真实业务缺口
+
+U17暴露128k模型收到约165k历史，输出预算被挤压为128 token且无公开正文。原生Pi压缩恢复了回答，但U19仍丢失先前报告身份、合计及证据限制，保持失败，不因压缩单测通过而验收。
+
+原生SDK对每条工具结果仅序列化前2000字符；实际报告身份出现在约7.6k后，evidenceNotes约48k后。修复采用Java从已绑定会话的报告事件取身份、由报告模块校验tenant/owner/source/conversation并重投影不可变历史合计和证据限制；这些事实不代表当前设备权限。Node只接受Java提供的通用压缩说明，使用原生压缩；说明变更时从原始持久日志重建摘要，不删除或导入旧会话。修复后的原会话追问截图尚待补齐。
 
 ## Execution contract
 

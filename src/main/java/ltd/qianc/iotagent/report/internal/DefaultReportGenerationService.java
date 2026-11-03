@@ -18,12 +18,12 @@ import ltd.qianc.iotagent.report.ReportFact;
 import ltd.qianc.iotagent.report.ReportFactStore;
 import ltd.qianc.iotagent.report.ReportGenerationService;
 import ltd.qianc.iotagent.report.ReportUnavailableException;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Service;
 
 /** Generates immutable conversation-origin reports from server-owned evidence. */
 @Service
-@ConditionalOnBean(ReportFactStore.class)
+@ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
 public final class DefaultReportGenerationService implements ReportGenerationService {
     private final ReportFactStore store;
     private final ObjectMapper mapper;
@@ -86,6 +86,8 @@ public final class DefaultReportGenerationService implements ReportGenerationSer
         Map<String, Object> result = mapper.convertValue(root, new com.fasterxml.jackson.core.type.TypeReference<>() { });
         result.remove("tenantCode");
         result.remove("ownerKey");
+        java.util.List<String> notes = MeterExportEvidence.reportNotes(result);
+        if (!notes.isEmpty()) result.put("evidenceNotes", notes);
         return result;
     }
 

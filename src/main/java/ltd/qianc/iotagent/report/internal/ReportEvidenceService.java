@@ -44,12 +44,12 @@ import ltd.qianc.iotagent.report.ReportUnavailableException;
  * returned evidence matches the request. Model-authored blocks, totals and
  * conclusions are rejected before they can become a report fact.</p>
  */
-final class ReportEvidenceService {
+public final class ReportEvidenceService {
     private static final ZoneId SHANGHAI = ZoneId.of("Asia/Shanghai");
     private static final Duration CALL_TIMEOUT = Duration.ofSeconds(45);
     private static final Set<String> ENERGY_KEYS = Set.of(
             "kind", "title", "period", "comparisons", "scope", "grain", "objective");
-    private static final Set<String> SAFETY_KEYS = Set.of("kind", "title", "period", "types", "objective");
+    private static final Set<String> SAFETY_KEYS = Set.of("kind", "title", "period", "types", "objective", "fixedDeviceIds");
     private static final Set<String> SCOPE_KEYS = Set.of("level", "floor", "text", "meterId", "meterIds");
     private static final Set<String> SAFETY_TYPES = Set.of("smoke", "gas", "flooding");
 
@@ -57,33 +57,44 @@ final class ReportEvidenceService {
     private final ObservationAdapter observations;
     private final Clock clock;
 
-    ReportEvidenceService(IotAdapter iot, ObservationAdapter observations, Clock clock) {
+    public ReportEvidenceService(IotAdapter iot, ObservationAdapter observations, Clock clock) {
         this.iot = Objects.requireNonNull(iot, "iot");
         this.observations = Objects.requireNonNull(observations, "observations");
         this.clock = Objects.requireNonNull(clock, "clock");
     }
 
     Map<String, Object> build(RequestIdentity identity, Map<String, Object> request) {
+        // Natural conversation queries resolve relative windows against the live clock.
+        return build(identity, request, clock.instant());
+    }
+
+    /**
+     * Builds a report with relative periods anchored at the given occurrence
+     * time instead of the live clock, so a scheduled checkpoint keeps the same
+     * absolute window no matter when capture or its bounded retry runs.
+     */
+    public Map<String, Object> build(RequestIdentity identity, Map<String, Object> request, Instant anchor) {
         if (identity == null || identity.source() != IotSource.COMPANY) {
             throw new BusinessException("REPORT_SOURCE_UNSUPPORTED", "报告只支持 Company 来源");
         }
+        Instant bound = anchor == null ? clock.instant() : anchor;
         Map<String, Object> root = unwrap(request);
         String kind = text(root.get("kind"));
         if (kind == null) throw new BusinessException("INVALID_REPORT", "报告请求缺少 kind");
         return switch (kind.toLowerCase(Locale.ROOT)) {
-            case "energy" -> energy(identity, root);
-            case "safety" -> safety(identity, root);
+            case "energy" -> energy(identity, root, bound);
+            case "safety" -> safety(identity, root, bound);
             default -> throw new BusinessException("REPORT_KIND_UNSUPPORTED", "暂不支持该报告类型");
         };
     }
 
-    private Map<String, Object> energy(RequestIdentity identity, Map<String, Object> root) {
+    private Map<String, Object> energy(RequestIdentity identity, Map<String, Object> root, Instant anchor) {
         requireKeys(root, ENERGY_KEYS);
         String title = title(root, "用电报告");
-        Map<String, Object> period = period(root.get("period"), clock.instant());
+        Map<String, Object> period = period(root.get("period"), anchor);
         Instant from = instant(period.get("from"));
         Instant to = instant(period.get("to"));
-        List<ComparisonRequest> comparisons = comparisons(root.get("comparisons"), from, to, clock.instant());
+        List<ComparisonRequest> comparisons = comparisons(root.get("comparisons"), from, to, anchor);
         Scope scope = scope(identity, root.get("scope"));
         String grain = optionalText(root.get("grain"));
         if (grain != null && !List.of("day", "week", "month").contains(grain)) {
@@ -203,10 +214,10 @@ final class ReportEvidenceService {
         return result;
     }
 
-    private Map<String, Object> safety(RequestIdentity identity, Map<String, Object> root) {
+    private Map<String, Object> safety(RequestIdentity identity, Map<String, Object> root, Instant anchor) {
         requireKeys(root, SAFETY_KEYS);
         String title = title(root, "安全告警报告");
-        Map<String, Object> period = period(root.get("period"), clock.instant());
+        Map<String, Object> period = period(root.get("period"), anchor);
         Instant from = instant(period.get("from"));
         Instant to = instant(period.get("to"));
         List<String> types = new ArrayList<>();
@@ -222,6 +233,26 @@ final class ReportEvidenceService {
                 if (!types.contains(type)) types.add(type);
             }
             if (types.isEmpty()) throw new BusinessException("INVALID_REPORT", "安全报告至少需要一类台账");
+        }
+        // Server-pinned fixed members from the confirmed read checkpoint: the
+        // ledger statistics may only count these devices, never additions or
+        // devices the checkpoint never selected.
+        List<String> fixedDevices = new ArrayList<>();
+        Object rawFixed = root.get("fixedDeviceIds");
+        if (rawFixed != null) {
+            for (Object value : list(rawFixed)) {
+                String id = text(value);
+                if (id == null || id.isBlank()) throw new BusinessException("INVALID_REPORT", "安全报告固定成员无效");
+                if (!fixedDevices.contains(id)) fixedDevices.add(id);
+            }
+            if (fixedDevices.isEmpty()) throw new BusinessException("INVALID_REPORT", "安全报告固定成员无效");
+            Set<String> authorizedSafety = new LinkedHashSet<>();
+            for (AuthorizedDevice device : loadScope(identity).devices()) {
+                if ("safety".equalsIgnoreCase(device.kind())) authorizedSafety.add(device.id());
+            }
+            if (!authorizedSafety.containsAll(fixedDevices)) {
+                throw new BusinessException("INVALID_REPORT", "安全报告固定成员不在当前授权范围");
+            }
         }
         List<Map<String, Object>> blocks = new ArrayList<>();
         List<Map<String, Object>> coverages = new ArrayList<>();
@@ -244,6 +275,11 @@ final class ReportEvidenceService {
                 }
                 Map<String, Object> payload = response.payload();
                 List<Map<String, Object>> items = maps(payload.get("items"));
+                if (!fixedDevices.isEmpty()) {
+                    items = items.stream()
+                            .filter(item -> fixedDevices.contains(text(item.get("deviceId"))))
+                            .toList();
+                }
                 Map<String, Object> coverage = new LinkedHashMap<>();
                 coverage.put("type", type);
                 coverage.put("events", items.size());
@@ -281,8 +317,17 @@ final class ReportEvidenceService {
         result.put("status", complete ? "completed" : "partial");
         result.put("summary", summary);
         result.put("blocks", blocks);
-        result.put("requirements", Map.of("period", period, "types", types));
-        result.put("coverage", Map.of("types", coverages, "missing", gaps, "events", totalEvents));
+        Map<String, Object> requirements = new LinkedHashMap<>();
+        requirements.put("period", period);
+        requirements.put("types", types);
+        if (!fixedDevices.isEmpty()) requirements.put("fixedDeviceCount", fixedDevices.size());
+        result.put("requirements", requirements);
+        Map<String, Object> coverageView = new LinkedHashMap<>();
+        coverageView.put("types", coverages);
+        coverageView.put("missing", gaps);
+        coverageView.put("events", totalEvents);
+        if (!fixedDevices.isEmpty()) coverageView.put("fixedDeviceCount", fixedDevices.size());
+        result.put("coverage", coverageView);
         result.put("meterIds", List.of());
         result.put("authorizationMeterIds", List.of());
         result.put("build", buildId());
@@ -484,7 +529,7 @@ final class ReportEvidenceService {
             if (unit == null || !List.of("day", "week", "month").contains(unit)) {
                 throw new BusinessException("INVALID_REPORT", "报告期间单位仅支持日/周/月");
             }
-            LocalDate today = LocalDate.now(clock.withZone(SHANGHAI));
+            LocalDate today = LocalDate.ofInstant(now, SHANGHAI);
             Instant to = switch (unit) {
                 case "day" -> boundary(today);
                 case "week" -> boundary(today.with(java.time.temporal.TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)));

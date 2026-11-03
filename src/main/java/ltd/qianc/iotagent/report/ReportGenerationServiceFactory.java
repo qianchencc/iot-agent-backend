@@ -19,4 +19,8 @@ public final class ReportGenerationServiceFactory {
             IotAdapter iot, ObservationAdapter observations, Clock clock) {
         return new DefaultReportGenerationService(store, mapper, iot, observations, clock);
     }
+
+    public static ReportEvidencePort evidence(IotAdapter iot, ObservationAdapter observations, Clock clock) {
+        return new ltd.qianc.iotagent.report.internal.ReportEvidenceService(iot, observations, clock)::build;
+    }
 }

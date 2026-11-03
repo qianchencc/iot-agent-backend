@@ -321,7 +321,7 @@ class IotAdapterContractTest {
         DeviceCandidateRecord set = new DeviceCandidateRecord("set-meter", "conversation-meter",
                 "TENANT-1", "owner-1", IotSource.COMPANY, "snapshot",
                 new DeviceCandidateQuery("energy", List.of(), null, List.of(), List.of(), null, null),
-                List.of(meter1, meter2), true, 2, "2026-10-30T09:00:00Z");
+                List.of(meter1, meter2), true, 2, "2026-10-30T09:00:00Z", "exact");
         store.save(set);
         synchronized (requests) { requests.clear(); }
 
@@ -330,8 +330,8 @@ class IotAdapterContractTest {
                                 "set-meter", List.of("meter-1", "meter-2")))), "conversation-meter")
                 .block(Duration.ofSeconds(1));
 
-        assertThat((Map<?, ?>) states.states().get("meter-1")).containsEntry("ia", 7.7);
-        assertThat((Map<?, ?>) states.states().get("meter-2")).containsEntry("ia", 2.1);
+        assertThat(((Map<?, ?>) states.states().get("meter-1")).get("ia")).isEqualTo(7.7);
+        assertThat(((Map<?, ?>) states.states().get("meter-2")).get("ia")).isEqualTo(2.1);
         assertThat(states.states().get("meter-1")).isNotEqualTo(states.states().get("meter-2"));
         synchronized (requests) {
             assertThat(requests).allMatch(request -> request.contains("/energy/"));
@@ -573,6 +573,40 @@ class IotAdapterContractTest {
                 java.util.List.of(env)).block(Duration.ofSeconds(2));
 
         assertThat(result.states().get("env-1").toString()).contains("25.6").contains("shadow");
+    }
+
+    @Test
+    void companyLightsInOneAreaUseOneCoherentObservation() {
+        var snapshot = new java.util.concurrent.atomic.AtomicInteger();
+        ExchangeFunction fixture = candidate -> {
+            String path = candidate.url().getPath();
+            String query = candidate.url().getQuery() == null ? "" : candidate.url().getQuery();
+            if (path.endsWith("/lighting/myAreaList") && !query.contains("parentId")) {
+                return Mono.just(json("[{\"id\":\"lighting-root\",\"fullCode\":\"L-1\",\"name\":\"一层\"}]"));
+            }
+            if (path.endsWith("/lighting/myAreaList")) return Mono.just(json("[]"));
+            if (path.endsWith("/lighting/devicePage")) {
+                boolean on = snapshot.getAndIncrement() % 2 == 0;
+                return Mono.just(json("[{\"id\":\"light-a\",\"hubDeviceId\":\"hub-a\",\"name\":\"A灯\",\"switchStatus\":"
+                        + on + "},{\"id\":\"light-b\",\"hubDeviceId\":\"hub-b\",\"name\":\"B灯\",\"switchStatus\":"
+                        + on + "}]"));
+            }
+            return Mono.just(json("{\"code\":204,\"content\":null}"));
+        };
+        IotAdapter adapter = IotAdapterFactory.webClient(
+                WebClient.builder().exchangeFunction(fixture).build(),
+                IotGatewayRoutes.runtimeCompany("/office-scope", null,
+                        "/micro-api/api/iot-center/device/page", "/micro-api/api/energy/equipment/page",
+                        "/micro-api/api/perception/device/page", "/micro-api/api/iot-center/device",
+                        "/micro-api/api/office/app/device", "/micro-api/api/office/app/device/ac/myAreaList",
+                        "/micro-api/api/office/app/device/ac/devicePage", "/micro-api/api/iot-center/device/page"),
+                Duration.ofSeconds(1), IotCallPolicy.passThrough());
+        DeviceStateReadResult result = adapter.readDeviceStates(
+                new RequestIdentity("Bearer company-user", "TENANT-1", IotSource.COMPANY),
+                List.of("light-a", "light-b")).block(Duration.ofSeconds(2));
+        assertThat(result.states()).containsOnlyKeys("light-a", "light-b");
+        assertThat(result.states().get("light-a")).isInstanceOf(Boolean.class)
+                .isEqualTo(result.states().get("light-b"));
     }
 
     @Test

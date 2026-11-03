@@ -34,15 +34,16 @@ public final class JdbcTaskScheduler implements TaskScheduler {
         String payload = TaskPayloadSafety.withoutCredentials(mapper, phase).toString();
         jdbc.update("INSERT INTO task_phases(phase_id,task_id,source,version,status,due_at,payload_json,definition_json,create_time,update_time) VALUES (?,?,?,1,'PENDING',?,?,?,?,?) "
                         + "ON DUPLICATE KEY UPDATE "
-                        + "status=IF(status='PENDING','PENDING',status), "
-                        + "version=version+IF(status='PENDING',1,0), "
-                        + "due_at=IF(status='PENDING',VALUES(due_at),due_at), "
-                        + "payload_json=IF(status='PENDING',VALUES(payload_json),payload_json), "
-                        + "definition_json=IF(status='PENDING',VALUES(definition_json),definition_json), "
-                        + "source=IF(status='PENDING',VALUES(source),source), "
-                        + "claimed_at=IF(status='PENDING',NULL,claimed_at), "
-                        + "ended_at=IF(status='PENDING',NULL,ended_at), "
-                        + "update_time=IF(status='PENDING',VALUES(update_time),update_time)",
+                        + "version=version+CASE WHEN status IN ('PENDING','CANCELLED') AND result_json IS NULL THEN 1 ELSE 0 END, "
+                        + "due_at=CASE WHEN status IN ('PENDING','CANCELLED') AND result_json IS NULL THEN VALUES(due_at) ELSE due_at END, "
+                        + "payload_json=CASE WHEN status IN ('PENDING','CANCELLED') AND result_json IS NULL THEN VALUES(payload_json) ELSE payload_json END, "
+                        + "definition_json=CASE WHEN status IN ('PENDING','CANCELLED') AND result_json IS NULL THEN VALUES(definition_json) ELSE definition_json END, "
+                        + "source=CASE WHEN status IN ('PENDING','CANCELLED') AND result_json IS NULL THEN VALUES(source) ELSE source END, "
+                        + "claimed_at=CASE WHEN status IN ('PENDING','CANCELLED') AND result_json IS NULL THEN NULL ELSE claimed_at END, "
+                        + "ended_at=CASE WHEN status IN ('PENDING','CANCELLED') AND result_json IS NULL THEN NULL ELSE ended_at END, "
+                        + "failure_reason=CASE WHEN status IN ('PENDING','CANCELLED') AND result_json IS NULL THEN NULL ELSE failure_reason END, "
+                        + "update_time=CASE WHEN status IN ('PENDING','CANCELLED') AND result_json IS NULL THEN VALUES(update_time) ELSE update_time END, "
+                        + "status=CASE WHEN status IN ('PENDING','CANCELLED') AND result_json IS NULL THEN 'PENDING' ELSE status END",
                 phaseId, taskId, source, java.sql.Timestamp.from(at), payload, payload,
                 java.sql.Timestamp.from(Instant.now()), java.sql.Timestamp.from(Instant.now()));
     }

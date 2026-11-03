@@ -37,6 +37,45 @@ class TaskPlanStoreIntegrationTest {
     private JdbcTemplate jdbc;
     @Autowired
     private ObjectMapper mapper;
+    @Autowired
+    private ltd.qianc.iotagent.task.TaskProposalStore proposals;
+
+    @Test
+    void newExpressionRetiresPendingCardsOnlyWithinConversationOwnerAndSource() throws Exception {
+        String conversation = UUID.randomUUID().toString();
+        java.util.List<String> ids = new java.util.ArrayList<>();
+        for (String kind : java.util.List.of("TASK", "CHANGE", "CANCELLATION")) {
+            for (String variant : java.util.List.of("pending", "expired", "confirmed", "other-owner", "other-source")) {
+                String id = conversation + "-" + kind + "-" + variant;
+                ids.add(id);
+                String owner = variant.equals("other-owner") ? "other" : "fixture";
+                String source = variant.equals("other-source") ? "office" : "company";
+                String status = variant.equals("confirmed") ? "CONFIRMED"
+                        : variant.equals("expired") ? "EXPIRED" : "PENDING_CONFIRMATION";
+                String payload = mapper.writeValueAsString(java.util.Map.of(
+                        "tenantCode", "LOCAL", "ownerKey", owner, "source", source,
+                        "conversationId", conversation, "turnId", "old-turn"));
+                proposals.save(new ltd.qianc.iotagent.task.TaskProposalFact(id, 3, status, payload, id,
+                        kind, "{}", "{}", "{}", "create", "LOCAL", owner, source, NOW.plusSeconds(600)));
+            }
+        }
+        try {
+            var retired = proposals.retireForConversation(conversation, "LOCAL", "fixture", "company");
+            assertThat(retired).extracting(ltd.qianc.iotagent.task.TaskProposalFact::proposalId)
+                    .containsExactlyInAnyOrderElementsOf(ids.stream().filter(id -> id.endsWith("-pending") || id.endsWith("-expired")).toList());
+            for (String id : ids) {
+                var current = proposals.find(id).orElseThrow();
+                boolean changed = id.endsWith("-pending") || id.endsWith("-expired");
+                assertThat(current.status()).isEqualTo(changed ? "CANCELLED"
+                        : id.endsWith("-confirmed") ? "CONFIRMED" : "PENDING_CONFIRMATION");
+                assertThat(current.version()).isEqualTo(changed ? 4 : 3);
+                assertThat(current.payloadJson()).contains("old-turn");
+            }
+            assertThat(proposals.retireForConversation(conversation, "LOCAL", "fixture", "company")).isEmpty();
+        } finally {
+            jdbc.update("DELETE FROM task_proposals WHERE conversation_id=?", conversation);
+        }
+    }
 
     @Test
     void cancellationCancelsOnlyPendingMaterializedWorkAndPreservesHistory() {

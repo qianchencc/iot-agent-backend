@@ -13,6 +13,7 @@ import java.util.Set;
 import ltd.qianc.iotagent.task.TaskFact;
 import ltd.qianc.iotagent.task.TaskPayloadSafety;
 import ltd.qianc.iotagent.task.TaskPhaseStore;
+import ltd.qianc.iotagent.task.TaskReportCheckpointComposer;
 
 /**
  * Builds the declarative report checkpoint passed to the report module. It never
@@ -21,7 +22,7 @@ import ltd.qianc.iotagent.task.TaskPhaseStore;
  * inspection tasks it adds the durable phase observations and the explicitly
  * assumption-based estimate as trusted evidence, never as measured savings.
  */
-public final class TaskReportComposer {
+public final class TaskReportComposer implements TaskReportCheckpointComposer {
     private final ObjectMapper mapper;
 
     public TaskReportComposer(ObjectMapper mapper) {
@@ -29,6 +30,7 @@ public final class TaskReportComposer {
     }
 
     /** Returns null when the task neither requested a report nor produced inspection evidence. */
+    @Override
     public String compose(TaskFact task, List<TaskPhaseStore.PhaseResult> results,
                           String outcome, Instant generatedAt) {
         JsonNode payload;

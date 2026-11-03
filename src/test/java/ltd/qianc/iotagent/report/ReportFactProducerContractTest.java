@@ -142,6 +142,62 @@ class ReportFactProducerContractTest {
         assertThat(store.values).hasSize(1);
     }
 
+    @Test
+    void scheduledRelativePeriodsAnchorToTheirOwnCheckpointAcrossDayAndMonthRetries() throws Exception {
+        MemoryStore store = new MemoryStore();
+        // The retry clock has crossed both a day and a month boundary since the checkpoints.
+        Clock lateClock = Clock.fixed(Instant.parse("2026-12-15T09:30:00Z"), ZoneOffset.UTC);
+        ReportFactProducer producer = ReportFactProducerFactory.local(store, mapper,
+                identity -> Mono.just(scope(identity)), ReportEvidenceFixture.evidence(), lateClock);
+        String request = "{\"reportRequest\":{\"kind\":\"energy\",\"period\":{\"kind\":\"previous\",\"unit\":\"day\"}}}";
+
+        ReportFact firstOccurrence = producer.produce(
+                checkpoint("task-day-1", request, Instant.parse("2026-10-01T01:00:00Z")), identity).orElseThrow();
+        ReportFact secondOccurrence = producer.produce(
+                checkpoint("task-day-2", request, Instant.parse("2026-10-02T01:00:00Z")), identity).orElseThrow();
+        // Delayed retry of the first occurrence: the scanner re-runs with a late clock,
+        // but the artifact must keep the window of its own scheduled day.
+        ReportFact retried = producer.produce(
+                checkpoint("task-day-1", request, Instant.parse("2026-10-01T01:00:00Z")), identity).orElseThrow();
+
+        JsonNode first = mapper.readTree(firstOccurrence.payloadJson());
+        JsonNode second = mapper.readTree(secondOccurrence.payloadJson());
+        assertThat(first.path("requirements").path("period").path("from").asText())
+                .isEqualTo("2026-09-30T08:00:00+08:00");
+        assertThat(first.path("requirements").path("period").path("to").asText())
+                .isEqualTo("2026-10-01T08:00:00+08:00");
+        assertThat(second.path("requirements").path("period").path("from").asText())
+                .isEqualTo("2026-10-01T08:00:00+08:00");
+        assertThat(retried.payloadJson()).isEqualTo(firstOccurrence.payloadJson());
+        // The evidence actually captured for the first occurrence is its anchored window,
+        // not the day before the late retry clock.
+        assertThat(first.path("blocks").get(0).path("report").path("params").path("span")
+                .path("requested").path("from").asText()).isEqualTo("2026-09-30T08:00:00+08:00");
+        assertThat(first.path("blocks").get(0).path("report").path("params").path("span")
+                .path("requested").path("to").asText()).isEqualTo("2026-10-01T08:00:00+08:00");
+    }
+
+    @Test
+    void scheduledMonthlyPeriodStaysOnTheCheckpointMonthOnLateRetry() throws Exception {
+        MemoryStore store = new MemoryStore();
+        Clock lateClock = Clock.fixed(Instant.parse("2026-12-20T05:00:00Z"), ZoneOffset.UTC);
+        ReportFactProducer producer = ReportFactProducerFactory.local(store, mapper,
+                identity -> Mono.just(scope(identity)), ReportEvidenceFixture.evidence(), lateClock);
+        String request = "{\"reportRequest\":{\"kind\":\"energy\",\"period\":{\"kind\":\"previous\",\"unit\":\"month\"}}}";
+
+        ReportFact fact = producer.produce(checkpoint("task-month-1", request,
+                Instant.parse("2026-11-01T02:00:00Z")), identity).orElseThrow();
+        ReportFact retry = producer.produce(checkpoint("task-month-1", request,
+                Instant.parse("2026-11-01T02:00:00Z")), identity).orElseThrow();
+
+        JsonNode report = mapper.readTree(fact.payloadJson());
+        assertThat(report.path("requirements").path("period").path("from").asText())
+                .isEqualTo("2026-10-01T08:00:00+08:00");
+        assertThat(report.path("requirements").path("period").path("to").asText())
+                .isEqualTo("2026-11-01T08:00:00+08:00");
+        assertThat(retry.payloadJson()).isEqualTo(fact.payloadJson());
+    }
+
     private ReportFactProducer producer(MemoryStore store) {
         return ReportFactProducerFactory.local(store, mapper, identity -> Mono.just(scope(identity)),
                 ReportEvidenceFixture.evidence(), CLOCK);
@@ -161,6 +217,12 @@ class ReportFactProducerContractTest {
         return new ReportFactProducer.ReportCheckpoint(
                 "task-1", "phase-1", "company", "XSJ", "owner-1",
                 "昨日用电统计并保存报告", outcome, CHECKPOINT, CLOCK.instant(), payload);
+    }
+
+    private ReportFactProducer.ReportCheckpoint checkpoint(String taskId, String payload, Instant checkpointAt) {
+        return new ReportFactProducer.ReportCheckpoint(
+                taskId, "phase-1", "company", "XSJ", "owner-1",
+                "昨日用电统计并保存报告", "COMPLETED", checkpointAt, CLOCK.instant(), payload);
     }
 
     private static final class MemoryStore implements ReportFactStore {

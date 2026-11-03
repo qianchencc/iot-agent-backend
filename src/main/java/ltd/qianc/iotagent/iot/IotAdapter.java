@@ -38,6 +38,12 @@ public interface IotAdapter {
         return findDeviceCandidates(identity, query);
     }
 
+    /** Resolves the complete persisted membership, bound to the discovering identity and conversation. */
+    default Mono<DeviceCandidateRecord> resolveDeviceCandidateSet(
+            RequestIdentity identity, String candidateSetId, String conversationId) {
+        return Mono.error(new UpstreamUnavailableException("设备候选集读取适配器未接入"));
+    }
+
     /** Real Office membership used to validate a server-bound focus region. */
     default Mono<List<OfficeRegion>> loadOfficeRegions(RequestIdentity identity) {
         return Mono.error(new UpstreamUnavailableException("Office 区域目录适配器未接入"));

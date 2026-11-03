@@ -1,5 +1,8 @@
 import {
   Agent,
+  SessionError,
+  FileError,
+  estimateTokens,
   type AgentEvent,
   type AgentMessage,
   type AgentTool,
@@ -9,7 +12,9 @@ import type { Model, TSchema } from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/api/openai-completions";
 import type { SidecarConfig } from "./config.js";
 import { traceStreamFn, type Observability } from "./observability.js";
-import type { PiSessionStore } from "./session.js";
+import type { PiSessionRun, PiSessionStore } from "./session.js";
+import { createReplyTextFilter, publicReplyText, type ReplyTextFilter } from "./reply-text.js";
+import { loadAgentHistory } from "./history.js";
 
 /** Plain JSON Schema supplied by Java. The sidecar never interprets business meaning. */
 export type JsonSchema = Record<string, unknown>;
@@ -41,6 +46,8 @@ export interface RunDefinition {
   maxTurns: number;
   maxToolCalls?: number;
   runTimeoutMs?: number;
+  finalizationInstructions?: string;
+  compactionInstructions?: string;
   model?: ModelSettings;
 }
 
@@ -70,6 +77,7 @@ const RUN_FIELDS: Record<string, true> = {
 };
 const DEFINITION_FIELDS: Record<string, true> = {
   instructions: true, tools: true, maxTurns: true, maxToolCalls: true, runTimeoutMs: true, model: true,
+  finalizationInstructions: true, compactionInstructions: true,
 };
 const TOOL_FIELDS: Record<string, true> = { name: true, label: true, description: true, parameters: true };
 const MODEL_FIELDS: Record<string, true> = {
@@ -249,7 +257,11 @@ function parseDefinition(input: unknown): RunDefinition {
     ? undefined
     : integerInRange(value.runTimeoutMs, "definition.runTimeoutMs", 1_000, 600_000);
   const model = value.model === undefined ? undefined : parseModel(value.model);
-  return { instructions, tools, maxTurns, maxToolCalls, runTimeoutMs, model };
+  const finalizationInstructions = value.finalizationInstructions === undefined ? undefined
+    : boundedText(value.finalizationInstructions, "definition.finalizationInstructions", 16_000);
+  const compactionInstructions = value.compactionInstructions === undefined ? undefined
+    : boundedText(value.compactionInstructions, "definition.compactionInstructions", 16_000);
+  return { instructions, tools, maxTurns, maxToolCalls, runTimeoutMs, model, finalizationInstructions, compactionInstructions };
 }
 
 function validateRequest(input: unknown): RunRequest {
@@ -278,9 +290,13 @@ export class AgentRunner {
   parseRequest(input: unknown): RunRequest { return validateRequest(input); }
 
   async run(request: RunRequest, emit: (event: PublicEvent) => void, signal: AbortSignal): Promise<RunOutcome> {
-    const session = await this.sessions.openOrCreate(request.sessionScope);
-    const history = await this.sessions.history(request.sessionScope);
-    const initialCount = history.length;
+    let checkpoint: PiSessionRun;
+    try { checkpoint = await this.sessions.openRun(request); }
+    catch (cause) { throw new Error("智能体会话暂不可用，请稍后重新发起请求", { cause }); }
+    let history: AgentMessage[];
+    try { history = await checkpoint.recoverAndStart(request.content); }
+    catch (error) { await checkpoint.close().catch(() => undefined); throw new Error("智能体会话未能恢复，请重新发起请求"); }
+    const initialMessageCount = history.length;
     // Java-owned snapshot for this run. Never log, trace, or emit this object or its key.
     const modelSettings = request.definition.model;
     const model = modelFor(this.config, modelSettings);
@@ -299,9 +315,15 @@ export class AgentRunner {
       draftPublished: boolean;
       finalText: string;
       toolCalls: number;
-    } = { halt: false, heldAssistantText: "", draftPublished: false, finalText: "", toolCalls: 0 };
+      finalizing: boolean;
+      replyText: ReplyTextFilter;
+    } = { halt: false, heldAssistantText: "", draftPublished: false, finalText: "", toolCalls: 0, finalizing: false,
+      replyText: createReplyTextFilter() };
     let turns = 0;
-    const tools = this.createTools(request, signal, observedEmit, state);
+    const tools = this.createTools(request, signal, observedEmit, state, checkpoint);
+    const overheadTokens = estimateTokens({ role: "user", timestamp: 0,
+      content: JSON.stringify({ instructions: request.definition.instructions, tools: request.definition.tools,
+        finalizationInstructions: request.definition.finalizationInstructions }) });
     const agent = new Agent({
       initialState: {
         model,
@@ -312,30 +334,48 @@ export class AgentRunner {
       },
       streamFn: traceStreamFn(streamSimple as StreamFn, trace),
       getApiKey: () => modelApiKey,
+      transformContext: () => loadAgentHistory(checkpoint.session, model, modelApiKey, overheadTokens, signal,
+        request.definition.compactionInstructions),
+      beforeToolCall: async () => state.halt || state.finalizing
+        ? { block: true, reason: request.definition.finalizationInstructions ?? "The tool phase is closed." }
+        : undefined,
       shouldStopAfterTurn: async ({ toolResults }) => {
         turns += 1;
-        return toolResults.length === 0 || state.halt || turns >= request.definition.maxTurns;
+        if (!toolResults.length || state.finalizing) return true;
+        const stopped = state.halt || turns >= request.definition.maxTurns
+          || (request.definition.maxToolCalls !== undefined && state.toolCalls >= request.definition.maxToolCalls);
+        if (stopped && request.definition.finalizationInstructions) {
+          state.finalizing = true;
+          return false;
+        }
+        return stopped;
       },
+      prepareNextTurnWithContext: ({ context }) => state.finalizing ? {
+        context: { ...context, tools: [],
+          systemPrompt: `${context.systemPrompt}\n\n${request.definition.finalizationInstructions}` },
+      } : undefined,
     });
     const detachAbort = () => agent.abort();
     signal.addEventListener("abort", detachAbort, { once: true });
     const unsubscribe = agent.subscribe(async (event, eventSignal) => {
+      if (event.type === "message_end") await checkpoint.append(event.message);
       this.publishAgentEvent(request, event, emit, state, trace ? observedEvent => trace.observeEvent(observedEvent) : undefined);
       if (eventSignal.aborted) return;
     });
     try {
+      signal.throwIfAborted();
       await agent.prompt(request.content);
-      const produced = agent.state.messages.slice(initialCount);
-      let modelFailed = false;
-      for (const message of produced) {
-        await session.appendMessage(JSON.parse(JSON.stringify(message)) as AgentMessage);
-        if (message.role === "assistant" && message.stopReason === "error") modelFailed = true;
-      }
+      signal.throwIfAborted();
+      const modelFailed = agent.state.messages.some((message, index) => index >= initialMessageCount && message.role === "assistant" && message.stopReason === "error");
       if (modelFailed) {
         // Pi resolves prompt() for provider errors; the persisted assistant
         // message retains diagnostics, but the public run must fail safely.
         throw new Error("Agent model request failed");
       }
+      if (!state.finalText.trim() && (!state.halt || request.definition.finalizationInstructions)) {
+        throw new Error("Agent model returned no displayable response");
+      }
+      await checkpoint.finish("completed");
       if (state.finalText) {
         observedEmit({ type: "message.completed", content: state.finalText, phase: "final" });
       }
@@ -344,12 +384,17 @@ export class AgentRunner {
       void this.observability.flush().catch(() => undefined);
       return outcome;
     } catch (error) {
+      await checkpoint.finish(signal.aborted ? "aborted" : "failed").catch(() => undefined);
       trace?.finish({ error });
       void this.observability.flush().catch(() => undefined);
+      if (error instanceof SessionError || error instanceof FileError) {
+        throw new Error("智能体会话保存未完成，请重新发起请求；已产生的业务结果不会自动重发");
+      }
       throw error;
     } finally {
       unsubscribe();
       signal.removeEventListener("abort", detachAbort);
+      await checkpoint.close().catch(() => undefined);
     }
   }
 
@@ -358,6 +403,7 @@ export class AgentRunner {
     signal: AbortSignal,
     emit: (event: PublicEvent) => void,
     state: { halt: boolean; toolCalls: number },
+    checkpoint: PiSessionRun,
   ): AgentTool[] {
     return request.definition.tools.map(tool => ({
       name: tool.name,
@@ -374,13 +420,19 @@ export class AgentRunner {
           throw new Error(`AGENT_TOOL_BUDGET_EXHAUSTED: tool call budget exhausted (maxToolCalls=${limit})`);
         }
         state.toolCalls += 1;
+        await checkpoint.toolStarted(toolCallId, tool.name, params as Record<string, unknown>);
         const callback = await this.callJavaTool(
           request,
           tool.name,
           params as Record<string, unknown>,
           toolCallId,
+          checkpoint.writerBinding(),
           toolSignal ?? signal,
+          () => { state.halt = true; },
         );
+        await checkpoint.toolCheckpoint({ role: "toolResult", toolCallId, toolName: tool.name,
+          content: [{ type: "text", text: jsonText(callback.result) }], details: callback.result,
+          isError: false, timestamp: Date.now() });
         emit({ type: "tool.result", tool: tool.name, toolCallId, result: callback.result });
         if (callback.halt) state.halt = true;
         return {
@@ -396,7 +448,9 @@ export class AgentRunner {
     toolName: string,
     argumentsValue: Record<string, unknown>,
     toolCallId: string,
+    writer: { writerId: string; epoch: number },
     signal: AbortSignal,
+    onHalt: () => void,
   ): Promise<{ result: unknown; halt: boolean }> {
     const controller = new AbortController();
     const onAbort = () => controller.abort();
@@ -418,6 +472,7 @@ export class AgentRunner {
           toolContextId: request.toolContextId,
           conversationId: request.conversationId,
           turnId: request.turnId,
+          ...writer,
           toolName,
           toolCallId,
           arguments: argumentsValue,
@@ -425,6 +480,9 @@ export class AgentRunner {
         signal: controller.signal,
       });
       const payload: unknown = await response.json().catch(() => null);
+      if (payload && typeof payload === "object" && !Array.isArray(payload)
+          && "protocolVersion" in payload && payload.protocolVersion === PROTOCOL_VERSION
+          && "halt" in payload && payload.halt === true) onHalt();
       if (!response.ok) {
         const message = payload && typeof payload === "object" && !Array.isArray(payload)
           && "message" in payload && typeof payload.message === "string"
@@ -459,7 +517,8 @@ export class AgentRunner {
     request: RunRequest,
     event: AgentEvent,
     emit: (event: PublicEvent) => void,
-    state: { heldAssistantText: string; draftPublished: boolean; finalText: string },
+    state: { heldAssistantText: string; draftPublished: boolean; finalText: string;
+      replyText: ReplyTextFilter },
     observe?: (event: PublicEvent) => void,
   ): void {
     const publish = (value: PublicEvent) => {
@@ -471,7 +530,7 @@ export class AgentRunner {
         // Publish only the incremental delta. Forwarding the cumulative partial
         // snapshot makes the client append repeated text.
         if (event.assistantMessageEvent?.type === "text_delta") {
-          const delta = event.assistantMessageEvent.delta;
+          const delta = state.replyText.push(event.assistantMessageEvent.delta);
           if (delta) {
             state.heldAssistantText += delta;
             state.draftPublished = true;
@@ -500,7 +559,7 @@ export class AgentRunner {
             publish({ type: "message.reclassified", to: "process", content: state.heldAssistantText });
           }
         } else {
-          const finalText = messageText(event.message);
+          const finalText = publicReplyText(messageText(event.message));
           if (finalText) state.finalText = finalText;
           if (state.heldAssistantText && !state.draftPublished) {
             publish({ type: "message.delta", content: state.heldAssistantText, phase: "final" });
@@ -508,6 +567,7 @@ export class AgentRunner {
         }
         state.heldAssistantText = "";
         state.draftPublished = false;
+        state.replyText.finish();
         break;
       }
       case "agent_end":

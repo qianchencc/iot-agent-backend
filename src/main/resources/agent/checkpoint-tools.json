@@ -1,0 +1,157 @@
+[
+  {
+    "name": "summarize_energy",
+    "label": "统计区间用电",
+    "description": "统计本次已确认的固定计量范围；总量、实际采样边界和覆盖由工具计算。",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "from",
+        "to"
+      ],
+      "properties": {
+        "from": {
+          "type": "string",
+          "description": "带时区的 ISO 统计起点"
+        },
+        "to": {
+          "type": "string",
+          "description": "带时区的 ISO 统计终点"
+        }
+      }
+    }
+  },
+  {
+    "name": "compare_energy",
+    "label": "对比两个期间用电",
+    "description": "比较同一固定计量范围的两个时间跨度。baseline缺省为前一等长期间；同比须显式指定去年同期间。基期缺数仍保留本期事实与不可比原因。",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "from",
+        "to"
+      ],
+      "properties": {
+        "from": {
+          "type": "string",
+          "description": "带时区的 ISO 统计起点"
+        },
+        "to": {
+          "type": "string",
+          "description": "带时区的 ISO 统计终点"
+        },
+        "baseline": {
+          "type": "object",
+          "required": [
+            "from",
+            "to"
+          ],
+          "properties": {
+            "from": {
+              "type": "string",
+              "description": "带时区的 ISO 统计起点"
+            },
+            "to": {
+              "type": "string",
+              "description": "带时区的 ISO 统计终点"
+            }
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "finish_checkpoint",
+    "label": "提交检查点结果",
+    "description": "提交本次已取得工具事实的检查点结果，不创建报告产物。summary仅解释工具事实，不能自造数值或控制授权。",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "summary"
+      ],
+      "properties": {
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 600
+        }
+      }
+    }
+  },
+  {
+    "name": "publish_report",
+    "label": "提交检查点报告",
+    "description": "组织本次已取得的工具事实与解读并提交报告。meter区块只能引用服务器返回的事实index；不能自造统计组件或数值。报告仍属于本次检查点，不结束周期计划或改变任务区间。",
+    "parameters": {
+      "type": "object",
+      "required": [
+        "title",
+        "summary",
+        "sections"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 600
+        },
+        "sections": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "object",
+                "required": [
+                  "type",
+                  "title",
+                  "text"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "text"
+                  },
+                  "title": {
+                    "type": "string",
+                    "minLength": 0,
+                    "maxLength": 100
+                  },
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 6000
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "required": [
+                  "type",
+                  "index"
+                ],
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "const": "meter"
+                  },
+                  "index": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "本次工具返回的事实序号"
+                  }
+                }
+              }
+            ]
+          },
+          "minItems": 1,
+          "maxItems": 12
+        }
+      }
+    }
+  }
+]

@@ -52,3 +52,11 @@
 ## 本票尚未验收
 
 本票仅发布规格，尚未执行任何验收；不得以确认单生成、检查点配置或隔离单测宣称条件任务业务完成。
+
+## 实现备注（TaskExecutionCorrections，2026-11-02）
+
+- 条件执行改为 Runtime 同语义逐台流程：初始分类 → 逐台（任务可下发复核 → 单台现读 → 状态未知/参数变化让行 → 已满足让行 → 原子持久预约 → 单台授权复核+下发 → 回读裁决）。整批一次读+一次批下发已删除。
+- 受受理未回读裁决为 disposition=unconfirmed/outcome=unconfirmed（原 adjusted 误记已修）；adjusted 仅在回读 confirmed 且取得实测温度时成立，afterSetpoint 只取回读事实。检查点聚合：全部成功 COMPLETED；部分成功 PARTIAL；无成功且全未确认 UNCONFIRMED；让行/未下发计入失败侧，不再虚增完成度。
+- inspect（只巡检不调温）：可读设备 outcome=observed 记成功（unknown→unavailable 保留不可读区分），纯巡检可 COMPLETED；节能估算仅在可读且低于目标时给 potential 潜在值（potential=true、coverage.adjusted=0、注明未调温），不冒充实测。
+- 巡检模式不触达 guard/预约，也不产生任何控制下发。
+- 2026-11-02 定向验证补充：`RealTaskExecutionGatewayBehaviorTest` 已通过，修复了持久逐设备结果遗漏 `disposition`、下发前状态不可判定/操作员改变参数时 outcome 错落为 unknown 的问题；明确无下发的让行现在记录 not_dispatched，与 Runtime `tasks/scanner.ts` 一致。日历台账回归原样本误把右边界之后的事件算入前一自然日，现改为延迟一天执行、包含左边界/排除右边界的真实业务窗口反例。与其他修复合计 66 项定向回归通过；没有触发生产任务、设备控制或通知，真实检查点执行及重启恢复仍未验收。

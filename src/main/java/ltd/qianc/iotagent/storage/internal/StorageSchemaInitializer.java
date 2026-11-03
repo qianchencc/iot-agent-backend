@@ -5,6 +5,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.jdbc.datasource.init.DatabasePopulatorUtils;
 import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 public final class StorageSchemaInitializer {
     private final DataSource dataSource;
 
@@ -19,6 +21,19 @@ public final class StorageSchemaInitializer {
         populator.setContinueOnError(false);
         DatabasePopulatorUtils.execute(populator, dataSource);
         ensureTaskProposalColumns();
+        retireLegacyPiConversations();
+    }
+
+    /** One-way cutover: retire old UI conversations, preserve every underlying business fact. */
+    private void retireLegacyPiConversations() {
+        JdbcTemplate jdbc = new JdbcTemplate(dataSource);
+        jdbc.execute("CREATE TABLE IF NOT EXISTS storage_migrations (migration_key VARCHAR(128) PRIMARY KEY, applied_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3))");
+        new TransactionTemplate(new DataSourceTransactionManager(dataSource)).executeWithoutResult(status -> {
+            int first = jdbc.update("INSERT IGNORE INTO storage_migrations(migration_key) VALUES ('pi-session-mysql-direct-cutover-v1')");
+            if (first == 1) {
+                jdbc.update("UPDATE conversations SET cleared=1,update_time=CURRENT_TIMESTAMP(3) WHERE cleared=0");
+            }
+        });
     }
 
     private void ensureTaskProposalColumns() {

@@ -5,10 +5,12 @@ import java.time.Clock;
 import java.time.Duration;
 import javax.sql.DataSource;
 import ltd.qianc.iotagent.action.ActionCommandGateway;
-import ltd.qianc.iotagent.iot.IotAdapter;
 import ltd.qianc.iotagent.iot.AutomationSummaryReader;
+import ltd.qianc.iotagent.iot.IotAdapter;
+import ltd.qianc.iotagent.iot.ObservationAdapter;
 import ltd.qianc.iotagent.report.ReportFactProducer;
 import ltd.qianc.iotagent.report.ReportFactStore;
+import ltd.qianc.iotagent.task.TaskDispatchGuard;
 import ltd.qianc.iotagent.task.TaskExecutionGateway;
 import ltd.qianc.iotagent.task.TaskExecutionIdentityStore;
 import ltd.qianc.iotagent.task.TaskFactStore;
@@ -18,7 +20,9 @@ import ltd.qianc.iotagent.task.TaskPhaseStore;
 import ltd.qianc.iotagent.task.TaskPlanStore;
 import ltd.qianc.iotagent.task.TaskProjectionStore;
 import ltd.qianc.iotagent.task.TaskProposalStore;
+import ltd.qianc.iotagent.task.TaskReportCheckpointComposer;
 import ltd.qianc.iotagent.task.TaskReportRetryStore;
+import ltd.qianc.iotagent.task.TaskSafetyLedgerReader;
 import ltd.qianc.iotagent.task.TaskScheduler;
 import ltd.qianc.iotagent.task.TaskScanner;
 import java.util.LinkedHashMap;
@@ -58,8 +62,8 @@ public class TaskConfiguration {
     @Bean(initMethod = "initialize")
     @org.springframework.context.annotation.DependsOn("storageSchemaInitializer")
     @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
-    TaskSchemaInitializer taskSchemaInitializer(DataSource dataSource) {
-        return new TaskSchemaInitializer(dataSource);
+    TaskSchemaInitializer taskSchemaInitializer(DataSource dataSource, ObjectMapper mapper) {
+        return new TaskSchemaInitializer(dataSource, mapper);
     }
 
     @Bean
@@ -97,14 +101,22 @@ public class TaskConfiguration {
             IotAdapter iot,
             ObjectProvider<ActionCommandGateway> actionGateway,
             ObjectProvider<TaskExecutionIdentityStore> identities,
+            ObjectProvider<TaskDispatchGuard> dispatchGuard,
+            ObjectProvider<ObservationAdapter> observation,
+            ObjectProvider<ltd.qianc.iotagent.task.TaskCheckpointRunner> checkpoints,
             @Value("${agent.task.scope-timeout-ms:30000}") long scopeTimeoutMs) {
         ActionCommandGateway actions = actionGateway.getIfAvailable();
         TaskExecutionIdentityStore identityStore = identities.getIfAvailable();
-        if (actions == null || identityStore == null) {
+        TaskDispatchGuard guard = dispatchGuard.getIfAvailable();
+        if (actions == null || identityStore == null || guard == null) {
             return new FailClosedTaskExecutionGateway("任务真实执行依赖未配置");
         }
-        return new RealTaskExecutionGateway(mapper, iot, actions, identityStore, Clock.systemUTC(),
-                Duration.ofMillis(Math.max(1000, scopeTimeoutMs)));
+        ObservationAdapter observations = observation.getIfAvailable();
+        TaskSafetyLedgerReader safetyLedger = observations == null
+                ? new FailClosedSafetyLedgerReader()
+                : new ObservationSafetyLedgerReader(observations, Duration.ofMillis(Math.max(1000, scopeTimeoutMs)));
+        return ltd.qianc.iotagent.task.TaskExecutionGatewayFactory.real(mapper, iot, actions, identityStore, guard, safetyLedger,
+                Clock.systemUTC(), Duration.ofMillis(Math.max(1000, scopeTimeoutMs)), checkpoints::getIfAvailable);
     }
 
     @Bean @ConditionalOnMissingBean(TaskExecutionGateway.class)
@@ -140,7 +152,7 @@ public class TaskConfiguration {
     TaskScanner taskScanner(TaskPhaseStore phases, TaskFactStore tasks, TaskExecutionGateway gateway,
                             TaskNotificationStore notifications,
                             ObjectProvider<ReportFactProducer> reports,
-                            ObjectProvider<TaskReportComposer> composer,
+                            ObjectProvider<TaskReportCheckpointComposer> composer,
                             ObjectProvider<TaskReportRetryStore> retries,
                             ObjectProvider<TaskExecutionIdentityStore> identities) {
         ReportFactProducer fallback = (checkpoint, identity) -> java.util.Optional.empty();

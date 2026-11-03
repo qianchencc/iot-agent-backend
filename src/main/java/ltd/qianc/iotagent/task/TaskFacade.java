@@ -30,7 +30,7 @@ import ltd.qianc.iotagent.task.internal.TaskProposalNormalizer;
  * Public task boundary. It performs proposal/plan/task CAS and idempotency while
  * execution, scheduling and durable facts stay behind injected adapters.
  */
-public final class TaskFacade {
+public final class TaskFacade implements ltd.qianc.iotagent.conversation.ConversationTaskCards {
     private static final String PENDING = "PENDING_CONFIRMATION";
     private static final String CONFIRMED = "CONFIRMED";
     private static final String CANCELLED = "CANCELLED";
@@ -99,7 +99,9 @@ public final class TaskFacade {
         if (prior.isPresent() && "TASK".equals(prior.get().kind())
                 && proposalOwned(prior.get(), principal, normalizedSource)) return prior.get();
         if (prior.isPresent()) throw conflict("IDEMPOTENCY_KEY_REUSED", "幂等键已用于其他任务来源");
-        JsonNode payload = safePayload(normalizer.normalizeProposal(principal, normalizedSource, payloadJson));
+        JsonNode request = safePayload(payloadJson);
+        if (request.isObject()) ((com.fasterxml.jackson.databind.node.ObjectNode) request).put("conversationId", conversationId);
+        JsonNode payload = safePayload(normalizer.normalizeProposal(principal, normalizedSource, request.toString()));
         if (payload.isObject()) {
             ((com.fasterxml.jackson.databind.node.ObjectNode) payload)
                     .put("conversationId", conversationId).put("turnId", turnId)
@@ -164,6 +166,7 @@ public final class TaskFacade {
             if (!proposalOwned(prior.get(), principal, normalizedSource)) throw notFound("TASK_CHANGE_NOT_FOUND", "任务修改提案不存在");
             return prior.get();
         }
+        ((com.fasterxml.jackson.databind.node.ObjectNode) request).put("conversationId", conversationId).put("turnId", turnId);
         TaskProposalFact created = new TaskProposalFact(UUID.randomUUID().toString(), targetVersion, PENDING, request.toString(), key,
                 "CHANGE", target.toString(), before.toString(), after.toString(), operation, principal.tenantCode(),
                 ownerKey(principal), normalizedSource, clock.instant().plus(java.time.Duration.ofMinutes(15)));
@@ -195,6 +198,7 @@ public final class TaskFacade {
             if (!proposalOwned(prior.get(), principal, normalizedSource)) throw notFound("TASK_CANCELLATION_NOT_FOUND", "任务取消提案不存在");
             return prior.get();
         }
+        ((com.fasterxml.jackson.databind.node.ObjectNode) request).put("conversationId", conversationId).put("turnId", turnId);
         TaskProposalFact created = new TaskProposalFact(UUID.randomUUID().toString(), current.version(), PENDING, request.toString(), key,
                 "CANCELLATION", target.toString(), current.payloadJson(), current.payloadJson(), "cancel",
                 principal.tenantCode(), ownerKey(principal), normalizedSource, clock.instant().plus(java.time.Duration.ofMinutes(15)));
@@ -283,6 +287,7 @@ public final class TaskFacade {
                 materializePreservingPhaseIds(proposal.afterJson(), current.payloadJson()), current.idempotencyKey()), current.version())
                 .orElseThrow(() -> conflict("VERSION_CONFLICT", "任务已变化，请重新提出修改"));
         if ("delete".equals(proposal.operation()) || "skip".equals(proposal.operation())) cancelScheduledPhases(current);
+        else if ("edit".equals(proposal.operation())) cancelReplacedPhases(current, updated);
         if (!"pause".equals(proposal.operation()) && !"delete".equals(proposal.operation())) scheduleIfDue(updated);
         markConfirmed(proposal);
         return managementResult(proposal, id, null);
@@ -440,9 +445,15 @@ public final class TaskFacade {
                 throw new BusinessException("INVALID_TASK_PAYLOAD", "任务时间区间无效", 400);
             }
         }
+        // Runtime ten-minute rule (tasks/store.ts confirmProposal): a windowless
+        // task stays confirmable for ten minutes after its first checkpoint,
+        // while interval tasks keep requiring a still-future checkpoint so a
+        // partially elapsed window confirms only on its remaining points.
+        Instant earliest = interval.isObject() ? now : now.minus(java.time.Duration.ofMinutes(10));
         for (JsonNode phase : phases) {
             try {
-                if (Instant.parse(phase.path("at").asText()).isAfter(now)) return;
+                Instant at = Instant.parse(phase.path("at").asText());
+                if (interval.isObject() ? at.isAfter(now) : !at.isBefore(earliest)) return;
             } catch (RuntimeException invalid) {
                 throw new BusinessException("INVALID_TASK_PAYLOAD", "任务阶段时间无效", 400);
             }
@@ -462,6 +473,20 @@ public final class TaskFacade {
         if (proposal.version() != expectedVersion) throw conflict("VERSION_CONFLICT", "任务提案已变化，请刷新后重试");
         return proposals.updateIfVersion(withStatus(proposal, CANCELLED), proposal.version())
                 .orElseThrow(() -> conflict("VERSION_CONFLICT", "任务提案已变化，请刷新后重试"));
+    }
+
+    /** Supersedes only unconfirmed cards; registered tasks and enabled plans are never cancelled here. */
+    public List<TaskProposalFact> retireConversation(PrincipalInfo principal, String conversationId, String requestedSource) {
+        checkPrincipal(principal);
+        List<TaskProposalFact> retired = proposals.retireForConversation(conversationId, principal.tenantCode(),
+                ownerKey(principal), source(requestedSource));
+        for (TaskProposalFact proposal : retired) {
+            if (!proposalOwned(proposal, principal, requestedSource)
+                    || !conversationId.equals(safePayload(proposal.payloadJson()).path("conversationId").asText())) {
+                throw new BusinessException("TASK_PROPOSAL_SCOPE_MISMATCH", "任务提案归属不匹配", 403);
+            }
+        }
+        return retired;
     }
 
     public TaskFact current(PrincipalInfo principal, String taskId) {
@@ -559,7 +584,7 @@ public final class TaskFacade {
                 normalizedPayload, current.idempotencyKey());
         TaskFact updated = tasks.updateIfVersion(replacement, expectedVersion)
                 .orElseThrow(() -> conflict("VERSION_CONFLICT", "任务状态已变化，请刷新后再试"));
-        cancelScheduledPhases(current);
+        cancelReplacedPhases(current, updated);
         scheduleIfDue(updated);
         return updated;
     }
@@ -945,15 +970,49 @@ public final class TaskFacade {
                 .filter(item -> !"DELETED".equalsIgnoreCase(item.status()))
                 .filter(item -> owns(item.payloadJson(), principal)).map(this::planView).toList();
     }
+    @Override
+    public Map<String, Object> conversationProposalState(PrincipalInfo principal, String proposalId, String requestedSource) {
+        TaskProposalFact proposal = proposal(principal, proposalId, requestedSource);
+        Map<String, Object> state = new LinkedHashMap<>();
+        state.put("status", proposalView(proposal).get("status"));
+        state.put("version", proposal.version());
+        if (proposal.expiresAt() != null) state.put("expiresAt", proposal.expiresAt().toString());
+        if ("TASK".equals(proposal.kind()) && CONFIRMED.equals(proposal.status())) {
+            if (safePayload(proposal.payloadJson()).path("repeat").isObject()) {
+                TaskPlanFact plan = plans.findByIdempotencyKey("plan:" + proposalId)
+                        .orElseThrow(() -> conflict("TASK_CREATION_UNCONFIRMED", "任务登记结果尚未核实"));
+                if (!owns(plan.payloadJson(), principal)) throw notFound("TASK_PLAN_NOT_FOUND", "任务计划不存在");
+                assertSource(plan.payloadJson(), source(requestedSource));
+                state.put("planId", plan.planId());
+                state.put("planStatus", plan.status());
+                state.put("status", "SCHEDULED");
+                state.put("version", plan.version());
+            } else {
+                TaskFact task = tasks.findByIdempotencyKey("task:" + proposalId)
+                        .orElseThrow(() -> conflict("TASK_CREATION_UNCONFIRMED", "任务登记结果尚未核实"));
+                if (!owns(task.payloadJson(), principal)) throw notFound("TASK_NOT_FOUND", "任务不存在");
+                assertSource(task.payloadJson(), source(requestedSource));
+                state.put("taskId", task.taskId());
+                state.put("status", task.status());
+                state.put("version", task.version());
+            }
+            state.put("created", true);
+        }
+        return state;
+    }
+
     public Map<String, Object> proposalView(TaskProposalFact proposal) {
         Map<String, Object> view = new LinkedHashMap<>();
-        view.put("proposalId", proposal.proposalId()); view.put("version", proposal.version()); view.put("status", proposal.status());
+        view.put("proposalId", proposal.proposalId()); view.put("version", proposal.version());
+        boolean expired = PENDING.equals(proposal.status()) && proposal.expiresAt() != null
+                && !clock.instant().isBefore(proposal.expiresAt());
+        view.put("status", expired ? "EXPIRED" : proposal.status());
+        if (proposal.expiresAt() != null) view.put("expiresAt", proposal.expiresAt().toString());
         if (!"TASK".equals(proposal.kind())) {
             view.put("kind", proposal.kind()); view.put("operation", proposal.operation());
             if (!"{}".equals(proposal.targetJson())) view.put("target", mapper.convertValue(publicPayload(safePayload(proposal.targetJson())), Object.class));
             if (!"{}".equals(proposal.beforeJson())) view.put("before", mapper.convertValue(publicPayload(safePayload(proposal.beforeJson())), Object.class));
             if (!"{}".equals(proposal.afterJson())) view.put("after", mapper.convertValue(publicPayload(safePayload(proposal.afterJson())), Object.class));
-            if (proposal.expiresAt() != null) view.put("expiresAt", proposal.expiresAt().toString());
         }
         view.put("payload", mapper.convertValue(publicPayload(safePayload(proposal.payloadJson())), Object.class));
         JsonNode proposed = safePayload(proposal.payloadJson());
@@ -1097,6 +1156,28 @@ public final class TaskFacade {
             }
         } else {
             try { scheduler.cancel(task.taskId(), task.taskId()); } catch (RuntimeException ignored) { }
+        }
+    }
+
+    private void cancelReplacedPhases(TaskFact before, TaskFact after) {
+        java.util.LinkedHashSet<String> retained = new java.util.LinkedHashSet<>();
+        for (JsonNode phase : safePayload(after.payloadJson()).path("phases")) {
+            String id = phase.path("phaseId").asText("");
+            if (!id.isBlank()) retained.add(id);
+        }
+        for (JsonNode phase : safePayload(before.payloadJson()).path("phases")) {
+            String id = phase.path("phaseId").asText("");
+            if (id.isBlank() || retained.contains(id)) continue;
+            if (this.phases != null) {
+                try {
+                    var durable = this.phases.find(id);
+                    if (durable.isPresent() && Set.of("COMPLETED", "PARTIAL", "FAILED", "UNCONFIRMED",
+                            "INTERRUPTED", "EXECUTING", "CANCELLED").contains(durable.get().status().toUpperCase())) continue;
+                } catch (RuntimeException unavailable) {
+                    continue;
+                }
+            }
+            try { scheduler.cancel(before.taskId(), id); } catch (RuntimeException ignored) { }
         }
     }
 

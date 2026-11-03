@@ -46,8 +46,26 @@ public class AgentBusinessConfiguration {
             ObjectProvider<ObservationAdapter> observations,
             ObjectProvider<TaskProjectionStore> projections,
             ActionDraftFacade actions, TaskFacade tasks, ObjectMapper mapper,
-            ObjectProvider<ReportGenerationPort> reports) {
-        return AgentBusinessEngineFactory.toolBridge(conversations, iot, observations.getIfAvailable(),
+            ObjectProvider<ReportGenerationPort> reports,
+            ObjectProvider<ltd.qianc.iotagent.agent.AgentCheckpointBridge> checkpoints) {
+        AgentToolBridge interactive = AgentBusinessEngineFactory.toolBridge(conversations, iot, observations.getIfAvailable(),
                 projections.getIfAvailable(), actions, tasks, mapper, reports.getIfAvailable());
+        return request -> {
+            var checkpoint = checkpoints.getIfAvailable();
+            var result = checkpoint == null ? java.util.Optional.<java.util.Map<String, Object>>empty() : checkpoint.executeTool(request);
+            return result.isPresent() ? result.get() : interactive.execute(request);
+        };
+    }
+
+    @Bean
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
+    ltd.qianc.iotagent.agent.AgentCheckpointBridge checkpointBridge(ObjectMapper mapper, IotAdapter iot,
+            ObservationAdapter observations, ltd.qianc.iotagent.report.ReportFactStore reports,
+            ObjectProvider<AdminConfigurationStore> configurations,
+            @Value("${agent.bridge.base-url:}") String baseUrl, @Value("${agent.bridge.token:}") String token) {
+        Clock clock = Clock.systemUTC();
+        return AgentBusinessEngineFactory.checkpointBridge(mapper, observations,
+                ltd.qianc.iotagent.report.ReportGenerationServiceFactory.evidence(iot, observations, clock),
+                reports, configurations::getIfAvailable, baseUrl, token, clock);
     }
 }

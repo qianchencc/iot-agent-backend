@@ -52,3 +52,17 @@
 ## 本票尚未验收
 
 本票仅发布规格，尚未执行任何验收；不得以台账可读、卡片渲染或报告接口成功宣称业务完成。
+
+## 实现记录（2026-11-02，工程完成，业务验收未开始）
+
+对照 Runtime `apps/runtime/src/safety/events.ts`、`src/iot/observation.ts`、`src/iot/adapter.ts` 完成后端只读实现，全部为查询，无生产写入/任务/通知/设备动作：
+
+- `iot/internal/SafetyLedgerComposer.java`（新增）：台账与详情的本地组合层。台账按 3 次上游分页读取（每页 100）滚动扫描，设备按授权安全范围（`loadAuthorizedSafetyScope`，仅 safety 家族，非全目录）与名称分类（烟/水浸/燃气）过滤，范围外计 `excludedCount`、类型不可核实计 `unknownCount`；游标为 owner 绑定（`owner=sha256(tenantCode\0authorization)`、type、窗口、page、offset、before-key）并经 HMAC-SHA256 完整性签名（域分隔 `iotagent:safety-ledger-cursor:v1`；密钥取 `iot.observation.safety-cursor-secret`，回退共享 `CONFIG_SECRET_KEY`，均未配置时用进程内临时密钥，重启后游标作废、如实报 `INVALID_SAFETY_CURSOR` 让用户重查；游标内不携带任何凭据），MAC 验签先于字段校验：同租主改写 page/offset/before/窗口再重编码、或跨租主/换类型/换窗口一律 `INVALID_SAFETY_CURSOR` 400；窗口含时区校验，默认 `to=now`；响应含 `observedAt/window/total(null)/scanned/excludedCount/unknownCount/coverageComplete/nextCursor`。详情先核验设备在当前安全范围内，再按 deviceId 过滤最多 5 页（Runtime `alarmPageCap`）扫描事件身份，找不到返回 404 `SAFETY_EVENT_UNAVAILABLE`，不做首页假 404。
+- `iot/internal/WebClientSafetyMetadataReader.java`（新增）：经安全范围 hub 绑定读 iot-center 设备详情（`/micro-api/api/iot-center/device/{hub}`），名称/位置 trim 后为空即 null，失败按“未核验”返回 `{name:null,location:null}`（401/403 保持类型化），上游 5xx/超时有界重试一次。
+- `WebClientObservationAdapter`：`parseSafety` 改为诚实原始页解析（items+last+scanned），删除 limit 截断、假 total、恒空 nextCursor 与单事件分支；`SAFETY_EVENT` 不再上游路由（直达即失败，fail-closed）。
+- `CompanyOfficeObservationAdapter`：`SAFETY_EVENTS/SAFETY_EVENT` 切换至组合层；“按位置找监控”复用同一权威事件读取（深度分页查找），当前位置空白不再伪造成空位置。
+- `ObservationController`：移除 cursor 503 停用桩；详情路由补 `source=company` 校验（404 `SAFETY_SOURCE_UNAVAILABLE`，对齐 Runtime）；`page` 参数不再进入台账白名单。
+- 工程回归（未执行，留给统一构建）：`SafetyLedgerObservationContractTest`（续页不重不漏、跨租主/篡改游标、过滤与计数、深页事件、合法空台账、非法窗口、诚实元数据缺失）、`SafetyCameraObservationContractTest`（已迁移到原始页上游桩）。
+- 报告/对话消费方（ReportEvidenceService、Agent 工具、引用解析）经组合层自动获得真实覆盖语义：`total` 恒为 null（Runtime 契约），覆盖不完整时如实 partial/缺口。
+
+剩余：真实前端台账/详情/周报/摄像头候选/引用对话验收（COMP-SAFE-01/02 等）全部未开始；证据目录未创建。回放可播放由 09 验收。

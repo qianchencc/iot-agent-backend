@@ -1,93 +1,78 @@
 # Independent Pi Agent Sidecar
 
-This directory is a separately buildable Node 22 service. It owns the published `pi-agent-core`, `pi-ai`, and Pi Session SQLite integration. It has **no runtime import, process invocation, workspace dependency, or filesystem dependency** on `../iot-agent-runtime`.
+Node 22 / published Pi 0.84.4. Java owns business instructions, tool schemas, authorization, device/task/report behavior, model policy and durable Pi Session storage in MySQL. Node owns the generic Pi loop, streaming, tool transport and checkpoint/recovery mechanics. It has no runtime dependency on `../iot-agent-runtime`, no database credentials and no SQLite or local session volume.
 
-## Install, build, and run
-
-Use Node `>=22.19.0 <23` from this directory:
+## Build and run
 
 ```sh
-npm install
+npm ci
 npm run build
-npm start
 ```
 
-`package-lock.json` is generated and maintained in this directory with `npm install --package-lock-only` when dependency versions change. Deployment installs with `npm ci` and then runs `npm run build`; no parent repository package or workspace is required.
+From the backend root, inject configuration into the launcher, not directly into Node:
+
+```sh
+set -a
+source .env
+set +a
+python tools/start-sidecar.py
+```
+
+The launcher passes only the sidecar environment allowlist. An optional directory argument selects an immutable release containing `dist/`, `package.json` and installed dependencies. The application directory may be read-only; session data is not written there.
 
 ## Configuration
 
-All configuration is environment-driven. Production must set:
+- `SIDECAR_HOST` / `SIDECAR_PORT`: loopback by default; private bridge only.
+- `AGENT_BRIDGE_TOKEN`: Java → Node bearer authentication.
+- `JAVA_AGENT_TOOLS_URL` / `JAVA_AGENT_TOOLS_TOKEN`: private Java tool callback.
+- `JAVA_AGENT_SESSIONS_URL`: private Java `/internal/agent/sessions`; defaults to the tools URL's origin plus that path. Uses the same private callback token.
+- `MODEL_BASE_URL`, `MODEL_ID`, `MODEL_API_KEY`: bootstrap only; production runs receive Java's immutable `definition.model` snapshot.
+- `SIDECAR_RUN_TIMEOUT_MS`, `JAVA_AGENT_TOOL_TIMEOUT_MS`, `SIDECAR_HEARTBEAT_MS`, `AGENT_THINKING_LEVEL`: optional runtime limits.
 
-- `SIDECAR_HOST` (default `127.0.0.1`) and `SIDECAR_PORT` (default `8787`)
-- `AGENT_BRIDGE_TOKEN` for Java-to-sidecar bearer authentication
-- `JAVA_AGENT_TOOLS_URL` and `JAVA_AGENT_TOOLS_TOKEN` for the authenticated callback to Java `/internal/agent/tools`
-- `MODEL_BASE_URL`, `MODEL_ID`, and `MODEL_API_KEY` as the bootstrap model endpoint; a run's `definition.model` snapshot overrides them (production Java supplies the snapshot)
-- `SIDECAR_SESSION_PATH` (default `./var/pi-agent/sessions.sqlite`)
-- `SIDECAR_BACKUP_DIR` (default `./var/pi-agent/backups`)
-- optional `SIDECAR_MINIMUM_FREE_BYTES`, `SIDECAR_RUN_TIMEOUT_MS`, `JAVA_AGENT_TOOL_TIMEOUT_MS`, and `SIDECAR_HEARTBEAT_MS`
+Java must have MySQL enabled and available. There is no SQLite fallback and no old-session import. The one-time Java cutover retires old public conversations while preserving historical business facts. New MySQL conversations survive subsequent Java/Node replacement within the application's conversation retention policy.
 
-Keep the sidecar SQLite volume separate from Java MySQL. Bind loopback unless an external private network is explicitly required. Never put a model key, bridge token, callback token, URL, or local path in health responses or operational errors.
+## Private HTTP contract
 
-## HTTP contract
+All Node routes require `Authorization: Bearer $AGENT_BRIDGE_TOKEN`.
 
-Every route requires `Authorization: Bearer $AGENT_BRIDGE_TOKEN`. `POST /run` accepts the versioned generic definition below and streams `application/x-ndjson`. The sidecar owns no business tool, schema, prompt, status parser, or public business-event projection.
+- `POST /run`: versioned generic run request; NDJSON response.
+- `POST /cancel/:runId`: cancel the matching in-flight run.
+- `GET /healthz`: sanitized service status.
 
-```json
-{
-  "protocolVersion": 1,
-  "runId": "…",
-  "conversationId": "…",
-  "turnId": "…",
-  "toolContextId": "…",
-  "content": "…",
-  "sessionScope": "opaque owner and source namespace",
-  "definition": {
-    "instructions": "system instructions supplied by Java",
-    "tools": [
-      {
-        "name": "…",
-        "label": "…",
-        "description": "…",
-        "parameters": { "type": "object", "properties": {} }
-      }
-    ],
-    "maxTurns": 8,
-    "maxToolCalls": 10,
-    "runTimeoutMs": 120000,
-    "model": {
-      "modelId": "…",
-      "modelBaseUrl": "https://model.example/v1",
-      "modelApiKey": "…",
-      "contextWindow": 128000,
-      "maxOutputTokens": 16384,
-      "reasoning": true,
-      "thinkingLevel": "low",
-      "supportsDeveloperRole": false,
-      "supportsReasoningEffort": true,
-      "supportsUsageInStreaming": true,
-      "maxTokensField": "max_completion_tokens"
-    }
-  }
-}
-```
+Run fields: `protocolVersion:1`, `runId`, `conversationId`, `turnId`, `toolContextId`, `content`, opaque `sessionScope`, and `definition`. Unknown fields are rejected.
 
-Unknown fields are rejected, so no tenant, source, focus, reference, or other business context travels through the engine. `definition.maxToolCalls` (1–1000) is enforced cumulatively: once reached, further tool attempts fail explicitly without a Java callback. `definition.runTimeoutMs` (1000–600000) overrides the configured run timeout for that request. When `definition.model` is present all eleven keys are required; every run builds its Pi model, thinking level, and API key from that immutable snapshot. The model key is never logged, traced, or emitted. Omitting `model` retains the sidecar configuration bootstrap for engineering fixtures only; production Java supplies the snapshot. Public NDJSON is limited to `run.started`, `run.progress`, `run.completed`, `run.failed`, `run.aborted`, `message.delta`, `message.completed`, `message.reclassified`, `tool.started`, `tool.progress`, `tool.completed`, `tool.result`, and `heartbeat`. A successful run always ends with `run.completed`; Java projects confirmation state from `tool.result` and `halt`. A run can be stopped with authenticated `POST /cancel/:runId`.
+`definition` contains Java-owned `instructions`, `tools` (`name`, `label`, `description`, JSON Schema `parameters`), `maxTurns`, optional `maxToolCalls`, `runTimeoutMs`, `finalizationInstructions` and `model`. A model snapshot contains `modelId`, `modelBaseUrl`, `modelApiKey`, `contextWindow`, `maxOutputTokens`, `reasoning`, `thinkingLevel`, `supportsDeveloperRole`, `supportsReasoningEffort`, `supportsUsageInStreaming`, `maxTokensField`. Keys and private URLs are never emitted in public events or operational errors.
 
-The sidecar calls Java, rather than exposing a public tool endpoint. Callback requests contain only `protocolVersion`, `runId`, `toolContextId`, `conversationId`, `turnId`, `toolName`, `toolCallId`, and `arguments`, and use `X-Agent-Bridge-Token: $JAVA_AGENT_TOOLS_TOKEN`. A successful callback returns `{"protocolVersion":1,"result":…,"halt":<boolean>}`; HTTP errors become tool errors. `halt:true` stops the generic loop after the current turn. Tool arguments are validated against the supplied JSON Schema by the installed Pi validator before the callback, with no evaluation of schema text. Session history is restored through the Pi session API for the opaque `sessionScope`, including compaction context.
+Node enforces the supplied loop/tool/time budgets. Java may return `halt:true` on a successful or failed tool response. Optional Java-supplied finalization instructions permit a tool-free final answer; no business fallback is embedded in Node.
 
-Authenticated operations are:
+Tool callbacks include the four run-binding IDs, protocol, tool name/call ID, arguments and `sessionWriter` fencing proof. Java resolves tenant/owner/source from its active authenticated run and rejects stale writers before dispatch. The session callback carries the same run binding and opaque virtual filesystem operations; it accepts neither database credentials nor tenant/source claims.
 
-- `POST /internal/pi-session/capacity`
-- `POST /internal/pi-session/integrity-check`
-- `POST /internal/pi-session/writer-lease/recover`
-- `POST /internal/pi-session/backup` (`{destination,force}`; destination MUST be inside `SIDECAR_BACKUP_DIR`)
-- `POST /internal/pi-session/restore` (`{backup,apply:true}`; source MUST be inside `SIDECAR_BACKUP_DIR`)
-- `GET /healthz` (safe status only, still authenticated)
+## Persistence and recovery
 
-There is no supervisor/admin handoff endpoint. An external supervisor calling `POST /internal/admin/apply` (even with its supervisor header and no bridge bearer) gets an unmatched-route 404; the sidecar never falsely reports a scheduled restart. Model, prompt, and limit changes apply through the per-run private policy and do not require a restart.
+The public Pi `JsonlSessionRepo` runs against a remote virtual filesystem backed by Java/MySQL append chunks. Its name does not imply local JSONL files. Native Pi retains record/entry, branch, compaction and open-operation semantics. Java provides scoped transactions, version checks, idempotent commit receipts and writer-epoch fencing.
 
-Integrity uses SQLite `PRAGMA quick_check`; backups use `VACUUM INTO`; restore verifies the backup before an atomic replacement. Responses redact filesystem paths and credentials.
+Tool intent and outcomes are checkpointed. After interruption, a committed outcome is recovered; an uncertain outcome becomes an explicit interrupted tool result. Node does not automatically replay a business effect. A running model request is not promised seamless continuation after process replacement.
 
-## Tests
+### Public Pi API to private storage mapping
 
-The tests are local contract tests and use in-process Fastify plus local fake HTTP servers only. They do not contact customer gateways, cloud services, Java production, or the historical Runtime. Run them with `npm test` after installing dependencies.
+| Public API | Owner and durable operation |
+| --- | --- |
+| `SessionRepo.create/open/list/delete/fork/close` | Thin opaque-ID wrapper delegates to Pi's native repository. Only physical filename IDs are JSON/base64url encoded; public IDs and parent IDs round-trip unchanged. Deleted/recreated handles are invalidated. |
+| metadata, lanes, lane moves, append entry/record, entry/branch/record/log queries, open operations, name/label/stats | Pi `Session` delegates to native storage unchanged; every wrapper checks the live handle. Pi owns validation, shared sequence, immutable reads, branch and compaction semantics. |
+| `absolutePath/joinPath` | Pure POSIX virtual-path normalization; never opens a local file. |
+| `readTextFile/readTextLines/fileInfo/listDir/exists` | Authenticated Java `read/lines/info/list/exists`, restricted to `/sessions` in the Java-derived scope. |
+| `writeFile/appendFile/createDir/renameFile/remove` | Java `write/append/mkdir/rename/remove`; short scope-locked transaction with expected version, writer epoch and commit ID. |
+| writer admission / close / tool dispatch | Java `claim/release/check`; four active-run IDs resolve server identity, not caller-supplied tenant/source. |
+
+File failures map to Pi's `aborted`, `not_found`, `permission_denied`, `not_directory`, `is_directory`, `invalid`, `not_supported`, or `unknown`. Authentication, stale writers and conflicts fail closed. A transport/body-read failure may retry **one identical storage mutation** with the same commit ID and content; it never retries a model run or business tool. Append chunks are checked for missing sequence numbers rather than silently truncating history.
+
+Public text also follows Runtime's generic reasoning-channel normalization: `<think>` / `<thinking>` spans, including split tag prefixes, are not published as answer/process text. The native durable model messages retain their original content; business errors and legitimate public text are not suppressed.
+
+
+The former SQLite capacity, integrity, backup, restore and writer-lease HTTP operations are removed. Administration exposes only Java's `/api/admin/pi-session/health`; backups cover the authoritative MySQL database together with linked business facts and the cutover marker.
+
+## Engineering verification versus acceptance
+
+`npm test` exercises generic loop/transport/recovery behavior. MySQL contract tests require the separate local Java conformance fixture and isolated test database documented in the Pi Session tickets. The unchanged upstream SessionBackendConformance suite runs through Node → Java → real MySQL. No customer gateway or historical Runtime is contacted by those fixtures.
+
+These are engineering checks, **not business acceptance**. Business acceptance requires real WeChat DevTools operations and screenshots, linked from `.scratch/pi-session-mysql/acceptance.md`. Never execute device control, create tasks or send production notifications during acceptance.

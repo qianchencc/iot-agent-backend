@@ -141,6 +141,38 @@ class ReportGenerationContractTest {
     }
 
     @Test
+    void safetyReportCountsOnlyServerPinnedFixedMembers() {
+        MemoryStore store = new MemoryStore();
+        MutableScopeAdapter iot = new MutableScopeAdapter();
+        iot.devices.add(new AuthorizedDevice("sensor-1", "safety", "传感器", "26楼", true));
+        iot.devices.add(new AuthorizedDevice("sensor-2", "safety", "传感器2", "27楼", true));
+        ReportGenerationService service = service(store, iot);
+        Map<String, Object> content = new LinkedHashMap<>();
+        content.put("kind", "safety");
+        content.put("period", Map.of("kind", "absolute", "from", "2026-10-01T08:00:00+08:00",
+                "to", "2026-10-02T08:00:00+08:00"));
+        content.put("types", List.of("smoke"));
+        content.put("fixedDeviceIds", List.of("sensor-1"));
+
+        ReportGenerationPort.GeneratedReport saved = service.generate(identity,
+                "conversation-fixed", "turn-fixed", "request-fixed", content);
+        Map<?, ?> coverage = (Map<?, ?>) saved.report().get("coverage");
+        assertThat(coverage.get("events")).isEqualTo(1);
+        assertThat(coverage.get("fixedDeviceCount")).isEqualTo(1);
+        assertThat((List<?>) ((Map<?, ?>) ((List<?>) saved.report().get("blocks")).get(0)).get("events")).hasSize(1);
+
+        Map<String, Object> elsewhere = new LinkedHashMap<>(content);
+        elsewhere.put("fixedDeviceIds", List.of("sensor-2"));
+        ReportGenerationPort.GeneratedReport filtered = service.generate(identity,
+                "conversation-filtered", "turn-filtered", "request-filtered", elsewhere);
+        Map<?, ?> filteredCoverage = (Map<?, ?>) filtered.report().get("coverage");
+        assertThat(filteredCoverage.get("events")).isEqualTo(0);
+        assertThat(filteredCoverage.get("fixedDeviceCount")).isEqualTo(1);
+        List<?> blocks = (List<?>) filtered.report().get("blocks");
+        assertThat((List<?>) ((Map<?, ?>) blocks.get(0)).get("events")).isEmpty();
+    }
+
+    @Test
     void sourceAndUnknownReportKindsAreRejected() {
         MemoryStore store = new MemoryStore();
         MutableScopeAdapter iot = new MutableScopeAdapter();

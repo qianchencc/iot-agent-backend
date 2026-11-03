@@ -5,6 +5,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -66,8 +68,136 @@ class TaskProposalNormalizationContractTest {
                 .hasMessageContaining("空调");
     }
 
+    @Test
+    void rejectsPhaseMixingControlActionsWithReadOnlyCheck() {
+        assertThatThrownBy(() -> propose("{\"label\":\"混合阶段\",\"phases\":[{\"at\":\"2026-11-02T06:00:00Z\","
+                + "\"actions\":[{\"deviceId\":\"light-1\",\"kind\":\"lighting\",\"command\":{\"closeOrOpen\":1}}],"
+                + "\"read\":{\"devices\":[{\"id\":\"ac-1\",\"kind\":\"ac\"}]}}]}"))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("混用");
+    }
+
+    @Test
+    void rejectsRootLevelControlMixedWithReadOnlyCheck() {
+        assertThatThrownBy(() -> propose("{\"label\":\"根级混合\",\"at\":\"2026-11-02T06:00:00Z\","
+                + "\"actions\":[{\"deviceId\":\"light-1\",\"kind\":\"lighting\",\"command\":{\"closeOrOpen\":1}}],"
+                + "\"read\":{\"devices\":[{\"id\":\"ac-1\",\"kind\":\"ac\"}]}}"))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("混用");
+    }
+
+    @Test
+    void acceptsReadOnlyPhaseWithEmptyActions() throws Exception {
+        TaskProposalFact saved = propose("{\"label\":\"只读\",\"phases\":[{\"at\":\"2026-11-02T06:00:00Z\","
+                + "\"actions\":[],\"read\":{\"devices\":[{\"id\":\"ac-1\",\"kind\":\"ac\"}]}}]}");
+        JsonNode first = mapper.readTree(saved.payloadJson()).path("phases").get(0);
+        assertThat(first.path("actions").size()).isZero();
+        assertThat(first.path("read").path("devices").get(0).path("id").asText()).isEqualTo("ac-1");
+    }
+
+    @Test
+    void windowExpansionIncludesTheEndBoundaryAndTruncatesToTheCadenceGrid() throws Exception {
+        JsonNode onGrid = mapper.readTree(propose(acPayload(30, "2026-11-02T06:00:00Z", "2026-11-02T08:00:00Z")).payloadJson());
+        assertThat(onGrid.path("phases")).hasSize(4);
+        assertThat(onGrid.path("phases").get(0).path("at").asText()).isEqualTo("2026-11-02T06:30:00Z");
+        assertThat(onGrid.path("phases").get(3).path("at").asText()).isEqualTo("2026-11-02T08:00:00Z");
+
+        JsonNode offGrid = mapper.readTree(propose(acPayload(30, "2026-11-02T06:00:00Z", "2026-11-02T07:10:00Z")).payloadJson());
+        assertThat(offGrid.path("phases")).hasSize(2);
+        assertThat(offGrid.path("phases").get(1).path("at").asText()).isEqualTo("2026-11-02T07:00:00Z");
+    }
+
+    @Test
+    void windowWithoutCadenceClarifiesAndSavesNoProposal() {
+        TaskProposalStore proposals = mock(TaskProposalStore.class);
+        assertThatThrownBy(() -> propose("{\"label\":\"巡检\",\"interval\":{\"startsAt\":\"2026-11-02T06:00:00Z\","
+                + "\"endsAt\":\"2026-11-02T08:00:00Z\"},\"phases\":[{\"at\":\"2026-11-02T06:00:00Z\",\"actions\":[],"
+                + "\"read\":{\"deviceIds\":[\"ac-1\"],\"ac\":{\"mode\":\"adjust_to_26\",\"target\":26}}}]}", proposals))
+                .isInstanceOf(BusinessException.class)
+                .extracting(error -> ((BusinessException) error).code())
+                .isEqualTo("AC_CADENCE_REQUIRED");
+        verify(proposals, never()).save(any());
+    }
+
+    @Test
+    void singleCheckWithoutWindowStaysConditional() throws Exception {
+        JsonNode payload = mapper.readTree(propose("{\"label\":\"单次检查\",\"phases\":[{\"at\":\"2026-11-02T06:00:00Z\","
+                + "\"actions\":[],\"read\":{\"deviceIds\":[\"ac-1\"],\"ac\":{\"mode\":\"inspect\",\"target\":26}}}]}")
+                .payloadJson());
+        assertThat(payload.path("taskKind").asText()).isEqualTo("conditional");
+        assertThat(payload.path("checkpointCount").asInt()).isEqualTo(1);
+        assertThat(payload.path("phases").get(0).path("read").path("ac").path("mode").asText()).isEqualTo("inspect");
+    }
+
+    @Test
+    void handWrittenAcCheckpointListsAreRejectedInFavorOfServerWindows() {
+        assertThatThrownBy(() -> propose("{\"label\":\"手写检查点\",\"phases\":["
+                + "{\"at\":\"2026-11-02T06:00:00Z\",\"actions\":[],\"read\":{\"deviceIds\":[\"ac-1\"],\"ac\":{\"mode\":\"inspect\",\"target\":26}}},"
+                + "{\"at\":\"2026-11-02T06:30:00Z\",\"actions\":[],\"read\":{\"deviceIds\":[\"ac-1\"],\"ac\":{\"mode\":\"inspect\",\"target\":26}}}]}"))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("只检查一次");
+        assertThatThrownBy(() -> propose("{\"label\":\"检查加控制\",\"phases\":["
+                + "{\"at\":\"2026-11-02T06:00:00Z\",\"actions\":[{\"deviceId\":\"light-1\",\"closeOrOpen\":1}]},"
+                + "{\"at\":\"2026-11-02T06:30:00Z\",\"actions\":[],\"read\":{\"deviceIds\":[\"ac-1\"],\"ac\":{\"mode\":\"inspect\",\"target\":26}}}]}"))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("只检查一次");
+    }
+
+    @Test
+    void recurringAcCheckpointsRequireWindowAndCadence() {
+        assertThatThrownBy(() -> propose("{\"label\":\"每天单次检查\",\"repeat\":{\"frequency\":\"daily\"},"
+                + "\"phases\":[{\"at\":\"2026-11-02T06:00:00Z\",\"actions\":[],"
+                + "\"read\":{\"deviceIds\":[\"ac-1\"],\"ac\":{\"mode\":\"inspect\",\"target\":26}}}]}"))
+                .isInstanceOf(BusinessException.class)
+                .extracting(error -> ((BusinessException) error).code())
+                .isEqualTo("AC_WINDOW_REQUIRED");
+    }
+
+    @Test
+    void activeWindowKeepsOnlyRemainingFutureCheckpoints() throws Exception {
+        JsonNode payload = mapper.readTree(propose(acPayload(30, "2026-11-02T04:00:00Z", "2026-11-02T06:30:00Z")).payloadJson());
+        assertThat(payload.path("taskKind").asText()).isEqualTo("conditional");
+        assertThat(payload.path("checkpointCount").asInt()).isEqualTo(3);
+        assertThat(payload.path("phases").get(0).path("at").asText()).isEqualTo("2026-11-02T05:30:00Z");
+        assertThat(payload.path("phases").get(2).path("at").asText()).isEqualTo("2026-11-02T06:30:00Z");
+
+        assertThatThrownBy(() -> propose(acPayload(30, "2026-11-02T03:00:00Z", "2026-11-02T04:30:00Z")))
+                .isInstanceOf(BusinessException.class)
+                .extracting(error -> ((BusinessException) error).code())
+                .isEqualTo("TASK_TIME_PASSED");
+    }
+
+    @Test
+    void recurringActiveWindowKeepsTheFullTemplateForFollowingDays() throws Exception {
+        JsonNode payload = mapper.readTree(propose("{\"label\":\"每日窗口巡检\",\"repeat\":{\"frequency\":\"daily\"},"
+                + "\"interval\":{\"startsAt\":\"2026-11-02T04:00:00Z\",\"endsAt\":\"2026-11-02T06:30:00Z\"},"
+                + "\"phases\":[{\"at\":\"2026-11-02T04:00:00Z\",\"actions\":[],\"read\":{\"deviceIds\":[\"ac-1\"],"
+                + "\"ac\":{\"mode\":\"adjust_to_26\",\"target\":26,\"cadenceMinutes\":30}}}]}").payloadJson());
+        assertThat(payload.path("taskKind").asText()).isEqualTo("recurring");
+        assertThat(payload.path("phases")).hasSize(5);
+        assertThat(payload.path("phases").get(0).path("at").asText()).isEqualTo("2026-11-02T04:30:00Z");
+        assertThat(payload.path("phases").get(4).path("at").asText()).isEqualTo("2026-11-02T06:30:00Z");
+        assertThat(payload.path("interval").path("startsAt").asText()).isEqualTo("2026-11-02T04:00:00Z");
+    }
+
+    @Test
+    void justPassedSingleCheckStaysSchedulableWithinTenMinutes() throws Exception {
+        assertThat(mapper.readTree(propose("{\"label\":\"刚过检查\",\"phases\":[{\"at\":\"2026-11-02T04:55:00Z\","
+                + "\"actions\":[],\"read\":{\"deviceIds\":[\"ac-1\"],\"ac\":{\"mode\":\"inspect\",\"target\":26}}}]}")
+                .payloadJson()).path("taskKind").asText()).isEqualTo("conditional");
+        assertThatThrownBy(() -> propose("{\"label\":\"过久检查\",\"phases\":[{\"at\":\"2026-11-02T04:49:00Z\","
+                + "\"actions\":[],\"read\":{\"deviceIds\":[\"ac-1\"],\"ac\":{\"mode\":\"inspect\",\"target\":26}}}]}"))
+                .isInstanceOf(BusinessException.class)
+                .extracting(error -> ((BusinessException) error).code())
+                .isEqualTo("TASK_TIME_PASSED");
+    }
+
     private TaskProposalFact propose(String payload) {
         TaskProposalStore proposals = mock(TaskProposalStore.class);
+        return propose(payload, proposals);
+    }
+
+    private TaskProposalFact propose(String payload, TaskProposalStore proposals) {
         when(proposals.findByIdempotencyKey(anyString())).thenReturn(Optional.empty());
         when(proposals.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
         TaskFacade facade = new TaskFacade(mapper, mock(TaskFactStore.class), proposals, mock(TaskPlanStore.class),

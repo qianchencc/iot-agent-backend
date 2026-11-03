@@ -23,12 +23,12 @@ import ltd.qianc.iotagent.report.ReportFact;
 import ltd.qianc.iotagent.report.ReportFactProducer;
 import ltd.qianc.iotagent.report.ReportFactStore;
 import ltd.qianc.iotagent.report.ReportUnavailableException;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 /** Projects terminal company checkpoints through the same server-evidence report engine. */
 @Component
-@ConditionalOnBean(ReportFactStore.class)
+@ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
 public final class DefaultReportFactProducer implements ReportFactProducer {
     private final ReportFactStore store;
     private final ObjectMapper mapper;
@@ -81,9 +81,13 @@ public final class DefaultReportFactProducer implements ReportFactProducer {
         try {
             Optional<ReportFact> existing = store.find(reportId);
             if (existing.isPresent()) return existing;
+            // Scheduled relative periods resolve against the occurrence's bound time,
+            // not the live clock: a delayed retry across a calendar boundary must
+            // still capture the window of the original checkpoint, and the resolved
+            // absolute window is persisted inside the saved fact and reused on retry.
             Map<String, Object> report = "ac_inspection".equals(text(content.get("kind")))
                     ? inspectionReport(checkpoint, content, parsed.get("inspectionEvidence"))
-                    : evidence.build(identity, content);
+                    : evidence.build(identity, content, checkpoint.checkpointAt());
             ObjectNode snapshot = mapper.valueToTree(report);
             snapshot.put("id", reportId);
             snapshot.put("source", "company");

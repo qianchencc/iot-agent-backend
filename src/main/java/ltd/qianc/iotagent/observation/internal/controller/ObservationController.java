@@ -79,13 +79,10 @@ public final class ObservationController {
     public ResponseEntity<?> safetyEvents(HttpServletRequest request) {
         ResponseEntity<?> source = requireCompanySource(request, "SAFETY_SOURCE_UNAVAILABLE", "安全历史仅支持公司来源");
         if (source != null) return source;
-        ResponseEntity<?> duplicate = rejectDuplicates(request, "INVALID_SAFETY_QUERY", "查询参数不可重复", "type", "from", "to", "limit", "cursor", "page");
+        ResponseEntity<?> duplicate = rejectDuplicates(request, "INVALID_SAFETY_QUERY", "查询参数不可重复", "type", "from", "to", "limit", "cursor");
         if (duplicate != null) return duplicate;
         String type = valueOr(request, "type", "gas");
         String limit = valueOr(request, "limit", "20");
-        if (request.getParameter("cursor") != null) {
-            return error(503, "SAFETY_CURSOR_UNAVAILABLE", "安全台账继续分页暂不可用，请重新查询");
-        }
         if (!List.of("gas", "smoke", "water").contains(type) || !integerBetween(limit, 1, 100)
                 || !validSafetyWindow(request.getParameter("from"), request.getParameter("to"))) {
             return error(400, "INVALID_SAFETY_QUERY", "台账类别、分页数量或查询时间范围无效");
@@ -95,6 +92,8 @@ public final class ObservationController {
 
     @GetMapping("/safety-events/{id}")
     public ResponseEntity<?> safetyEvent(HttpServletRequest request, @PathVariable String id) {
+        ResponseEntity<?> source = requireCompanySource(request, "SAFETY_SOURCE_UNAVAILABLE", "安全台账详情仅支持公司来源");
+        if (source != null) return source;
         ResponseEntity<?> duplicate = rejectDuplicates(request, "INVALID_REFERENCE", "安全台账记录身份不可重复", "ledger", "deviceId");
         if (duplicate != null) return duplicate;
         if (request.getParameter("ledger") == null || request.getParameter("deviceId") == null
@@ -103,6 +102,7 @@ public final class ObservationController {
         }
         return read(request, ObservationOperation.SAFETY_EVENT, Map.of("id", id));
     }
+
     @GetMapping("/safety-events/{id}/cameras")
     public ResponseEntity<?> safetyEventCameras(HttpServletRequest request, @PathVariable String id) {
         ResponseEntity<?> source = requireCompanySource(request, "SAFETY_SOURCE_UNAVAILABLE", "安全记录监控复盘仅支持公司来源");
@@ -369,7 +369,7 @@ public final class ObservationController {
         Set<String> allowed = switch (operation) {
             case DASHBOARD -> Set.of("section");
             case ENVIRONMENT_HISTORY -> Set.of("from", "to", "page");
-            case SAFETY_EVENTS -> Set.of("type", "from", "to", "limit", "cursor", "page");
+            case SAFETY_EVENTS -> Set.of("type", "from", "to", "limit", "cursor");
             case SAFETY_EVENT, SAFETY_EVENT_CAMERAS -> Set.of("ledger", "deviceId");
             case REGION_LIST -> Set.of("section");
             case REGION_TIMELINE, DEVICE_TIMELINE -> Set.of("date");

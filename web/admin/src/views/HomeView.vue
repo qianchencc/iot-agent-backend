@@ -403,6 +403,21 @@
                   {{ view?.deployment.host }}:{{ view?.deployment.port }} · {{ view?.deployment.environment }}
                 </a-descriptions-item>
               </a-descriptions>
+              <a-divider />
+              <a-space direction="vertical" fill>
+                <a-space>
+                  <strong>智能体会话存储</strong>
+                  <a-button size="small" :loading="sessionHealthLoading" @click="loadSessionHealth">检查 MySQL 状态</a-button>
+                </a-space>
+                <a-alert v-if="sessionHealthError" type="error">{{ sessionHealthError }}</a-alert>
+                <a-descriptions v-else-if="sessionHealth" :column="2" bordered size="medium">
+                  <a-descriptions-item label="存储">{{ sessionHealth.message }}</a-descriptions-item>
+                  <a-descriptions-item label="职责">Java / MySQL 持久化，Node 无本地会话库</a-descriptions-item>
+                  <a-descriptions-item label="会话范围">{{ sessionHealth.details.scopes }}</a-descriptions-item>
+                  <a-descriptions-item label="会话日志">{{ sessionHealth.details.documents }}</a-descriptions-item>
+                </a-descriptions>
+                <span v-else>尚未检查。备份与恢复统一使用 MySQL 运维流程，不再操作 Node 文件。</span>
+              </a-space>
 
               <div class="state-note">
                 保存只会生成新的配置修订，不执行任何进程重启。模型、生成参数、业务指令与执行预算是热字段，编辑区显示已保存值，保存后直接进入下一轮快照；完整快照中的指令字段只显示字符数，避免长文本重复。进程级参数在本页只读展示，修改需按部署维护流程处理。
@@ -568,6 +583,7 @@ import {
   type AdminChangeRecord,
   type AdminConfigValues,
   type AdminConfigView,
+  type PiSessionHealth,
   type ConfigChangeSet
 } from "../api/admin";
 import { useSessionStore } from "../stores/session";
@@ -604,6 +620,22 @@ interface SnapshotRow {
 interface TestOutcome {
   type: "success" | "error";
   message: string;
+}
+const sessionHealth = ref<PiSessionHealth>();
+const sessionHealthLoading = ref(false);
+const sessionHealthError = ref("");
+
+async function loadSessionHealth() {
+  sessionHealthLoading.value = true;
+  sessionHealthError.value = "";
+  try {
+    sessionHealth.value = (await adminApi.piSessionHealth()).data;
+  } catch (error) {
+    sessionHealth.value = undefined;
+    sessionHealthError.value = errorOf(error, "无法读取 MySQL 会话状态").message;
+  } finally {
+    sessionHealthLoading.value = false;
+  }
 }
 
 const THINKING_OPTIONS = [

@@ -56,6 +56,7 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
     private final AutomationSummaryReader automation;
     private final RegionSeenStore regionSeen;
     private final CompanyEnergyObservationComposer energyComposer;
+    private final SafetyLedgerComposer safetyLedger;
     private final Clock clock;
     private final ConcurrentMap<String, CacheEntry> dashboardCache = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Mono<ObservationResponse>> dashboardJobs = new ConcurrentHashMap<>();
@@ -68,7 +69,7 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
             AutomationSummaryReader automation,
             RegionSeenStore regionSeen,
             Clock clock) {
-        this(upstream, iot, automation, regionSeen, null, clock);
+        this(upstream, iot, automation, regionSeen, null, null, clock);
     }
 
     public CompanyOfficeObservationAdapter(
@@ -78,11 +79,25 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
             RegionSeenStore regionSeen,
             CompanyEnergyObservationComposer energyComposer,
             Clock clock) {
+        this(upstream, iot, automation, regionSeen, energyComposer, null, clock);
+    }
+
+    public CompanyOfficeObservationAdapter(
+            ObservationAdapter upstream,
+            IotAdapter iot,
+            AutomationSummaryReader automation,
+            RegionSeenStore regionSeen,
+            CompanyEnergyObservationComposer energyComposer,
+            SafetyLedgerComposer safetyLedger,
+            Clock clock) {
         this.upstream = Objects.requireNonNull(upstream, "upstream");
         this.iot = Objects.requireNonNull(iot, "iot");
         this.automation = Objects.requireNonNull(automation, "automation");
         this.regionSeen = regionSeen;
         this.energyComposer = energyComposer;
+        this.safetyLedger = safetyLedger == null
+                ? new SafetyLedgerComposer(upstream, iot, null, clock)
+                : safetyLedger;
         this.clock = Objects.requireNonNull(clock, "clock");
     }
 
@@ -95,6 +110,8 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
             case REGION_DEVICES -> regionDevices(request);
             case REGION_STATES -> regionStates(request);
             case REGION_SEEN -> regionSeen(request);
+            case SAFETY_EVENTS -> safetyLedger.readLedger(request);
+            case SAFETY_EVENT -> safetyLedger.readEvent(request);
             case SAFETY_EVENT_CAMERAS -> safetyEventCameras(request);
             case COMPANY_ENERGY_DAILY, COMPANY_ENERGY_REPORT, ENERGY_COMPARISON, COMPANY_METER_REPORT ->
                     energy(request);
@@ -134,7 +151,8 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
         eventParameters.put("id", eventId);
         eventParameters.put("ledger", ledger);
         eventParameters.put("deviceId", deviceId);
-        return upstream.read(new ObservationRequest(request.identity(), ObservationOperation.SAFETY_EVENT, eventParameters))
+        return safetyLedger.readEvent(new ObservationRequest(
+                request.identity(), ObservationOperation.SAFETY_EVENT, eventParameters))
                 .flatMap(response -> {
                     if (response.status() == ObservationStatus.UNAVAILABLE) {
                         return Mono.error(new ltd.qianc.iotagent.iot.ObservationUnavailableException("安全台账读取失败"));
@@ -250,7 +268,11 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
         String name = text(source, "name");
         String location = text(source, "location", "installAddress");
         if (name == null && current != null) name = current.name();
-        if (location == null && current != null) location = current.installAddress();
+        // A blank scope address is an unverified location, not an empty one; keep it
+        // null so candidate lookup cannot fabricate a place from missing metadata.
+        if (location == null && current != null && !current.installAddress().isBlank()) {
+            location = current.installAddress();
+        }
         result.put("name", name);
         result.put("location", location);
         return result;
