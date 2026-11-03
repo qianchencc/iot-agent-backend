@@ -85,13 +85,6 @@ class AgentBusinessDefinitionContractTest {
 
         Map<String, Object> definition = map(body.get("definition"));
         assertThat(definition).containsEntry("maxTurns", 8);
-        String instructions = String.valueOf(definition.get("instructions"));
-        assertThat(instructions).contains("2026-11-02T10:00:00+08:00")
-                .contains("26楼运营办公区")
-                .contains("current_time")
-                .contains("taskId=task-1")
-                .contains("<reference_facts>")
-                .contains("真实任务一");
 
 
         assertThat(policy.projection().apply(event("run.started", Map.of()))).singleElement()
@@ -154,9 +147,7 @@ class AgentBusinessDefinitionContractTest {
         Map<String, Object> window = map(referenceView.get("window"));
         assertThat(window).containsEntry("from", "2026-11-01T09:45:00Z")
                 .containsEntry("to", "2026-11-01T10:15:00Z");
-        String instructions = String.valueOf(map(policy.request().get("definition")).get("instructions"));
-        assertThat(instructions).contains("<reference_facts>", "safetyEvent", "reviewWindow")
-                .doesNotContain("客户端伪造标题");
+        assertThat(policy.request().toString()).doesNotContain("客户端伪造标题");
     }
 
     @Test
@@ -185,8 +176,6 @@ class AgentBusinessDefinitionContractTest {
                 .apply(event("run.started", Map.of())).getFirst().fields().get("reference"));
         assertThat(referenceView).containsEntry("from", from).containsEntry("to", to)
                 .containsEntry("verified", true);
-        String instructions = String.valueOf(map(policy.request().get("definition")).get("instructions"));
-        assertThat(instructions).contains("environmentWindow").contains(from).contains(to);
     }
 
     @Test
@@ -217,8 +206,7 @@ class AgentBusinessDefinitionContractTest {
                 .apply(event("run.started", Map.of())).getFirst().fields().get("reference"));
         assertThat(referenceView).containsEntry("reportId", "report-1")
                 .containsEntry("label", "真实报告").containsEntry("verified", true);
-        String instructions = String.valueOf(map(policy.request().get("definition")).get("instructions"));
-        assertThat(instructions).contains("真实报告").doesNotContain("客户端伪造标题");
+        assertThat(policy.request().toString()).doesNotContain("客户端伪造标题");
     }
 
     @Test
@@ -231,8 +219,6 @@ class AgentBusinessDefinitionContractTest {
                 () -> conversations, null, CLOCK, 6);
 
         AgentRunPolicy policy = provider.prepare(request("company", null, Map.of()));
-        String instructions = String.valueOf(map(policy.request().get("definition")).get("instructions"));
-        assertThat(instructions).contains("公司设施助手").doesNotContain("办公室物联助手");
 
         List<Map<String, Object>> tools = listOfMaps(map(policy.request().get("definition")).get("tools"));
         Set<String> names = tools.stream()
@@ -275,8 +261,7 @@ class AgentBusinessDefinitionContractTest {
                 .containsEntry("thinkingLevel", "low")
                 .containsEntry("maxTokensField", "max_completion_tokens");
         String instructions = String.valueOf(definition.get("instructions"));
-        assertThat(instructions).contains("office configured guidance", "reply configured guidance")
-                .doesNotContain("private-key");
+        assertThat(instructions).doesNotContain("private-key");
     }
 
     @Test

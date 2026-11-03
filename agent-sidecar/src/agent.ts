@@ -42,6 +42,8 @@ export interface ModelSettings {
 
 export interface RunDefinition {
   instructions: string;
+  /** Ephemeral invocation data, placed beside the current user input and never journaled. */
+  context?: string;
   tools: ToolDefinition[];
   maxTurns: number;
   maxToolCalls?: number;
@@ -77,7 +79,7 @@ const RUN_FIELDS: Record<string, true> = {
 };
 const DEFINITION_FIELDS: Record<string, true> = {
   instructions: true, tools: true, maxTurns: true, maxToolCalls: true, runTimeoutMs: true, model: true,
-  finalizationInstructions: true, compactionInstructions: true,
+  finalizationInstructions: true, compactionInstructions: true, context: true,
 };
 const TOOL_FIELDS: Record<string, true> = { name: true, label: true, description: true, parameters: true };
 const MODEL_FIELDS: Record<string, true> = {
@@ -261,7 +263,8 @@ function parseDefinition(input: unknown): RunDefinition {
     : boundedText(value.finalizationInstructions, "definition.finalizationInstructions", 16_000);
   const compactionInstructions = value.compactionInstructions === undefined ? undefined
     : boundedText(value.compactionInstructions, "definition.compactionInstructions", 16_000);
-  return { instructions, tools, maxTurns, maxToolCalls, runTimeoutMs, model, finalizationInstructions, compactionInstructions };
+  const context = value.context === undefined ? undefined : boundedText(value.context, "definition.context", 80_000);
+  return { instructions, context, tools, maxTurns, maxToolCalls, runTimeoutMs, model, finalizationInstructions, compactionInstructions };
 }
 
 function validateRequest(input: unknown): RunRequest {
@@ -323,7 +326,9 @@ export class AgentRunner {
     const tools = this.createTools(request, signal, observedEmit, state, checkpoint);
     const overheadTokens = estimateTokens({ role: "user", timestamp: 0,
       content: JSON.stringify({ instructions: request.definition.instructions, tools: request.definition.tools,
-        finalizationInstructions: request.definition.finalizationInstructions }) });
+        finalizationInstructions: request.definition.finalizationInstructions, context: request.definition.context }) });
+    const invocationContext: AgentMessage | undefined = request.definition.context
+      ? { role: "user", content: request.definition.context, timestamp: Date.now() } : undefined;
     const agent = new Agent({
       initialState: {
         model,
@@ -334,8 +339,13 @@ export class AgentRunner {
       },
       streamFn: traceStreamFn(streamSimple as StreamFn, trace),
       getApiKey: () => modelApiKey,
-      transformContext: () => loadAgentHistory(checkpoint.session, model, modelApiKey, overheadTokens, signal,
-        request.definition.compactionInstructions),
+      transformContext: async () => {
+        const messages = await loadAgentHistory(checkpoint.session, model, modelApiKey, overheadTokens, signal,
+          request.definition.compactionInstructions);
+        if (!invocationContext) return messages;
+        const currentInput = messages.findLastIndex(message => message.role === "user");
+        return messages.toSpliced(currentInput < 0 ? messages.length : currentInput, 0, invocationContext);
+      },
       beforeToolCall: async () => state.halt || state.finalizing
         ? { block: true, reason: request.definition.finalizationInstructions ?? "The tool phase is closed." }
         : undefined,
