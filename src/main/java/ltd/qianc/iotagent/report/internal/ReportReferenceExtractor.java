@@ -38,7 +38,7 @@ public final class ReportReferenceExtractor {
         String normalized = key.toLowerCase(Locale.ROOT);
         if (ARRAY_KEYS.contains(normalized)) {
             if (!value.isArray()) throw new IllegalArgumentException("report reference list is invalid");
-            boolean meter = normalized.contains("meter") || normalized.equals("deviceids");
+            boolean meter = normalized.contains("meter");
             for (JsonNode item : value) addText(item, meter, references);
             return;
         }
@@ -47,6 +47,9 @@ public final class ReportReferenceExtractor {
             return;
         }
         if (normalized.equals("meters") || normalized.equals("devices")) {
+            // Coverage summaries and floor rollups reuse these names for counts; only
+            // arrays carry device references. Unknown shapes still fail closed.
+            if (value.isNull() || value.isNumber()) return;
             if (!value.isArray()) throw new IllegalArgumentException("report reference collection is invalid");
             boolean meter = normalized.equals("meters");
             for (JsonNode item : value) {

@@ -46,6 +46,7 @@ import reactor.core.scheduler.Schedulers;
  */
 public final class CompanyOfficeObservationAdapter implements ObservationAdapter {
     private static final String REGION_UNAVAILABLE = "当前用户区域暂不可用，请稍后重试";
+
     private static final Pattern FLOOR_PATTERN = Pattern.compile("(?:^|[^\\d])(\\d+)(?:楼|层)");
 
     private final ObservationAdapter upstream;
@@ -54,6 +55,7 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
     private final RegionSeenStore regionSeen;
     private final CompanyEnergyObservationComposer energyComposer;
     private final ReadSnapshots regionSnapshots;
+    private final ObservationAdapter safetyLedger;
     private final Clock clock;
 
     public CompanyOfficeObservationAdapter(
@@ -62,7 +64,7 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
             AutomationSummaryReader automation,
             RegionSeenStore regionSeen,
             Clock clock) {
-        this(upstream, iot, automation, regionSeen, null, clock);
+        this(upstream, iot, automation, regionSeen, null, null, null, clock);
     }
 
     public CompanyOfficeObservationAdapter(
@@ -72,19 +74,22 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
             RegionSeenStore regionSeen,
             CompanyEnergyObservationComposer energyComposer,
             Clock clock) {
-        this(upstream, iot, automation, regionSeen, energyComposer, null, clock);
+        this(upstream, iot, automation, regionSeen, energyComposer, null, null, clock);
     }
 
     public CompanyOfficeObservationAdapter(
             ObservationAdapter upstream, IotAdapter iot, AutomationSummaryReader automation,
             RegionSeenStore regionSeen, CompanyEnergyObservationComposer energyComposer,
-            ReadSnapshots regionSnapshots, Clock clock) {
+            ObservationAdapter safetyLedger, ReadSnapshots regionSnapshots, Clock clock) {
         this.upstream = Objects.requireNonNull(upstream, "upstream");
         this.iot = Objects.requireNonNull(iot, "iot");
         this.automation = Objects.requireNonNull(automation, "automation");
         this.regionSeen = regionSeen;
         this.energyComposer = energyComposer;
         this.regionSnapshots = regionSnapshots;
+        this.safetyLedger = safetyLedger == null
+                ? ltd.qianc.iotagent.iot.ObservationAdapterFactory.safetyLedger(upstream, iot, null, clock)
+                : safetyLedger;
         this.clock = Objects.requireNonNull(clock, "clock");
     }
 
@@ -97,6 +102,7 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
             case REGION_DEVICES -> regionDevices(request);
             case REGION_STATES -> regionStates(request);
             case REGION_SEEN -> regionSeen(request);
+            case SAFETY_EVENTS, SAFETY_EVENT -> safetyLedger.read(request);
             case SAFETY_EVENT_CAMERAS -> safetyEventCameras(request);
             case COMPANY_ENERGY_DAILY, COMPANY_ENERGY_REPORT, ENERGY_COMPARISON, COMPANY_METER_REPORT, ENERGY_REPORT ->
                     composeEnergy(request);
@@ -104,6 +110,7 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
         };
 
     }
+
 
     private Mono<ObservationResponse> composeEnergy(ObservationRequest request) {
         if (energyComposer == null) return upstream.read(request);
@@ -126,7 +133,8 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
         eventParameters.put("id", eventId);
         eventParameters.put("ledger", ledger);
         eventParameters.put("deviceId", deviceId);
-        return upstream.read(new ObservationRequest(request.identity(), ObservationOperation.SAFETY_EVENT, eventParameters))
+        return safetyLedger.read(new ObservationRequest(
+                request.identity(), ObservationOperation.SAFETY_EVENT, eventParameters))
                 .flatMap(response -> {
                     if (response.status() == ObservationStatus.UNAVAILABLE) {
                         return Mono.error(new ltd.qianc.iotagent.iot.ObservationUnavailableException("安全台账读取失败"));
@@ -197,8 +205,10 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
                         : "按当前安装位置查找同楼层（" + floor + "楼）候选；记录时位置与画面覆盖未核验";
         List<Map<String, Object>> candidates = new ArrayList<>();
         if (occurred != null) {
-            Instant end = occurred.plusSeconds(15 * 60L).isBefore(clock.instant())
-                    ? occurred.plusSeconds(15 * 60L) : clock.instant();
+            // The candidate window is the recorded event's actual ±15 minutes. It is
+            // never clipped to "now": a too-recent recording must fail playback
+            // honestly instead of silently rewriting the referenced window.
+            Instant end = occurred.plusSeconds(15 * 60L);
             if (end.isAfter(occurred)) {
                 DateTimeFormatter format = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSXXX")
                         .withZone(ZoneOffset.ofHours(8));
@@ -240,7 +250,11 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
         String name = text(source, "name");
         String location = text(source, "location", "installAddress");
         if (name == null && current != null) name = current.name();
-        if (location == null && current != null) location = current.installAddress();
+        // A blank scope address is an unverified location, not an empty one; keep it
+        // null so candidate lookup cannot fabricate a place from missing metadata.
+        if (location == null && current != null && !current.installAddress().isBlank()) {
+            location = current.installAddress();
+        }
         result.put("name", name);
         result.put("location", location);
         return result;

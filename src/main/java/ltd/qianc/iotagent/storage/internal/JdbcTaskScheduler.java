@@ -32,17 +32,20 @@ public final class JdbcTaskScheduler implements TaskScheduler {
         }
         if (phase == null) throw new IllegalStateException("任务阶段不存在，无法调度");
         String payload = TaskPayloadSafety.withoutCredentials(mapper, phase).toString();
-        jdbc.update("INSERT INTO task_phases(phase_id,task_id,source,version,status,due_at,payload_json,create_time,update_time) VALUES (?,?,?,1,'PENDING',?,?,?,?) "
+        jdbc.update("INSERT INTO task_phases(phase_id,task_id,source,version,status,due_at,payload_json,definition_json,create_time,update_time) VALUES (?,?,?,1,'PENDING',?,?,?,?,?) "
                         + "ON DUPLICATE KEY UPDATE "
-                        + "status=IF(status IN ('CANCELLED','PENDING'),'PENDING',status), "
-                        + "version=version+IF(status IN ('CANCELLED','PENDING'),1,0), "
-                        + "due_at=IF(status IN ('CANCELLED','PENDING'),VALUES(due_at),due_at), "
-                        + "payload_json=IF(status IN ('CANCELLED','PENDING'),VALUES(payload_json),payload_json), "
-                        + "source=IF(status IN ('CANCELLED','PENDING'),VALUES(source),source), "
-                        + "claimed_at=IF(status IN ('CANCELLED','PENDING'),NULL,claimed_at), "
-                        + "ended_at=IF(status IN ('CANCELLED','PENDING'),NULL,ended_at), "
-                        + "update_time=IF(status IN ('CANCELLED','PENDING'),VALUES(update_time),update_time)",
-                phaseId, taskId, source, java.sql.Timestamp.from(at), payload, java.sql.Timestamp.from(Instant.now()), java.sql.Timestamp.from(Instant.now()));
+                        + "version=version+CASE WHEN status IN ('PENDING','CANCELLED') AND result_json IS NULL THEN 1 ELSE 0 END, "
+                        + "due_at=CASE WHEN status IN ('PENDING','CANCELLED') AND result_json IS NULL THEN VALUES(due_at) ELSE due_at END, "
+                        + "payload_json=CASE WHEN status IN ('PENDING','CANCELLED') AND result_json IS NULL THEN VALUES(payload_json) ELSE payload_json END, "
+                        + "definition_json=CASE WHEN status IN ('PENDING','CANCELLED') AND result_json IS NULL THEN VALUES(definition_json) ELSE definition_json END, "
+                        + "source=CASE WHEN status IN ('PENDING','CANCELLED') AND result_json IS NULL THEN VALUES(source) ELSE source END, "
+                        + "claimed_at=CASE WHEN status IN ('PENDING','CANCELLED') AND result_json IS NULL THEN NULL ELSE claimed_at END, "
+                        + "ended_at=CASE WHEN status IN ('PENDING','CANCELLED') AND result_json IS NULL THEN NULL ELSE ended_at END, "
+                        + "failure_reason=CASE WHEN status IN ('PENDING','CANCELLED') AND result_json IS NULL THEN NULL ELSE failure_reason END, "
+                        + "update_time=CASE WHEN status IN ('PENDING','CANCELLED') AND result_json IS NULL THEN VALUES(update_time) ELSE update_time END, "
+                        + "status=CASE WHEN status IN ('PENDING','CANCELLED') AND result_json IS NULL THEN 'PENDING' ELSE status END",
+                phaseId, taskId, source, java.sql.Timestamp.from(at), payload, payload,
+                java.sql.Timestamp.from(Instant.now()), java.sql.Timestamp.from(Instant.now()));
     }
 
     @Override

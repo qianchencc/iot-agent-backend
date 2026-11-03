@@ -29,7 +29,6 @@ import ltd.qianc.iotagent.iot.ObservationStatus;
 import ltd.qianc.iotagent.iot.ObservationUnavailableException;
 import ltd.qianc.iotagent.iot.ReportDownload;
 import ltd.qianc.iotagent.iot.RequestIdentity;
-import ltd.qianc.iotagent.iot.ObservationNotFoundException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.web.reactive.function.client.ClientResponse;
@@ -44,9 +43,13 @@ public final class WebClientObservationAdapter implements ObservationAdapter {
     private static final Set<String> SECRET_KEYS = Set.of(
             "authorization", "tenantcode", "token", "accesstoken", "refreshtoken",
             "apikey", "secret", "password", "providerid", "internalauthkey");
+    /** Company-only operations. SAFETY_EVENT(S)_CAMERAS stay company-resolved;
+     *  raw alarm pages (SAFETY_EVENTS) are intentionally absent here: the Runtime
+     *  reads the same fire-alarm ledger endpoint for Office, filtered by the
+     *  Office's own authorized safety catalog in the composition layer. */
     private static final Set<ObservationOperation> COMPANY_OPERATIONS = Set.of(
             ObservationOperation.DASHBOARD, ObservationOperation.ENVIRONMENT_HISTORY,
-            ObservationOperation.SAFETY_EVENTS, ObservationOperation.SAFETY_EVENT,
+            ObservationOperation.SAFETY_EVENT,
             ObservationOperation.SAFETY_EVENT_CAMERAS, ObservationOperation.ENERGY_HISTORY,
             ObservationOperation.ENERGY_COMPARISON, ObservationOperation.ENERGY_REPORT,
             ObservationOperation.COMPANY_ENERGY_DAILY, ObservationOperation.COMPANY_ENERGY_REPORT,
@@ -145,11 +148,9 @@ public final class WebClientObservationAdapter implements ObservationAdapter {
                 Map<String, Object> empty = new LinkedHashMap<>();
                 empty.put("source", "company");
                 empty.put("items", List.of());
-                empty.put("total", null);
-                empty.put("excludedCount", 0);
+                empty.put("total", 0L);
                 empty.put("scanned", 0);
-                empty.put("coverageComplete", true);
-                empty.put("nextCursor", null);
+                empty.put("last", true);
                 return Mono.just(ObservationResponse.available(empty));
             }
             return Mono.just(ObservationResponse.empty(Map.of("status", "empty")));
@@ -168,9 +169,15 @@ public final class WebClientObservationAdapter implements ObservationAdapter {
         if (operation == ObservationOperation.ENERGY_HISTORY) {
             return parseEnergy(content, operation, parameters);
         }
-        if (operation == ObservationOperation.SAFETY_EVENTS || operation == ObservationOperation.SAFETY_EVENT) {
+        if (operation == ObservationOperation.SAFETY_EVENT) {
+            // Single-event resolution (scope check plus bounded page scan) is owned
+            // by the local safety ledger composition; a raw upstream page must
+            // never leak through as a detail response.
+            return Mono.error(unavailable(operation, "安全台账详情由本地组合层提供"));
+        }
+        if (operation == ObservationOperation.SAFETY_EVENTS) {
             if (!content.isObject()) {
-                return Mono.error(unavailable(operation, "安全台账上游内容格式无效"));
+                return Mono.error(unavailable(operation, "安全台账上游分页格式无效"));
             }
             return parseSafety(content, operation, parameters);
         }
@@ -187,6 +194,11 @@ public final class WebClientObservationAdapter implements ObservationAdapter {
         return Mono.just(ObservationResponse.available(payload));
     }
 
+    /**
+     * Raw alarm page parser. One upstream page becomes one honest items list plus
+     * the page's own completion flag; window, ledger-type and cursor semantics are
+     * owned by the composition layer, never guessed here.
+     */
     private Mono<ObservationResponse> parseSafety(
             JsonNode content, ObservationOperation operation, Map<String, String> parameters) {
         JsonNode rows = content.get("content");
@@ -197,32 +209,24 @@ public final class WebClientObservationAdapter implements ObservationAdapter {
         if (ledger == null) {
             ledger = "water".equals(parameters.get("type")) ? "flooding" : parameters.getOrDefault("type", "gas");
         }
-        String requestedId = parameters.get("id");
         String requestedDevice = parameters.get("deviceId");
-        String from = parameters.get("from");
-        String to = parameters.get("to");
-        long fromMillis = from == null ? Long.MIN_VALUE : instantMillis(from);
-        long toMillis = to == null ? Long.MAX_VALUE : instantMillis(to);
         List<Map<String, Object>> records = new ArrayList<>();
         for (JsonNode row : rows) {
             String id = text(row, "id");
             String deviceId = text(row, "deviceId");
             String deviceName = text(row, "deviceName");
             String occurredAt = safetyTime(row.get("createdAt"));
-            if (id == null || deviceId == null || occurredAt == null) continue;
-            long occurredMillis = instantMillis(occurredAt);
-            if (occurredMillis < fromMillis || occurredMillis > toMillis) continue;
+            if (id == null || deviceId == null || deviceName == null || occurredAt == null) continue;
             if (requestedDevice != null && !requestedDevice.equals(deviceId)) continue;
-            if (requestedId != null && !requestedId.equals(id)) continue;
+            Map<String, Object> currentDevice = new LinkedHashMap<>();
+            currentDevice.put("name", null);
+            currentDevice.put("location", null);
             Map<String, Object> record = new LinkedHashMap<>();
             record.put("eventId", id);
             record.put("ledger", ledger);
             record.put("deviceId", deviceId);
             record.put("deviceName", deviceName);
             record.put("recordedDeviceName", deviceName);
-            Map<String, Object> currentDevice = new LinkedHashMap<>();
-            currentDevice.put("name", null);
-            currentDevice.put("location", null);
             record.put("currentDevice", currentDevice);
             record.put("location", "");
             record.put("subtype", "flooding".equals(ledger) ? "water" : ledger);
@@ -231,23 +235,31 @@ public final class WebClientObservationAdapter implements ObservationAdapter {
             record.put("report", row.has("report") && !row.get("report").isNull() ? row.get("report").asBoolean() : null);
             records.add(record);
         }
-        if (operation == ObservationOperation.SAFETY_EVENT) {
-            if (records.isEmpty()) return Mono.error(new ObservationNotFoundException("当前授权范围内未找到安全台账记录"));
-            return Mono.just(ObservationResponse.available(Map.of("source", "company", "record", records.get(0))));
-        }
-        int limit = parseLimit(parameters.get("limit"));
-        if (records.size() > limit) records = new ArrayList<>(records.subList(0, limit));
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("source", "company");
         payload.put("items", records);
-        payload.put("window", Map.of("from", from == null ? "1970-01-01T00:00:00.000Z" : from,
-                "to", to == null ? "9999-12-31T23:59:59.999Z" : to));
-        payload.put("total", content.has("totalElements") ? content.get("totalElements").asInt() : null);
-        payload.put("excludedCount", 0);
+        payload.put("total", content.has("totalElements") && content.get("totalElements").isNumber()
+                ? content.get("totalElements").asLong() : null);
         payload.put("scanned", rows.size());
-        payload.put("coverageComplete", content.path("last").asBoolean(rows.size() < 100));
-        payload.put("nextCursor", null);
+        payload.put("last", lastSafetyPage(content, rows.size(), parameters.get("page")));
         return Mono.just(ObservationResponse.available(payload));
+    }
+
+    private static boolean lastSafetyPage(JsonNode content, int rowCount, String pageParameter) {
+        if (content.path("last").isBoolean()) return content.path("last").asBoolean();
+        JsonNode totalElements = content.get("totalElements");
+        if (totalElements != null && totalElements.isIntegralNumber()) {
+            return (parsePage(pageParameter) + 1) * 100 >= totalElements.asLong();
+        }
+        return rowCount < 100;
+    }
+
+    private static int parsePage(String value) {
+        try {
+            return Math.max(0, Integer.parseInt(value == null ? "0" : value));
+        } catch (NumberFormatException ignored) {
+            return 0;
+        }
     }
 
     private Mono<ObservationResponse> parseEnvironment(JsonNode content, ObservationOperation op, Map<String,String> p) {
@@ -334,16 +346,6 @@ public final class WebClientObservationAdapter implements ObservationAdapter {
     private static void metric(List<Map<String,Object>> samples,List<Map<String,Object>> out,String k,String label,String unit){List<Map<String,Object>>v=samples.stream().filter(x->((Map<?,?>)x.get("values")).get(k) instanceof Number).toList();Map<String,Object>m=new LinkedHashMap<>();m.put("key",k);m.put("label",label);m.put("unit",unit);m.put("count",v.size());if(v.isEmpty()){m.put("min",null);m.put("peak",null);}else{double min=v.stream().mapToDouble(x->((Number)((Map<?,?>)x.get("values")).get(k)).doubleValue()).min().orElseThrow();Map<String,Object>peak=v.stream().max(java.util.Comparator.comparingDouble(x->((Number)((Map<?,?>)x.get("values")).get(k)).doubleValue())).orElseThrow();m.put("min",min);m.put("peak",Map.of("value",((Map<?,?>)peak.get("values")).get(k),"at",peak.get("recordedAt")));}out.add(m);}
     private static Double numberOrNull(JsonNode v){if(v==null||v.isNull())return null;try{double n=v.isNumber()?v.asDouble():Double.parseDouble(v.asText().trim());return Double.isFinite(n)?n:null;}catch(RuntimeException e){return null;}}
     private static String observationTime(JsonNode v){if(v==null||v.isNull()||!v.isValueNode())return null;String raw=v.asText();try{return OffsetDateTime.parse(raw).toInstant().toString();}catch(RuntimeException e){try{return java.time.LocalDateTime.parse(raw.replace(' ','T'),DateTimeFormatter.ISO_LOCAL_DATE_TIME).toInstant(ZoneOffset.ofHours(8)).toString();}catch(RuntimeException x){return null;}}}
-
-    private static int parseLimit(String value) {
-        try {
-            int parsed = Integer.parseInt(value == null ? "20" : value);
-            return Math.max(1, Math.min(100, parsed));
-        } catch (NumberFormatException ignored) {
-            return 20;
-        }
-    }
-
     private static String safetyTime(JsonNode value) {
         if (value == null || value.isNull() || !value.isValueNode()) return null;
         String raw = value.asText();
@@ -426,13 +428,13 @@ public final class WebClientObservationAdapter implements ObservationAdapter {
                 values.put("size", List.of(parameters.getOrDefault("size", "20")));
                 values.put("sort", List.of("readTime,desc", "id,desc"));
             }
-            case SAFETY_EVENTS, SAFETY_EVENT -> {
+            case SAFETY_EVENTS -> {
                 String ledger = ledger(parameters.getOrDefault("type", parameters.getOrDefault("ledger", "gas")));
                 values.put("page", List.of(parameters.getOrDefault("page", "0")));
                 values.put("size", List.of("100"));
-                copyAllowed(values, parameters, "deviceId", "id", "from", "to", "days", "unreportedOnly");
+                copyAllowed(values, parameters, "deviceId");
                 values.put("sort", List.of("createdAt,desc", "id,desc", "deviceId,desc"));
-                if (operation == ObservationOperation.SAFETY_EVENTS) values.put("ledger", List.of(ledger));
+                values.put("ledger", List.of(ledger));
             }
             case REGION_TIMELINE, DEVICE_TIMELINE -> copyAllowed(values, parameters, "date");
             case REGION_CALENDAR, DEVICE_CALENDAR -> copyAllowed(values, parameters, "from", "to");
@@ -445,10 +447,11 @@ public final class WebClientObservationAdapter implements ObservationAdapter {
                     "text", "meterId", "meterIds", "from", "to", "windowFrom", "windowTo", "grain", "baseFrom",
                     "baseTo", "otherScopeLevel", "otherFloor", "otherText", "otherMeterId", "otherMeterIds");
             case REPORT_DOWNLOAD -> copyAllowed(values, parameters, "format");
-            case DASHBOARD, SAFETY_EVENT_CAMERAS, REGION_LIST, REGION_SEEN, REGION_DEVICES, REGION_STATES,
-                    VIDEO_STREAM, REPORT -> {
+            case DASHBOARD, SAFETY_EVENT, SAFETY_EVENT_CAMERAS, REGION_LIST, REGION_SEEN,
+                    REGION_DEVICES, REGION_STATES, VIDEO_STREAM, REPORT -> {
                 // These Runtime parameters select an internal route or response shape,
-                // not a customer upstream query parameter.
+                // not a customer upstream query parameter. SAFETY_EVENT is resolved by
+                // the local safety ledger composition and never routed upstream.
             }
         }
         return values;

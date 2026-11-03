@@ -1,22 +1,47 @@
 package ltd.qianc.iotagent.iot.internal;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Duration;
+import javax.sql.DataSource;
+import ltd.qianc.iotagent.iot.DeviceCandidateSetStore;
 import ltd.qianc.iotagent.iot.IotAdapter;
 import ltd.qianc.iotagent.iot.IotAdapterFactory;
 import ltd.qianc.iotagent.iot.IotCallPolicy;
 import ltd.qianc.iotagent.iot.IotGatewayRoutes;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.reactive.function.client.WebClient;
 
 /** Missing gateway configuration is an explicit 503 boundary, never an in-memory fallback. */
 @Configuration(proxyBeanMethods = false)
 public class IotAdapterConfiguration {
 
+    @Bean(initMethod = "initialize")
+    @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
+    DeviceCandidateSchemaInitializer deviceCandidateSchemaInitializer(DataSource dataSource) {
+        return new DeviceCandidateSchemaInitializer(dataSource);
+    }
+
     @Bean
-    @org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = "agent.control.mode", havingValue = "fixture")
+    @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
+    @ConditionalOnMissingBean(DeviceCandidateSetStore.class)
+    DeviceCandidateSetStore jdbcDeviceCandidateSetStore(JdbcTemplate jdbc, ObjectMapper mapper) {
+        return new JdbcDeviceCandidateSetStore(jdbc, mapper);
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "false", matchIfMissing = true)
+    @ConditionalOnMissingBean(DeviceCandidateSetStore.class)
+    DeviceCandidateSetStore failClosedDeviceCandidateSetStore() {
+        return new FailClosedDeviceCandidateSetStore("设备候选集事实存储未配置");
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "agent.control.mode", havingValue = "fixture")
     IotAdapter fixtureIotAdapter() {
         return new FixtureIotAdapter();
     }
@@ -45,7 +70,8 @@ public class IotAdapterConfiguration {
             @Value("${iot.gateway.company-ac-device-path:/micro-api/api/office/app/device/ac/devicePage}") String companyAcDevicePath,
             @Value("${iot.gateway.company-ac-binding-path:/micro-api/api/iot-center/device/page}") String companyAcBindingPath,
             @Value("${iot.gateway.company-monitor-down-path:/micro-api/api/office/app/device/monitor/down}") String companyMonitorDownPath,
-            @Value("${iot.gateway.call-timeout-ms:30000}") long timeoutMs) {
+            @Value("${iot.gateway.call-timeout-ms:30000}") long timeoutMs,
+            DeviceCandidateSetStore candidateStore) {
         if (officePath == null || officePath.isBlank()) {
             return IotAdapterFactory.failClosed("物联 Office 授权设备范围路径未配置");
         }
@@ -68,7 +94,7 @@ public class IotAdapterConfiguration {
                             companySmartBasePath, companyAcAreaPath, companyAcDevicePath, companyAcBindingPath,
                             companyMonitorDownPath),
                     Duration.ofMillis(timeoutMs),
-                    IotCallPolicy.passThrough());
+                    IotCallPolicy.passThrough(), candidateStore);
         } catch (RuntimeException invalidConfiguration) {
             return IotAdapterFactory.failClosed("物联上游配置无效");
         }

@@ -2,6 +2,7 @@ package ltd.qianc.iotagent.iot;
 
 import java.time.Duration;
 import java.util.List;
+import ltd.qianc.iotagent.error.BusinessException;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -17,6 +18,7 @@ import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** In-process production-protocol exchange fixture; no real gateway or device is contacted. */
 class IotAdapterContractTest {
@@ -167,6 +169,225 @@ class IotAdapterContractTest {
     }
 
     @Test
+    void officePhysicalJoinKeepsScopedIdentityAndDropsAssociationOnlyDevices() {
+        ExchangeFunction fixture = candidate -> {
+            var url = candidate.url();
+            if (url.getPath().equals("/membership")) {
+                return Mono.just(json("{\"code\":200,\"content\":[{\"elementId\":\"office-a\",\"elementName\":\"26楼运营办公区\"}]}"));
+            }
+            if (url.getPath().equals("/lighting")) {
+                return Mono.just(json("{\"code\":200,\"content\":[{\"id\":\"scoped-light\",\"hubDeviceId\":\"hub-1\",\"name\":\"灯\",\"installAddress\":\"26楼\"}]}"));
+            }
+            if (url.getPath().equals("/lighting-assoc")) {
+                return Mono.just(json("{\"code\":200,\"content\":["
+                        + "{\"id\":\"association-light\",\"hubDeviceId\":\"hub-1\",\"name\":\"灯\"},"
+                        + "{\"id\":\"association-only\",\"hubDeviceId\":\"hub-2\",\"name\":\"关联灯\"}]}"));
+            }
+            return Mono.just(json("{\"code\":204,\"content\":null}"));
+        };
+        IotAdapter adapter = IotAdapterFactory.webClient(
+                WebClient.builder().exchangeFunction(fixture).build(),
+                IotGatewayRoutes.officeDirectory("/office-scope", null, "/membership", List.of(
+                        new OfficeDeviceSource("my-office.lighting", "lighting", "/lighting", Map.of(), true),
+                        new OfficeDeviceSource("office-association.lighting", "lighting", "/lighting-assoc", Map.of(), false))),
+                Duration.ofSeconds(1), IotCallPolicy.passThrough());
+
+        AuthorizedDeviceScope scope = adapter.loadAuthorizedDeviceScope(
+                        new RequestIdentity("Bearer office-token", "TENANT-1", IotSource.OFFICE))
+                .block(Duration.ofSeconds(1));
+
+        assertThat(scope.devices()).extracting(AuthorizedDevice::id).containsExactly("scoped-light");
+        AuthorizedDevice device = scope.device("scoped-light").orElseThrow();
+        assertThat(device.controlRef()).isEqualTo("association-light");
+        assertThat(device.officeIds()).containsExactly("office-a");
+        assertThat(device.sourceKeys()).containsExactly("my-office.lighting", "office-association.lighting");
+        assertThat(scope.device("association-only")).isEmpty();
+    }
+
+    @Test
+    void candidateSetsPersistFullMembershipAndRejectDevicesOutsideTheirSet() {
+        java.util.Map<String, DeviceCandidateRecord> saved = new java.util.concurrent.ConcurrentHashMap<>();
+        DeviceCandidateSetStore store = new DeviceCandidateSetStore() {
+            @Override public DeviceCandidateRecord save(DeviceCandidateRecord record) {
+                saved.put(record.candidateSetId(), record);
+                return record;
+            }
+            @Override public java.util.Optional<DeviceCandidateRecord> find(String id) {
+                return java.util.Optional.ofNullable(saved.get(id));
+            }
+        };
+        ExchangeFunction fixture = candidate -> {
+            var url = candidate.url();
+            if (url.getPath().equals("/membership")) {
+                return Mono.just(json("{\"code\":200,\"content\":[{\"elementId\":\"office-a\",\"elementName\":\"A区\"},{\"elementId\":\"office-b\",\"elementName\":\"B区\"}]}"));
+            }
+            if (url.getPath().equals("/lighting")) {
+                String office = url.getQuery().contains("elementId=office-a") ? "A区" : "B区";
+                String id = office.equals("A区") ? "light-a" : "light-b";
+                return Mono.just(json("{\"code\":200,\"content\":[{\"id\":\"" + id + "\",\"hubDeviceId\":\"hub-" + id
+                        + "\",\"name\":\"灯\",\"installAddress\":\"" + office + "\"}]}"));
+            }
+            return Mono.just(json("{\"code\":204,\"content\":null}"));
+        };
+        IotAdapter adapter = IotAdapterFactory.webClient(
+                WebClient.builder().exchangeFunction(fixture).build(),
+                IotGatewayRoutes.officeDirectory("/office-scope", null, "/membership", List.of(
+                        new OfficeDeviceSource("my-office.lighting", "lighting", "/lighting", Map.of(), true))),
+                Duration.ofSeconds(1), IotCallPolicy.passThrough(), store);
+        RequestIdentity identity = new RequestIdentity("Bearer office-token", "TENANT-1", IotSource.OFFICE, "owner-1");
+
+        DeviceCandidateSet set = adapter.findDeviceCandidates(identity,
+                        new DeviceCandidateQuery("lighting", List.of(), "A区", List.of(), List.of(), null, "office-a"),
+                        new DeviceCandidateBinding("conversation-1"))
+                .block(Duration.ofSeconds(1));
+
+        assertThat(set.devices()).extracting(AuthorizedDevice::id).containsExactly("light-a");
+        DeviceCandidateRecord record = saved.get(set.candidateSetId());
+        assertThat(record).isNotNull();
+        assertThat(record.query().regionId()).isEqualTo("office-a");
+        assertThat(record.conversationId()).isEqualTo("conversation-1");
+        assertThat(record.members()).extracting(AuthorizedDevice::id).containsExactly("light-a");
+        assertThat(record.complete()).isTrue();
+
+        assertThatThrownBy(() -> adapter.inspectDeviceCapabilities(identity,
+                        new DeviceCapabilityRequest(List.of(new DeviceCapabilityRequest.DeviceCapabilitySelection(
+                                set.candidateSetId(), List.of("light-b")))), "conversation-1")
+                .block(Duration.ofSeconds(1)))
+                .isInstanceOf(BusinessException.class)
+                .satisfies(error -> assertThat(((BusinessException) error).code()).isEqualTo("INVALID_DEVICE_REFERENCE"));
+
+        DeviceStateReadResult states = adapter.readDeviceStates(identity,
+                        new DeviceCapabilityRequest(List.of(new DeviceCapabilityRequest.DeviceCapabilitySelection(
+                                set.candidateSetId(), List.of("light-a")))), "conversation-1")
+                .block(Duration.ofSeconds(1));
+        assertThat(states.states()).containsKey("light-a");
+        assertThatThrownBy(() -> adapter.readDeviceStates(identity,
+                        new DeviceCapabilityRequest(List.of(new DeviceCapabilityRequest.DeviceCapabilitySelection(
+                                set.candidateSetId(), List.of("light-b")))), "conversation-1")
+                .block(Duration.ofSeconds(1)))
+                .isInstanceOf(BusinessException.class)
+                .satisfies(error -> assertThat(((BusinessException) error).code()).isEqualTo("INVALID_DEVICE_REFERENCE"));
+    }
+
+    @Test
+    void companyCandidateMeterStateReadUsesOnlyTheEnergyFamily() {
+        java.util.List<String> requests = new java.util.ArrayList<>();
+        ExchangeFunction fixture = candidate -> {
+            var url = candidate.url();
+            synchronized (requests) { requests.add(url.getPath() + "?" + (url.getQuery() == null ? "" : url.getQuery())); }
+            String path = url.getPath();
+            if (path.endsWith("/energy/equipment/page")) {
+                return Mono.just(json("{\"code\":200,\"content\":{\"content\":["
+                        + "{\"id\":\"meter-1\",\"equipmentName\":\"总电表\",\"areaName\":\"配电房\"},"
+                        + "{\"id\":\"meter-2\",\"equipmentName\":\"分电表\",\"areaName\":\"二层\"}],\"last\":true}}"));
+            }
+            if (path.endsWith("/energy/realTimeRead/page")) {
+                return Mono.just(json("{\"code\":200,\"content\":{\"content\":["
+                        + "{\"equipmentId\":\"meter-1\",\"readTime\":\"2026-10-30 04:00:00\",\"ia\":6.9,\"ib\":0,\"ic\":0},"
+                        + "{\"equipmentId\":\"meter-2\",\"readTime\":\"2026-10-30 04:00:00\",\"ia\":2.1,\"ib\":1.2,\"ic\":1.3},"
+                        + "{\"equipmentId\":\"meter-1\",\"readTime\":\"2026-10-30 04:05:00\",\"ia\":7.7,\"ib\":0,\"ic\":0}"
+                        + "],\"last\":true}}"));
+            }
+            return Mono.just(json("{\"code\":204,\"content\":null}"));
+        };
+        java.util.Map<String, DeviceCandidateRecord> saved = new java.util.concurrent.ConcurrentHashMap<>();
+        DeviceCandidateSetStore store = new DeviceCandidateSetStore() {
+            @Override public DeviceCandidateRecord save(DeviceCandidateRecord record) {
+                saved.put(record.candidateSetId(), record);
+                return record;
+            }
+            @Override public java.util.Optional<DeviceCandidateRecord> find(String id) {
+                return java.util.Optional.ofNullable(saved.get(id));
+            }
+        };
+        IotAdapter adapter = IotAdapterFactory.webClient(
+                WebClient.builder().exchangeFunction(fixture).build(),
+                IotGatewayRoutes.runtimeCompany("/office-scope", null,
+                        "/micro-api/api/iot-center/device/page",
+                        "/micro-api/api/energy/equipment/page",
+                        "/micro-api/api/perception/device/page",
+                        "/micro-api/api/iot-center/device",
+                        "/micro-api/api/office/app/device",
+                        "/micro-api/api/office/app/device/ac/myAreaList",
+                        "/micro-api/api/office/app/device/ac/devicePage",
+                        "/micro-api/api/iot-center/device/page"),
+                Duration.ofSeconds(1), IotCallPolicy.passThrough(), store);
+        RequestIdentity identity = new RequestIdentity("Bearer company-token", "TENANT-1", IotSource.COMPANY,
+                "owner-1");
+        AuthorizedDeviceScope catalog = adapter.loadAuthorizedDeviceScope(identity)
+                .block(Duration.ofSeconds(1));
+        AuthorizedDevice meter1 = catalog.device("meter-1").orElseThrow();
+        AuthorizedDevice meter2 = catalog.device("meter-2").orElseThrow();
+        DeviceCandidateRecord set = new DeviceCandidateRecord("set-meter", "conversation-meter",
+                "TENANT-1", "owner-1", IotSource.COMPANY, "snapshot",
+                new DeviceCandidateQuery("energy", List.of(), null, List.of(), List.of(), null, null),
+                List.of(meter1, meter2), true, 2, "2026-10-30T09:00:00Z", "exact");
+        store.save(set);
+        synchronized (requests) { requests.clear(); }
+
+        DeviceStateReadResult states = adapter.readDeviceStates(identity,
+                        new DeviceCapabilityRequest(List.of(new DeviceCapabilityRequest.DeviceCapabilitySelection(
+                                "set-meter", List.of("meter-1", "meter-2")))), "conversation-meter")
+                .block(Duration.ofSeconds(1));
+
+        assertThat(((Map<?, ?>) states.states().get("meter-1")).get("ia")).isEqualTo(7.7);
+        assertThat(((Map<?, ?>) states.states().get("meter-2")).get("ia")).isEqualTo(2.1);
+        assertThat(states.states().get("meter-1")).isNotEqualTo(states.states().get("meter-2"));
+        synchronized (requests) {
+            assertThat(requests).allMatch(request -> request.contains("/energy/"));
+            assertThat(requests).anyMatch(request -> request.contains("/energy/equipment/page"));
+            assertThat(requests).anyMatch(request -> request.contains("/energy/realTimeRead/page"));
+            assertThat(requests).noneMatch(request -> request.contains("/perception")
+                    || request.contains("/myAreaList") || request.contains("/ac/") || request.contains("/iot-center"));
+        }
+    }
+
+    @Test
+    void companyEnergyScopeReadsOnlyMetersAndKeepsUnauthorizedEmpty() {
+        java.util.List<String> requests = new java.util.ArrayList<>();
+        ExchangeFunction fixture = candidate -> {
+            var url = candidate.url();
+            synchronized (requests) { requests.add(url.getPath()); }
+            if (url.getPath().endsWith("/energy/equipment/page")) {
+                return Mono.just(json("{\"code\":200,\"content\":{\"content\":["
+                        + "{\"id\":\"meter-1\",\"equipmentName\":\"总电表\",\"areaName\":\"配电房\"},"
+                        + "{\"id\":\"meter-2\",\"equipmentName\":\"分电表\",\"areaName\":\"二层\"}],\"last\":true}}"));
+            }
+            return Mono.just(json("{\"code\":204,\"content\":null}"));
+        };
+        IotAdapter adapter = IotAdapterFactory.webClient(
+                WebClient.builder().exchangeFunction(fixture).build(),
+                IotGatewayRoutes.runtimeCompany("/office-scope", null,
+                        "/micro-api/api/iot-center/device/page",
+                        "/micro-api/api/energy/equipment/page",
+                        "/micro-api/api/perception/device/page",
+                        "/micro-api/api/iot-center/device",
+                        "/micro-api/api/office/app/device",
+                        "/micro-api/api/office/app/device/ac/myAreaList",
+                        "/micro-api/api/office/app/device/ac/devicePage",
+                        "/micro-api/api/iot-center/device/page"),
+                Duration.ofSeconds(1), IotCallPolicy.passThrough());
+        RequestIdentity identity = new RequestIdentity("Bearer company-token", "TENANT-1", IotSource.COMPANY,
+                "owner-1");
+
+        AuthorizedDeviceScope scope = adapter.loadAuthorizedEnergyScope(identity).block(Duration.ofSeconds(1));
+
+        assertThat(scope.identity()).isEqualTo(identity);
+        assertThat(scope.source()).isEqualTo(IotSource.COMPANY);
+        assertThat(scope.devices()).extracting(AuthorizedDevice::kind).containsOnly("energy");
+        assertThat(scope.devices()).extracting(AuthorizedDevice::id).containsExactly("meter-1", "meter-2");
+        assertThat(scope.device("meter-missing")).isEmpty();
+        synchronized (requests) {
+            assertThat(requests).containsExactly("/micro-api/api/energy/equipment/page");
+        }
+        assertThatThrownBy(() -> adapter.loadAuthorizedEnergyScope(
+                        new RequestIdentity("Bearer office-token", "TENANT-1", IotSource.OFFICE, "owner-1"))
+                .block(Duration.ofSeconds(1)))
+                .isInstanceOf(BusinessException.class)
+                .satisfies(error -> assertThat(((BusinessException) error).code()).isEqualTo("IOT_SOURCE_UNAVAILABLE"));
+    }
+
+    @Test
     void companyCatalogUsesRuntimeShapesAndMergesAcLocations() {
         AtomicReference<java.util.List<String>> requests = new AtomicReference<>(new java.util.ArrayList<>());
         java.util.concurrent.atomic.AtomicBoolean validBinding = new java.util.concurrent.atomic.AtomicBoolean(true);
@@ -244,12 +465,12 @@ class IotAdapterContractTest {
         assertThat(missingBinding.device("hub-ac").orElseThrow().controlRef()).isNull();
         DeviceCandidateSet lighting = adapter.findDeviceCandidates(
                         new RequestIdentity("Bearer company-token", "TENANT-1", IotSource.COMPANY),
-                        new DeviceCandidateQuery("lighting", List.of(), "一层", List.of(), List.of(), null))
+                        new DeviceCandidateQuery("lighting", List.of(), "一层", List.of(), List.of(), null, null))
                 .block(Duration.ofSeconds(2));
         assertThat(lighting.devices()).extracting(AuthorizedDevice::id).containsExactly("light-1");
         DeviceCandidateSet companyEnergy = adapter.findDeviceCandidates(
                         new RequestIdentity("Bearer company-token", "TENANT-1", IotSource.COMPANY),
-                        new DeviceCandidateQuery("energy", List.of(), "公司", List.of("公司"), List.of(), "电表"))
+                        new DeviceCandidateQuery("energy", List.of(), "公司", List.of("公司"), List.of(), "电表", null))
                 .block(Duration.ofSeconds(2));
         assertThat(companyEnergy.devices()).extracting(AuthorizedDevice::id).containsExactly("energy-1");
     }
@@ -352,6 +573,40 @@ class IotAdapterContractTest {
                 java.util.List.of(env)).block(Duration.ofSeconds(2));
 
         assertThat(result.states().get("env-1").toString()).contains("25.6").contains("shadow");
+    }
+
+    @Test
+    void companyLightsInOneAreaUseOneCoherentObservation() {
+        var snapshot = new java.util.concurrent.atomic.AtomicInteger();
+        ExchangeFunction fixture = candidate -> {
+            String path = candidate.url().getPath();
+            String query = candidate.url().getQuery() == null ? "" : candidate.url().getQuery();
+            if (path.endsWith("/lighting/myAreaList") && !query.contains("parentId")) {
+                return Mono.just(json("[{\"id\":\"lighting-root\",\"fullCode\":\"L-1\",\"name\":\"一层\"}]"));
+            }
+            if (path.endsWith("/lighting/myAreaList")) return Mono.just(json("[]"));
+            if (path.endsWith("/lighting/devicePage")) {
+                boolean on = snapshot.getAndIncrement() % 2 == 0;
+                return Mono.just(json("[{\"id\":\"light-a\",\"hubDeviceId\":\"hub-a\",\"name\":\"A灯\",\"switchStatus\":"
+                        + on + "},{\"id\":\"light-b\",\"hubDeviceId\":\"hub-b\",\"name\":\"B灯\",\"switchStatus\":"
+                        + on + "}]"));
+            }
+            return Mono.just(json("{\"code\":204,\"content\":null}"));
+        };
+        IotAdapter adapter = IotAdapterFactory.webClient(
+                WebClient.builder().exchangeFunction(fixture).build(),
+                IotGatewayRoutes.runtimeCompany("/office-scope", null,
+                        "/micro-api/api/iot-center/device/page", "/micro-api/api/energy/equipment/page",
+                        "/micro-api/api/perception/device/page", "/micro-api/api/iot-center/device",
+                        "/micro-api/api/office/app/device", "/micro-api/api/office/app/device/ac/myAreaList",
+                        "/micro-api/api/office/app/device/ac/devicePage", "/micro-api/api/iot-center/device/page"),
+                Duration.ofSeconds(1), IotCallPolicy.passThrough());
+        DeviceStateReadResult result = adapter.readDeviceStates(
+                new RequestIdentity("Bearer company-user", "TENANT-1", IotSource.COMPANY),
+                List.of("light-a", "light-b")).block(Duration.ofSeconds(2));
+        assertThat(result.states()).containsOnlyKeys("light-a", "light-b");
+        assertThat(result.states().get("light-a")).isInstanceOf(Boolean.class)
+                .isEqualTo(result.states().get("light-b"));
     }
 
     @Test

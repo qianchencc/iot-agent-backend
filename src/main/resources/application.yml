@@ -16,6 +16,10 @@ agent:
     token: ${AGENT_BRIDGE_TOKEN:}
     run-timeout-ms: ${AGENT_BRIDGE_RUN_TIMEOUT_MS:120000}
   heartbeat-ms: ${AGENT_HEARTBEAT_MS:15000}
+  video:
+    # Exact browser origin of the video player page; empty keeps cross-origin
+    # playback closed. Never a wildcard, cookie or general Agent API CORS policy.
+    allowed-origin: ${AGENT_VIDEO_ALLOWED_ORIGIN:}
   storage:
     mysql:
       enabled: ${AGENT_STORAGE_MYSQL_ENABLED:false}
@@ -66,6 +70,10 @@ iot:
       video-stream: ${IOT_OBSERVATION_ROUTE_VIDEO_STREAM:}
       report: ${IOT_OBSERVATION_ROUTE_REPORT:}
       report-download: ${IOT_OBSERVATION_ROUTE_REPORT_DOWNLOAD:}
+    # HMAC key for safety-ledger continuation cursors (hex 64 or >=16-byte text);
+    # falls back to the shared CONFIG_SECRET_KEY. Empty = per-boot ephemeral key,
+    # so a restart invalidates outstanding cursors with an honest re-query error.
+    safety-cursor-secret: ${IOT_OBSERVATION_SAFETY_CURSOR_SECRET:${CONFIG_SECRET_KEY:}}
   identity:
     verify: ${IOT_IDENTITY_VERIFY:true}
     verify-timeout-ms: ${IOT_IDENTITY_VERIFY_TIMEOUT_MS:10000}

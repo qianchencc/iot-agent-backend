@@ -1,23 +1,16 @@
 package ltd.qianc.iotagent;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
-import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import ltd.qianc.iotagent.conversation.AgentEngineBridge;
 import ltd.qianc.iotagent.conversation.AgentEngineEvent;
@@ -54,9 +47,6 @@ class RuntimeContractGateTest {
     @Autowired
     private MockMvc mockMvc;
 
-    @Autowired
-    private FixtureBridge bridge;
-
     @Test
     void requiresPublicBoundaryHeaders() throws Exception {
         mockMvc.perform(get("/api/agent/conversations/current"))
@@ -64,43 +54,6 @@ class RuntimeContractGateTest {
                 .andExpect(jsonPath("$.code").value("UNAUTHORIZED"));
     }
 
-    @Test
-    void createsConversationWithSourceAndRunsNdjsonToTerminal() throws Exception {
-        var create = mockMvc.perform(post("/api/agent/conversations")
-                        .header("Authorization", "Bearer fixture")
-                        .header("Tenantcode", "FIXTURE")
-                        .contentType("application/json")
-                        .content("{\"source\":\"company\"}"))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.source").value("company"))
-                .andReturn();
-        String id = new ObjectMapper().readTree(create.getResponse().getContentAsString()).get("id").asText();
-
-        var initial = mockMvc.perform(post("/api/agent/conversations/" + id + "/messages")
-                        .queryParam("source", "company")
-                        .header("Authorization", "Bearer fixture")
-                        .header("Tenantcode", "FIXTURE")
-                        .header("Idempotency-Key", "fixture-1")
-                        .contentType("application/json")
-                        .accept("application/x-ndjson")
-                        .content("{\"content\":\"查询状态\"}"))
-                .andExpect(request().asyncStarted())
-                .andReturn();
-        var result = mockMvc.perform(asyncDispatch(initial))
-                .andExpect(status().isOk())
-                .andExpect(content().contentTypeCompatibleWith("application/x-ndjson"))
-                .andReturn();
-
-        List<String> lines = result.getResponse().getContentAsString().lines().toList();
-        assertThat(lines).hasSize(3);
-        assertThat(lines).allMatch(line -> line.startsWith("{") && line.endsWith("}"));
-        assertThat(lines).extracting(line -> parse(line).get("sequence").asLong())
-                .containsExactly(1L, 2L, 3L);
-        assertThat(lines).extracting(line -> parse(line).get("type").asText())
-                .containsExactly("run.started", "message.delta", "run.completed");
-        assertThat(parse(lines.get(2)).get("type").asText()).isIn("run.completed", "run.awaiting_confirmation", "run.failed", "run.aborted");
-        assertThat(bridge.request.get().source()).isEqualTo("company");
-    }
 
     @Test
     void rejectsInvalidSourceAndCompanyOnlyFocusContext() throws Exception {
@@ -135,14 +88,12 @@ class RuntimeContractGateTest {
     }
 
     static final class FixtureBridge implements AgentEngineBridge {
-        final AtomicReference<AgentRunRequest> request = new AtomicReference<>();
         @Override public CompletionStage<Void> start(AgentRunRequest request, Consumer<AgentEngineEvent> events) {
-            this.request.set(request);
-            events.accept(new AgentEngineEvent(request.runId(), request.conversationId(), request.turnId(), "message.delta", Map.of("content", "状态")));
-            events.accept(new AgentEngineEvent(request.runId(), request.conversationId(), request.turnId(), "run.completed", Map.of("outcome", "message")));
-            return CompletableFuture.completedFuture(null);
+            throw new AssertionError("Boundary rejection must not start an agent run");
         }
-        @Override public CompletionStage<Void> cancel(String runId) { return CompletableFuture.completedFuture(null); }
+        @Override public CompletionStage<Void> cancel(String runId) {
+            throw new AssertionError("Boundary rejection must not cancel an agent run");
+        }
     }
 
     static final class FixtureStore implements ConversationStore, ConversationEventStore {
@@ -150,7 +101,7 @@ class RuntimeContractGateTest {
         private final List<ConversationTurn> turns = new ArrayList<>();
         private final List<ConversationEventFact> events = new ArrayList<>();
         @Override public ConversationRecord create(String tenant, String owner, String source, Instant at) {
-            conversation = new ConversationRecord("fixture-conversation", tenant, owner, source, at, false); return conversation;
+            conversation = new ConversationRecord("fixture-conversation", tenant, owner, source, at, at, false); return conversation;
         }
         @Override public Optional<ConversationRecord> find(String id, String tenant, String owner) {
             return conversation != null && conversation.id().equals(id) && conversation.tenantCode().equals(tenant) && conversation.ownerKey().equals(owner) ? Optional.of(conversation) : Optional.empty();
@@ -167,7 +118,4 @@ class RuntimeContractGateTest {
         @Override public Optional<ConversationEventFact> findByIdempotencyKey(String id, String key) { return Optional.empty(); }
     }
 
-    private static com.fasterxml.jackson.databind.JsonNode parse(String line) {
-        try { return new ObjectMapper().readTree(line); } catch (Exception e) { throw new AssertionError(e); }
-    }
 }

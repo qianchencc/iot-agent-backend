@@ -80,13 +80,15 @@ public final class JdbcTaskPlanStore extends JdbcFactSupport implements TaskPlan
                     (rs, index) -> rs.getString(1), planId);
             for (String taskId : taskIds) {
                 jdbc.update("UPDATE task_phases SET status='CANCELLED',version=version+1,ended_at=?,update_time=? "
-                                + "WHERE task_id=? AND status NOT IN ('EXECUTING','COMPLETED','PARTIAL','FAILED','UNCONFIRMED','INTERRUPTED','CANCELLED')",
+                                + "WHERE task_id=? AND status='PENDING'",
                         time(now), time(now), taskId);
                 Integer executing = jdbc.queryForObject("SELECT COUNT(*) FROM task_phases WHERE task_id=? AND status='EXECUTING'",
                         Integer.class, taskId);
                 if (executing == null || executing == 0) {
                     jdbc.update("UPDATE task_facts SET status='CANCELLED',version=version+1,update_time=? "
-                                    + "WHERE task_id=? AND status='SCHEDULED'", time(now), taskId);
+                                    + "WHERE task_id=? AND status='SCHEDULED' "
+                                    + "AND NOT EXISTS (SELECT 1 FROM task_phases p WHERE p.task_id=task_facts.task_id "
+                                    + "AND p.status NOT IN ('PENDING','CANCELLED'))", time(now), taskId);
                 }
             }
             int changed = jdbc.update("UPDATE task_plans SET status='DELETED',version=?,next_at=NULL,next_date=NULL,update_time=? "
@@ -142,6 +144,11 @@ public final class JdbcTaskPlanStore extends JdbcFactSupport implements TaskPlan
                 .stream().findFirst();
     }
     @Override public List<TaskPlanFact> list(String tenantCode, String ownerKey, String source) { return jdbc.query("SELECT plan_id,version,status,payload_json,idempotency_key FROM task_plans WHERE tenant_code=? AND owner_key=? AND source=? ORDER BY update_time DESC", this::map, tenantCode, ownerKey, source); }
+    @Override public Optional<String> latestTaskId(String planId) {
+        return jdbc.query("SELECT o.task_id FROM task_plan_occurrences o JOIN task_facts t ON t.task_id=o.task_id "
+                        + "WHERE o.plan_id=? AND o.task_id IS NOT NULL ORDER BY t.update_time DESC, o.occurrence_date DESC LIMIT 1",
+                (rs, row) -> rs.getString(1), planId).stream().findFirst();
+    }
 
     private Pointer nextPointer(String planId, String payloadJson, String repeatJson, Instant now) {
         JsonNode payload = readPayload(payloadJson);
@@ -160,13 +167,32 @@ public final class JdbcTaskPlanStore extends JdbcFactSupport implements TaskPlan
             if (occurrence != null && (occurrence.taskId() != null || Set.of("CLAIMED", "MATERIALIZED", "SKIPPED").contains(occurrence.status()))) continue;
             JsonNode effective = occurrence != null && occurrence.overridePayloadJson() != null
                     ? readPayload(occurrence.overridePayloadJson()) : shifted(payload, date, anchorDate);
-            Instant at = effectiveAt(effective);
+            Instant at = firstFutureAt(effective, now, anchor, date);
             if (!at.isAfter(now)) continue;
             if (candidateAt == null || at.isBefore(candidateAt) || (at.equals(candidateAt) && date.isBefore(candidateDate))) {
                 candidateAt = at; candidateDate = date;
             }
         }
         return new Pointer(candidateAt, candidateDate);
+    }
+    private Instant firstFutureAt(JsonNode effective, Instant now, Instant anchor, LocalDate date) {
+        Instant fallback = TaskRecurrence.occurrenceAt(anchor, date);
+        JsonNode interval = effective.path("interval");
+        JsonNode phases = effective.path("phases");
+        if (!interval.isObject() || !phases.isArray() || phases.size() <= 1) return fallback;
+        try {
+            Instant start = Instant.parse(interval.path("startsAt").asText());
+            Instant end = Instant.parse(interval.path("endsAt").asText());
+            if (start.isAfter(now) || !now.isBefore(end)) return fallback;
+            Instant first = null;
+            for (JsonNode phase : phases) {
+                Instant at = Instant.parse(phase.path("at").asText());
+                if (at.isAfter(now) && (first == null || at.isBefore(first))) first = at;
+            }
+            return first == null ? fallback : first;
+        } catch (RuntimeException ignored) {
+            return fallback;
+        }
     }
     private JsonNode shifted(JsonNode original, LocalDate date, LocalDate anchorDate) {
         JsonNode copy = original.deepCopy();
@@ -242,8 +268,13 @@ public final class JdbcTaskPlanStore extends JdbcFactSupport implements TaskPlan
             LocalDate until = repeat.has("until") ? LocalDate.parse(repeat.path("until").asText()) : null;
             if (until != null && until.isBefore(TaskRecurrence.localDate(anchor))) throw new IllegalArgumentException("截止日无效");
             TaskRecurrence.RepeatRule rule = new TaskRecurrence.RepeatRule(frequency, weekdays, day, until);
-            LocalDate date = TaskRecurrence.next(rule, anchor, Instant.now().minusNanos(1));
+            Instant now = Instant.now();
+            LocalDate date = TaskRecurrence.next(rule, anchor, now.minusNanos(1));
             if (date == null) throw new IllegalArgumentException("截止日前没有未来发生");
+            Instant checkpoint = firstFutureAt(body, now, anchor, date);
+            if (checkpoint != null && !checkpoint.equals(TaskRecurrence.occurrenceAt(anchor, date))) {
+                return new Pointer(checkpoint, TaskRecurrence.localDate(now));
+            }
             return new Pointer(TaskRecurrence.occurrenceAt(anchor, date), date);
         } catch (RuntimeException error) {
             throw new IllegalArgumentException("周期规则无效", error);

@@ -121,15 +121,22 @@ public class StorageConfiguration {
 
     @Bean
     @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
+    @ConditionalOnMissingBean(ltd.qianc.iotagent.task.TaskDispatchGuard.class)
+    JdbcTaskDispatchGuard jdbcTaskDispatchGuard(JdbcTemplate jdbc) { return new JdbcTaskDispatchGuard(jdbc); }
+
+    @Bean
+    @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
     @ConditionalOnMissingBean(TaskScheduler.class)
     JdbcTaskScheduler jdbcTaskScheduler(JdbcTemplate jdbc, ObjectMapper mapper) { return new JdbcTaskScheduler(jdbc, mapper); }
     @Bean
     @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
     JdbcTaskRecurrenceMaterializer jdbcTaskRecurrenceMaterializer(
             JdbcTemplate jdbc, TransactionTemplate transactions, ObjectMapper mapper,
-            org.springframework.core.env.Environment environment) {
+            org.springframework.core.env.Environment environment,
+            org.springframework.beans.factory.ObjectProvider<ltd.qianc.iotagent.task.TaskExecutionIdentityStore> identities) {
         int batch = environment.getProperty("agent.task.recurrence.batch-size", Integer.class, 25);
-        return new JdbcTaskRecurrenceMaterializer(jdbc, transactions, mapper, java.time.Clock.systemUTC(), batch);
+        return new JdbcTaskRecurrenceMaterializer(jdbc, transactions, mapper, java.time.Clock.systemUTC(), batch,
+                identities.getIfAvailable());
     }
 
     @Bean

@@ -80,7 +80,8 @@ public class SecurityConfiguration {
     SecurityFilterChain securityFilterChain(
             HttpSecurity http,
             AgentIdentityFilter agentIdentityFilter,
-            BridgeAuthenticationFilter bridgeAuthenticationFilter) throws Exception {
+            BridgeAuthenticationFilter bridgeAuthenticationFilter,
+            @Value("${agent.video.allowed-origin:}") String videoAllowedOrigin) throws Exception {
         http
                 .csrf(AbstractHttpConfigurer::disable)
                 .addFilterBefore(bridgeAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
@@ -88,6 +89,10 @@ public class SecurityConfiguration {
                 .authorizeHttpRequests(authorize -> authorize
                         .requestMatchers("/healthz").permitAll()
                         .anyRequest().permitAll());
+        // Scoped before the identity filter so a valid preflight is answered without
+        // credentials while the actual GET still requires Authorization + Tenantcode.
+        VideoStreamCorsFilter videoCors = VideoStreamCorsFilter.create(videoAllowedOrigin);
+        if (videoCors != null) http.addFilterBefore(videoCors, AgentIdentityFilter.class);
         return http.build();
     }
 }

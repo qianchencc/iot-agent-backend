@@ -35,5 +35,15 @@ public final class JdbcTaskNotificationStore extends JdbcFactSupport implements 
         return jdbc.query("SELECT notification_id,task_id,tenant_code,recipient_key,source,outcome,ended_at,read_at,payload_json FROM task_notifications WHERE notification_id=? AND tenant_code=? AND recipient_key=? AND source=?", this::map, notificationId, tenantCode, recipientKey, source).stream().findFirst().orElseThrow();
     }
     @Override public int markAllSeen(String tenantCode, String recipientKey, String source, Instant at) { return jdbc.update("UPDATE task_notifications SET read_at=?,update_time=? WHERE tenant_code=? AND recipient_key=? AND source=? AND read_at IS NULL", time(at), time(at), tenantCode, recipientKey, source); }
+
+    @Override public TaskNotificationFact refresh(String taskId, String recipientKey, String outcome,
+                                                   String payloadJson, Instant at) {
+        jdbc.update("UPDATE task_notifications SET outcome=?,payload_json=?,update_time=? "
+                        + "WHERE task_id=? AND recipient_key=?",
+                outcome, payloadJson, time(at), taskId, recipientKey);
+        return jdbc.query("SELECT notification_id,task_id,tenant_code,recipient_key,source,outcome,ended_at,read_at,payload_json "
+                        + "FROM task_notifications WHERE task_id=? AND recipient_key=?",
+                this::map, taskId, recipientKey).stream().findFirst().orElseThrow();
+    }
     private TaskNotificationFact map(java.sql.ResultSet rs, int row) throws java.sql.SQLException { return new TaskNotificationFact(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getString(5), rs.getString(6), rs.getTimestamp(7).toInstant(), rs.getTimestamp(8) == null ? null : rs.getTimestamp(8).toInstant(), rs.getString(9)); }
 }

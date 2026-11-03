@@ -1,0 +1,22 @@
+{
+  "observed_at": "2026-11-01T18:24:36.866628+00:00",
+  "frontend_commit": "0758a3b",
+  "backend_source_commit": "a10f752",
+  "window": "Agent Business WT - Java 3215",
+  "automation": 9441,
+  "runtime_profile": {
+    "agent": "http://127.0.0.1:3215/api",
+    "videoApi": "http://127.0.0.1:3215/api",
+    "player": "http://127.0.0.1:9419/owner/h5player/index.html",
+    "page": "pages/index/index",
+    "hasToken": true
+  },
+  "compile": "HBuilderX 5.24 succeeded after local video routing update; existing warnings retained",
+  "production_writes": false,
+  "final_business_acceptance": false,
+  "guard_smoke": "isolated fake upstream: read grants allowed; unproven/control/cross-tenant/task/notification/destructive GET denied; not business evidence",
+  "artifacts": {
+    "miniapp_app": "9079fb7f9d4e1d4416050e217c8be057202ad42228e9131e7821521b6b3a445e",
+    "miniapp_settings": "728387a50e5df215c3e376e81adff483d72f0b2a4ec89a12c0fd01f14f69ae20"
+  }
+}

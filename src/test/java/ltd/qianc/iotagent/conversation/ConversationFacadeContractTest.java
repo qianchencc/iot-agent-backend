@@ -1,6 +1,8 @@
 package ltd.qianc.iotagent.conversation;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -15,6 +17,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import ltd.qianc.iotagent.auth.PrincipalInfo;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import ltd.qianc.iotagent.error.BusinessException;
 import org.junit.jupiter.api.Test;
 
 class ConversationFacadeContractTest {
@@ -26,7 +29,7 @@ class ConversationFacadeContractTest {
         MemoryConversationStore conversations = new MemoryConversationStore();
         MemoryEventStore events = new MemoryEventStore();
         RecordingBridge bridge = new RecordingBridge(false);
-        ConversationFacade facade = new ConversationFacade(new ObjectMapper(), conversations, events, bridge, Runnable::run);
+        ConversationFacade facade = new ConversationFacade(new ObjectMapper(), conversations, events, bridge, Runnable::run, mock(ConversationDrafts.class), mock(ConversationTaskCards.class));
         Map<String, Object> created = facade.create(PRINCIPAL, "company");
 
         facade.message(PRINCIPAL, (String) created.get("id"), "查询状态", "idem-1", "company");
@@ -44,7 +47,7 @@ class ConversationFacadeContractTest {
         MemoryEventStore events = new MemoryEventStore();
         RecordingBridge bridge = new RecordingBridge(false, () -> events.append(new ConversationEventFact(
                 "conversation-1", "turn-1", 2L, "action.proposed", "{}", "action-event-1")));
-        ConversationFacade facade = new ConversationFacade(new ObjectMapper(), conversations, events, bridge, Runnable::run);
+        ConversationFacade facade = new ConversationFacade(new ObjectMapper(), conversations, events, bridge, Runnable::run, mock(ConversationDrafts.class), mock(ConversationTaskCards.class));
         String id = (String) facade.create(PRINCIPAL, "office").get("id");
 
         facade.message(PRINCIPAL, id, "生成控制草案", "idem-action-sequence");
@@ -59,7 +62,7 @@ class ConversationFacadeContractTest {
         MemoryConversationStore conversations = new MemoryConversationStore();
         MemoryEventStore events = new MemoryEventStore();
         RecordingBridge bridge = new RecordingBridge(true);
-        ConversationFacade facade = new ConversationFacade(new ObjectMapper(), conversations, events, bridge, Runnable::run);
+        ConversationFacade facade = new ConversationFacade(new ObjectMapper(), conversations, events, bridge, Runnable::run, mock(ConversationDrafts.class), mock(ConversationTaskCards.class));
         String id = (String) facade.create(PRINCIPAL, "office").get("id");
 
         facade.message(PRINCIPAL, id, "停止前运行", "idem-cancel");
@@ -74,7 +77,7 @@ class ConversationFacadeContractTest {
         MemoryConversationStore conversations = new MemoryConversationStore();
         MemoryEventStore events = new MemoryEventStore();
         RecordingBridge bridge = new RecordingBridge(false);
-        ConversationFacade facade = new ConversationFacade(new ObjectMapper(), conversations, events, bridge, Runnable::run);
+        ConversationFacade facade = new ConversationFacade(new ObjectMapper(), conversations, events, bridge, Runnable::run, mock(ConversationDrafts.class), mock(ConversationTaskCards.class));
         String id = (String) facade.create(PRINCIPAL, "office").get("id");
 
         facade.message(PRINCIPAL, id, "重复安全", "idem-replay");
@@ -101,7 +104,8 @@ class ConversationFacadeContractTest {
                 return reads.getAndIncrement() == 0 ? List.of(second, first) : List.of(first, second, later);
             }
         };
-        ConversationFacade facade = new ConversationFacade(new ObjectMapper(), conversations, events, null, Runnable::run);
+        ConversationFacade facade = new ConversationFacade(new ObjectMapper(), conversations, events, null, Runnable::run,
+                mock(ConversationDrafts.class), mock(ConversationTaskCards.class));
         String id = (String) facade.create(PRINCIPAL, "office").get("id");
         conversations.startTurn(id, "第一问", Instant.now(), "q1");
         conversations.startTurn(id, "第二问", Instant.now(), "q2");
@@ -114,6 +118,30 @@ class ConversationFacadeContractTest {
                 .isEqualTo("[{\"sequence\":1,\"content\":\"第一轮\"}]");
         assertThat(mapper.valueToTree(((Map<?, ?>) turns.get(1)).get("events")).toString())
                 .isEqualTo("[{\"sequence\":1,\"content\":\"第二轮\"}]");
+    }
+
+    @Test
+    void callbacksRequireTheExactActiveRunAndAreRevokedOnCancel() {
+        RecordingBridge bridge = new RecordingBridge(true);
+        ConversationFacade facade = new ConversationFacade(new ObjectMapper(), new MemoryConversationStore(),
+                new MemoryEventStore(), bridge, Runnable::run, mock(ConversationDrafts.class), mock(ConversationTaskCards.class));
+        String id = (String) facade.create(PRINCIPAL, "company").get("id");
+        facade.message(PRINCIPAL, id, "查询", "bound-run", "company", "region-1", null);
+        AgentRunRequest run = bridge.request.get();
+        facade.toolContext(run.toolContextId(), id, run.turnId(), run.runId());
+
+        assertContextRejected(() -> facade.toolContext("unknown-context", id, run.turnId(), run.runId()));
+        assertContextRejected(() -> facade.toolContext(run.toolContextId(), "other-conversation", run.turnId(), run.runId()));
+        assertContextRejected(() -> facade.toolContext(run.toolContextId(), id, "other-turn", run.runId()));
+        assertContextRejected(() -> facade.toolContext(run.toolContextId(), id, run.turnId(), "other-run"));
+
+        facade.cancel(PRINCIPAL, id, "company");
+        assertContextRejected(() -> facade.toolContext(run.toolContextId(), id, run.turnId(), run.runId()));
+    }
+
+    private static void assertContextRejected(org.assertj.core.api.ThrowableAssert.ThrowingCallable request) {
+        assertThatThrownBy(request).isInstanceOfSatisfying(BusinessException.class,
+                error -> assertThat(error.code()).isEqualTo("AGENT_TOOL_RUN_UNAVAILABLE"));
     }
 
     private static final class RecordingBridge implements AgentEngineBridge {
@@ -136,6 +164,8 @@ class ConversationFacadeContractTest {
         public CompletionStage<Void> start(AgentRunRequest request, Consumer<AgentEngineEvent> events) {
             startCount.incrementAndGet();
             this.request.set(request);
+            events.accept(new AgentEngineEvent(request.runId(), request.conversationId(), request.turnId(),
+                    "run.started", Map.of("createdAt", Instant.now().toString())));
             beforeMessage.run();
             events.accept(new AgentEngineEvent(request.runId(), request.conversationId(), request.turnId(),
                     "message.delta", Map.of("sequence", 99, "content", "状态")));
@@ -158,7 +188,7 @@ class ConversationFacadeContractTest {
 
         @Override
         public ConversationRecord create(String tenantCode, String ownerKey, String source, Instant createdAt) {
-            conversation = new ConversationRecord("conversation-1", tenantCode, ownerKey, source, createdAt, false);
+            conversation = new ConversationRecord("conversation-1", tenantCode, ownerKey, source, createdAt, createdAt, false);
             return conversation;
         }
 

@@ -32,7 +32,7 @@ public final class AdminController {
     private final String configuredPassword;
     private final Path passwordFile;
     private final boolean secureCookie;
-    private PiSessionOperations piSession = PiSessionOperationsFactory.failClosed("Pi Session sidecar not configured");
+    private PiSessionOperations piSession = PiSessionOperationsFactory.unavailable();
     @Value("${server.address:127.0.0.1}")
     private String deploymentHost;
     @Value("${server.port:3200}")
@@ -124,47 +124,9 @@ public final class AdminController {
         return ResponseEntity.status(result.status()).body(Map.of("code", result.code(), "message", result.message()));
     }
 
-    @PostMapping("/pi-session/capacity")
-    public ResponseEntity<?> piSessionCapacity() {
-        return operation(piSession.capacity());
-    }
-
-    @PostMapping({"/pi-session/integrity-check", "/pi-session/check"})
-    public ResponseEntity<?> piSessionIntegrity() {
-        return operation(piSession.integrityCheck());
-    }
-
-    @PostMapping("/pi-session/writer-lease/recover")
-    public ResponseEntity<?> piSessionWriterRecovery() {
-        return operation(piSession.recoverWriterLease());
-    }
-
-    @PostMapping("/pi-session/backup")
-    public ResponseEntity<?> piSessionBackup(@RequestBody(required = false) Map<String, Object> body) {
-        String destination = text(body, "destination");
-        Object force = body == null ? null : body.get("force");
-        if (destination == null || !(force instanceof Boolean)) {
-            return error(400, "PI_SESSION_INVALID", "备份参数无效");
-        }
-        try {
-            return operation(piSession.backup(localPath(destination), (Boolean) force));
-        } catch (IllegalArgumentException invalid) {
-            return error(400, "PI_SESSION_INVALID", "备份路径无效");
-        }
-    }
-
-    @PostMapping("/pi-session/restore")
-    public ResponseEntity<?> piSessionRestore(@RequestBody(required = false) Map<String, Object> body) {
-        String backup = text(body, "backup");
-        Object apply = body == null ? null : body.get("apply");
-        if (backup == null || !(apply instanceof Boolean)) {
-            return error(400, "PI_SESSION_INVALID", "恢复参数无效");
-        }
-        try {
-            return operation(piSession.restore(localPath(backup), (Boolean) apply));
-        } catch (IllegalArgumentException invalid) {
-            return error(400, "PI_SESSION_INVALID", "恢复路径无效");
-        }
+    @GetMapping("/pi-session/health")
+    public ResponseEntity<?> piSessionHealth() {
+        return operation(piSession.health());
     }
 
     @GetMapping("/changes")
@@ -175,7 +137,7 @@ public final class AdminController {
     @GetMapping("/prompts")
     public Map<String, Object> prompts() {
         Map<String, Object> active = store.active();
-        return Map.of("revision", view().activeRevision(), "office", active.getOrDefault("officeInstructions", ""), "company", active.getOrDefault("companyInstructions", ""));
+        return Map.of("revision", view().revision(), "office", active.getOrDefault("officeInstructions", ""), "company", active.getOrDefault("companyInstructions", ""));
     }
 
     @PostMapping("/restore")
@@ -240,7 +202,7 @@ public final class AdminController {
         body.put("code", result.code());
         body.put("message", result.message());
         Map<String, Object> details = new LinkedHashMap<>();
-        for (String key : new String[] {"status", "integrity", "freeBytes", "minimumFreeBytes", "applied", "recoveredLeases"}) {
+        for (String key : new String[] {"status", "backend", "scopes", "documents", "invalidJournals"}) {
             Object value = result.details().get(key);
             if (value instanceof String || value instanceof Number || value instanceof Boolean) details.put(key, value);
         }
@@ -248,11 +210,6 @@ public final class AdminController {
         return ResponseEntity.status(result.status()).body(body);
     }
 
-    private static Path localPath(String value) {
-        Path path = Path.of(value).normalize();
-        if (!path.isAbsolute() || value.contains("://")) throw new IllegalArgumentException("path must be local");
-        return path;
-    }
 
     private String cookie(String token, int maxAge) {
         ResponseCookie.ResponseCookieBuilder builder = ResponseCookie.from(AdminSessionManager.COOKIE, token)

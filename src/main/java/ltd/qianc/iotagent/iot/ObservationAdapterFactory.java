@@ -5,6 +5,7 @@ import java.time.Duration;
 import java.util.Objects;
 import ltd.qianc.iotagent.iot.internal.CompanyOfficeObservationAdapter;
 import ltd.qianc.iotagent.iot.internal.FailClosedObservationAdapter;
+import ltd.qianc.iotagent.iot.internal.SafetyLedgerComposer;
 import ltd.qianc.iotagent.iot.internal.WebClientObservationAdapter;
 import ltd.qianc.iotagent.region.RegionSeenStore;
 import ltd.qianc.iotagent.readmodel.ReadSnapshots;
@@ -50,6 +51,35 @@ public final class ObservationAdapterFactory {
             RegionSeenStore regionSeen, CompanyEnergyObservationComposer energyComposer,
             ReadSnapshots snapshots, Clock clock) {
         return new CompanyOfficeObservationAdapter(upstream, iot, automation, regionSeen,
-                energyComposer, snapshots, clock);
+                energyComposer, null, snapshots, clock);
+    }
+
+    /** Safety history and event resolution share the same source-bound authorization. */
+    public static ObservationAdapter safetyLedger(ObservationAdapter upstream, IotAdapter iot,
+            java.util.function.BiFunction<RequestIdentity, String,
+                    reactor.core.publisher.Mono<java.util.Map<String, Object>>> metadata, Clock clock) {
+        return safetyLedger(upstream, iot, metadata, null, clock);
+    }
+
+    public static ObservationAdapter safetyLedger(ObservationAdapter upstream, IotAdapter iot,
+            java.util.function.BiFunction<RequestIdentity, String,
+                    reactor.core.publisher.Mono<java.util.Map<String, Object>>> metadata,
+            byte[] cursorMacKey, Clock clock) {
+        SafetyLedgerComposer ledger = new SafetyLedgerComposer(upstream, iot,
+                metadata == null ? null : metadata::apply, cursorMacKey, clock);
+        return request -> switch (request.operation()) {
+            case SAFETY_EVENTS -> ledger.readLedger(request);
+            case SAFETY_EVENT -> ledger.readEvent(request);
+            default -> reactor.core.publisher.Mono.error(
+                    new ObservationUnavailableException("该入口仅支持安全台账和事件详情"));
+        };
+    }
+
+    public static ObservationAdapter composed(
+            ObservationAdapter upstream, IotAdapter iot, AutomationSummaryReader automation,
+            RegionSeenStore regionSeen, CompanyEnergyObservationComposer energyComposer,
+            ObservationAdapter safetyLedger, ReadSnapshots snapshots, Clock clock) {
+        return new CompanyOfficeObservationAdapter(upstream, iot, automation, regionSeen,
+                energyComposer, safetyLedger, snapshots, clock);
     }
 }

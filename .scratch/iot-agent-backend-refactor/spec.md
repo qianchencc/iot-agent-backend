@@ -1,7 +1,9 @@
 # 物联 Agent Java 重构规格
 
-Status: report-conversation-core-implemented-runtime-parity-open
+Status: historical; superseded-for-current-business-recovery
 Date: 2026-10-29
+
+当前执行依据：[Java业务完整性恢复规格](../agent-business-recovery/spec.md)及[十六组闭环](../agent-business-recovery/README.md)。下文保留为历史实施记录；其中 Node 业务职责、小程序不联调及局部 readiness 不能覆盖 2026-11-02 用户确认的新边界与真实前端验收要求。
 
 ## Problem Statement
 

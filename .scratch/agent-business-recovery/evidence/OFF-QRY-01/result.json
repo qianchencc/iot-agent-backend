@@ -1,0 +1,32 @@
+{
+  "case_id": "OFF-QRY-01",
+  "scope": "baseline real frontend observation; final integrated build re-verification required",
+  "input": "办公室有几盏灯，哪几个开着",
+  "result": "实际界面显示4盏灯，逐台均为关；未执行任何控制",
+  "source": "office",
+  "region": "26楼运营办公区",
+  "account": "same authorized main account; identifier omitted",
+  "backend_source_commit": "a10f752",
+  "frontend_base_commit": "bf0951ffcfe93a927622ba25f1ac8916b7920388",
+  "frontend_changes": "isolated profile and previously verified login corrections; no cache branch changes",
+  "source_kind": "S-REAL",
+  "ports": {
+    "java": 3215,
+    "node": 3235,
+    "readonly_proxy": 3245,
+    "automation": 9441
+  },
+  "artifact_sha256": {
+    "java_jar": "f5a52a04119ae07782dc94f1b2ccd1fc76667341e15e05306749e0614a8582ea",
+    "node_agent": "edcc53092bd4ed04219843d02ab61845c93abade947044c49613144f35bb9f36",
+    "miniapp_app": "9079fb7f9d4e1d4416050e217c8be057202ad42228e9131e7821521b6b3a445e",
+    "miniapp_settings": "ce12d6cf8f3692881268c353a6f9ff78ecbe75aa6915579ae40cec21173c8800"
+  },
+  "production_writes": false,
+  "limitations": [
+    "Node业务定义尚未迁回Java；本例不能关闭票01",
+    "仅为本轮只读单例，不代表其余场景或视频通过",
+    "后续视频路由配置重编译及最终集成后需重新取证"
+  ],
+  "observed_at": "2026-11-01T18:13:17.261Z"
+}

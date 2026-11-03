@@ -23,20 +23,20 @@ public final class JdbcConversationStore extends JdbcFactSupport implements Conv
         String id = java.util.UUID.randomUUID().toString();
         jdbc.update("INSERT INTO conversations(conversation_id,tenant_code,owner_key,source,cleared,create_time,update_time) VALUES (?,?,?,?,0,?,?)",
                 id, tenantCode, ownerKey, source, time(createdAt), time(createdAt));
-        return new ConversationRecord(id, tenantCode, ownerKey, source, createdAt, false);
+        return new ConversationRecord(id, tenantCode, ownerKey, source, createdAt, createdAt, false);
     }
 
     @Override
     public Optional<ConversationRecord> find(String conversationId, String tenantCode, String ownerKey) {
-        return one("SELECT conversation_id,tenant_code,owner_key,source,cleared,create_time FROM conversations WHERE conversation_id=? AND tenant_code=? AND owner_key=?",
-                (rs, row) -> new ConversationRecord(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getTimestamp(6).toInstant(), rs.getBoolean(5)),
+        return one("SELECT conversation_id,tenant_code,owner_key,source,cleared,create_time,update_time FROM conversations WHERE conversation_id=? AND tenant_code=? AND owner_key=?",
+                (rs, row) -> new ConversationRecord(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getTimestamp(6).toInstant(), rs.getTimestamp(7).toInstant(), rs.getBoolean(5)),
                 conversationId, tenantCode, ownerKey);
     }
 
     @Override
     public Optional<ConversationRecord> current(String tenantCode, String ownerKey, String source, Instant activeAfter) {
-        return one("SELECT conversation_id,tenant_code,owner_key,source,cleared,create_time FROM conversations WHERE tenant_code=? AND owner_key=? AND source=? AND cleared=0 AND update_time>=? ORDER BY update_time DESC LIMIT 1",
-                (rs, row) -> new ConversationRecord(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getTimestamp(6).toInstant(), rs.getBoolean(5)),
+        return one("SELECT conversation_id,tenant_code,owner_key,source,cleared,create_time,update_time FROM conversations WHERE tenant_code=? AND owner_key=? AND source=? AND cleared=0 AND update_time>? ORDER BY update_time DESC LIMIT 1",
+                (rs, row) -> new ConversationRecord(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getTimestamp(6).toInstant(), rs.getTimestamp(7).toInstant(), rs.getBoolean(5)),
                 tenantCode, ownerKey, source, time(activeAfter));
     }
 

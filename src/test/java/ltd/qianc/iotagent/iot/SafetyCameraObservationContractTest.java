@@ -18,7 +18,7 @@ class SafetyCameraObservationContractTest {
     private static final Instant NOW = Instant.parse("2024-04-20T07:11:01Z");
 
     @Test
-    void filtersCompanyMonitorsByCurrentFloorAndCapsWindowAtNow() {
+    void filtersCompanyMonitorsByCurrentFloorWithoutRewritingEventWindow() {
         ObservationAdapter upstream = event(Map.of(
                 "eventId", "alarm-1", "ledger", "gas", "deviceId", "gas-1",
                 "deviceName", "recorded gas", "occurredAt", "2024-04-20T07:10:01Z"));
@@ -37,7 +37,7 @@ class SafetyCameraObservationContractTest {
         Map<?, ?> candidate = (Map<?, ?>) candidates.get(0);
         assertThat(candidate.get("deviceId")).isEqualTo("cam-27");
         assertThat(candidate.get("beginTime")).isEqualTo("2024-04-20T14:55:01.000+08:00");
-        assertThat(candidate.get("endTime")).isEqualTo("2024-04-20T15:11:01.000+08:00");
+        assertThat(candidate.get("endTime")).isEqualTo("2024-04-20T15:25:01.000+08:00");
         assertThat(((Map<?, ?>) candidate.get("safetyContext")).get("eventId")).isEqualTo("alarm-1");
     }
 
@@ -46,7 +46,8 @@ class SafetyCameraObservationContractTest {
         ObservationAdapter upstream = event(Map.of(
                 "eventId", "alarm-1", "ledger", "gas", "deviceId", "gas-1",
                 "deviceName", "recorded gas", "occurredAt", "2024-04-20T07:10:01Z"));
-        ObservationAdapter adapter = composed(upstream, scope(),
+        ObservationAdapter adapter = composed(upstream,
+                scope(device("gas-1", "safety", "燃气感应器", null, null, List.of())),
                 scope(device("cam-27", "video", "27楼监控", "27楼", "hub", List.of())));
 
         Map<?, ?> payload = adapter.read(new ObservationRequest(COMPANY,
@@ -59,19 +60,20 @@ class SafetyCameraObservationContractTest {
 
     @Test
     void absentEventAndAuthorizationFailuresRemainTyped() {
+        AuthorizedDevice sensor = device("gas-1", "safety", "燃气感应器", null, null, List.of());
         ObservationAdapter absent = request -> Mono.error(new ObservationNotFoundException("missing"));
-        ObservationAdapter absentAdapter = composed(absent, scope(), scope());
+        ObservationAdapter absentAdapter = composed(absent, scope(sensor), scope());
         assertThatThrownBy(() -> absentAdapter.read(request()).block())
                 .isInstanceOf(ObservationNotFoundException.class)
                 .hasMessage("missing");
 
         ObservationAdapter unauthorized = request -> Mono.error(new GatewayAuthorizationException(401));
-        ObservationAdapter unauthorizedAdapter = composed(unauthorized, scope(), scope());
+        ObservationAdapter unauthorizedAdapter = composed(unauthorized, scope(sensor), scope());
         assertThatThrownBy(() -> unauthorizedAdapter.read(request()).block())
                 .isInstanceOf(GatewayAuthorizationException.class);
 
         ObservationAdapter unavailable = request -> Mono.error(new ObservationUnavailableException("gateway"));
-        ObservationAdapter unavailableAdapter = composed(unavailable, scope(), scope());
+        ObservationAdapter unavailableAdapter = composed(unavailable, scope(sensor), scope());
         assertThatThrownBy(() -> unavailableAdapter.read(request()).block())
                 .isInstanceOf(ObservationUnavailableException.class);
     }
@@ -95,9 +97,22 @@ class SafetyCameraObservationContractTest {
     }
 
     private static ObservationAdapter event(Map<String, Object> record) {
-        return request -> request.operation() == ObservationOperation.SAFETY_EVENT
-                ? Mono.just(ObservationResponse.available(Map.of("source", "company", "record", record)))
-                : Mono.error(new AssertionError("unexpected operation: " + request.operation()));
+        return request -> {
+            if (request.operation() != ObservationOperation.SAFETY_EVENTS) {
+                return Mono.error(new AssertionError("unexpected operation: " + request.operation()));
+            }
+            if (request.parameters().containsKey("deviceId")
+                    && !String.valueOf(record.get("deviceId")).equals(request.parameters().get("deviceId"))) {
+                return Mono.error(new AssertionError("unexpected deviceId filter"));
+            }
+            Map<String, Object> page = new java.util.LinkedHashMap<>();
+            page.put("source", "company");
+            page.put("items", List.of(record));
+            page.put("total", 1L);
+            page.put("scanned", 1);
+            page.put("last", true);
+            return Mono.just(ObservationResponse.available(page));
+        };
     }
 
     private static ObservationAdapter composed(

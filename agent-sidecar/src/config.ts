@@ -1,19 +1,13 @@
-import { homedir } from "node:os";
-import { resolve } from "node:path";
-
 export interface SidecarConfig {
   host: string;
   port: number;
   bridgeToken: string;
-  supervisorToken: string;
   javaToolsUrl: string;
+  javaSessionsUrl: string;
   javaToolsToken: string;
   modelBaseUrl: string;
   modelId: string;
   modelApiKey: string;
-  sessionPath: string;
-  backupDir: string;
-  minimumFreeBytes: number;
   runTimeoutMs: number;
   javaToolTimeoutMs: number;
   heartbeatMs: number;
@@ -39,20 +33,16 @@ function parseThinkingLevel(value: string | undefined): "off" | "low" | "medium"
 
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): SidecarConfig {
-  const sessionPath = resolve(env.SIDECAR_SESSION_PATH?.trim() || "./var/pi-agent/sessions.sqlite");
   return {
     host: env.SIDECAR_HOST?.trim() || "127.0.0.1",
     port: positive(env, "SIDECAR_PORT", 8787),
     bridgeToken: required(env, "AGENT_BRIDGE_TOKEN"),
-    supervisorToken: required(env, "SIDECAR_SUPERVISOR_TOKEN"),
     javaToolsUrl: required(env, "JAVA_AGENT_TOOLS_URL"),
+    javaSessionsUrl: env.JAVA_AGENT_SESSIONS_URL?.trim() || new URL("/internal/agent/sessions", required(env, "JAVA_AGENT_TOOLS_URL")).toString(),
     javaToolsToken: required(env, "JAVA_AGENT_TOOLS_TOKEN"),
     modelBaseUrl: required(env, "MODEL_BASE_URL"),
     modelId: required(env, "MODEL_ID"),
     modelApiKey: required(env, "MODEL_API_KEY"),
-    sessionPath,
-    backupDir: resolve(env.SIDECAR_BACKUP_DIR?.trim() || "./var/pi-agent/backups"),
-    minimumFreeBytes: positive(env, "SIDECAR_MINIMUM_FREE_BYTES", 1),
     javaToolTimeoutMs: positive(env, "JAVA_AGENT_TOOL_TIMEOUT_MS", 60_000),
     runTimeoutMs: positive(env, "SIDECAR_RUN_TIMEOUT_MS", 120_000),
     heartbeatMs: positive(env, "SIDECAR_HEARTBEAT_MS", 15_000),
@@ -65,15 +55,12 @@ export function defaultConfigForTests(overrides: Partial<SidecarConfig> = {}): S
     host: "127.0.0.1",
     port: 0,
     bridgeToken: "test-bridge",
-    supervisorToken: "test-supervisor",
     javaToolsUrl: "http://127.0.0.1:9/internal/agent/tools",
+    javaSessionsUrl: process.env.JAVA_SESSION_TEST_URL || "http://127.0.0.1:9/internal/agent/sessions",
     javaToolsToken: "test-java",
     modelBaseUrl: "http://127.0.0.1:9/v1",
     modelId: "test-model",
     modelApiKey: "test-model-key",
-    sessionPath: resolve(`${homedir()}/.iot-agent-sidecar-test.sqlite`),
-    backupDir: resolve(`${homedir()}/.iot-agent-sidecar-test-backups`),
-    minimumFreeBytes: 1,
     javaToolTimeoutMs: 60_000,
     runTimeoutMs: 120_000,
     heartbeatMs: 15_000,

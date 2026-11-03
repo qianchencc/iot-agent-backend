@@ -7,6 +7,7 @@ import ltd.qianc.iotagent.admin.AdminPasswordPolicy;
 import ltd.qianc.iotagent.admin.AdminWorkState;
 import ltd.qianc.iotagent.admin.PiSessionOperations;
 import ltd.qianc.iotagent.admin.PiSessionOperationsFactory;
+import ltd.qianc.iotagent.pisession.PiSessionService;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
@@ -89,29 +90,9 @@ public class AdminModuleConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    PiSessionOperations piSessionOperations(ObjectProvider<WebClient.Builder> builders,
-            @Value("${agent.bridge.base-url:}") String bridgeUrl,
-            @Value("${agent.bridge.token:${agent.bridge-token:}}") String bridgeToken,
-            @Value("${pi.session.local.enabled:false}") boolean localEnabled,
-            @Value("${pi.session.database-path:}") String localDatabase,
-            @Value("${pi.session.minimum-free-bytes:1}") long minimumFreeBytes) {
-        if (localEnabled && localDatabase != null && !localDatabase.isBlank()) {
-            try {
-                return PiSessionOperationsFactory.local(Path.of(localDatabase), Math.max(0, minimumFreeBytes));
-            } catch (RuntimeException ignored) {
-                return PiSessionOperationsFactory.failClosed("invalid local Pi Session configuration");
-            }
-        }
-        if (bridgeUrl == null || bridgeUrl.isBlank() || bridgeToken == null || bridgeToken.isBlank()) {
-            return PiSessionOperationsFactory.failClosed("Node sidecar bridge is not configured");
-        }
-        try {
-            WebClient.Builder builder = builders.getIfAvailable(WebClient::builder);
-            if (builder == null) return PiSessionOperationsFactory.failClosed("Node sidecar bridge is unavailable");
-            return PiSessionOperationsFactory.node(builder.baseUrl(bridgeUrl).build(), bridgeToken);
-        } catch (RuntimeException ignored) {
-            return PiSessionOperationsFactory.failClosed("Node sidecar bridge configuration is invalid");
-        }
+    PiSessionOperations piSessionOperations(ObjectProvider<PiSessionService> sessions) {
+        PiSessionService store = sessions.getIfAvailable();
+        return store == null ? PiSessionOperationsFactory.unavailable() : PiSessionOperationsFactory.mysql(store);
     }
 
     @Bean
@@ -194,8 +175,10 @@ public class AdminModuleConfiguration {
 
     static Set<String> locked(Environment environment) {
         Set<String> result = new java.util.LinkedHashSet<>();
-        Map<String, String> fields = Map.of("modelBaseUrl", "MODEL_BASE_URL", "modelId", "MODEL_ID", "modelApiKey", "MODEL_API_KEY", "thinkingLevel", "AGENT_THINKING_LEVEL", "heartbeatMs", "HEARTBEAT_MS", "langfuseBaseUrl", "LANGFUSE_BASE_URL", "langfusePublicKey", "LANGFUSE_PUBLIC_KEY", "langfuseSecretKey", "LANGFUSE_SECRET_KEY");
-        fields.forEach((name, variable) -> { if (environment.getProperty(variable) != null) result.add(name); });
+        Map<String, String> fields = Map.of("modelBaseUrl", "MODEL_BASE_URL", "modelId", "MODEL_ID", "modelApiKey", "MODEL_API_KEY", "thinkingLevel", "AGENT_THINKING_LEVEL", "catalogTtlMs", "IOT_CATALOG_TTL_MS", "heartbeatMs", "HEARTBEAT_MS", "langfuseBaseUrl", "LANGFUSE_BASE_URL", "langfusePublicKey", "LANGFUSE_PUBLIC_KEY", "langfuseSecretKey", "LANGFUSE_SECRET_KEY");
+        fields.forEach((name, variable) -> {
+            if (environment.getProperty(variable) != null && !LiveAgentSettings.contains(name)) result.add(name);
+        });
         return result;
     }
 

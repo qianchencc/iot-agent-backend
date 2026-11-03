@@ -222,7 +222,7 @@ class CompanyOfficeObservationAdapterContractTest {
                 List.of(List.of("一号楼", "一楼")), List.of("office-secret"),
                 Map.of("rawPayload", Map.of("token", "metadata-secret")));
         DeviceCandidateSet candidates = new DeviceCandidateSet("candidate-a",
-                new DeviceCandidateQuery("ac", List.of(), "一楼", List.of(), List.of(), null), List.of(device), true, 1);
+                new DeviceCandidateQuery("ac", List.of(), "一楼", List.of(), List.of(), null, null), List.of(device), true, 1);
         String json = new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(candidates.publicView());
         assertThat(json).contains("device-a", "空调 A", "一楼", "candidate-a", "observationOnly");
         assertThat(json).doesNotContain("controlRef", "officeDeviceRef", "hubDeviceId", "smartAreaCode", "officeIds", "metadata",

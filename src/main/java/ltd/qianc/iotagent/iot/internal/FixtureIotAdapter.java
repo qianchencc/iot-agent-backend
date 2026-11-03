@@ -53,7 +53,7 @@ public final class FixtureIotAdapter implements IotAdapter {
             for (String id : deviceIds == null ? List.<String>of() : deviceIds) {
                 AuthorizedDevice device = scope.device(id).orElseThrow(() -> new IllegalArgumentException("device outside fixture scope"));
                 states.put(id, switch (device.kind()) {
-                    case "lighting" -> Map.of("power", "off");
+                    case "lighting" -> Boolean.FALSE;
                     case "access" -> Map.of("locked", true);
                     case "ac" -> Map.of("power", "off", "temperature", 24);
                     default -> null;
@@ -71,13 +71,12 @@ public final class FixtureIotAdapter implements IotAdapter {
                 for (String id : selection.deviceIds()) {
                     AuthorizedDevice device = scope.device(id).orElseThrow(() -> new IllegalArgumentException("device outside fixture scope"));
                     List<Map<String, Object>> commands = switch (device.kind()) {
-                        case "lighting" -> List.of(Map.of("power", "on"), Map.of("power", "off"));
+                        case "lighting" -> List.of(Map.of("closeOrOpen", 0), Map.of("closeOrOpen", 1));
                         case "access" -> List.of(Map.of("controlType", 2));
                         default -> List.of();
                     };
                     DeviceCapabilityInspection.MapParameters parameters = "ac".equals(device.kind())
-                            ? new DeviceCapabilityInspection.MapParameters(16, 30, 1,
-                            List.of("auto", "cool", "heat", "dry", "fan"), List.of("low", "high", "auto")) : null;
+                            ? ltd.qianc.iotagent.iot.AcCommandCapabilities.parameters() : null;
                     devices.add(new DeviceCapabilityInspection.DeviceCapability(id, device.kind(), commands, parameters));
                 }
             }

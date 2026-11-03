@@ -44,31 +44,16 @@ class ReportJdbcIntegrationTest {
         String turn = "turn-" + UUID.randomUUID();
         String request = "request-" + UUID.randomUUID();
 
-        ReportGenerationPort.GeneratedReport first = ReportGenerationServiceFactory.local(facts, mapper, scope)
-                .generate(identity, conversation, turn, request, content("completed"));
+        ReportGenerationPort.GeneratedReport first = ReportGenerationServiceFactory.local(facts, mapper, scope, ReportEvidenceFixture.evidence())
+                .generate(identity, conversation, turn, request, ReportEvidenceFixture.energy("meter-jdbc", false));
         assertThat(facts.find(first.reportId())).isPresent();
 
-        ReportGenerationPort.GeneratedReport afterRestart = ReportGenerationServiceFactory.local(facts, mapper, scope)
-                .generate(identity, conversation, turn, request, content("failed"));
+        ReportGenerationPort.GeneratedReport afterRestart = ReportGenerationServiceFactory.local(facts, mapper, scope, ReportEvidenceFixture.evidence())
+                .generate(identity, conversation, turn, request, ReportEvidenceFixture.energy("meter-jdbc", false));
         assertThat(afterRestart.reused()).isTrue();
         assertThat(afterRestart.report()).containsEntry("status", "completed");
         assertThat(facts.find(first.reportId()).orElseThrow().payloadJson())
                 .isEqualTo(facts.find(afterRestart.reportId()).orElseThrow().payloadJson());
-    }
-
-    private static Map<String, Object> content(String status) {
-        Map<String, Object> meter = Map.of("id", "meter-jdbc");
-        Map<String, Object> nested = new LinkedHashMap<>();
-        nested.put("authorizationMeterIds", List.of("meter-jdbc"));
-        nested.put("meters", new ArrayList<>(List.of(meter)));
-        Map<String, Object> block = new LinkedHashMap<>();
-        block.put("type", "meter_report");
-        block.put("report", nested);
-        Map<String, Object> report = new LinkedHashMap<>();
-        report.put("title", "JDBC report");
-        report.put("status", status);
-        report.put("blocks", new ArrayList<>(List.of(block)));
-        return report;
     }
 
     private static final class FixtureScope implements IotAdapter {

@@ -53,14 +53,14 @@ public final class EncryptedFileAdminConfigurationStore implements AdminConfigur
     @Override
     public synchronized ConfigurationView view(DeploymentInfo deployment) {
         Map<String, Object> saved = effective(state.revisions.get(state.revisions.size() - 1).settings);
-        Map<String, Object> active = effective(state.revisions.get(state.activeIndex).settings);
+        Map<String, Object> active = LiveAgentSettings.effective(state.revisions.get(state.activeIndex).settings, saved);
         List<String> changed = changedFields(saved, active);
         Map<String, Map<String, Boolean>> secrets = new LinkedHashMap<>();
         for (String secret : SECRET_KEYS) {
             secrets.put(secret, Map.of("configured", Boolean.TRUE.equals(hasValue(saved.get(secret))),
                     "activeConfigured", Boolean.TRUE.equals(hasValue(active.get(secret)))));
         }
-        return new ConfigurationView(state.latestRevision(), state.revisions.get(state.activeIndex).revision,
+        return new ConfigurationView(state.latestRevision(), changed.isEmpty() ? state.latestRevision() : state.revisions.get(state.activeIndex).revision,
                 publicSettings(saved), publicSettings(active), secrets, List.copyOf(locked), !changed.isEmpty(),
                 changed, false, deployment);
     }
@@ -84,8 +84,11 @@ public final class EncryptedFileAdminConfigurationStore implements AdminConfigur
         if (!issues.isEmpty()) return new SaveResult(400, "CONFIG_INVALID", issues);
         List<String> changed = changedFields(previous, next);
         if (changed.isEmpty()) return SaveResult.ok();
-        state.revisions.add(new Revision(state.latestRevision() + 1, next, changed, actor, Instant.now().toString()));
-        persist();
+        List<Revision> revisions = new ArrayList<>(state.revisions);
+        revisions.add(new Revision(state.latestRevision() + 1, next, changed, actor, Instant.now().toString()));
+        State committed = new State(revisions, state.activeIndex);
+        persist(committed);
+        state = committed;
         return SaveResult.ok();
     }
 
@@ -117,7 +120,8 @@ public final class EncryptedFileAdminConfigurationStore implements AdminConfigur
 
     @Override
     public synchronized Map<String, Object> active() {
-        return effective(state.revisions.get(state.activeIndex).settings);
+        return LiveAgentSettings.effective(state.revisions.get(state.activeIndex).settings,
+                state.revisions.get(state.revisions.size() - 1).settings);
     }
 
     @Override
@@ -147,9 +151,6 @@ public final class EncryptedFileAdminConfigurationStore implements AdminConfigur
         }
     }
 
-    private void persist() {
-        persist(state);
-    }
 
     private void persist(State value) {
         try {
@@ -229,8 +230,8 @@ public final class EncryptedFileAdminConfigurationStore implements AdminConfigur
         integer(settings, issues, "contextWindow", 8192, 2_000_000);
         integer(settings, issues, "maxOutputTokens", 256, 128_000);
         integer(settings, issues, "maxAgentTurns", 1, 30);
-        integer(settings, issues, "maxToolCalls", 1, 100);
-        integer(settings, issues, "runTimeoutMs", 10_000, 1_800_000);
+        integer(settings, issues, "maxToolCalls", 1, 1000);
+        integer(settings, issues, "runTimeoutMs", 1000, 600_000);
         integer(settings, issues, "draftTtlMs", 30_000, 3_600_000);
         integer(settings, issues, "heartbeatMs", 0, 60_000);
         integer(settings, issues, "readbackWaitMs", 0, 120_000);

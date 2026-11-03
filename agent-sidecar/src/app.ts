@@ -32,6 +32,17 @@ function invalid(reply: FastifyReply): void {
   reply.code(400).send({ error: "invalid_request" });
 }
 
+// These fields carry model or Java-owned payloads that the Java projection must
+// receive intact. Redacting them lossily would corrupt cards, reports, and text.
+const PASSTHROUGH_FIELDS: Record<string, readonly string[]> = {
+  "message.delta": ["content"],
+  "message.completed": ["content"],
+  "message.reclassified": ["content"],
+  "tool.started": ["arguments"],
+  "tool.progress": ["details"],
+  "tool.result": ["result"],
+};
+
 export function buildApp(config: SidecarConfig, observability: Observability = createObservability()): FastifyInstance {
   const app = Fastify({ logger: false, bodyLimit: 1_048_576 });
   const sessions = new PiSessionStore(config);
@@ -41,9 +52,9 @@ export function buildApp(config: SidecarConfig, observability: Observability = c
     await observability.shutdown();
   });
   app.addHook("preHandler", async (request, reply) => {
-    const supervisorRequest = request.url === "/internal/admin/apply"
-      && typeof request.headers["x-admin-supervisor-token"] === "string";
-    if (supervisorRequest) return;
+    // No route means no data; let Fastify return a plain 404. This keeps an
+    // external supervisor pointed at the removed handoff path clearly unavailable.
+    if (request.is404) return;
     if (!sameSecret(config.bridgeToken, bearer(request))) {
       await reply.code(401).send({ error: "unauthorized" });
     }
@@ -75,7 +86,7 @@ export function buildApp(config: SidecarConfig, observability: Observability = c
       timeout: setTimeout(() => {
         state.timedOut = true;
         controller.abort();
-      }, config.runTimeoutMs),
+      }, input.definition.runTimeoutMs ?? config.runTimeoutMs),
     };
     active.set(input.runId, state);
     reply.hijack();
@@ -102,18 +113,19 @@ export function buildApp(config: SidecarConfig, observability: Observability = c
         turnId: input.turnId,
         timestamp: new Date().toISOString(),
       };
+      for (const field of PASSTHROUGH_FIELDS[type] ?? []) {
+        if (field in event) payload[field] = event[field];
+      }
       if (type !== "heartbeat") payload.sequence = ++sequence;
       reply.raw.write(`${JSON.stringify(payload)}\n`);
     };
     emit({ type: "run.started" });
     heartbeat = setInterval(() => emit({ type: "heartbeat" }), config.heartbeatMs);
     try {
-      const outcome = await runner.run(input, emit, controller.signal);
+      await runner.run(input, emit, controller.signal);
       if (state.timedOut) emit({ type: "run.failed", code: "AGENT_ENGINE_TIMEOUT", message: "Agent Engine run timed out" });
       else if (controller.signal.aborted) emit({ type: "run.aborted", reason: "cancelled" });
-      else if (outcome.terminal === "awaiting_confirmation") {
-        emit({ type: "run.awaiting_confirmation", ...outcome.confirmation });
-      } else emit({ type: "run.completed", outcome: "message" });
+      else emit({ type: "run.completed", outcome: "message" });
     } catch (error) {
       if (state.timedOut) emit({ type: "run.failed", code: "AGENT_ENGINE_TIMEOUT", message: "Agent Engine run timed out" });
       else if (controller.signal.aborted) emit({ type: "run.aborted", reason: "cancelled" });
@@ -142,47 +154,6 @@ export function buildApp(config: SidecarConfig, observability: Observability = c
   });
 
 
-  app.post("/internal/pi-session/capacity", async (_request, reply) => {
-    try { return await sessions.capacity(); } catch { reply.code(503).send({ error: "pi_session_unavailable" }); }
-  });
-  app.post("/internal/pi-session/integrity-check", async (_request, reply) => {
-    try { return await sessions.integrityCheck(); } catch { reply.code(503).send({ error: "pi_session_integrity_failed" }); }
-  });
-  app.post("/internal/pi-session/writer-lease/recover", async (_request, reply) => {
-    try { return await sessions.recoverWriterLease(); } catch { reply.code(503).send({ error: "pi_session_writer_recovery_failed" }); }
-  });
-  app.post("/internal/pi-session/backup", async (request, reply) => {
-    const body = request.body;
-    if (!body || typeof body !== "object" || Array.isArray(body)) { invalid(reply); return; }
-    const input = body as Record<string, unknown>;
-    if (typeof input.destination !== "string" || typeof input.force !== "boolean") { invalid(reply); return; }
-    try { return await sessions.backup(input.destination, input.force); } catch { reply.code(503).send({ error: "pi_session_backup_failed" }); }
-  });
-  app.post("/internal/pi-session/restore", async (request, reply) => {
-    const body = request.body;
-    if (!body || typeof body !== "object" || Array.isArray(body)) { invalid(reply); return; }
-    const input = body as Record<string, unknown>;
-    if (typeof input.backup !== "string" || typeof input.apply !== "boolean") { invalid(reply); return; }
-    try { return await sessions.restore(input.backup, input.apply); } catch { reply.code(503).send({ error: "pi_session_restore_failed" }); }
-  });
-
-  app.post("/internal/admin/apply", async (request, reply) => {
-    const supervisorHeader = request.headers["x-admin-supervisor-token"] ?? request.headers["x-supervisor-token"];
-    if (!sameSecret(config.supervisorToken, typeof supervisorHeader === "string" ? supervisorHeader : undefined)) {
-      reply.code(401).send({ error: "supervisor_unauthorized" });
-      return;
-    }
-    const body = request.body;
-    if (!body || typeof body !== "object" || Array.isArray(body)) { invalid(reply); return; }
-    const handoff = body as Record<string, unknown>;
-    const acceptedHandoff = handoff.handoff === "restart"
-      || (typeof handoff.handoffId === "string" && handoff.handoffId.trim() !== "");
-    if (!acceptedHandoff) {
-      reply.code(409).send({ error: "handoff_not_accepted" });
-      return;
-    }
-    return { accepted: true };
-  });
 
   app.addHook("onClose", async () => {
     for (const run of active.values()) run.controller.abort();

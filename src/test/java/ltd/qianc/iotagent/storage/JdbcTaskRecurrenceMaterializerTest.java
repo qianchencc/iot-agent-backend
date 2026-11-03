@@ -15,10 +15,19 @@ import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
+import ltd.qianc.iotagent.task.TaskExecutionIdentityStore;
 import ltd.qianc.iotagent.task.TaskOccurrenceMaterializer;
 class JdbcTaskRecurrenceMaterializerTest {
     private static final Instant NOW = Instant.parse("2026-11-01T01:00:01Z");
     private final ObjectMapper mapper = new ObjectMapper();
+    private final TaskExecutionIdentityStore identities = new TaskExecutionIdentityStore() {
+        @Override public void saveForTask(String taskId, TaskExecutionIdentityStore.TaskExecutionIdentity identity) { }
+        @Override public void saveForPlan(String planId, TaskExecutionIdentityStore.TaskExecutionIdentity identity) { }
+        @Override public java.util.Optional<TaskExecutionIdentityStore.TaskExecutionIdentity> loadForTask(String taskId) {
+            return java.util.Optional.empty();
+        }
+        @Override public void copyPlanIdentityToTask(String planId, String taskId) { }
+    };
     private JdbcTemplate jdbc;
     private TransactionTemplate transactions;
 
@@ -32,7 +41,7 @@ class JdbcTaskRecurrenceMaterializerTest {
         jdbc.execute("CREATE TABLE task_plans (id BIGINT AUTO_INCREMENT PRIMARY KEY, plan_id VARCHAR(64) NOT NULL UNIQUE, version BIGINT NOT NULL, status VARCHAR(32) NOT NULL, next_at TIMESTAMP NULL, next_date DATE NULL, repeat_json VARCHAR(2000) NOT NULL, payload_json VARCHAR(20000) NOT NULL, idempotency_key VARCHAR(256) NOT NULL, create_time TIMESTAMP NOT NULL, update_time TIMESTAMP NOT NULL)");
         jdbc.execute("CREATE TABLE task_plan_occurrences (id BIGINT AUTO_INCREMENT PRIMARY KEY, plan_id VARCHAR(64) NOT NULL, occurrence_date DATE NOT NULL, task_id VARCHAR(64) NULL, status VARCHAR(32) NOT NULL, override_payload_json VARCHAR(20000) NULL, version BIGINT NOT NULL DEFAULT 1, create_time TIMESTAMP NOT NULL, update_time TIMESTAMP NOT NULL, UNIQUE(plan_id, occurrence_date))");
         jdbc.execute("CREATE TABLE task_facts (id BIGINT AUTO_INCREMENT PRIMARY KEY, task_id VARCHAR(64) NOT NULL UNIQUE, version BIGINT NOT NULL, status VARCHAR(32) NOT NULL, payload_json VARCHAR(20000) NOT NULL, idempotency_key VARCHAR(256) NOT NULL UNIQUE, create_time TIMESTAMP NOT NULL, update_time TIMESTAMP NOT NULL)");
-        jdbc.execute("CREATE TABLE task_phases (id BIGINT AUTO_INCREMENT PRIMARY KEY, phase_id VARCHAR(64) NOT NULL UNIQUE, task_id VARCHAR(64) NOT NULL, source VARCHAR(16) NOT NULL, version BIGINT NOT NULL, status VARCHAR(32) NOT NULL, due_at TIMESTAMP NOT NULL, payload_json VARCHAR(20000) NOT NULL, create_time TIMESTAMP NOT NULL, update_time TIMESTAMP NOT NULL)");
+        jdbc.execute("CREATE TABLE task_phases (id BIGINT AUTO_INCREMENT PRIMARY KEY, phase_id VARCHAR(64) NOT NULL UNIQUE, task_id VARCHAR(64) NOT NULL, source VARCHAR(16) NOT NULL, version BIGINT NOT NULL, status VARCHAR(32) NOT NULL, due_at TIMESTAMP NOT NULL, payload_json VARCHAR(20000) NOT NULL, definition_json VARCHAR(20000) NULL, result_json VARCHAR(20000) NULL, failure_reason VARCHAR(1024) NULL, claimed_at TIMESTAMP NULL, ended_at TIMESTAMP NULL, create_time TIMESTAMP NOT NULL, update_time TIMESTAMP NOT NULL)");
     }
 
     @Test
@@ -81,8 +90,103 @@ class JdbcTaskRecurrenceMaterializerTest {
         assertThat(jdbc.queryForObject("SELECT next_date FROM task_plans WHERE plan_id='plan-override'", java.sql.Date.class).toLocalDate().toString()).isEqualTo("2026-11-02");
     }
 
+    @Test
+    void lateRestartRecordsElapsedCheckpointsMissedAndKeepsFuturePending() throws Exception {
+        String id = "plan-late-interval";
+        insertIntervalPlan(id, "2026-11-01");
+
+        Instant late = Instant.parse("2026-11-01T09:15:00Z");
+        assertThat(materializer(Clock.fixed(late, ZoneOffset.UTC)).materializeOnce()).isEqualTo(1);
+        assertThat(count("task_facts")).isEqualTo(1);
+        assertThat(count("task_phases")).isEqualTo(3);
+        assertThat(jdbc.queryForObject("SELECT status FROM task_phases WHERE due_at=?", String.class,
+                java.sql.Timestamp.from(Instant.parse("2026-11-01T09:00:00Z")))).isEqualTo("MISSED");
+        assertThat(jdbc.queryForObject("SELECT failure_reason FROM task_phases WHERE due_at=?", String.class,
+                java.sql.Timestamp.from(Instant.parse("2026-11-01T09:00:00Z")))).isEqualTo("服务重启时检查点已过，未下发");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM task_phases WHERE status='PENDING'", Integer.class)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM task_phases WHERE status='PENDING' AND due_at <= ?", Integer.class,
+                java.sql.Timestamp.from(late))).isZero();
+        String payload = jdbc.queryForObject("SELECT payload_json FROM task_facts WHERE idempotency_key='occurrence:" + id + ":2026-11-01'", String.class);
+        assertThat(mapper.readTree(payload).path("phases").size()).isEqualTo(3);
+        assertThat(jdbc.queryForObject("SELECT status FROM task_plan_occurrences WHERE plan_id=?", String.class, id))
+                .isEqualTo("MATERIALIZED");
+        assertThat(nextDate(id)).isEqualTo("2026-11-02");
+    }
+
+    @Test
+    void lateRestartDecidesOnShiftedOccurrenceInsteadOfRawTemplate() {
+        String id = "plan-shifted-recovery";
+        insertIntervalPlan(id, "2026-10-31");
+
+        Instant late = Instant.parse("2026-11-01T09:12:00Z");
+        assertThat(materializer(Clock.fixed(late, ZoneOffset.UTC)).materializeOnce()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT status FROM task_plan_occurrences WHERE plan_id=?", String.class, id))
+                .isEqualTo("MATERIALIZED");
+        assertThat(count("task_facts")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT status FROM task_phases WHERE due_at=?", String.class,
+                java.sql.Timestamp.from(Instant.parse("2026-11-01T09:00:00Z")))).isEqualTo("MISSED");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM task_phases WHERE status='PENDING'", Integer.class)).isEqualTo(2);
+        assertThat(nextDate(id)).isEqualTo("2026-11-02");
+    }
+
+    @Test
+    void lateRestartHonorsOverrideWindowWithFutureCheckpoints() {
+        String id = "plan-override-recovery";
+        insertIntervalPlan(id, "2026-10-31");
+        String override = "{\"source\":\"company\",\"tenantCode\":\"TENANT\",\"ownerKey\":\"owner-1\","
+                + "\"label\":\"override-window\",\"interval\":{\"startsAt\":\"2026-11-01T09:00:00Z\",\"endsAt\":\"2026-11-01T17:00:00Z\"},"
+                + "\"phases\":[{\"at\":\"2026-11-01T09:00:00Z\",\"actions\":[]},"
+                + "{\"at\":\"2026-11-01T09:30:00Z\",\"actions\":[]},"
+                + "{\"at\":\"2026-11-01T10:00:00Z\",\"actions\":[]}]}";
+        jdbc.update("INSERT INTO task_plan_occurrences(plan_id,occurrence_date,status,override_payload_json,version,create_time,update_time) VALUES (?,?,?,?,1,?,?)",
+                id, "2026-11-01", "OVERRIDDEN", override, java.sql.Timestamp.from(NOW), java.sql.Timestamp.from(NOW));
+
+        Instant late = Instant.parse("2026-11-01T09:12:00Z");
+        assertThat(materializer(Clock.fixed(late, ZoneOffset.UTC)).materializeOnce()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT status FROM task_plan_occurrences WHERE plan_id=?", String.class, id))
+                .isEqualTo("MATERIALIZED");
+        assertThat(count("task_facts")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT status FROM task_phases WHERE due_at=?", String.class,
+                java.sql.Timestamp.from(Instant.parse("2026-11-01T09:00:00Z")))).isEqualTo("MISSED");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM task_phases WHERE status='PENDING'", Integer.class)).isEqualTo(2);
+        assertThat(nextDate(id)).isEqualTo("2026-11-02");
+    }
+
+    @Test
+    void onTimeMaterializationKeepsDueStartPhasePending() {
+        String id = "plan-ontime-start";
+        insertIntervalPlan(id, "2026-11-01");
+
+        Instant justAfterStart = Instant.parse("2026-11-01T09:00:05Z");
+        assertThat(materializer(Clock.fixed(justAfterStart, ZoneOffset.UTC)).materializeOnce()).isEqualTo(1);
+        assertThat(count("task_facts")).isEqualTo(1);
+        assertThat(count("task_phases")).isEqualTo(3);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM task_phases WHERE status<>'PENDING'", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM task_phases WHERE due_at <= ?", Integer.class,
+                java.sql.Timestamp.from(justAfterStart))).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT status FROM task_plan_occurrences WHERE plan_id=?", String.class, id))
+                .isEqualTo("MATERIALIZED");
+        assertThat(nextDate(id)).isEqualTo("2026-11-02");
+    }
+
+    @Test
+    void staleOccurrenceWithNoCheckpointLeftIsSkippedAndPointerAdvances() {
+        insertPlan("plan-stale-done", "office", "owner-3", "2026-11-01T08:00:00Z");
+
+        assertThat(materializer(Clock.fixed(Instant.parse("2026-11-01T09:00:00Z"), ZoneOffset.UTC)).materializeOnce()).isEqualTo(1);
+        assertThat(count("task_facts")).isZero();
+        assertThat(count("task_phases")).isZero();
+        assertThat(jdbc.queryForObject("SELECT status FROM task_plan_occurrences WHERE plan_id='plan-stale-done'", String.class))
+                .isEqualTo("SKIPPED");
+        assertThat(nextDate("plan-stale-done")).isEqualTo("2026-11-02");
+    }
+
     private TaskOccurrenceMaterializer materializer() {
-        return TaskOccurrenceMaterializerFactory.jdbc(jdbc, transactions, mapper, Clock.fixed(NOW, ZoneOffset.UTC), 10);
+        return materializer(Clock.fixed(NOW, ZoneOffset.UTC));
+    }
+
+    private TaskOccurrenceMaterializer materializer(Clock clock) {
+        return TaskOccurrenceMaterializerFactory.jdbc(jdbc, transactions, mapper, clock, 10, identities);
     }
 
     private void insertPlan(String id, String source, String owner, String at) {
@@ -91,6 +195,22 @@ class JdbcTaskRecurrenceMaterializerTest {
         jdbc.update("INSERT INTO task_plans(plan_id,version,status,next_at,next_date,repeat_json,payload_json,idempotency_key,create_time,update_time) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 id, 1, "ENABLED", java.sql.Timestamp.from(Instant.parse(at)), "2026-11-01", "{\"frequency\":\"daily\"}", payload, id,
                 java.sql.Timestamp.from(NOW), java.sql.Timestamp.from(NOW));
+    }
+
+    private void insertIntervalPlan(String id, String anchorDate) {
+        String payload = "{\"source\":\"company\",\"tenantCode\":\"TENANT\",\"ownerKey\":\"owner-1\","
+                + "\"label\":\"interval\",\"repeat\":{\"frequency\":\"daily\"},"
+                + "\"interval\":{\"startsAt\":\"" + anchorDate + "T09:00:00Z\",\"endsAt\":\"" + anchorDate + "T17:00:00Z\"},"
+                + "\"phases\":[{\"at\":\"" + anchorDate + "T09:00:00Z\",\"actions\":[]},"
+                + "{\"at\":\"" + anchorDate + "T09:30:00Z\",\"actions\":[]},"
+                + "{\"at\":\"" + anchorDate + "T10:00:00Z\",\"actions\":[]}]}";
+        jdbc.update("INSERT INTO task_plans(plan_id,version,status,next_at,next_date,repeat_json,payload_json,idempotency_key,create_time,update_time) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                id, 1, "ENABLED", java.sql.Timestamp.from(Instant.parse("2026-11-01T09:00:00Z")), "2026-11-01",
+                "{\"frequency\":\"daily\"}", payload, id, java.sql.Timestamp.from(NOW), java.sql.Timestamp.from(NOW));
+    }
+
+    private String nextDate(String id) {
+        return jdbc.queryForObject("SELECT next_date FROM task_plans WHERE plan_id=?", java.sql.Date.class, id).toLocalDate().toString();
     }
 
     private int count(String table) { return jdbc.queryForObject("SELECT COUNT(*) FROM " + table, Integer.class); }

@@ -1,8 +1,10 @@
 # Java Backend Parity Phase 2
 
-**Status:** implementation-in-progress-with-independent-sidecar-core
+**Status:** historical; superseded-for-current-business-recovery
 **Date:** 2026-10-30
 **Parent:** `spec.md`, ticket 10 parity readiness
+
+当前执行依据：[业务完整性恢复规格](../agent-business-recovery/spec.md)。本文件是历史阶段记录；小程序联调排除、Node业务union和局部工程门禁不作为当前完成标准。生产禁写、Runtime单向参照及双事实库职责继续保留。
 
 ## Problem Statement
 

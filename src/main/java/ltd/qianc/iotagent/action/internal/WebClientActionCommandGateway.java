@@ -303,7 +303,11 @@ public final class WebClientActionCommandGateway implements ActionCommandGateway
     }
 
     private boolean commandSatisfied(JsonNode command, Object state) {
-        if (state == null || command == null || !command.isObject()) return false;
+        if (state == null || command == null || !command.isObject() || command.isEmpty()) return false;
+        if (state instanceof Boolean lit) {
+            return command.has("closeOrOpen") && command.size() == 1
+                    && lit == (command.path("closeOrOpen").asInt() == 1);
+        }
         JsonNode observed = mapper.valueToTree(state);
         if (command.has("power") && !command.path("power").asText().equals(observed.path("power").asText())) return false;
         if (command.has("mode") && !command.path("mode").asText().equals(observed.path("mode").asText())) return false;
@@ -316,7 +320,7 @@ public final class WebClientActionCommandGateway implements ActionCommandGateway
             }
             if (closeOrOpen == null || command.path("closeOrOpen").asInt() != closeOrOpen.asInt(Integer.MIN_VALUE)) return false;
         }
-        return command.fieldNames().hasNext();
+        return true;
     }
 
     private static boolean accepted(JsonNode body) {

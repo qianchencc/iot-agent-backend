@@ -1,0 +1,40 @@
+name: iot-agent-business-preview
+
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: iot_agent_business
+      MYSQL_USER: iot_agent_business
+      MYSQL_PASSWORD: ${BUSINESS_MYSQL_PASSWORD:?Set BUSINESS_MYSQL_PASSWORD in the ignored local .env}
+      MYSQL_ROOT_PASSWORD: ${BUSINESS_MYSQL_ROOT_PASSWORD:?Set BUSINESS_MYSQL_ROOT_PASSWORD in the ignored local .env}
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:3338:3306"
+    volumes:
+      - business-mysql:/var/lib/mysql
+      - ./src/main/resources/db/mysql/agent-facts.sql:/docker-entrypoint-initdb.d/001-agent-facts.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u$${MYSQL_USER} -p$${MYSQL_PASSWORD} --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+    ports:
+      - "127.0.0.1:6398:6379"
+    volumes:
+      - business-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  business-mysql:
+  business-redis:

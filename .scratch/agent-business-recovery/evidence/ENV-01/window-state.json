@@ -1,0 +1,10 @@
+{
+  "at": "2026-11-01T17:58:37.300Z",
+  "routes": [
+    "pages/index/index",
+    "pages/agent/dashboard"
+  ],
+  "hasToken": true,
+  "hasDistrict": true,
+  "endpoint": "http://127.0.0.1:3215/api"
+}

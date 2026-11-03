@@ -1,153 +1,112 @@
-import { DatabaseSync } from "node:sqlite";
-import { chmodSync, cpSync, existsSync, mkdirSync, renameSync, rmSync, statSync, statfsSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { NodeExecutionEnv, type Session } from "@earendil-works/pi-agent-core/node";
-import {
-  createNodeSqliteFactory,
-  SqliteSessionRepository,
-  type SqliteSessionMetadata,
-} from "@earendil-works/pi-session-backend-sqlite-node";
-import type { SidecarConfig } from "./config.js";
-import { redactPath } from "./redaction.js";
+import { randomUUID } from 'node:crypto';
+import { buildSessionContext, type AgentMessage, type Session } from '@earendil-works/pi-agent-core';
+import type { SidecarConfig } from './config.js';
+import { MysqlSessionFileSystem, MysqlSessionRepository, type SessionBinding } from './mysql-session-repository.js';
 
-export class PiSessionStore {
-  private repository: SqliteSessionRepository;
-  private readonly openSessions = new Map<string, Session<SqliteSessionMetadata>>();
-  private initialized?: Promise<void>;
+export class PiSessionRun {
+  private assistantEntryId = '';
+  private readonly resultIds = new Map<string, string>();
+  private readonly acknowledgedTools = new Set<string>();
+  private finished = false;
+  constructor(readonly session: Session, private readonly repository: MysqlSessionRepository,
+    private readonly binding: SessionBinding, private readonly writer: { writerId: string; epoch: number },
+    private readonly onClose: () => void) {}
 
-  constructor(private readonly config: SidecarConfig) {
-    this.repository = this.createRepository();
-  }
+  writerBinding(): { writerId: string; epoch: number } { return this.writer; }
 
-  private createRepository(): SqliteSessionRepository {
-    mkdirSync(dirname(this.config.sessionPath), { recursive: true, mode: 0o700 });
-    if (!existsSync(this.config.sessionPath)) {
-      const database = new DatabaseSync(this.config.sessionPath);
-      database.close();
+  async recoverAndStart(content: string): Promise<AgentMessage[]> {
+    const entries = await this.session.findEntriesOnBranch({ order: 'oldestFirst' });
+    const pending = new Map<string, { assistantId: string; name: string }>();
+    const checkpoints = new Map<string, AgentMessage>();
+    for (const entry of entries) {
+      if (entry.type === 'compaction') pending.clear();
+      if (entry.type === 'message') {
+        if (entry.message.role === 'assistant') {
+          for (const block of entry.message.content) {
+            if (block.type === 'toolCall') pending.set(block.id, { assistantId: entry.id, name: block.name });
+          }
+        } else if (entry.message.role === 'toolResult') pending.delete(entry.message.toolCallId);
+      }
+      if (entry.type === 'custom' && entry.customType === 'tool_checkpoint' && entry.data && typeof entry.data === 'object') {
+        const saved = entry.data as { assistantEntryId: string; message: AgentMessage };
+        if (saved.message?.role === 'toolResult') {
+          checkpoints.set(`${saved.assistantEntryId}:${saved.message.toolCallId}`, saved.message);
+        }
+      }
     }
-    return new SqliteSessionRepository({
-      env: new NodeExecutionEnv({ cwd: process.cwd() }),
-      sqlite: createNodeSqliteFactory(),
-      databasePath: this.config.sessionPath,
-      writerLease: { ttlMs: 120_000, heartbeatIntervalMs: 15_000 },
-    });
-  }
-
-  private async init(): Promise<void> {
-    if (!this.initialized) this.initialized = this.repository.list().then(() => undefined);
-    await this.initialized;
-  }
-
-  async openOrCreate(id: string, metadata: Record<string, unknown>): Promise<Session<SqliteSessionMetadata>> {
-    await this.init();
-    const current = this.openSessions.get(id);
-    if (current) return current;
-    const existing = (await this.repository.list()).find(item => item.id === id);
-    const session = existing
-      ? await this.repository.open(existing)
-      : await this.repository.create({ id, cwd: process.cwd(), metadata });
-    this.openSessions.set(id, session);
-    return session;
-  }
-
-  async capacity(): Promise<Record<string, unknown>> {
-    await this.init();
-    const stats = statfsSync(dirname(this.config.sessionPath));
-    const freeBytes = Number(stats.bavail) * Number(stats.bsize);
-    return {
-      status: freeBytes >= this.config.minimumFreeBytes ? "ok" : "insufficient_capacity",
-      freeBytes,
-      minimumFreeBytes: this.config.minimumFreeBytes,
-    };
-  }
-
-  async integrityCheck(): Promise<Record<string, unknown>> {
-    await this.init();
-    const db = new DatabaseSync(this.config.sessionPath, { readOnly: true });
-    try {
-      const row = db.prepare("PRAGMA quick_check").get() as Record<string, unknown> | undefined;
-      const integrity = String(row?.quick_check ?? row?.["quick_check"] ?? "");
-      if (integrity !== "ok") throw new Error("SQLite quick_check failed");
-      return { status: "ok", integrity: "ok" };
-    } finally {
-      db.close();
+    // Recover committed outcomes; an uncertain external effect is never executed again.
+    for (const [toolCallId, target] of pending) {
+      await this.session.appendMessage(checkpoints.get(`${target.assistantId}:${toolCallId}`) ?? {
+        role: 'toolResult', toolCallId, toolName: target.name,
+        content: [{ type: 'text', text: '上次工具调用中断，执行结果未确认。禁止自动重发；如需继续，请查询实际业务事实。' }],
+        isError: true, timestamp: Date.now(),
+      });
     }
+    for (const open of await this.session.findOpenOperations('main')) {
+      await this.session.appendRecord({ id: randomUUID(), type: 'operation_finished', lane: 'main',
+        runId: open.id, outcome: 'aborted', error: { code: 'ENGINE_INTERRUPTED', message: '执行节点已中断，未自动重放工具' } });
+    }
+    const history = buildSessionContext(await this.session.findEntriesOnBranch({ order: 'oldestFirst' })).messages;
+    await this.session.appendRecord({ id: this.binding.runId, type: 'operation_started', lane: 'main',
+      sourceLeafId: await this.session.getLeafId(), intent: { kind: 'run',
+        originalPrompt: [{ role: 'user', content, timestamp: Date.now() }], initialMessages: [] } });
+    return history;
   }
 
-  async recoverWriterLease(): Promise<Record<string, unknown>> {
-    await this.init();
-    const db = new DatabaseSync(this.config.sessionPath);
-    try {
-      const now = Date.now();
-      const result = db.prepare("DELETE FROM writer_leases WHERE expires_at_ms <= ?").run(now);
-      return { status: "ok", recoveredLeases: Number(result.changes) };
-    } finally {
-      db.close();
+  async append(message: AgentMessage): Promise<void> {
+    const id = message.role === 'toolResult' ? this.resultIds.get(message.toolCallId) : undefined;
+    if (message.role === 'toolResult' && this.acknowledgedTools.has(message.toolCallId)) return;
+    const entryId = id ?? randomUUID();
+    // Pi's loop materializes optional fields as undefined; its durable API requires JSON values.
+    const durableMessage = JSON.parse(JSON.stringify(message)) as AgentMessage;
+    await this.session.appendEntry({ id: entryId, type: 'message', message: durableMessage }, 'main');
+    if (message.role === 'assistant') {
+      this.assistantEntryId = entryId;
+      this.resultIds.clear();
+      this.acknowledgedTools.clear();
     }
+    if (message.role === 'toolResult') this.acknowledgedTools.add(message.toolCallId);
   }
 
-  private checkDestination(destination: string): string {
-    if (typeof destination !== "string" || destination.trim() === "") throw new Error("destination is required");
-    const candidate = resolve(destination);
-    const backupRoot = resolve(this.config.backupDir);
-    if (candidate === resolve(this.config.sessionPath)
-        || (candidate !== backupRoot && !candidate.startsWith(`${backupRoot}/`))) {
-      throw new Error("backup path must be inside the sidecar backup directory");
-    }
-    return candidate;
+  async toolStarted(toolCallId: string, toolName: string, effectiveArgs: Record<string, unknown>): Promise<void> {
+    const resultEntryId = randomUUID();
+    this.resultIds.set(toolCallId, resultEntryId);
+    await this.session.appendRecord({ id: randomUUID(), type: 'tool_started', lane: 'main', runId: this.binding.runId,
+      assistantEntryId: this.assistantEntryId, toolIndex: this.resultIds.size - 1,
+      toolCallId, toolName, effectiveArgs, resultEntryId, replay: 'never' });
   }
 
-  async backup(destination: string, force: boolean): Promise<Record<string, unknown>> {
-    await this.init();
-    const target = this.checkDestination(destination);
-    mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
-    if (existsSync(target)) {
-      if (!force) throw new Error("backup destination already exists");
-      rmSync(target, { force: true });
-    }
-    const db = new DatabaseSync(this.config.sessionPath);
-    try {
-      const escaped = target.replaceAll("'", "''");
-      db.exec(`VACUUM INTO '${escaped}'`);
-    } finally {
-      db.close();
-    }
-    const check = new DatabaseSync(target, { readOnly: true });
-    try {
-      const row = check.prepare("PRAGMA quick_check").get() as Record<string, unknown> | undefined;
-      if (String(row?.quick_check ?? "") !== "ok") throw new Error("backup integrity check failed");
-    } finally {
-      check.close();
-    }
-    return { status: "ok", integrity: "ok", bytes: statSync(target).size, destination: redactPath(target) };
+  async toolCheckpoint(message: AgentMessage): Promise<void> {
+    // Pi emits the final toolResult entries in assistant source order; do not reorder them
+    // by parallel completion time. This durable, non-model checkpoint covers a crash first.
+    await this.session.appendCustomEntry('tool_checkpoint', { assistantEntryId: this.assistantEntryId, message });
   }
-
-  async restore(backup: string, apply: boolean): Promise<Record<string, unknown>> {
-    if (!apply) throw new Error("restore requires apply=true");
-    const source = this.checkDestination(backup);
-    if (!existsSync(source)) throw new Error("backup does not exist");
-    const check = new DatabaseSync(source, { readOnly: true });
-    try {
-      const row = check.prepare("PRAGMA quick_check").get() as Record<string, unknown> | undefined;
-      if (String(row?.quick_check ?? "") !== "ok") throw new Error("backup integrity check failed");
-    } finally {
-      check.close();
-    }
-    await this.repository.close();
-    this.openSessions.clear();
-    mkdirSync(dirname(this.config.sessionPath), { recursive: true, mode: 0o700 });
-    const temporary = `${this.config.sessionPath}.restore-${process.pid}-${Date.now()}`;
-    cpSync(source, temporary);
-    chmodSync(temporary, 0o600);
-    renameSync(temporary, this.config.sessionPath);
-    this.repository = this.createRepository();
-    this.initialized = undefined;
-    await this.init();
-    return { status: "ok", integrity: "ok", applied: true, backup: redactPath(source) };
+  async finish(outcome: 'completed' | 'aborted' | 'failed'): Promise<void> {
+    if (this.finished) return;
+    await this.session.appendRecord({ id: randomUUID(), type: 'operation_finished', lane: 'main', runId: this.binding.runId, outcome });
+    this.finished = true;
   }
-
   async close(): Promise<void> {
-    this.openSessions.clear();
-    await this.repository.close();
+    try { await this.repository.close(); } finally { this.onClose(); }
   }
+}
+
+/** No local durable state: every run reopens the Java-authorized MySQL journal. */
+export class PiSessionStore {
+  private readonly active = new Set<PiSessionRun>();
+  constructor(private readonly config: SidecarConfig) {}
+  async openRun(binding: SessionBinding & { sessionScope: string }): Promise<PiSessionRun> {
+    const fs = new MysqlSessionFileSystem({ url: this.config.javaSessionsUrl,
+      token: this.config.javaToolsToken, timeoutMs: this.config.javaToolTimeoutMs }, binding);
+    await fs.claim();
+    const repository = new MysqlSessionRepository(fs);
+    try {
+      const existing = (await repository.list()).find(item => item.id === binding.sessionScope);
+      const session = existing ? await repository.open(existing) : await repository.create({ id: binding.sessionScope });
+      const run = new PiSessionRun(session, repository, binding, fs.writerBinding(), () => this.active.delete(run));
+      this.active.add(run);
+      return run;
+    } catch (error) { await repository.close().catch(() => undefined); throw error; }
+  }
+  async close(): Promise<void> { await Promise.all([...this.active].map(run => run.close())); }
 }

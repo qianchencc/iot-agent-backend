@@ -1,6 +1,7 @@
 package ltd.qianc.iotagent.admin;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.file.Files;
@@ -13,7 +14,7 @@ import org.junit.jupiter.api.Test;
 class AdminConfigurationContractTest {
 
     @Test
-    void encryptedRevisionsRedactSecretsAndActivateLatestRevisionAfterReopen() throws Exception {
+    void encryptedModelRevisionIsAvailableToTheNextRunAndSurvivesReopen() throws Exception {
         Path file = Files.createTempFile("admin-config", ".bin");
         Files.delete(file);
         byte[] key = new byte[32];
@@ -28,8 +29,9 @@ class AdminConfigurationContractTest {
         assertThat(initialView.secrets().get("modelApiKey")).containsEntry("configured", true);
 
         assertThat(first.save(1, Map.of("modelApiKey", "secret-after"), "operator").status()).isEqualTo(200);
-        assertThat(first.pendingRestart()).isTrue();
-        assertThat(first.view(deployment).activeRevision()).isEqualTo(1);
+        assertThat(first.pendingRestart()).isFalse();
+        assertThat(first.view(deployment).activeRevision()).isEqualTo(2);
+        assertThat(first.active().get("modelApiKey")).isEqualTo("secret-after");
         first.close();
 
         AdminConfigurationStore reopened = AdminConfigurationFactory.encryptedFile(
@@ -75,6 +77,42 @@ class AdminConfigurationContractTest {
         assertThat(store.restore(2, 1, "operator").status()).isEqualTo(200);
         assertThat(store.view(deployment).saved()).containsEntry("modelId", "test-model");
         store.close();
+    }
+
+    @Test
+    void anExistingRunSnapshotStaysStableWhileNewRunsUseCommittedPolicy() throws Exception {
+        Path file = Files.createTempDirectory("admin-run-policy").resolve("config.bin");
+        AdminConfigurationStore store = AdminConfigurationFactory.encryptedFile(
+                new ObjectMapper(), file, new byte[32], validSettings("retained-secret"), Set.of());
+        Map<String, Object> running = store.active();
+
+        assertThat(store.save(1, Map.of("maxToolCalls", 1000, "officeInstructions", "回答需说明数据范围"), "operator").status())
+                .isEqualTo(200);
+        assertThat(store.active()).containsEntry("maxToolCalls", 1000).containsEntry("officeInstructions", "回答需说明数据范围");
+        assertThat(running).containsEntry("maxToolCalls", 10).containsEntry("officeInstructions", "");
+        assertThat(store.pendingRestart()).isFalse();
+
+        assertThat(store.save(2, Map.of("heartbeatMs", 0), "operator").status()).isEqualTo(200);
+        assertThat(store.active()).containsEntry("heartbeatMs", 15000).containsEntry("maxToolCalls", 1000);
+        assertThat(store.pendingRestart()).isTrue();
+        assertThat(store.changes()).extracting(AdminConfigurationStore.ChangeRecord::changedFields)
+                .contains(java.util.List.of("heartbeatMs"));
+    }
+
+    @Test
+    void persistenceFailureDoesNotPublishAnUncommittedConfiguration() throws Exception {
+        Path parent = Files.createTempDirectory("admin-write-failure");
+        Path file = parent.resolve("config.bin");
+        AdminConfigurationStore store = AdminConfigurationFactory.encryptedFile(
+                new ObjectMapper(), file, new byte[32], validSettings("old-secret"), Set.of());
+        Files.delete(file);
+        Files.delete(parent);
+        Files.writeString(parent, "not a directory");
+
+        assertThatThrownBy(() -> store.save(1, Map.of("modelId", "not-committed"), "operator"))
+                .isInstanceOf(ltd.qianc.iotagent.error.BusinessException.class);
+        assertThat(store.saved()).containsEntry("modelId", "test-model");
+        assertThat(store.changes()).extracting(AdminConfigurationStore.ChangeRecord::revision).containsExactly(1L);
     }
 
     private static Map<String, Object> validSettings(String apiKey) {

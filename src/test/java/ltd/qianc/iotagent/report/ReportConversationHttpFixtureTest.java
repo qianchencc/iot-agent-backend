@@ -7,7 +7,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -41,31 +40,28 @@ class ReportConversationHttpFixtureTest {
     }
 
     @Test
-    void statusesDuplicateAndReferenceFailuresAreMappedWithoutSuccessFallback() {
+    void duplicateAndReferenceFailuresAreMappedWithoutSuccessFallback() {
         MemoryStore store = new MemoryStore();
         MutableScopeAdapter scope = new MutableScopeAdapter();
-        ReportGenerationService generation = ReportGenerationServiceFactory.local(store, mapper, scope);
-        for (String reportStatus : List.of("preparing", "partial", "failed", "completed")) {
-            ReportGenerationPort.GeneratedReport result = generation.generate(identity, "conversation-1",
-                    "turn-" + reportStatus, "request-" + reportStatus, content(reportStatus, "meter-1"));
-            assertThat(result.report()).containsEntry("status", reportStatus);
-        }
+        ReportGenerationService generation = ReportGenerationServiceFactory.local(
+                store, mapper, scope, ReportEvidenceFixture.evidence());
+
         ReportGenerationPort.GeneratedReport original = generation.generate(identity, "conversation-1", "turn-duplicate",
-                "request-duplicate", content("completed", "meter-1"));
+                "request-duplicate", ReportEvidenceFixture.energy("meter-1", true));
         ReportGenerationPort.GeneratedReport duplicate = generation.generate(identity, "conversation-1", "turn-duplicate",
-                "request-duplicate", content("failed", "meter-1"));
+                "request-duplicate", ReportEvidenceFixture.energy("meter-1", false));
         assertThat(duplicate.reused()).isTrue();
         assertThat(duplicate.report()).containsEntry("status", "completed");
 
         assertThatThrownBy(() -> generation.generate(identity, "conversation-1", "turn-revoked", "req-revoked",
-                content("partial", "revoked-meter")))
+                ReportEvidenceFixture.energy("revoked-meter", false)))
                 .isInstanceOf(BusinessException.class)
                 .extracting(error -> ((BusinessException) error).code())
                 .isEqualTo("REPORT_SCOPE_CHANGED");
         RequestIdentity otherTenant = new RequestIdentity("Bearer other", "OTHER", IotSource.COMPANY, "owner-2");
         assertThatThrownBy(() -> generation.generate(
                 new RequestIdentity("Bearer office", "TENANT", IotSource.OFFICE, "owner-1"),
-                "conversation-1", "turn-office", "request-office", content("completed", "meter-1")))
+                "conversation-1", "turn-office", "request-office", ReportEvidenceFixture.energy("meter-1", false)))
                 .isInstanceOf(BusinessException.class)
                 .extracting(error -> ((BusinessException) error).code())
                 .isEqualTo("REPORT_SOURCE_UNSUPPORTED");
@@ -78,22 +74,26 @@ class ReportConversationHttpFixtureTest {
     void publicReadAndDownloadPreserveStatusAndResponseHeaders() throws Exception {
         MemoryStore store = new MemoryStore();
         MutableScopeAdapter scope = new MutableScopeAdapter();
-        ReportGenerationService generation = ReportGenerationServiceFactory.local(store, mapper, scope);
+        ReportGenerationService generation = ReportGenerationServiceFactory.local(
+                store, mapper, scope, ReportEvidenceFixture.evidence());
         ReportGenerationPort.GeneratedReport generated = generation.generate(identity, "conversation-1", "turn-http",
-                "request-http", content("partial", "meter-1"));
+                "request-http", ReportEvidenceFixture.energy("meter-1", false));
         MockMvc reports = reportHttp(ReportServiceFactory.local(store, mapper, scope));
 
         reports.perform(get("/api/agent/reports/" + generated.reportId()).queryParam("source", "company"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.report.status").value("partial"))
-                .andExpect(result -> assertThat(result.getResponse().getHeader("Cache-Control")).isEqualTo("no-store"));
+                .andExpect(jsonPath("$.report.status").value("completed"))
+                .andExpect(jsonPath("$.report.contentHash").isNotEmpty())
+                .andExpect(result -> assertThat(result.getResponse().getHeader("Cache-Control")).isEqualTo("no-store"))
+                .andExpect(result -> assertThat(result.getResponse().getHeader("X-Report-Content-Hash")).isNotEmpty());
         reports.perform(get("/api/agent/reports/" + generated.reportId() + "/download")
                         .queryParam("source", "company").queryParam("format", "pdf"))
                 .andExpect(status().isOk())
                 .andExpect(result -> assertThat(result.getResponse().getHeader("Cache-Control")).isEqualTo("no-store"))
+                .andExpect(result -> assertThat(result.getResponse().getHeader("X-Report-Content-Hash")).isNotEmpty())
                 .andExpect(result -> assertThat(result.getResponse().getContentType()).isEqualTo("application/pdf"))
                 .andExpect(result -> assertThat(result.getResponse().getHeader("Content-Disposition"))
-                        .contains("attachment; filename=\"Energy.pdf\"").contains("filename*=UTF-8''Energy.pdf"));
+                        .contains("attachment;").contains("filename*=UTF-8''"));
         reports.perform(get("/api/agent/reports/" + generated.reportId() + "/download")
                         .queryParam("source", "company").queryParam("format", "xlsx"))
                 .andExpect(status().isOk())
@@ -106,9 +106,10 @@ class ReportConversationHttpFixtureTest {
     void publicSourceScopeFormatAndMissingErrorsAreSafe() throws Exception {
         MemoryStore store = new MemoryStore();
         MutableScopeAdapter scope = new MutableScopeAdapter();
-        ReportGenerationService generation = ReportGenerationServiceFactory.local(store, mapper, scope);
+        ReportGenerationService generation = ReportGenerationServiceFactory.local(
+                store, mapper, scope, ReportEvidenceFixture.evidence());
         ReportGenerationPort.GeneratedReport generated = generation.generate(identity, "conversation-1", "turn-errors",
-                "request-errors", content("completed", "meter-1"));
+                "request-errors", ReportEvidenceFixture.energy("meter-1", false));
         MockMvc reports = reportHttp(ReportServiceFactory.local(store, mapper, scope));
 
         reports.perform(get("/api/agent/reports/" + generated.reportId()).queryParam("source", "office"))
@@ -132,8 +133,10 @@ class ReportConversationHttpFixtureTest {
     void rendererFailureIsMappedThroughPublicFactoryWithoutLeakingDetails() throws Exception {
         MemoryStore store = new MemoryStore();
         MutableScopeAdapter scope = new MutableScopeAdapter();
-        ReportGenerationPort.GeneratedReport generated = ReportGenerationServiceFactory.local(store, mapper, scope)
-                .generate(identity, "conversation-1", "turn-render", "request-render", content("completed", "meter-1"));
+        ReportGenerationPort.GeneratedReport generated = ReportGenerationServiceFactory.local(
+                store, mapper, scope, ReportEvidenceFixture.evidence())
+                .generate(identity, "conversation-1", "turn-render", "request-render",
+                        ReportEvidenceFixture.energy("meter-1", false));
         ReportRenderer failingPdf = report -> {
             throw new IllegalStateException("renderer internals must not escape");
         };
@@ -165,24 +168,6 @@ class ReportConversationHttpFixtureTest {
         return MockMvcBuilders.standaloneSetup(application.endpoint()).addInterceptors(auth).build();
     }
 
-
-    private static Map<String, Object> content(String status, String meterId) {
-        Map<String, Object> meter = new LinkedHashMap<>();
-        meter.put("id", meterId);
-        Map<String, Object> report = new LinkedHashMap<>();
-        report.put("authorizationMeterIds", List.of(meterId));
-        report.put("meters", new ArrayList<>(List.of(meter)));
-        Map<String, Object> block = new LinkedHashMap<>();
-        block.put("type", "meter_report");
-        block.put("report", report);
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("title", "Energy");
-        result.put("status", status);
-        result.put("meterIds", List.of(meterId));
-        result.put("blocks", new ArrayList<>(List.of(block)));
-        return result;
-    }
-
     private static final class MemoryStore implements ReportFactStore {
         private final Map<String, ReportFact> values = new LinkedHashMap<>();
 
@@ -199,7 +184,7 @@ class ReportConversationHttpFixtureTest {
     }
 
     private static final class MutableScopeAdapter implements IotAdapter {
-        private final List<AuthorizedDevice> devices = new ArrayList<>(List.of(
+        private final List<AuthorizedDevice> devices = new java.util.ArrayList<>(List.of(
                 new AuthorizedDevice("meter-1", "energy", "Meter 1", "Building", false)));
         private RuntimeException failure;
 

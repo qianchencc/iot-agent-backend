@@ -12,10 +12,8 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -27,16 +25,17 @@ import java.util.function.Consumer;
 import ltd.qianc.iotagent.conversation.AgentEngineBridge;
 import ltd.qianc.iotagent.conversation.AgentEngineEvent;
 import ltd.qianc.iotagent.conversation.AgentRunRequest;
+import ltd.qianc.iotagent.conversation.AgentRunPolicy;
+import ltd.qianc.iotagent.conversation.AgentRunPolicyProvider;
 import ltd.qianc.iotagent.error.BusinessException;
-import org.springframework.beans.factory.annotation.Value;
 
-/**
- * HTTP/NDJSON adapter for the private Node Agent Engine. The adapter forwards
- * only the stable public event union; pi.* implementation events never escape.
- */
+/** HTTP/NDJSON transport for the private generic engine; Java owns event projection. */
 public final class HttpAgentEngineBridge implements AgentEngineBridge {
 
-    private static final String[] PUBLIC_PREFIXES = {"run.", "message.", "tool.", "action.", "task.", "observation.", "report."};
+    private static final java.util.Set<String> ENGINE_EVENTS = java.util.Set.of(
+            "run.started", "run.progress", "run.completed", "run.failed", "run.aborted", "heartbeat",
+            "message.delta", "message.completed", "message.reclassified",
+            "tool.started", "tool.progress", "tool.completed", "tool.result");
 
     private final ObjectMapper objectMapper;
     private final URI baseUri;
@@ -45,44 +44,9 @@ public final class HttpAgentEngineBridge implements AgentEngineBridge {
     private final Duration runTimeout;
     private final ScheduledExecutorService scheduler;
     private final String bridgeToken;
+    private final AgentRunPolicyProvider policies;
 
-    public HttpAgentEngineBridge(
-            ObjectMapper objectMapper,
-            @Value("${agent.bridge.base-url:}") String baseUrl,
-            Executor executor) {
-        this(objectMapper, baseUrl, "", executor, Duration.ofMinutes(2));
-    }
 
-    public HttpAgentEngineBridge(
-            ObjectMapper objectMapper,
-            String baseUrl,
-            Executor executor,
-            Duration runTimeout) {
-        this(objectMapper, baseUrl, "", executor, runTimeout);
-    }
-
-    public HttpAgentEngineBridge(
-            ObjectMapper objectMapper,
-            String baseUrl,
-            Executor executor,
-            Duration runTimeout,
-            ScheduledExecutorService scheduler) {
-        this(objectMapper, baseUrl, "", executor, runTimeout, scheduler);
-    }
-
-    public HttpAgentEngineBridge(
-            ObjectMapper objectMapper,
-            String baseUrl,
-            String bridgeToken,
-            Executor executor,
-            Duration runTimeout) {
-        this(objectMapper, baseUrl, bridgeToken, executor, runTimeout,
-                new ScheduledThreadPoolExecutor(1, runnable -> {
-                    Thread thread = new Thread(runnable, "agent-bridge-timeout");
-                    thread.setDaemon(true);
-                    return thread;
-                }));
-    }
 
     public HttpAgentEngineBridge(
             ObjectMapper objectMapper,
@@ -90,7 +54,8 @@ public final class HttpAgentEngineBridge implements AgentEngineBridge {
             String bridgeToken,
             Executor executor,
             Duration runTimeout,
-            ScheduledExecutorService scheduler) {
+            ScheduledExecutorService scheduler,
+            AgentRunPolicyProvider policies) {
         this.objectMapper = objectMapper;
         this.baseUri = baseUrl == null || baseUrl.isBlank() ? null
                 : URI.create(baseUrl.endsWith("/") ? baseUrl : baseUrl + "/");
@@ -98,6 +63,7 @@ public final class HttpAgentEngineBridge implements AgentEngineBridge {
         this.executor = executor;
         this.runTimeout = requireTimeout(runTimeout);
         this.scheduler = scheduler;
+        this.policies = java.util.Objects.requireNonNull(policies, "policies");
         this.client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).executor(executor).build();
     }
 
@@ -106,19 +72,17 @@ public final class HttpAgentEngineBridge implements AgentEngineBridge {
     public CompletionStage<Void> start(AgentRunRequest request, Consumer<AgentEngineEvent> events) {
         if (baseUri == null || bridgeToken.isBlank()) return CompletableFuture.failedFuture(unavailable());
         try {
-            Map<String, Object> requestBody = new LinkedHashMap<>();
-            requestBody.put("runId", request.runId());
-            requestBody.put("toolContextId", request.toolContextId());
-            requestBody.put("conversationId", request.conversationId());
-            requestBody.put("turnId", request.turnId());
-            requestBody.put("source", request.source());
-            requestBody.put("content", request.content());
-            requestBody.put("tenantCode", request.tenantCode());
-            if (request.focusRegionId() != null) requestBody.put("focusRegionId", request.focusRegionId());
-            if (request.reference() != null) requestBody.put("reference", request.reference());
-            String body = objectMapper.writeValueAsString(requestBody);
+            AgentRunPolicy policy = policies.prepare(request);
+            AgentEngineEvent started = new AgentEngineEvent(request.runId(), request.conversationId(), request.turnId(),
+                    "run.started", Map.of("createdAt", java.time.Instant.now().toString()));
+            for (AgentEngineEvent projected : policy.projection().apply(started)) events.accept(projected);
+            String body = objectMapper.writeValueAsString(policy.request());
+            Map<?, ?> definition = policy.request().get("definition") instanceof Map<?, ?> value ? value : Map.of();
+            Object configuredTimeout = definition.get("runTimeoutMs");
+            Duration deadline = configuredTimeout instanceof Number value
+                    ? Duration.ofMillis(value.longValue()) : runTimeout;
             HttpRequest httpRequest = HttpRequest.newBuilder(baseUri.resolve("run"))
-                    .timeout(runTimeout)
+                    .timeout(deadline)
                     .header("content-type", "application/json")
                     .header("accept", "application/x-ndjson")
                     .header("authorization", "Bearer " + bridgeToken)
@@ -134,7 +98,7 @@ public final class HttpAgentEngineBridge implements AgentEngineBridge {
                     try { bodyStream.close(); } catch (Exception ignored) { }
                 }
                 result.completeExceptionally(timeout());
-            }, runTimeout.toMillis(), TimeUnit.MILLISECONDS);
+            }, deadline.toMillis(), TimeUnit.MILLISECONDS);
             client.sendAsync(httpRequest, HttpResponse.BodyHandlers.ofInputStream())
                     .whenCompleteAsync((response, failure) -> {
                         if (failure != null) {
@@ -159,31 +123,31 @@ public final class HttpAgentEngineBridge implements AgentEngineBridge {
                                 if (line.isBlank()) continue;
                                 JsonNode node = objectMapper.readTree(line);
                                 String type = text(node, "type");
-                                if ("heartbeat".equals(type)) {
-                                    events.accept(new AgentEngineEvent(request.runId(), request.conversationId(), request.turnId(), type, Map.of()));
-                                    continue;
+                                if (type == null || !ENGINE_EVENTS.contains(type)) continue;
+                                if (!request.runId().equals(text(node, "runId"))
+                                        || !request.conversationId().equals(text(node, "conversationId"))
+                                        || !request.turnId().equals(text(node, "turnId"))) {
+                                    throw new BusinessException("AGENT_ENGINE_CONTEXT_MISMATCH", "Agent 运行上下文不匹配", 502);
                                 }
-                                if (type == null || !isPublic(type)) continue;
+                                if ("run.started".equals(type)) continue;
                                 Map<String, Object> fields = objectMapper.convertValue(node, new TypeReference<>() {});
                                 fields.keySet().removeAll(java.util.Set.of("type", "runId", "conversationId", "turnId",
                                         "sequence", "timestamp"));
-                                events.accept(new AgentEngineEvent(
-                                        textOr(node, "runId", request.runId()),
-                                        textOr(node, "conversationId", request.conversationId()),
-                                        textOr(node, "turnId", request.turnId()),
-                                        type,
-                                        fields));
+                                AgentEngineEvent event = new AgentEngineEvent(
+                                        request.runId(), request.conversationId(), request.turnId(), type, fields);
+                                for (AgentEngineEvent projected : policy.projection().apply(event)) events.accept(projected);
                             }
                             result.complete(null);
                         } catch (Exception error) {
-                            result.completeExceptionally(timedOut.get() ? timeout() : unavailable());
+                            result.completeExceptionally(timedOut.get() ? timeout()
+                                    : error instanceof BusinessException ? error : unavailable());
                         } finally {
                             watchdog.cancel(false);
                         }
                     }, executor);
             return result;
         } catch (Exception error) {
-            return CompletableFuture.failedFuture(unavailable());
+            return CompletableFuture.failedFuture(error instanceof BusinessException ? error : unavailable());
         }
     }
 
@@ -202,20 +166,12 @@ public final class HttpAgentEngineBridge implements AgentEngineBridge {
                 });
     }
 
-    private static boolean isPublic(String type) {
-        for (String prefix : PUBLIC_PREFIXES) if (type.startsWith(prefix)) return true;
-        return false;
-    }
 
     private static String text(JsonNode node, String field) {
         JsonNode value = node.get(field);
         return value != null && value.isTextual() ? value.textValue() : null;
     }
 
-    private static String textOr(JsonNode node, String field, String fallback) {
-        String value = text(node, field);
-        return value == null || value.isBlank() ? fallback : value;
-    }
 
     private static String encodePathSegment(String value) {
         return java.net.URLEncoder.encode(value, StandardCharsets.UTF_8).replace("+", "%20");
