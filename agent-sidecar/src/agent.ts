@@ -79,6 +79,9 @@ export const TOOL_CAPABILITY_MATRIX: readonly ToolCapability[] = [
 ];
 
 
+const HISTORY_MESSAGE_LIMIT = 40;
+const MAX_TURN_MESSAGES = 8;
+
 function modelFor(config: SidecarConfig): Model<"openai-completions"> {
   return {
     id: config.modelId,
@@ -316,6 +319,11 @@ export class AgentRunner {
       tenantCode: request.tenantCode,
       source: request.source,
     });
+    // Same-conversation turns must see prior messages; otherwise follow-ups like
+    // "最近一周" arrive without the question they answer.
+    const history = (await session.findEntries({ type: "message", order: "oldestFirst" }))
+      .flatMap(entry => (entry.type === "message" ? [entry.message] : []))
+      .slice(-HISTORY_MESSAGE_LIMIT);
     await session.appendMessage({ role: "user", content: request.content, timestamp: Date.now() });
     const model = modelFor(this.config);
     const trace = this.observability.startAgentRun({
@@ -334,6 +342,7 @@ export class AgentRunner {
     const agent = new Agent({
       initialState: {
         model,
+        messages: history,
         systemPrompt: `你是一个受控的物联助手。只基于工具返回的事实回答。设备控制必须严格按：find_device_candidates 得到非空候选集 → read_device_states 使用候选集中的真实 candidateSetId/deviceIds → 仅在用户明确要求且设备可控时生成 propose_action_draft 待确认草案；不得发明设备ID、candidateSetId或kind，不得把空候选当作成功。控制动作每项必须显式填写 kind：lighting 只能使用 closeOrOpen，ac 只能使用 ac，access 只能使用 controlType=2，禁止混用；候选为空时先修正检索词或向用户澄清；Company来源没有可控目录时如实说明不可用。检索时scopeText/scopeTerms只放地点条件，deviceText/nameHints只放设备名称或型号，不要把地点拼进设备名称。任何控制都不能在草案阶段直接执行。${request.focusRegionId ? `本轮办公室当前关注区域由服务端传入，focusRegionId=${request.focusRegionId}；用户说“当前位置”或“当前区域”时，必须按该区域检索，不得把这些词作为字面地点查询。` : ""}使用中文，简洁且不暴露内部凭据。`,
         thinkingLevel: this.config.thinkingLevel,
         tools,
@@ -351,7 +360,7 @@ export class AgentRunner {
     });
     try {
       await agent.prompt(request.content);
-      const messages = agent.state.messages.slice(-4);
+      const messages = agent.state.messages.slice(history.length).slice(-MAX_TURN_MESSAGES);
       for (const message of messages) {
         const serialized = JSON.stringify(message);
         if (!serialized) continue;
@@ -417,6 +426,15 @@ export class AgentRunner {
           }
           : result;
         const eventPayload: PublicEvent = { type: capability.event, tool: capability.name, details: eventDetails };
+        if (capability.event === "action.proposed") {
+          const draft = eventDetails && typeof eventDetails === "object" && !Array.isArray(eventDetails)
+            ? eventDetails as Record<string, unknown> : null;
+          if (draft && typeof draft.draftId === "string" && Array.isArray(draft.actions)) {
+            Object.assign(eventPayload, draft);
+          } else {
+            eventPayload.type = "tool.progress";
+          }
+        }
         if (capability.event === "observation.reported" && eventDetails && typeof eventDetails === "object"
           && !Array.isArray(eventDetails)) {
           const report = eventDetails as Record<string, unknown>;
@@ -425,7 +443,9 @@ export class AgentRunner {
         }
         emit(eventPayload);
         if (capability.status === "java" && isPendingConfirmation(result)) {
-          state.confirmation = { tool: capability.name, details: result };
+          state.confirmation = capability.event === "action.proposed"
+            ? { draftId: (result as Record<string, unknown>).draftId }
+            : { tool: capability.name, details: result };
         }
         return { content: [{ type: "text", text: jsonText(result) }], details: result };
       },

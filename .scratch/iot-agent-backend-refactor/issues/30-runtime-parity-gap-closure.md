@@ -19,7 +19,7 @@
 - [ ] task/scheduler：任务确认、变更、取消、列表/详情、readback/report blocks 与 Runtime 状态机完全一致。
 - [x] NDJSON：视频/观察 block 顶层事件、sequence 去重与任务 confirmation 前端应用已对齐；任务全状态恢复仍待 backend 事件持久化对拍。
 - [x] mp：本机 backend profile、事件渲染、确认进度已对齐；真实微信开发者工具 GUI 环境仍需安装/提供。
-- [ ] 软件说明书案例逐项完成 backend 真实请求和前端验收证据。
+- [ ] 软件说明书案例逐项完成 backend 真实请求和前端验收证据（唯一验收矩阵见 31）。
 
 ## Latest evidence (2026-11-01)
 

@@ -2,11 +2,16 @@ package ltd.qianc.iotagent.error.internal;
 
 import ltd.qianc.iotagent.error.BusinessException;
 import ltd.qianc.iotagent.error.ErrorResponse;
+import jakarta.servlet.http.HttpServletRequest;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.servlet.NoHandlerFoundException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
  * 未分类失败对用户只说「原因未确认」；日志只留异常类型与栈帧位置，
@@ -22,6 +27,15 @@ public class BusinessErrorAdvice {
     public ResponseEntity<ErrorResponse> onBusiness(BusinessException e) {
         return ResponseEntity.status(e.httpStatus())
                 .body(new ErrorResponse(e.code(), e.getMessage(), e.recovery()));
+    }
+
+    @ExceptionHandler({NoHandlerFoundException.class, NoResourceFoundException.class})
+    public ResponseEntity<Map<String, Object>> onUnknownRoute(HttpServletRequest request) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("message", "Route " + request.getMethod() + ":" + request.getRequestURI() + " not found");
+        body.put("error", "Not Found");
+        body.put("statusCode", 404);
+        return ResponseEntity.status(404).body(body);
     }
 
     @ExceptionHandler(Exception.class)

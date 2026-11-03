@@ -13,6 +13,8 @@ import org.springframework.web.reactive.function.client.WebClient;
 
 /** Ports Runtime's GET /sso-api/account/me verification without creating a second login system. */
 public final class WebClientAccountPrincipalVerifier implements AccountPrincipalVerifier {
+    private static final org.slf4j.Logger log =
+            org.slf4j.LoggerFactory.getLogger(WebClientAccountPrincipalVerifier.class);
     private final WebClient client;
     private final URI identityUri;
     private final Duration timeout;
@@ -43,6 +45,8 @@ public final class WebClientAccountPrincipalVerifier implements AccountPrincipal
         } catch (BusinessException error) {
             throw error;
         } catch (RuntimeException error) {
+            log.warn("身份核验调用失败 type={} cause={}", error.getClass().getName(),
+                    error.getCause() == null ? "-" : error.getCause().getClass().getName());
             throw unavailable();
         }
     }

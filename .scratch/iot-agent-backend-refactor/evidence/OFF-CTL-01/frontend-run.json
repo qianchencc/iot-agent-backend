@@ -1,0 +1,12 @@
+[
+  {
+    "at": "2026-11-01T16:20:37.248Z",
+    "step": "current",
+    "value": "none"
+  },
+  {
+    "at": "2026-11-01T16:20:54.362Z",
+    "step": "error",
+    "value": "Failed to launch wechat web devTools, please make sure http port is open\ncli output:\n- initialize\n\n(node:698) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.\n(Use `Electron --trace-deprecation ...` to show where the warning was created)\n✔ IDE server has started, listening on http://127.0.0.1:9420\n- preparing\n- Fetching AppID () permissions\n✔ Using AppID: wxe60e1f697d115f96\n✔ auto"
+  }
+]

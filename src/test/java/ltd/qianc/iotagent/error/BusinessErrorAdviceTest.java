@@ -39,6 +39,15 @@ class BusinessErrorAdviceTest {
                 .andExpect(jsonPath("$.recovery").doesNotExist());
     }
 
+    @Test
+    void unknownRouteMatchesRuntimeNotFoundEnvelope() throws Exception {
+        mockMvc.perform(get("/test/errors/missing"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.message").value("Route GET:/test/errors/missing not found"))
+                .andExpect(jsonPath("$.error").value("Not Found"))
+                .andExpect(jsonPath("$.statusCode").value(404));
+    }
+
     @RestController
     static class TestErrorController {
 

@@ -21,6 +21,7 @@ import ltd.qianc.iotagent.iot.IotSource;
 import ltd.qianc.iotagent.iot.DeviceStateReadResult;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.auth.PrincipalInfo;
+import ltd.qianc.iotagent.auth.ScopedKey;
 import ltd.qianc.iotagent.error.BusinessException;
 import ltd.qianc.iotagent.report.ReportFact;
 import ltd.qianc.iotagent.report.ReportFactStore;
@@ -177,8 +178,7 @@ public final class TaskFacade {
             throw new BusinessException("TASK_CANCELLATION_UNSUPPORTED", "当前仅支持一次性任务取消", 409);
         }
         String taskId = targetId(target);
-        TaskFact current = current(principal, taskId, normalizedSource);
-        assertSource(current.payloadJson(), normalizedSource);
+        TaskFact current = ownedCurrent(principal, taskId, normalizedSource);
         String key = scoped(principal, idempotencyKey);
         Optional<TaskProposalFact> prior = proposals.findByIdempotencyKey(key);
         if (prior.isPresent()) {
@@ -249,7 +249,7 @@ public final class TaskFacade {
             markConfirmed(proposal);
             return managementResult(proposal, null, updated.planId());
         }
-        TaskFact current = current(principal, id, normalizedSource);
+        TaskFact current = ownedCurrent(principal, id, normalizedSource);
         if (current.version() != proposal.version()) throw conflict("VERSION_CONFLICT", "任务已变化，请重新提出修改");
         if (terminalTask(current.status())) throw conflict("TASK_NOT_EDITABLE", "已结束任务不可修改");
         String status = switch (proposal.operation()) {
@@ -289,7 +289,7 @@ public final class TaskFacade {
         if (!PENDING.equals(proposal.status())) throw conflict("CANCELLATION_NOT_PENDING", "取消提案已结束");
         if (proposal.version() != expectedVersion) throw conflict("VERSION_CONFLICT", "任务已变化，请重新提出取消");
         JsonNode target = readJson(proposal.targetJson());
-        TaskFact current = current(principal, targetId(target), normalizedSource);
+        TaskFact current = ownedCurrent(principal, targetId(target), normalizedSource);
         assertCurrentCatalog(principal, proposal.source(), current.payloadJson());
         if (current.version() != proposal.version()) throw conflict("VERSION_CONFLICT", "任务已变化，请重新提出取消");
         TaskFact cancelled = cancel(principal, current.taskId(), current.version(), normalizedSource);
@@ -365,8 +365,17 @@ public final class TaskFacade {
         checkPrincipal(principal);
         String normalizedSource = source(requestedSource);
         TaskFact task = tasks.find(taskId).orElseThrow(() -> notFound("TASK_NOT_FOUND", "任务不存在"));
-        if (!owns(task.payloadJson(), principal)) throw notFound("TASK_NOT_FOUND", "任务不存在");
+        JsonNode payload = safePayload(task.payloadJson());
+        if (!principal.tenantCode().equals(payload.path("tenantCode").asText(""))) {
+            throw notFound("TASK_NOT_FOUND", "任务不存在");
+        }
         assertSource(task.payloadJson(), normalizedSource);
+        return task;
+    }
+
+    private TaskFact ownedCurrent(PrincipalInfo principal, String taskId, String requestedSource) {
+        TaskFact task = current(principal, taskId, requestedSource);
+        if (!owns(task.payloadJson(), principal)) throw notFound("TASK_NOT_FOUND", "任务不存在");
         return task;
     }
 
@@ -429,7 +438,7 @@ public final class TaskFacade {
 
 
     public TaskFact update(PrincipalInfo principal, String taskId, long expectedVersion, String payloadJson) {
-        TaskFact current = current(principal, taskId);
+        TaskFact current = ownedCurrent(principal, taskId, "office");
         if (current.version() != expectedVersion) throw conflict("VERSION_CONFLICT", "任务状态已变化，请刷新后再试");
         if (terminalTask(current.status())) throw conflict("TASK_ALREADY_FINISHED", "任务已结束");
         JsonNode nextPayload = safePayload(payloadJson);
@@ -452,7 +461,7 @@ public final class TaskFacade {
     }
 
     public TaskFact cancel(PrincipalInfo principal, String taskId, long expectedVersion, String requestedSource) {
-        TaskFact current = current(principal, taskId, requestedSource);
+        TaskFact current = ownedCurrent(principal, taskId, requestedSource);
         if (CANCELLED.equals(current.status())) return current;
         if (terminalTask(current.status())) throw conflict("TASK_ALREADY_FINISHED", "任务已结束");
         if (current.version() != expectedVersion) throw conflict("VERSION_CONFLICT", "任务状态已变化，请刷新后再试");
@@ -1348,7 +1357,7 @@ public final class TaskFacade {
         return new BusinessException(code, message, 409);
     }
     private static String scoped(PrincipalInfo principal, String key) {
-        return principal.tenantCode() + "\u0000" + ownerKey(principal) + "\u0000" + key;
+        return ScopedKey.of(principal.tenantCode(), ownerKey(principal), key);
     }
     public static String ownerKey(PrincipalInfo principal) {
         return principal.ownerKey();

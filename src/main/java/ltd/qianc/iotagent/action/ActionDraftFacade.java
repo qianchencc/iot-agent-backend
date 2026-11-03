@@ -21,6 +21,7 @@ import java.util.UUID;
 import ltd.qianc.iotagent.audit.AuditEventFact;
 import ltd.qianc.iotagent.audit.AuditEventStore;
 import ltd.qianc.iotagent.auth.PrincipalInfo;
+import ltd.qianc.iotagent.auth.ScopedKey;
 import ltd.qianc.iotagent.conversation.ConversationEventFact;
 import ltd.qianc.iotagent.conversation.ConversationEventStore;
 import ltd.qianc.iotagent.error.BusinessException;
@@ -86,8 +87,8 @@ public final class ActionDraftFacade {
         if (idempotencyKey == null || idempotencyKey.isBlank()) {
             throw new BusinessException("INVALID_IDEMPOTENCY_KEY", "Idempotency key is required");
         }
-        String scopedKey = principal.tenantCode() + "\u0000" + ownerKey(principal)
-                + "\u0000" + iotSource.wireValue() + "\u0000" + idempotencyKey;
+        String scopedKey = ScopedKey.of(principal.tenantCode(), ownerKey(principal),
+                iotSource.wireValue(), idempotencyKey);
         Optional<ActionDraftFact> prior = store.findByIdempotencyKey(scopedKey);
         if (prior.isPresent() && tenantOf(prior.get()).equals(principal.tenantCode())
                 && ownerKey(principal).equals(payload(prior.get()).path("ownerKey").asText(""))
@@ -339,6 +340,9 @@ public final class ActionDraftFacade {
         view.put("status", draft.status());
         view.put("revision", draft.revision());
         view.put("expiresAt", body.path("expiresAt").asText(null));
+        view.put("summary", body.path("summary").asText(""));
+        if (body.hasNonNull("question")) view.put("question", body.path("question").asText());
+        if (body.has("inventory")) view.put("inventory", mapper.convertValue(body.get("inventory"), Object.class));
         view.put("source", body.path("source").asText(null));
         view.put("conversationId", body.path("conversationId").asText(null));
         view.put("turnId", body.path("turnId").asText(null));
@@ -826,7 +830,7 @@ public final class ActionDraftFacade {
     }
     private void emit(ActionDraftFact draft, String type) {
         if (conversationEvents == null) return;
-        ObjectNode event = mapper.createObjectNode();
+        ObjectNode event = mapper.valueToTree(view(draft));
         event.put("type", type);
         event.put("draftId", draft.draftId());
         event.put("status", draft.status());
@@ -837,6 +841,9 @@ public final class ActionDraftFacade {
         String turnId = body.path("turnId").asText("");
         synchronized (conversationEvents) {
             long sequence = conversationEvents.read(conversationId).stream().filter(e -> turnId.equals(e.turnId())).mapToLong(ConversationEventFact::sequence).max().orElse(0) + 1;
+            event.put("turnId", turnId);
+            event.put("sequence", sequence);
+            event.put("timestamp", clock.instant().toString());
             conversationEvents.append(new ConversationEventFact(conversationId, turnId, sequence, type, json(event), draft.draftId() + ":" + type + ":" + draft.revision()));
         }
     }
