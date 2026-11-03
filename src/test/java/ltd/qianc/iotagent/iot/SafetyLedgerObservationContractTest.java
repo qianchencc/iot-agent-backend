@@ -373,6 +373,21 @@ class SafetyLedgerObservationContractTest {
         };
     }
 
+    private static IotAdapter sourceIot(RequestIdentity identity, IotSource source,
+                                        AuthorizedDevice... devices) {
+        return new IotAdapter() {
+            @Override
+            public Mono<AuthorizedDeviceScope> loadAuthorizedDeviceScope(RequestIdentity request) {
+                return Mono.just(AuthorizedDeviceScope.of(identity, source, List.of(devices)));
+            }
+
+            @Override
+            public Mono<AuthorizedDeviceScope> loadAuthorizedSafetyScope(RequestIdentity request) {
+                return Mono.just(AuthorizedDeviceScope.of(identity, source, List.of(devices)));
+            }
+        };
+    }
+
 
     private static AuthorizedDevice device(String id, String name, String hub) {
         return new AuthorizedDevice(id, "safety", name, "", true, null, id, hub, null, List.of(), List.of(), Map.of());

@@ -18,7 +18,7 @@ Java 21（`--release 21` 编译，本机 JDK 25 运行）、Spring Boot 3.5.16�
 
 - 版本权威：Java 21 LTS、Spring Boot 3.5.x、Maven 3.9.x、springdoc-openapi 2.x、MyBatis-Plus 3.5.17、Spring Security 6.x、Spring WebClient、Resilience4j 2.x——均与 Boot 3.5 兼容，按模块落地时引入。
 - ehe-core 5.0.0.0-SNAPSHOT 与 Boot 3.5 不兼容（Java 11 字节码 / javax.servlet / springfox）：等客户 jakarta 版再接；过渡期认证上下文自实现，保留 `LocalVariable.getPrincipalInfo()` 同名 API 形状。见 ADR-0002。
-- 存储方向已落地：MySQL 保存业务事实与 Pi Session，Redis 只承载协调/可重建读能力；Node sidecar 不持有 SQLite、数据库凭据或本地会话卷，只提供通用 Pi 循环、流式传输、工具转接和中断检查点。业务能力、工具定义、授权、报告、任务和会话权威均由 Java 维护。见 `docs/adr/0005-java-owned-mysql-pi-session.md`。
+- 存储方向已落地：MySQL 保存业务事实与 Pi Session，Redis 只承载协调/可重建读能力；Node sidecar 不持有 SQLite、数据库凭据或本地会话卷，只提供通用 Pi 循环、流式传输、工具转接和中断检查点。业务能力、工具定义、授权、报告、任务和会话权威均由 Java 维护。处理会话、重启恢复或运维时先读 [Pi Session 验收账本](.scratch/pi-session-mysql/acceptance.md) 的当前入口与证据；不导入旧会话。见 `docs/adr/0005-java-owned-mysql-pi-session.md`。
 
 技术规范硬性条目（编码/建表/部署时强制）：
 

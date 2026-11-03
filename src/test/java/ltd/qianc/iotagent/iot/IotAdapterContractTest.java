@@ -270,7 +270,7 @@ class IotAdapterContractTest {
     }
 
     @Test
-    void genericLocationIsAnActionableScopeErrorNotAnUpstreamOutage() {
+    void genericCompanyScopeMeansAuthorizedWholeScopeAndNoLocation() {
         ExchangeFunction fixture = ignored -> Mono.just(json("""
                 {"code":200,"content":[
                   {"id":"light-26","kind":"lighting","name":"灯","installAddress":"26楼"},
@@ -282,14 +282,10 @@ class IotAdapterContractTest {
                 new IotGatewayRoutes("/office-scope", "/company-scope"),
                 Duration.ofSeconds(1), IotCallPolicy.passThrough());
         RequestIdentity identity = new RequestIdentity("Bearer fixture", "TENANT", IotSource.COMPANY);
-        assertThatThrownBy(() -> adapter.findDeviceCandidates(identity,
-                new DeviceCandidateQuery("lighting", List.of(), "公司", List.of(), List.of(), null, null)).block())
-                .isInstanceOf(BusinessException.class)
-                .satisfies(error -> {
-                    BusinessException failure = (BusinessException) error;
-                    assertThat(failure.code()).isEqualTo("INVALID_DEVICE_QUERY");
-                    assertThat(failure.httpStatus()).isEqualTo(400);
-                });
+        DeviceCandidateSet company = adapter.findDeviceCandidates(identity,
+                new DeviceCandidateQuery("lighting", List.of(), "公司", List.of(), List.of(), null, null)).block();
+        assertThat(company.devices()).extracting(AuthorizedDevice::id)
+                .containsExactly("light-26", "light-27");
         DeviceCandidateSet repaired = adapter.findDeviceCandidates(identity,
                 new DeviceCandidateQuery("lighting", List.of(), "26楼", List.of(), List.of(), null, null)).block();
         assertThat(repaired.devices()).extracting(AuthorizedDevice::id).containsExactly("light-26");
@@ -496,9 +492,13 @@ class IotAdapterContractTest {
         assertThat(lighting.devices()).extracting(AuthorizedDevice::id).containsExactly("light-1");
         DeviceCandidateSet companyEnergy = adapter.findDeviceCandidates(
                         new RequestIdentity("Bearer company-token", "TENANT-1", IotSource.COMPANY),
-                        new DeviceCandidateQuery("energy", List.of(), "公司", List.of("公司"), List.of(), "电表", null))
+                        new DeviceCandidateQuery("energy", List.of(), "公司", List.of(), List.of(), null, null))
                 .block(Duration.ofSeconds(2));
         assertThat(companyEnergy.devices()).extracting(AuthorizedDevice::id).containsExactly("energy-1");
+        StepVerifier.create(adapter.findDeviceCandidates(
+                        new RequestIdentity("Bearer company-token", "TENANT-1", IotSource.COMPANY),
+                        new DeviceCandidateQuery("energy", List.of(), null, List.of(), List.of(), null, null)))
+                .expectError(UpstreamUnavailableException.class).verify();
     }
 
     @Test

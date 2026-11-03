@@ -2,7 +2,38 @@
 
 口径：2026-11-03。用户明确不导入旧会话，直接切换。约20条灵活代表路径，不要求说明书149条全过；数量放宽不代表已知错误可以标绿。测试、SQL、HTTP状态、NDJSON和进程启动均不是业务验收。
 
-## 已执行的真实界面路径
+## 当前定版验收与隔离更正
+
+- 后端工作区现为`iot-agent-backend-mysql-final`，分支`refactor/pi-session-mysql-final`；原business worktree持续有其他修改，保留不覆盖。
+- 冻结窗口最初虽然名为3215，编译配置实际指向3217。U14–U21不能用来验收新发布Java20；原程序字节已保存在`var/business-preview/mp-original-misrouted-3217`，不把这些旧截图改成新版本成功。已将同一已获人工拒绝蓝牙权限的9444窗口改名`MySQL Final - Java 3215`，仅修正develop.local的Agent/视频API为3215。
+- 正确路由后，U23真实恢复两楼层旧报告合计441.56/461.29及模拟补数、采样边界；U24完整覆盖156台照明，54开、82关、20未知。之后U25因另一Java实例正使用同一Company会话而被writer保护拒绝；不是伪装查询成功。
+- 为避免同账号会话互相干扰，最终环境使用独立空库`iot_agent_mysql_final`和Redis DB2，仅复制加密的模型管理配置，不复制旧会话、任务、报告或身份；原库及另一实例不动。以下F系列在此空库从真实界面重新建立业务事实。
+
+|ID|当前结果|截图|
+|---|---|---|
+|F01|真实Office当前区域4盏：2开、2关、0未知；空会话开始，无控制|[状态](evidence/F01-office-current-lighting/03-result.png)|
+|F02|承接刚才已关的两盏，正确列出真实名称；无新操作|[追问](evidence/F02-office-followup/03-result.png)|
+|F03|打开两盏已关灯的待确认草案：4发现、2选择执行、2其他未选；未点击执行|[草案](evidence/F03-office-two-light-draft/03-result.png)|
+|F04|页面重开后同一草案与两盏选择保留，仍待人工确认|[重开](evidence/F04-office-draft-reopen/03-reopened-draft.png)|
+|F05|两盏已关灯再次关闭返回无需操作，0选择、执行按钮禁用；未下发|[无需操作](evidence/F05-office-no-change/03-result.png)|
+|F06|原先因Office误用Company范围契约失败；仅修改Java后，v21真实生成11月4日09:00、全部4盏照明的单次待确认单，保留当前已关闭成员；Node未修改，未点击创建任务|[修复后](evidence/F06-office-once-task-proposal/java21/03-result.png)、[原失败](evidence/F06-office-once-task-proposal/03-result.png)|
+|F07|同一Office任务确认单页面重开后仍为待确认，原时间与4盏目标保留；未创建|[重开](evidence/F07-office-proposal-reopen/03-pending-proposal-reopened.png)|
+|F08|Java22已修复显式公司范围被当作空查询拒绝的问题；真实覆盖156台照明，53开、83关、20未知，不把未知记为关闭；原失败保留|[修复后](evidence/F08-company-all-lighting/java22/03-result.png)、[原失败](evidence/F08-company-all-lighting/03-result.png)|
+|F09|Java23真实返回27楼空调固定候选26台，与正文26台一致；实际名称列表可继续选择单台。不再用宽目录49台中的模型自行清点作为完成证据|[固定范围与数量](evidence/F09-company-ac-discovery/java23/04-fixed-scope-summary.png)|
+|F10|Office确认单自然超时后重新进入，权威卡显示已过期、不再提供创建按钮，未伪造时间或改库|[过期](evidence/F10-office-expired-proposal/03-expired-on-reopen.png)|
+|F11|在新独立库生成26楼/27楼上周报告：441.56/461.29度，分别给出环比与模拟补数、采样覆盖、小时负荷缺数限制|[生成结果](evidence/F11-company-two-floor-reports/03-result.png)|
+|F12|用户明确选择列表第一台，真实读取关机、制冷、24℃及16–30℃可控范围，未控制|[状态与能力](evidence/F12-company-ac-state-capability/03-result.png)|
+|F13|真实生成仅把24℃设为26℃的单台草案，未附加开机、模式或风速更改，未执行|[参数草案](evidence/F13-company-ac-parameter-draft/03-result.png)|
+|F14|Java23下单次只读确认单与正文一致：11月4日10:00检查一次，不开机、不调参；condition仅评估，不含控制。未创建任务|[修复后](evidence/F14-company-once-readonly-proposal/java23/03-result.png)、[原解释错误](evidence/F14-company-once-readonly-proposal/03-result.png)|
+|F15|替换只读目录中的Node进程后，页面重开并追问，保留已选空调原状态、两报告合计与模拟补数限制，无重新生成或副作用重发|[恢复追问](evidence/F15-node-restart-business-recall/03-result.png)|
+|F16|从真实已保存报告卡打开26楼报告，加载完成后显示441.56度、22台电表和模拟补数提示；不把骨架屏算通过|[实际预览](evidence/F16-saved-report-preview/04-loaded-report.png)|
+|F17|真实燃气历史台账读取，说明仅取得20条、覆盖未完整、历史名称与当前目录冲突，不冒充已恢复|[台账](evidence/F17-company-gas-ledger/03-result.png)|
+|F18|真实点击“引用本报告”后追问，原报告限制保留，明确不能作为真实运行或节能证据|[引用追问](evidence/F18-report-reference-followup/03-result.png)|
+|F19|承接第一条历史报警，分别说明当时发生/上报状态与当前未知，未通知或创建任务|[恢复边界](evidence/F19-historical-alert-recovery-boundary/03-result.png)|
+|F20|真实读取35台授权摄像头和位置分组，展示实际名称；不自动播放、不控制|[摄像头](evidence/F20-company-video-discovery/03-result.png)|
+|F21|用户明确选择第一台后，生成11月1日09:00–10:00录像卡；未播放，明确卡片不证明录像存在或完整|[录像卡](evidence/F21-video-recording-card/03-result.png)|
+
+## 历史真实界面路径（不等于当前定版通过）
 
 |ID|业务结果与边界|证据|
 |---|---|---|
@@ -29,17 +60,15 @@
 
 ## 当前已知问题 / 未验收
 
-- 报告生成与引用证据投影已修复，并有v17真实生成/独立恢复库/Redis中断后的业务结果。更早缺少证据说明的历史轮次可能仍误导解读，不能用新成功截图覆盖旧失败。
-- 六小时无活动会话按既有策略过期。跨夜旧页面继续发送实际出现404且缺具体原因；重新进入页面取得新会话后可继续业务。不能宣称过期会话永久可恢复，也不通过延长保留期掩盖问题。
-- 精确崩溃点工程验证与真实Node SIGKILL界面已记录；全公司照明状态业务读取仍失败，保留未验收。Company任务提案重开状态变化仍需核实；Office未来单次3灯新卡待补无遮挡重开证据。
-- 最终集成版本的业务代表路径、一次最终内联审查及语义提交尚未全部完成。禁止称“全部能力完备”。
-- 新冻结窗口“`MySQL Session Frozen - Java 3215`”、自动化9444，防止源项目9441的其他操作混入。其蓝牙授权弹层经SDK `authorizeCancel()`未关闭；macOS辅助访问被系统拒绝（-25211）。必须在该窗口实际点击“拒绝”，不授予蓝牙、不裁剪弹层冒充通过；这一步尚缺人工操作。
-- 发现供应商把`<thinking>`混入文本。已按原Runtime `reply-text.ts`恢复通用跨分片推理通道解析（Node无业务分支），新Node v10已应用，后续任务说明不再输出推理标签；无遮挡最终界面仍受上述弹层阻塞。
-- 已进一步对照原Runtime定位全照明读取的N+1区域重复拉取：Java现按kind+area一次读取、三路队列，保证同区域使用同一快照；已应用v19。原同范围业务失败仍保持未验收，待解除弹层后在真实界面重验；不拿新增回归通过代替。
+- 本轮F01–F21共21条代表业务路径已有实际界面证据，按各自迭代构建留档；不声称21条均在同一版本从头重跑，更不声称149条全部验收。此前失败全部保留，最终版本23已覆盖本轮最后修正的公司检索、只读解释、报告引用与恢复路径。
+- 未抽取的实际任务创建/调度、生产控制、通知发送、PDF/表格下载、实际视频播放、全部安全/环境组合等不自动记为已验收；遵守用户不创建任务/不执行提案的边界。
+- 六小时无活动会话按既有策略过期，不承诺永久恢复；不导入旧SQLite会话。新库中的会话与业务事实以本轮真实操作产生。
+- 蓝牙人工权限阻塞已解除；保留原SDK取消无效和macOS辅助访问拒绝的诊断，不通过裁剪或伪造关闭弹层取得截图。
+- 已纠正窗口名与实际路由不一致的问题，并隔离了另一运行占用的会话库。历史构建、旧失败与本轮证据分开；最终内联审查与语义提交正在收口。
 
 ## 业务验收操作
 
-原独立工作区DevTools9441保留；新增冻结构建DevTools9444用于本轮最终复核。Java3215、Node3235、只读上游3245、MySQL3338、Redis6398。原缓存3207/3223/9431及生产Runtime不动。
+DevTools9444使用`MySQL Final - Java 3215`；旧9441、另一业务3217/3237和原缓存3207/3223/9431不操作。最终Java3215、Node3235、只读上游3245、MySQL3338的`iot_agent_mysql_final`、Redis6398/2。生产Runtime只读、不运行。
 
 1. 通过真实客户登录、园区和Agent入口操作；不注入token、setData、假工具响应或伪造卡片。
 2. Office/Company新会话查询、切换、引用、草案重核、任务提案、报告预览/解读均截图。任务不创建、控制不确认、通知不发送。
@@ -49,8 +78,7 @@
 ## 工程检查（不是验收）
 
 - 未修改官方Pi0.84.4 SessionBackendConformance：30/30，经Node→Java→独立真实MySQL。
-- 最新Node通用loop/传输/检查点/推理通道回归22通过；Java目标持久化/报告/草案/业务定义与摄像头选择回归41通过。均不是业务验收。
-- 先前全Java233的definition键断言、摄像头toolCallId夹具与模块边界问题已在集成源码解决；本轮后续完整`mvn -q test`成功。之后新增区域快照一致性缺陷有红→绿回归，IotAdapter/Company观察/控制网关目标回归通过；这项分组修正后的全套尚未重跑。所有测试仍非业务验收。
+- 独立源码定版前Java完整`mvn -q package`成功，Node通用回归25通过且构建成功；后续Office任务契约变更将重新构建并在真实界面重验。工程检查不计业务条数。
 - S01–S04：公开Pi语义、writer fencing、版本/幂等提交与响应丢失的工程验证；不计入业务通过数。
 - S05–S06：中断/Redis故障的持久性与安全工程检查和真实界面结果分别记录。
 - S07旧会话导入已由用户取消；替换为一次性cutover marker、旧公开会话结束与新会话重启保留。旧SQLite文件留作离线历史，不导入、不删除、不自动回退。

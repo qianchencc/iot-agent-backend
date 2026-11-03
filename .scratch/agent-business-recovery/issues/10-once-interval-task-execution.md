@@ -60,3 +60,9 @@
 - 安全读检查点（safety 设备 + alertWindow previous_day/previous_week 或 alertDays，缺省近 7 天至当前）改为经组合 ObservationAdapter（SAFETY_EVENTS）真实台账窗口读取：窗口锚点为计划日北京时间零点（日历窗半开区间），逐台账 smoke/gas/water 分页到游标耗尽或 20 页上限，按本检查点设备过滤并输出 alerts 证据块（总数/分类/覆盖/失败/最近记录）；某类台账失败只影响该子类设备（read_failed），不用当前状态伪造告警，也不因无关类别失败而误伤。
 - 新增行为回归 `RealTaskExecutionGatewayBehaviorTest`（未运行）：未确认不算完成、两台之间取消/操作员改参阻止后续下发、预约跨检查点/重启去重、巡检只读计 observed 成功并给潜在节能估算（potential 标记）、安全窗口含/排除边界记录与部分失败。
 - 待验证：编译、既有 178 项回归、新行为回归、隔离库迁移回填与真实 MySQL/Redis 全量构建均未运行（由统一验证方执行）。
+
+## 2026-11-03真实Office确认单修复
+
+新独立空库中，F06最初连续失败：统一工具定义暴露Company专属targets，模型用于Office后被服务端正确拒绝，用户却拿不到合法确认单。Java现按来源提供缓存的任务契约：Office只暴露明确actions/候选引用，Company保留完整范围targets；不放宽后台来源校验，不在Node中新增分支。
+
+Java21下原自然语言请求已在真实开发者工具得到“2026-11-04 09:00、26楼运营办公区全部4盏、单次”待确认单，保留目前已满足的设备。F07页面重开仍保留同一确认单和4盏目标，未点击创建或执行。证据：[修复后确认单](../../pi-session-mysql/evidence/F06-office-once-task-proposal/java21/03-result.png)、[重开](../../pi-session-mysql/evidence/F07-office-proposal-reopen/03-pending-proposal-reopened.png)。其余执行内核/间隔场景不因这两条UI结果自动闭票。

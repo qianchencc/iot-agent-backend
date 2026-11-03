@@ -71,11 +71,10 @@ final class DeviceCandidateMatcher {
         List<String> normalizedHints = nameHints.stream().map(DeviceCandidateMatcher::normalize).toList();
 
         boolean browse = normalizedTerms.isEmpty() && normalizedEffectiveScope.isEmpty();
-        if (browse && nameHints.isEmpty() && query.deviceIds().isEmpty()) {
-            throw new BusinessException("INVALID_DEVICE_QUERY",
-                    "检索需要具体地点、设备描述或精确成员；公司、全部等不是具体地点。"
-                            + "若用户要求全公司定时控制，请在propose_task的targets中显式设置allAuthorized=true，"
-                            + "并保留原excludeTexts、动作和全部阶段；不要重复同一无范围查询。", 400);
+        boolean explicitAuthorizedScope = genericScope(scopeText)
+                || submittedScopeTerms.stream().anyMatch(DeviceCandidateMatcher::genericScope);
+        if (browse && !explicitAuthorizedScope && nameHints.isEmpty() && query.deviceIds().isEmpty()) {
+            throw new UpstreamUnavailableException("至少需要设备范围或设备描述");
         }
 
         List<String> explicitEnergyFloors = "energy".equalsIgnoreCase(query.kind())
