@@ -1,12 +1,12 @@
 # Pi Session MySQL：探索结论与执行入口
 
-Date: 2026-11-02
-Status: implementation-in-progress
+Date: 2026-11-03
+Status: implemented; representative-sample-accepted; remaining-validation-open
 Implementation: direct-cutover-no-import
 
 方向：Java/MySQL 作为唯一持久化权威；Node 保留 Pi 0.84.4 通用执行和薄存储适配，不依赖本地会话库。用户已取消旧会话导入；从新会话开始，保留原有业务事实。未取得真实界面证据的项仍未验收。
 
-入口：[探索收敛记录](exploration.md) · [规格](spec.md) · [预期效果与验收](acceptance.md) · [ADR0005](../../docs/adr/0005-java-owned-mysql-pi-session.md) · [社区研究](../agent-business-recovery/research-pi-mysql-session.md)。
+入口：[规格](spec.md) · [真实验收账本](acceptance.md) · [最终一次审查](final-review.md) · [当前测试入口](../agent-business-recovery/local-preview.md) · [构建记录](evidence/final-validation-20261103.json)。原始依据：[探索记录](exploration.md) · [ADR0005](../../docs/adr/0005-java-owned-mysql-pi-session.md) · [社区研究](../agent-business-recovery/research-pi-mysql-session.md)。
 
 ## 探索收敛
 
@@ -20,16 +20,16 @@ Implementation: direct-cutover-no-import
 
 ## 票据及唯一完成结果
 
-|票|真实阻塞|可展示结果|
+|票|当前状态|结果 / 剩余验收|
 |---|---|---|
-|[01 新会话与完整Pi仓储契约](issues/01-new-session-mysql-contract.md)|无|实际Node→Java→MySQL创建、写入、重开并构造相同上下文；官方契约通过|
-|[02 在途提交与中断恢复](issues/02-run-checkpoints-recovery.md)|01|应答丢失/旧writer/中断不会重复或覆盖事实，成功终态确实已落盘|
-|[03 旧会话导入](issues/03-existing-session-import.md)|已取消|用户明确不导入，不实现、不计完成|
-|[04 新会话直接切换](issues/04-existing-conversation-cutover.md)|02|新会话走MySQL，替换Node后仍继续；旧会话明确结束，不伪装继承上下文|
-|[05 运维与无本地盘交付](issues/05-operations-sqlite-retirement.md)|04|管理面与备份恢复只依赖Java/MySQL，运行包没有SQLite依赖/旧入口|
-|[06 开发者工具验收及最终审查](issues/06-devtools-final-acceptance.md)|05|统一构建真实UI恢复路径、截图及一次最终审查收口|
+|[01 新会话与完整Pi仓储契约](issues/01-new-session-mysql-contract.md)|done|真实新会话、追问、新Node恢复及最终官方契约30/30分别留档|
+|[02 在途提交与中断恢复](issues/02-run-checkpoints-recovery.md)|implemented / validation open|已中断/停止Redis/替换Node并真实追问；三个精确崩溃点的完整前端矩阵未齐|
+|[03 旧会话导入](issues/03-existing-session-import.md)|cancelled|用户明确不导入，不实现、不计完成|
+|[04 新会话直接切换](issues/04-existing-conversation-cutover.md)|implemented / validation open|新独立空库已从真实UI形成事实；草案、确认单及Node恢复有截图，最终同版集成未齐|
+|[05 运维与无本地盘交付](issues/05-operations-sqlite-retirement.md)|implemented / validation open|无本地卷Node已真实恢复；O01/O02为v17证据，v24同版管理面/恢复未重演|
+|[06 开发者工具验收及最终审查](issues/06-devtools-final-acceptance.md)|sample accepted / final replay open|F01–F21真实样本与唯一内联审查完成；最终13215窗口蓝牙弹层遮挡F22，不计通过|
 
-01/02形成唯一会话协议，04/05在同一隔离集成分支完成后切换用户构建。03取消，不再阻塞04。没有子代理或中途审查；工程结果与真实业务验收分开记录。
+源码、票据和证据已合入`iot-agent-backend`的`main`；原mysql-final工作树清理前保留检查点和私有归档。13215/13235冻结服务迁至主worktree的`var/mysql-final-preview/`，保留独立MySQL库和Redis DB2，不覆盖主线3217/3237或根配置。21条仍为Java20–23迭代证据，不改成主线最新构建全量通过。未齐验收保留，无子代理。
 
 ## 预期终点
 

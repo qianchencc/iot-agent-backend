@@ -6,7 +6,7 @@
 
 **Status:** in-progress
 
-**Execution:** implementing
+**Execution:** implemented；直接切换不导入旧会话，最终独立空库由真实UI形成新事实；F04/F07/F10/F15分别覆盖草案重开、任务确认单重开/自然过期和Node替换恢复。构建标识见最终记录；02的精确故障矩阵和06同版重放仍未验收，保持此集成票开放。
 
 规格：[统一 MySQL 会话持久化](../spec.md)。验收：[预期效果与验收](../acceptance.md)。工程通过不等于业务通过；不修改或关闭原业务恢复父票。
 

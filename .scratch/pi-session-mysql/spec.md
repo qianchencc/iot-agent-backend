@@ -1,7 +1,7 @@
 # Pi Session 统一 MySQL 持久化
 
 Status: in-progress
-Execution: implementing-direct-cutover
+Execution: implemented; 21 representative UI paths accepted across iterative builds; final same-build replay and exact crash-point UI matrix remain unaccepted
 Date: 2026-11-02
 
 ## Problem Statement
@@ -48,7 +48,7 @@ Java 统一管理业务事实和 Pi Session 的持久化权威；两者逻辑分
 - 停止旧隔离实例后直接切换。数据库一次性迁移只将旧公开会话标记 cleared；不删除 turn/event 原记录，不改写或重建草案、任务、报告和执行事实；迁移标记保证后续启动不再清新会话。
 - 正式切换使用单一 MySQL 权威，无双写、SQLite 回退、导入入口或兼容别名。
 - SQLite 专用的管理备份、恢复、磁盘容量和 writer-lease 手工恢复入口随调用方一并切除。Java 管理面显示真实 MySQL 会话状态；数据库备份恢复交给受控运维流程，不提供任意路径或 SQL 执行入口。
-- 全部源码在现有业务 worktree 的集成分支推进；迁移完成前不把中间源码部署为用户可测试版本。隔离构建完成后一次切换，原缓存工作区、原开发者工具窗口和生产 Runtime 不动。
+- 本轮独立`iot-agent-backend-mysql-final`分支`refactor/pi-session-mysql-final`的实现及证据已合入主worktree的`main`。原工作树清理前留存检查点/私有归档，13215/13235冻结运行迁至主worktree的`var/mysql-final-preview/`，独立MySQL库和Redis DB2不变；不覆盖主线3217/3237、其他worktree、根配置或生产Runtime。实际构建、样本及未验收项见acceptance.md。
 - 本次 Node 存储适配属于通用引擎升级，需要新的源码/构建基线；旧的 Node 字节不变证据只证明旧版本，不能挪作新版本证明。业务定义仍留 Java。
 
 ## Testing Decisions

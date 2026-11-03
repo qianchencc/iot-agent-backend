@@ -6,7 +6,7 @@
 
 **Status:** in-progress
 
-**Execution:** MySQL健康管理、SQLite退役、环境白名单、只读Node已应用；独立数据库恢复后真实报告追问成功，等待最终集成审查。
+**Execution:** implemented；O01/O02有真实管理面与v17独立MySQL恢复后的业务截图；最终Node只读无本地卷并通过F15。最终Java24审计字段升级保留全部已生成事实；v24管理面/备份恢复未同版重演，不把历史证据改名闭票。
 
 规格：[统一 MySQL 会话持久化](../spec.md)。验收：[预期效果与验收](../acceptance.md)。工程通过不等于业务通过；不修改或关闭原业务恢复父票。
 
