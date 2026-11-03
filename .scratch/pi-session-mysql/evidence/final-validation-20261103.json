@@ -1,0 +1,146 @@
+{
+  "date": "2026-11-03",
+  "source": {
+    "worktree": "/Users/qianchen/works/新发展/iot-agent-backend-mysql-final",
+    "branch": "refactor/pi-session-mysql-final",
+    "reviewBase": "6bb8068",
+    "implementationCheckpoints": [
+      "5199b13",
+      "d1e2686"
+    ],
+    "note": "Final Java artifact built from the implemented worktree; d1e2686 preserves the reviewed implementation and iterative evidence. Final review additionally bounds only the engineering fixture executor."
+  },
+  "runtime": {
+    "java": {
+      "service": "mysql-final-java13215-v24",
+      "port": 13215,
+      "artifact": "var/business-preview/iot-agent-mysql-session-preview-v24-20261103.jar",
+      "sha256": "858dd4d099bcbca4c866cbe2012e9ef354e3d05f735eb52389686f621023ab34"
+    },
+    "node": {
+      "service": "mysql-final-engine13235-v12",
+      "port": 13235,
+      "release": "var/business-preview/sidecar-mysql-ro-v12",
+      "readOnlyApplication": true,
+      "localSessionVolume": false,
+      "agentSha256": "51e0d5aef24bb04f563112779623550773e7c09bdae6bee0b592f33874bdfe35",
+      "historySha256": "b88e65b60dd15b8aa891a55126a8ef367e1d3d84878f5a52fd7634193315e10f"
+    },
+    "mysql": {
+      "port": 3338,
+      "schema": "iot_agent_mysql_final",
+      "initialState": "empty; no old conversations or business facts imported"
+    },
+    "redis": {
+      "port": 6398,
+      "database": 2
+    },
+    "readonlyUpstreamPort": 3245,
+    "playerPort": 9419
+  },
+  "frontend": {
+    "project": "/Users/qianchen/works/新发展/iot-agent-backend-business/var/business-preview/mp-mysql-v17-node10",
+    "window": "MySQL Final - Java 13215",
+    "automationPort": 9444,
+    "agentBaseUrl": "http://127.0.0.1:13215/api",
+    "videoApiBaseUrl": "http://127.0.0.1:13215/api",
+    "settingsSha256": "662730bad91a1aca04a9f63bd8b092ae9865823e1690b40858951421e759dd9a",
+    "programArchiveSha256": "8ca6a428eaa71eb38ddf34d6ec82cccaffa95766b989fcf40d164e14bcf508c0",
+    "archiveHashMethod": "tar --exclude=project.private.config.json --exclude=.DS_Store -cf - . | shasum -a 256; includes archive metadata; not the earlier incomplete 200-result glob manifest"
+  },
+  "businessAcceptance": {
+    "acceptedRepresentativeCases": [
+      "F01",
+      "F02",
+      "F03",
+      "F04",
+      "F05",
+      "F06",
+      "F07",
+      "F08",
+      "F09",
+      "F10",
+      "F11",
+      "F12",
+      "F13",
+      "F14",
+      "F15",
+      "F16",
+      "F17",
+      "F18",
+      "F19",
+      "F20",
+      "F21"
+    ],
+    "count": 21,
+    "evidenceLedger": "../acceptance.md",
+    "buildClassification": "iterative Java20-23; not all rerun on final Java24",
+    "lastBusinessFixes": {
+      "F06": "Java21 Office once-task scope",
+      "F08": "Java22 explicit company scope",
+      "F09": "Java23 server-fixed subset count",
+      "F14": "Java23 read-only inspection interpretation"
+    },
+    "noProductionControls": true,
+    "noTaskCreation": true,
+    "noNotifications": true,
+    "F22": {
+      "accepted": false,
+      "reason": "Native Bluetooth permission overlay remains in the actual DevTools window; SDK cancel ineffective and macOS accessibility denied",
+      "lastObservation": "F22-java-port-process-recovery/04-current-surface.png"
+    },
+    "unaccepted": [
+      "final same-build complete sample replay",
+      "exact tool-intent/tool-result/pre-terminal crash-point frontend matrix",
+      "Java24 same-build management UI and database backup/restore replay",
+      "unselected manual scenarios, actual playback/download and prohibited production writes"
+    ]
+  },
+  "engineeringOnlyNotBusinessAcceptance": {
+    "javaPackage": {
+      "command": "mvn -q package",
+      "tests": 267,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 5
+    },
+    "nodeRegression": {
+      "passed": 25,
+      "buildSucceeded": true
+    },
+    "officialUnmodifiedPiConformance": {
+      "version": "0.84.4",
+      "passed": 30,
+      "total": 30,
+      "path": "Node -> reviewed Java -> isolated real contract MySQL",
+      "rerunAfterBoundedFixtureCompile": true
+    },
+    "auditSchemaUpgrade": {
+      "tables": [
+        "pi_session_scopes",
+        "pi_session_documents",
+        "pi_session_chunks",
+        "pi_session_commits"
+      ],
+      "requiredColumns": [
+        "id",
+        "create_time",
+        "update_time"
+      ],
+      "preservedCountsBeforeAndAfter": {
+        "conversations": 2,
+        "reports": 2,
+        "tasks": 0,
+        "sessionChunks": 217
+      }
+    }
+  },
+  "cleanup": {
+    "engineeringConformanceFixture3297": "stopped",
+    "staleAdmin5185TargetingOther3215": "stopped only our owned preview",
+    "finalJavaAndNode": "kept running",
+    "originalRuntimeAndCacheWorktrees": "untouched"
+  },
+  "review": "../final-review.md",
+  "secrets": "Not included; private .env and encrypted model configuration remain ignored and mode 0600"
+}

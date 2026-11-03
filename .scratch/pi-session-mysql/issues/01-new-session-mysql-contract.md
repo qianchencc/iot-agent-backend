@@ -4,21 +4,21 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** in-progress
+**Status:** done
 
-**Execution:** implemented; MySQL官方契约30/30、U01/U03真实查询与只读新Node恢复有截图；等待最终集成验收与审查，不以工程绿灯闭票。
+**Execution:** implemented and sample-accepted；F01/F02/F15实际查询、追问与无本地卷Node替换恢复；最终官方Pi/MySQL契约30/30。工程与业务证据独立记录，最终集中审查已完成，见[记录](../final-review.md)。
 
 规格：[统一 MySQL 会话持久化](../spec.md)。验收：[预期效果与验收](../acceptance.md)。工程通过不等于业务通过；不修改或关闭原业务恢复父票。
 
 ## Acceptance criteria
 
-- [ ] Node 实现 SessionRepo / SessionStorage 薄适配，Java 隐藏持久化实现；使用真实独立 MySQL，不依赖 SQLite 或伪造内存后端换绿。
-- [ ] 固定版本未修改的官方 createSessionBackendConformance 经过实际 Node→Java→MySQL 全部通过；覆盖分支、压缩、lane、共享序号、日志、fork、用量与不可变读取，不以当前只调用 appendMessage 缩减接口。
-- [ ] 新会话真实设备查询后，以新 Node 进程重新打开同一会话，能继续引用原上下文查询当前状态；保存真实界面证据。
-- [ ] 所有会话访问绑定 Java 核验的租户、主体、source 和 conversation/run；猜测标识、伪造范围、跨来源、无内部认证均不可读写，且不泄露他人会话存在性。
-- [ ] 不强制 UUID，不大小写折叠或静默截断 Pi 标识；规范载荷和顺序保真，Pi 表不与业务 tasks/事件表混用。
-- [ ] Node 不持有 MySQL 凭据；私有协议只允许受限会话操作，不接受 SQL、文件路径或代码执行。
-- [ ] 记录各 SDK 语义到公共协议操作的完整映射与失败语义；不能满足官方契约时停止依赖票，不先扩散未验证实现。
+- [x] Node 实现 SessionRepo / SessionStorage 薄适配，Java 隐藏持久化实现；使用真实独立 MySQL，不依赖 SQLite 或伪造内存后端换绿。
+- [x] 固定版本未修改的官方 createSessionBackendConformance 经过实际 Node→Java→MySQL 全部通过；完整SDK存储语义及原生压缩保留，不以当前只调用 appendMessage 缩减接口。
+- [x] 新会话真实设备查询后，以新 Node 进程重新打开同一会话，能继续引用原上下文查询当前状态；F15保存真实界面证据。
+- [x] 所有会话访问绑定 Java 核验的租户、主体、source 和 conversation/run；身份与跨范围负向工程回归、最终入口审查已覆盖，不冒充跨账号真实UI验收。
+- [x] 不强制 UUID，不大小写折叠或静默截断 Pi 标识；规范载荷和顺序保真，Pi 表不与业务 tasks/事件表混用。
+- [x] Node 不持有 MySQL 凭据；私有协议只允许受限会话操作，不接受 SQL、宿主文件路径或代码执行。
+- [x] SDK仓储语义通过公开JsonlSessionRepo及受限虚拟文件系统映射；失败与版本/提交冲突见实现、官方30条工程验证及验收账本。
 
 ## 2026-11-03进展
 

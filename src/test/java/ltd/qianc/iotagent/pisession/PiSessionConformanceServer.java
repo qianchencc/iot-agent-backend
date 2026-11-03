@@ -10,7 +10,9 @@ import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import ltd.qianc.iotagent.error.BusinessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
@@ -37,7 +39,10 @@ public final class PiSessionConformanceServer {
         String token = System.getenv().getOrDefault("JAVA_SESSION_TEST_TOKEN", "test-java");
         int port = Integer.parseInt(System.getenv().getOrDefault("JAVA_SESSION_TEST_PORT", "3297"));
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
-        server.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
+        ThreadPoolExecutor executor = new ThreadPoolExecutor(4, 4, 0L, TimeUnit.MILLISECONDS,
+                new ArrayBlockingQueue<>(64), Thread.ofPlatform().daemon(true).name("pi-contract-", 0).factory(),
+                new ThreadPoolExecutor.AbortPolicy());
+        server.setExecutor(executor);
         server.createContext("/internal/agent/sessions", exchange -> {
             try {
                 if (!"POST".equals(exchange.getRequestMethod()) || !token.equals(exchange.getRequestHeaders().getFirst("X-Agent-Bridge-Token"))) {
@@ -60,7 +65,7 @@ public final class PiSessionConformanceServer {
                 exchange.sendResponseHeaders(500, -1);
             } finally { namespace.remove(); exchange.close(); }
         });
-        Runtime.getRuntime().addShutdownHook(new Thread(() -> { server.stop(0); source.close(); }));
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> { server.stop(0); executor.shutdownNow(); source.close(); }));
         server.start(); System.out.println("Pi Session MySQL engineering fixture ready on "+port);
         new CountDownLatch(1).await();
     }

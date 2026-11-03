@@ -1,143 +1,62 @@
 # 独立开发者工具验收环境
 
-日期：2026-11-03。隔离Java/Node/MySQL/Redis及开发者工具已启动，Pi Session已直接切换Java/MySQL，无旧会话导入。业务验收仍未全部完成；以[实时证据与缺口](../pi-session-mysql/acceptance.md)为准，不以启动、接口或测试结果闭票。
+## 当前入口（2026-11-03）
 
-## 1. 固定工作区和链路
-
-|用途|本轮位置/地址|
+|用途|位置 / 地址|
 |---|---|
-|后端源码|`/Users/qianchen/works/新发展/iot-agent-backend-mysql-final`；`refactor/pi-session-mysql-final`；原business worktree保留|
-|前端源码|`/Users/qianchen/works/新发展/mp-agent-business`；`refactor/java-agent-business-preview`|
-|前端生成目录|`mp-agent-business/unpackage/dist/dev/mp-weixin`|
-|可见验收窗口|`MySQL Session Frozen - Java 3215`，使用已冻结的小程序构建；旧9441/缓存9431不操作|
-|自动化|`ws://127.0.0.1:9444`；旧9441及原9431不动|
-|Java|`127.0.0.1:3215`，从本worktree重新构建的jar启动|
-|Pi sidecar|`127.0.0.1:3235`，从本worktree的agent-sidecar重新构建启动|
-|只读上游代理|`127.0.0.1:3245`→客户真实物联上游；不指向生产Runtime|
-|MySQL|独立容器、`127.0.0.1:3338/iot_agent_business`|
-|Redis|独立容器、`127.0.0.1:6398/0`，不共享原实例|
-|Pi Session/Admin|Pi上下文与业务事实同在本轮MySQL；Node无本地会话卷，私密配置不提交|
-|本地视频静态页|`http://127.0.0.1:9419/owner/h5player/index.html`|
-|develop Agent/视频API|均为`http://127.0.0.1:3215/api`；trial/release不变|
+|后端源码|`/Users/qianchen/works/新发展/iot-agent-backend-mysql-final`，`refactor/pi-session-mysql-final`|
+|前端源码|`/Users/qianchen/works/新发展/mp-agent-business`；本轮不整包并入缓存改动|
+|实际已打开项目|`/Users/qianchen/works/新发展/iot-agent-backend-business/var/business-preview/mp-mysql-v17-node10`；目录名不是当前版本号|
+|开发者工具窗口 / 自动化|`MySQL Final - Java 13215` / `ws://127.0.0.1:9444`|
+|Agent / 视频API|`http://127.0.0.1:13215/api`|
+|Java|`mysql-final-java13215-v24`，不可变完整构建 `var/business-preview/iot-agent-mysql-session-preview-v24-20261103.jar`|
+|通用Pi sidecar|`mysql-final-engine13235-v12`，13235，只读发布目录 `var/business-preview/sidecar-mysql-ro-v12`，无本地会话卷|
+|只读客户上游代理|`127.0.0.1:3245`；真实授权物联上游，不指向生产Runtime|
+|MySQL|专用容器 `iot-agent-business-preview-mysql-1`，3338，独立空库 `iot_agent_mysql_final`|
+|Redis|专用容器 `iot-agent-business-preview-redis-1`，6398/2；不是唯一持久权威|
+|视频静态页|`http://127.0.0.1:9419/owner/h5player/index.html`|
 
-主链路：小程序3215→本地Java→3235真实Pi/模型→Java工具→3245只读上游。业务事实只落本轮独立库，真实用户权限由Java及客户上游核验。模型供应商配置复用合法本机配置，但bridge、管理员和数据库密钥重新生成，不复制客户身份。
+原business worktree、旧3215/3235、3217/3237、9441及原缓存3207/3223/9431继续保留，不终止、不覆盖。原3215后被另一实例占用，故本轮改用13215/13235；原库 `iot_agent_business` 不再作为本轮会话库。只复制加密的模型管理配置，不导入旧会话、报告、任务或身份。
 
-当前固定发布：Java `business-preview-java-3215-mysql-v19`（`var/business-preview/iot-agent-mysql-session-preview-v19-20261103.jar`），Node `business-preview-sidecar-3235-mysql-ro-v10`（`var/business-preview/sidecar-mysql-ro-v10`，应用目录只读、无SQLite卷）；上游 `business-preview-upstream-3245-v3`，播放器 `business-preview-player-9419-v2`，Admin `business-preview-admin-5185`。Docker项目 `iot-agent-business-preview` 独占MySQL/Redis卷，不删除持久卷。
+旧Admin5185指向3215，已停止本轮拥有的该预览服务，不把它误称当前管理面。历史管理界面和备份恢复证据在验收账本单列。
 
-2026-11-03后续：原business worktree同一Java文件在构建间持续变化，已另建上述final worktree，并转移当前源码改动；不反向覆盖原worktree。转移前tracked checkpoint为`01053baf1ba62c7e2dc8ac8f9396d07eff9efd29`。本目录后续构建/部署结果以Pi Session验收账本为准，不把原worktree的中间态当成可信构建。
+## 本轮结果与限制
 
-## 2. 重启/恢复前检查
+真实业务证据和未验收项统一见[验收账本](../pi-session-mysql/acceptance.md)及[最终构建记录](../pi-session-mysql/evidence/final-validation-20261103.json)。F01–F21为迭代Java20–23的21条实际业务路径，不声称同一最终Java24从头重跑全部样本。Java24仅进一步补齐数据库审计字段；升级前后保留的记录数量是工程诊断，不是业务验收。
 
-1. 确认仍在上述两个worktree。原缓存工作区不修改；不整包复制其未提交代码、`.env`、`var/`、target或dist。
-2. 本地`.env`为0600，包含独立端口、库、bridge及模型配置；不要打印、提交或贴入日志。若丢失，重新生成独立数据库/bridge/Admin密钥，模型配置只取明确白名单，不复制原运行文件。
-3. 确认端口归属；已是本轮服务则复用，不启动重复实例。不终止占用原3207/3223/9431的缓存链路。
-4. 原miniapp启动缺陷只精确迁入必要修复：普通无token登录、token反序列化配对、首次园区选择；原缓存整改未整包带入。前端所有业务数据仍来自真实应用流程。
+当前窗口又出现蓝牙权限弹层，需要在真实开发者工具中点击“拒绝”；SDK取消未生效、系统辅助访问被拒绝。F22带弹层的截图不计通过。不裁图、不伪造权限、不注入token/卡片/消息。只沿真实登录、园区、Office/Company入口操作。
 
-## 3. 构建与启动
+验收可以生成草案、任务确认单和报告，但不点击执行、不创建任务、不发送通知。报告模拟补数/采样边界必须与界面及助手解读一致。录像卡不证明录像存在或播放成功。
 
-以下为不同终端分别执行的命令；环境值只从本worktree忽略文件加载。不要把密钥写到命令参数或产物中。
+## 构建与重启
+
+只在上述final worktree执行；`.env`及加密管理配置在忽略目录、权限0600，不打印或提交。先确认目标端口属于本轮服务，已运行则复用。不得用重建Docker卷或清库来“恢复”环境。
 
 ```sh
-# 在后端worktree；只使用专用compose，绝不使用旧compose.yaml启动本环境。
-docker compose --env-file .env -f compose.business-preview.yaml up -d --wait
-
-# 本轮启动构建确实使用了此命令；没有运行测试，不能算工程门禁通过。
-mvn -q -Dmaven.test.skip=true clean package
+# 工程构建；不是业务验收。
+JAVA_HOME=/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home mvn -q package
 npm --prefix agent-sidecar run build
 
-# 终端A：上游只读出口
+# Java：仅在本轮13215实例确需重启时执行，不覆盖不可变发布jar。
 set -a; . ./.env; set +a
-/opt/homebrew/opt/node@22/bin/node tools/business-preview-upstream.mjs
+/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home/bin/java   -Dagent.video.allowed-origin=http://127.0.0.1:9419   -jar var/business-preview/iot-agent-mysql-session-preview-v24-20261103.jar
 
-# 终端B：Java（从后端worktree运行）
-# 视频页与Java不同源时，必须显式给出来源；未配置时跨域取流保持关闭。
+# Node：另一个终端；启动器仅传通用引擎白名单，不传DB/Redis/Admin凭据。
 set -a; . ./.env; set +a
-/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home/bin/java \
-  -Dagent.video.allowed-origin=http://127.0.0.1:9419 \
-  -jar target/iot-agent-backend-0.1.0.jar
-
-# 终端C：从后端worktree启动Pi；白名单启动器不向Node传递DB/Redis/Admin凭据。
-set -a; . ./.env; set +a
-/Users/qianchen/anaconda3/bin/python tools/start-sidecar.py var/business-preview/sidecar-mysql-ro-v10
-
-# 终端D：从后端worktree启动独立静态页。禁止默认http.server记录带token的URL。
-python3 tools/business-preview-player.py --port 9419 --directory '/Users/qianchen/works/新发展/iot-agent-video-player/public'
+PATH=/opt/homebrew/opt/node@22/bin:$PATH   /Users/qianchen/anaconda3/bin/python tools/start-sidecar.py var/business-preview/sidecar-mysql-ro-v12
 ```
 
-工程回归与真实UI证据独立记录。MySQL官方一致性30/30、Node20条工程通过不等于业务验收；Java全套仍有已记录失败。不得用测试或HTTP状态替代选定真实业务路径。
+当前Java与Node回调、会话私有协议均使用13215/13235。不要额外添加旧3235启动覆盖项。需要重新构建发布时创建新产物并记录SHA256，不能用编译成功代替业务重验。
 
-前端仅编译独立项目，不触发上传或发布：
+现有DevTools9444使用上表冻结项目。前端源码重新编译可能恢复其另一线程的3217配置，**不可直接把新dist当作本轮13215项目**；先核对该项目 `config/settings.js` 的 `develop.local.agentBaseUrl`、`videoApiBaseUrl` 和实际请求归属，不改trial/release、不复制登录存储。不要关闭原开发者工具或清应用数据来规避竞态。
 
-```sh
-/Applications/HBuilderX.app/Contents/MacOS/cli project open --path '/Users/qianchen/works/新发展/mp-agent-business'
-/Applications/HBuilderX.app/Contents/MacOS/cli launch mp-weixin --project '/Users/qianchen/works/新发展/mp-agent-business' --compile true
-/Applications/wechatwebdevtools.app/Contents/MacOS/cli open --project '/Users/qianchen/works/新发展/mp-agent-business/unpackage/dist/dev/mp-weixin'
-```
+## 恢复、运维与安全边界
 
-生成配置中的projectname可设为`Agent Business WT - Java 3215`用于区分窗口，不改AppID或注入业务数据。启动自动化使用已安装的`miniprogram-automator`，projectPath明确指向上述生成目录、端口9441、trustProject=true；已有9441时用connect，不重复launch或关闭原IDE。CLI auto实际使用`auto --project <生成目录> --auto-port 9441 --trust-project`。自动化包当前在`/tmp/mp-automator/node_modules`，若目录被系统清理，在新的本地工具目录正常安装同版本依赖，不修改程序业务依赖。
-
-2026-11-03新增冻结项目：`iot-agent-backend-business/var/business-preview/mp-mysql-v17-node10`，窗口名`MySQL Session Frozen - Java 3215`，自动化9444。只复制编译源码，未复制或注入登录凭据；原9441和缓存9431不关闭。构建摘要见[记录](../pi-session-mysql/evidence/builds-20261103.json)。该窗口当前蓝牙权限弹层需真实点击“拒绝”；SDK取消未生效、系统辅助访问被拒绝，未取得无遮挡结果的路径保持未验收，不点“创建任务”。
-
-## 4. 真正的环境/路由核实
-
-仅启动成功或healthz不够。每次切换构建后：
-
-1. 在新窗口沿真实客户登录及组织/园区链路到首页，检查有物联助手菜单；不复制或注入token，不清原窗口登录。
-2. 真实点击物联助手进入仪表盘，再从办公室入口进入Office。等页面路由和可交互控件完成，不在tap后立即对旧page调用waitFor。
-3. 在当前应用上下文只读检查编译配置的Agent地址为3215，结合本worktree的脱敏Tomcat访问记录证明实际请求到达。不要读取或保存Authorization等凭据。
-4. 真实输入说明书只读问题并发送，观察界面结果、截图；同时确认请求经历本轮Java、Pi和授权上游。接口日志只用于定位链路，业务判定仍看界面。
-5. 记录Java jar、sidecar构建文件和miniapp生成文件SHA256以及来源commit/未提交变更，避免旧产物截图被当新构建。
-
-### 视频跨域配置与预检
-
-播放页`http://127.0.0.1:9419`与Java`127.0.0.1:3215`不同源，浏览器的`OPTIONS`预检不会携带`Authorization`/`Tenantcode`，因此Java必须显式允许该播放页来源：
-
-- 属性：`agent.video.allowed-origin`（环境变量`AGENT_VIDEO_ALLOWED_ORIGIN`），值为精确的`scheme://host[:port]`，默认空=跨域关闭；
-- 仅覆盖`/api/agent/devices/{id}/video-stream`，只允许`GET`/`OPTIONS`和`Authorization`/`Tenantcode`（及播放器`no-store`取流可能产生的缓存提示头），不启用cookie、不覆盖`/internal`或`/api/admin`，也不接受通配符/带路径的来源（配置错误会启动失败）；
-- 实际取流`GET`仍经过`AgentIdentityFilter`，缺少真实`Authorization`+`Tenantcode`仍是401；预检只绕过认证不返回业务数据。
-
-重新构建并带该属性启动后，用不带凭据的本地预检确认工程链路（业务播放仍看前端真实画面）：
-
-```sh
-curl -sS -i -X OPTIONS \
-  'http://127.0.0.1:3215/api/agent/devices/DEVICE_ID/video-stream?source=office&mode=live' \
-  -H 'Origin: http://127.0.0.1:9419' \
-  -H 'Access-Control-Request-Method: GET' \
-  -H 'Access-Control-Request-Headers: authorization,tenantcode'
-```
-
-预期`200`且`Access-Control-Allow-Origin`精确等于播放页来源；同一地址的无凭据`GET`仍应返回`401 UNAUTHORIZED`。旧构建/未配置该属性时预检返回`401`且无CORS头，属预期失败，不能当作播放验收。
-
-早期[OFF-QRY-01](evidence/OFF-QRY-01/README.md)是旧构建/旧时点4盏全关的历史证据。MySQL新会话在2026-11-02真实看到3盏、2开1关；之后重新核验状态又已变化。不得把历史清单与状态硬编码到模型或测试；当前结果见[Pi Session真实验收](../pi-session-mysql/acceptance.md)。
-
-## 5. 自动化与截图陷阱
-
-- `launch()`刚返回时，`currentPage()`可能遇到页面元数据尚未建立；先等应用页面栈稳定，再获取page。不清应用数据来解决自动化竞态。
-- `property('disabled')`本版本实测返回字符串`"false"`，不能按JS truthiness误判为禁用；只把布尔true或字符串`"true"`视为禁用。
-- `page.text()`不一定包含Markdown自定义组件正文；本轮plain text只返回处理记录，但真实截图已有完整灯清单。必须看实际截图，不用DOM摘要下错误结论。
-- SDK截图要等渲染完成。需要完整IDE窗口证据时，按窗口标题查询CoreGraphics window ID，再用`screencapture -x -l <window-id>`；不要按屏幕矩形抓图，用户切换前台会抓到其他程序。
-- 无关蓝牙授权可拒绝，不操作真实BLE设备；遇到原生弹层先正常关闭，再验证截图。不得裁掉失败弹层冒充成功。
-- 工具连接失败、导航竞态、按钮读取类型错误是工具诊断，不等于后端业务失败；相反，页面实际失败不能被200或终态覆盖。
-
-## 6. 生产禁写与证据边界
-
-代理只允许源码白名单内的身份/目录/现态/历史GET。`interactive/.../down`不能仅按HTTP动词判断：只允许同一Bearer+tenant先前真实授权目录中被识别为`realTimeData/acDetail/view`的读取动作（短期授权），及Runtime明确的录像读取形状；其余控制、任务、通知、配置写入拒绝。授权取流是读取，不是设备控制。新增读路由必须核对Runtime语义，不能用通配放行解决403。
-
-代理本轮用独立假上游做过工程烟测：真实转发读取、未知query拒绝、读action与控制action区分、身份隔离、控制/任务/通知拒绝。该夹具不是业务证据。真实环境未进行控制写入测试；物理禁写由代理出口及操作范围共同保证，不通过生产试下发来验证。
-
-当前前端其他客户菜单仍属于原小程序，不在本轮Agent验收范围，不从这些菜单进行设备控制。新环境也没有生产任务/通知事实；需要历史管理证据按票13取得合法来源并导入独立库，不能把当前空列表认成已迁移历史。
-
-视频静态页和API已本地分流；Java已按上述显式来源属性支持该路由的跨域预检与响应头，但新构建的预检烟测、WebView/SDK加载、真实摄像头动帧和录像推进仍未验收，由09完成；不以静态页200、预检200或取流URL证明视频成功。
-
-## 7. 关闭业务票的终点
-
-先完成本票业务实现、代表路径与风险验证，再按[共享CASE规则](README.md#共享case闭票与并行交接)交接；票内UI步骤不另加全量客户验收。09必须等08，14必须等08/13；01以后可以并行调查，但共享文件/证据有唯一集成人。
-
-最终16按用户最新口径采用约20条灵活代表业务路径，数量和清单不严格，不要求149条全过。候选库保留，未抽到项标未验收、不阻塞抽样收口；工程验证独立记录，不充业务数量或追加全量客户门禁。缓存集成后复验所选受影响路径，Java-only真实扩展与完整实现要求不变。主验收可不下发控制、不创建生产任务；新窗口、单例成功、请求200和测试全绿都不等于完整交付。
-
-## 9. 当前已知业务修复预览（2026-11-02 13:49）
-
-- Java 3215 当前进程：`business-preview-java-3215-business-v11`；运行 `var/business-preview/iot-agent-business-fixes-preview-v11-20261102.jar`，SHA256 `0fd0d0ac3f67b2d308f4f5f43280d3b0c767f77b1ad983e803cb3f57d20e8d7c`。
-- 这是隔离业务修复预览，不是整个工作区最新源码的完整构建：以先前 v7 完整运行包为基线（SHA256 `9167dd874bf825a7cdf27dfa1e7d2a2ce3f3fa0f3b83784c33391b15546a0b01`），仅替换已独立编译/定向验证的能耗组合、报告模块注册、PDF/XLSX 投影、巡检结果类，并加入必要 PDFBox 依赖、静态字体及许可证。保留原包，未带入并行线程尚在推进的 Java/MySQL Pi Session 迁移，不应作为整体迁移发布包。
-- 当前已验证报告真实前端路径及下载文件见 [COMP-ENE-04](evidence/COMP-ENE-04/README.md)。MySQL 会话迁移合并后的完整源构建与集成复验由后续集成收口，不能沿用此包宣称已切换 MySQL Pi Session。
-- 用户已取消“逐类遍历全部卡片”的待办；本轮只收口已遇到问题。草案真实控制仍停在安全边界，不解除只读上游代理。
+- Java管理业务事实和Pi上下文的MySQL持久化；Node仅是通用循环、原生压缩、流和受控检查点适配，无业务分支和数据库凭据。六小时无活动会话沿用既有过期策略，不承诺永久恢复。
+- 直接切换不导入旧SQLite，旧文件只作离线历史；运行无双写、SQLite回退或本地会话卷。一次性cutover标记不得在每次启动清新历史。
+- MySQL备份需包含业务事实、Pi表及迁移标记的一致恢复点，恢复到另一个独立库，不覆盖在线库。O02是v17真实恢复后继续业务的历史证据，不能冒充v24同版演练。
+- Node/Java中断后只恢复已提交事实；未确认副作用视为未知，不自动重发。Redis不可用不能用清空历史掩盖。
+- 上游代理仅放行明确只读路由及已授权读取动作；不能因HTTP动词为POST就认定控制，也不能用通配放行解决拒绝。未知控制、任务、通知、配置写入拒绝；不向生产试下发来证明禁写。
+- 视频来源精确允许 `http://127.0.0.1:9419`，只覆盖视频取流GET/OPTIONS；实际GET仍需真实身份。预检200、静态页200、URL或录像卡不是播放验收。
+- 自动化须等实际控件/报告加载完成；Markdown正文不一定出现在`page.text()`。禁用值可能是字符串`"false"`，不能按truthiness误判；截图保留失败与修复后版本。
+- 不运行或重启可靠原Runtime；只读其源码作为业务逻辑对照。原业务父票不因存储迁移自动关闭，未抽取场景标未验收，不追加149条硬门禁。
