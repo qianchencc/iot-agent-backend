@@ -29,7 +29,7 @@ Implementation: direct-cutover-no-import
 |[05 运维与无本地盘交付](issues/05-operations-sqlite-retirement.md)|implemented / validation open|无本地卷Node已真实恢复；O01/O02为v17证据，v24同版管理面/恢复未重演|
 |[06 开发者工具验收及最终审查](issues/06-devtools-final-acceptance.md)|sample accepted / final replay open|F01–F21真实样本与唯一内联审查完成；最终13215窗口蓝牙弹层遮挡F22，不计通过|
 
-源码、票据和证据已合入`iot-agent-backend`的`main`；原mysql-final工作树清理前保留检查点和私有归档。13215/13235冻结服务迁至主worktree的`var/mysql-final-preview/`，保留独立MySQL库和Redis DB2，不覆盖主线3217/3237或根配置。21条仍为Java20–23迭代证据，不改成主线最新构建全量通过。未齐验收保留，无子代理。
+源码、票据和证据已合入`iot-agent-backend`的`main`，原mysql-final工作树已删除；本轮私有归档和两个临时清理checkpoint依用户要求删除。13215/13235冻结服务从主worktree的`var/mysql-final-preview/`运行，独立MySQL库和Redis DB2不变，不覆盖主线3217/3237或根配置。21条仍为Java20–23迭代证据，不改成主线最新构建全量通过。未齐验收保留，无子代理。
 
 ## 预期终点
 

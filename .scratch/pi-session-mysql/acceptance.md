@@ -4,7 +4,7 @@
 
 ## 当前定版验收与隔离更正
 
-- 本轮原工作区`iot-agent-backend-mysql-final`及分支`refactor/pi-session-mysql-final`的实现、票据和证据已合入主工作区`iot-agent-backend`的`main`。清理前保留Git检查点和私有归档；13215/13235冻结进程迁至主worktree专用`var/mysql-final-preview/`，不覆盖根配置或其他实例。
+- 本轮原工作区`iot-agent-backend-mysql-final`及分支`refactor/pi-session-mysql-final`的实现、票据和证据已合入主工作区`iot-agent-backend`的`main`，原工作树已删除。本轮私有归档及清理时创建的两个临时checkpoint已依用户要求删除，不保留该归档备份；13215/13235冻结进程从主worktree专用`var/mysql-final-preview/`运行，不覆盖根配置或其他实例。
 - 冻结窗口最初虽然名为3215，编译配置实际指向3217。U14–U21不能验收新发布Java20，原程序字节已另存。之后纠正同一9444窗口路由，完成下列真实样本；最终窗口名为`MySQL Final - Java 13215`，Agent/视频API均指向13215。旧3215又被另一实例占用，本轮未终止它。
 - 正确路由后，U23真实恢复两楼层旧报告合计441.56/461.29及模拟补数、采样边界；U24完整覆盖156台照明，54开、82关、20未知。之后U25因另一Java实例正使用同一Company会话而被writer保护拒绝；不是伪装查询成功。
 - 为避免同账号会话互相干扰，最终环境使用独立空库`iot_agent_mysql_final`和Redis DB2，仅复制加密的模型管理配置，不复制旧会话、任务、报告或身份；原库及另一实例不动。以下F系列在此空库从真实界面重新建立业务事实。

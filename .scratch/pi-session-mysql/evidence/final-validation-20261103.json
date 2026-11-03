@@ -148,7 +148,7 @@
     "verificationNote": "Initial npm test omitted the required Java/MySQL fixture. With that prerequisite supplied, cancellation teardown exposed deliberately hanging model connections; the test harness now closes its own connections and separates cancellation from startup deadlines. Full suite/build and unchanged official conformance subsequently passed; production behavior was not changed.",
     "frozenArtifactsPreserved": true,
     "postRelocationCounts": {"conversations": 2, "reports": 2, "tasks": 0, "sessionChunks": 217},
-    "privateBackup": "/Users/qianchen/works/新发展/.worktree-backups/mysql-final-221f73e-20261103/worktree-private.tar.gz",
+    "privateBackup": null,
     "privateEnvironment": "var/mysql-final-preview/.env",
     "scope": "Merge source, tickets and evidence into main; move only the 13215/13235 frozen processes. Keep main root configuration, 3217/3237, other worktrees and Docker data untouched.",
     "businessAcceptance": "No new acceptance claimed by build, SQL counts, process startup or relocation; existing permission-overlay limitation remains."
@@ -156,6 +156,8 @@
   "cleanup": {
     "sourceWorktreeRemoved": true,
     "sourceBranchRetained": true,
+    "privateArchiveRemovedAtUserRequest": true,
+    "temporaryCleanupCheckpointsRemoved": true,
     "engineeringConformanceFixture3297": "stopped",
     "staleAdmin5185TargetingOther3215": "stopped only our owned preview",
     "finalJavaAndNode": "restarted with identical frozen artifacts under main, same ports and database",
