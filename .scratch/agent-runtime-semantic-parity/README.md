@@ -48,7 +48,7 @@
 
 ## 执行纪律与停止条件
 
-- 开工冻结来源与运行包。当前完整构建目录为`var/business-preview/semantic-final-20261103-095803/`，各版本与SHA256在manifest.json；v11拼接预览仅为历史，不作交付。
+- 来源与运行包分别冻结。合并后的后端主线为`iot-agent-backend/main`，当前隔离完整源码构建在`var/semantic-context-20261103-125434/`，来源和SHA256见manifest.json；旧`var/business-preview/semantic-final-20261103-095803/`及v11拼接预览仅保留历史，不作为当前交付。
 - 每票包含业务定义→服务器规则→Business Fact→现有事件/卡片→代表验证，不拆成「先prompt、再接口、最后等UI」的横向空闭环。
 - 实现遵守红绿回归和深模块原则；使用现有公开入口，不为测试暴露内部实现。必要新协议保持通用，迁移全部调用方，不留双规则或兼容层掩盖错误。
 - 每张票列出的前端路径均是定向示例与证据要求，不要求把所有卡片重新走一遍。已知失败不可被未抽验标记掩盖；未选择的其他UI分支保持未验收。
@@ -57,10 +57,11 @@
 
 ## 2026-11-03 当前验证记录
 
-- Java完整源码`mvn -q package`：272项、0失败/错误/跳过；Node类型检查、25项回归、独立进程烟测及构建通过；独立小程序编译成功。工程结果不充业务验收。
-- 真实全照明提案已有156成员卡片及预检计数：[完整卡片](evidence/SEM-TASK-ALL/12-final-card.png)，没有创建任务。
-- 全授权43电表只读检查与周报待确认单：[结果](evidence/SEM-READ-ALL/10-fixed-members-proposal.png)，固定期间2026-10-26至11-01，没有创建任务。
-- 原报告读取保留26楼441.56度、27楼461.29度及模拟补数限制：[结果](evidence/SEM-FACT-CONTEXT/13-saved-report-facts.png)，未生成新报告。
+- 合并后独立完整源码`mvn -q package`：352项、0失败/错误/跳过；Node类型检查、26项回归、独立进程烟测及构建通过。前端主线`63e09b7`已在独立目录完整编译，仅本地Agent/视频API指向3377，未修改主线3217或trial/release。工程结果不充业务验收。
+- 前序构建已有真实全照明156成员卡片及预检计数：[完整卡片](evidence/SEM-TASK-ALL/12-final-card.png)，没有创建任务；不能冒充当前合并包通过。
+- 前序构建有全授权43电表只读检查与周报待确认单：[结果](evidence/SEM-READ-ALL/10-fixed-members-proposal.png)，固定期间2026-10-26至11-01，没有创建任务。
+- 前序构建的原报告读取保留26楼441.56度、27楼461.29度及模拟补数限制：[结果](evidence/SEM-FACT-CONTEXT/13-saved-report-facts.png)，未生成新报告。
 - 范围声明把“公司”当具体地点时现返回可修正的400，不再误报上游503；完整授权必须显式声明，不能静默扩大。Java-only修改，Node产物不变。
 - 真实两阶段提案暴露空调未知回读的`Mono.just(null)`错误，现用空信号表达未知，批次保留其他设备事实，401/403仍拒绝；公开入口红→绿。正在最终包复验，不把先前失败标绿。
 - [环境引用截图](evidence/SEM-FACT-CONTEXT/11-environment-reference-result.png)已说明站点不可代表房间、单位/覆盖限制；部分采样覆盖时点的上海时间表达仍须核对，不据此宣称全部引用分支完成。
+- 当轮上下文修正后的原话复测：[实际结果](evidence/SEM-TASK-ALL/context-original-result.png)。执行时间已正确使用本轮13:06的时间锚点，但模型走逐台`actions`旧入口，仅生成50台却声称全部，因此仍未验收。当前主线需要在Java模型schema及提案入口同时切断Company控制任务的逐台入口，改为完整范围/精确选择统一走`targets`；不放宽时间/范围校验，不清空原会话，不再修改Node。
