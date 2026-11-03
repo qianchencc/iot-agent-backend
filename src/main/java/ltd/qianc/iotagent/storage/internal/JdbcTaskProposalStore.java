@@ -36,9 +36,21 @@ public final class JdbcTaskProposalStore extends JdbcFactSupport implements Task
                 replacement.proposalId(), expectedVersion);
         return changed == 1 ? Optional.of(replacement) : Optional.empty();
     }
-    @Override public void retireForConversation(String conversationId) {
-        jdbc.update("UPDATE task_proposals SET status='RETIRED',update_time=? WHERE conversation_id=? AND status NOT IN ('CONFIRMED','CANCELLED','RETIRED','EXPIRED')",
-                time(java.time.Instant.now()), conversationId);
+    @Override public java.util.List<TaskProposalFact> retireForConversation(String conversationId, String tenantCode,
+            String ownerKey, String source) {
+        return transactions.execute(transaction -> {
+            var pending = jdbc.query("SELECT proposal_id,version,status,payload_json,idempotency_key,kind,target_json,before_json,after_json,operation,tenant_code,owner_key,source,expires_at FROM task_proposals "
+                            + "WHERE conversation_id=? AND tenant_code=? AND owner_key=? AND source=? AND status IN ('PENDING_CONFIRMATION','EXPIRED') FOR UPDATE",
+                    this::map, conversationId, tenantCode, ownerKey, source);
+            if (pending.isEmpty()) return java.util.List.of();
+            jdbc.update("UPDATE task_proposals SET status='CANCELLED',version=version+1,update_time=? "
+                            + "WHERE conversation_id=? AND tenant_code=? AND owner_key=? AND source=? AND status IN ('PENDING_CONFIRMATION','EXPIRED')",
+                    time(java.time.Instant.now()), conversationId, tenantCode, ownerKey, source);
+            return pending.stream().map(proposal -> new TaskProposalFact(proposal.proposalId(), proposal.version() + 1,
+                    "CANCELLED", proposal.payloadJson(), proposal.idempotencyKey(), proposal.kind(), proposal.targetJson(),
+                    proposal.beforeJson(), proposal.afterJson(), proposal.operation(), proposal.tenantCode(),
+                    proposal.ownerKey(), proposal.source(), proposal.expiresAt())).toList();
+        });
     }
     private TaskProposalFact map(java.sql.ResultSet rs, int row) throws java.sql.SQLException {
         java.sql.Timestamp expiry = rs.getTimestamp(14);

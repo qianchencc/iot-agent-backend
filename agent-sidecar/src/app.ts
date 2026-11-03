@@ -154,29 +154,6 @@ export function buildApp(config: SidecarConfig, observability: Observability = c
   });
 
 
-  app.post("/internal/pi-session/capacity", async (_request, reply) => {
-    try { return await sessions.capacity(); } catch { reply.code(503).send({ error: "pi_session_unavailable" }); }
-  });
-  app.post("/internal/pi-session/integrity-check", async (_request, reply) => {
-    try { return await sessions.integrityCheck(); } catch { reply.code(503).send({ error: "pi_session_integrity_failed" }); }
-  });
-  app.post("/internal/pi-session/writer-lease/recover", async (_request, reply) => {
-    try { return await sessions.recoverWriterLease(); } catch { reply.code(503).send({ error: "pi_session_writer_recovery_failed" }); }
-  });
-  app.post("/internal/pi-session/backup", async (request, reply) => {
-    const body = request.body;
-    if (!body || typeof body !== "object" || Array.isArray(body)) { invalid(reply); return; }
-    const input = body as Record<string, unknown>;
-    if (typeof input.destination !== "string" || typeof input.force !== "boolean") { invalid(reply); return; }
-    try { return await sessions.backup(input.destination, input.force); } catch { reply.code(503).send({ error: "pi_session_backup_failed" }); }
-  });
-  app.post("/internal/pi-session/restore", async (request, reply) => {
-    const body = request.body;
-    if (!body || typeof body !== "object" || Array.isArray(body)) { invalid(reply); return; }
-    const input = body as Record<string, unknown>;
-    if (typeof input.backup !== "string" || typeof input.apply !== "boolean") { invalid(reply); return; }
-    try { return await sessions.restore(input.backup, input.apply); } catch { reply.code(503).send({ error: "pi_session_restore_failed" }); }
-  });
 
   app.addHook("onClose", async () => {
     for (const run of active.values()) run.controller.abort();

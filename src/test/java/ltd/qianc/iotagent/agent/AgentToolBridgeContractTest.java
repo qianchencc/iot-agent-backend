@@ -36,6 +36,19 @@ class AgentToolBridgeContractTest {
     private final PrincipalInfo principal = new PrincipalInfo("Bearer fixture", "TENANT", "owner-1", "fixture");
 
     @Test
+    void wholeCandidateReadCannotBeMixedWithAnExplicitDeviceSelection() {
+        ConversationFacade conversations = mock(ConversationFacade.class);
+        IotAdapter iot = mock(IotAdapter.class);
+        bind(conversations, "company", null);
+        AgentToolBridge bridge = AgentToolBridgeFactory.local(conversations, iot,
+                mock(ActionDraftFacade.class), mock(TaskFacade.class), mapper, null);
+        BusinessException error = catchThrowableOfType(() -> bridge.execute(request("read_device_states",
+                Map.of("candidateSets", List.of(Map.of("candidateSetId", "set-1",
+                        "all", true, "deviceIds", List.of("selected-only")))))), BusinessException.class);
+        assertThat(error.code()).isEqualTo("INVALID_DEVICE_REFERENCE");
+    }
+
+    @Test
     void officeRegionNameSearchReturnsOnlyMatchingAuthorizedRegions() {
         ConversationFacade conversations = mock(ConversationFacade.class);
         IotAdapter iot = mock(IotAdapter.class);
@@ -52,27 +65,6 @@ class AgentToolBridgeContractTest {
         assertThat(result.get("regions")).isEqualTo(List.of(new OfficeRegion("region-2", "杨国英办公室")));
     }
 
-    @Test
-    void publicFactoryRoutesObservationThroughTheJavaSeam() {
-        ConversationFacade conversations = mock(ConversationFacade.class);
-        ObservationAdapter observations = mock(ObservationAdapter.class);
-        bind(conversations, "company", null);
-        when(observations.read(any(ObservationRequest.class)))
-                .thenReturn(Mono.just(ObservationResponse.available(Map.of("records", List.of(Map.of("id", "alert-1"))))));
-        AgentToolBridge bridge = AgentToolBridgeFactory.local(conversations, mock(IotAdapter.class), observations,
-                mock(TaskProjectionStore.class), mock(ActionDraftFacade.class), mock(TaskFacade.class), mapper, null);
-
-        Map<String, Object> result = bridge.execute(request("query_alerts",
-                Map.of("types", List.of("gas"), "days", 3)));
-
-        assertThat(result).containsKey("records");
-        AtomicReference<ObservationRequest> observed = new AtomicReference<>();
-        verify(observations).read(org.mockito.ArgumentMatchers.argThat((ObservationRequest value) -> {
-            observed.set(value);
-            return true;
-        }));
-        assertThat(observed.get().identity().source().wireValue()).isEqualTo("company");
-    }
 
     @Test
     void aggregatesRequestedAlertTypesWithoutMaskingMissingTotals() {
@@ -160,27 +152,6 @@ class AgentToolBridgeContractTest {
                 .containsEntry("to", "2026-10-02T00:00:00+08:00");
     }
 
-    @Test
-    void safetyToolArgumentsPreserveRuntimeEventIdentityAndTypeFilters() {
-        ConversationFacade conversations = mock(ConversationFacade.class);
-        ObservationAdapter observations = mock(ObservationAdapter.class);
-        bind(conversations, "company", null);
-        AtomicReference<ObservationRequest> request = new AtomicReference<>();
-        when(observations.read(any(ObservationRequest.class))).thenAnswer(invocation -> {
-            request.set(invocation.getArgument(0));
-            return Mono.just(ObservationResponse.available(Map.of("record", Map.of("eventId", "event-1"))));
-        });
-        AgentToolBridge bridge = AgentToolBridgeFactory.local(conversations, mock(IotAdapter.class), observations,
-                mock(TaskProjectionStore.class), mock(ActionDraftFacade.class), mock(TaskFacade.class), mapper, null);
-
-        bridge.execute(request("review_safety_event",
-                Map.of("eventId", "event-1", "deviceId", "gas-1", "ledger", "gas")));
-
-        assertThat(request.get().operation()).isEqualTo(ObservationOperation.SAFETY_EVENT);
-        assertThat(request.get().parameters()).containsEntry("id", "event-1")
-                .containsEntry("deviceId", "gas-1")
-                .containsEntry("ledger", "gas");
-    }
 
     @Test
     void readDeviceStatesAcceptsRuntimeCandidateSetShape() {

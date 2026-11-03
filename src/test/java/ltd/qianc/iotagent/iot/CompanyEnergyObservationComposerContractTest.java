@@ -42,6 +42,116 @@ class CompanyEnergyObservationComposerContractTest {
         assertThat(payload.get("timezone")).isEqualTo("Asia/Shanghai");
     }
 
+
+
+    @Test
+    void energyComposerUsesTheEnergyOnlyAuthorizationScope() {
+        CompanyEnergyObservationComposer composer = CompanyEnergyObservationComposerFactory.composed(
+                raw((request, pageNumber) -> Mono.just(ObservationResponse.available(pageBody(List.of(
+                        row("a", "2026-10-02 08:00:00", "meter-1", 100)), true)))),
+                new IotAdapter() {
+                    @Override public Mono<AuthorizedDeviceScope> loadAuthorizedDeviceScope(RequestIdentity request) {
+                        return Mono.just(AuthorizedDeviceScope.of(request, IotSource.COMPANY, List.of()));
+                    }
+
+                    @Override public Mono<AuthorizedDeviceScope> loadAuthorizedEnergyScope(RequestIdentity request) {
+                        return Mono.just(AuthorizedDeviceScope.of(request, IotSource.COMPANY, List.of(METER)));
+                    }
+                }, CLOCK);
+        Map<String, Object> payload = composer.read(new ObservationRequest(COMPANY,
+                ObservationOperation.COMPANY_ENERGY_DAILY, Map.of("days", "1"))).block().payload();
+
+        assertThat((List<?>) payload.get("meters")).hasSize(1);
+        assertThat(payload.get("latestSampleTime")).isNotNull();
+    }
+
+    @Test
+    void dailyDoesNotCountPartialBoundaryUsageAsComplete() {
+        CompanyEnergyObservationComposer composer = composer(page(List.of(
+                row("a", "2026-10-02 08:00:00", "meter-1", 100),
+                row("b", "2026-10-03 07:59:00", "meter-1", 125)), true));
+
+        Map<String, Object> payload = composer.read(new ObservationRequest(COMPANY,
+                ObservationOperation.COMPANY_ENERGY_DAILY, Map.of("days", "1", "end", "2026-10-02"))).block().payload();
+
+        Map<?, ?> day = (Map<?, ?>) ((List<?>) payload.get("days")).get(0);
+        assertThat(day.get("complete")).isEqualTo(false);
+        assertThat(day.get("usage")).isNull();
+        assertThat(day.get("coveredMeters")).isEqualTo(0);
+        assertThat(day.get("partialMeters")).isEqualTo(1);
+        Map<?, ?> meter = (Map<?, ?>) ((List<?>) payload.get("meters")).get(0);
+        Map<?, ?> cell = (Map<?, ?>) ((Map<?, ?>) meter.get("daily")).get("2026-10-02");
+        assertThat(cell.get("status")).isEqualTo("partial");
+    }
+
+    @Test
+    void regularTwelveHourSamplesProduceMeterCardForEqualLengthObservedWeek() {
+        CompanyEnergyObservationComposer composer = composer(page(List.of(
+                row("a", "2026-09-30 20:00:00", "meter-1", 100),
+                row("b", "2026-10-07 20:00:00", "meter-1", 125)), true));
+        Map<String, Object> report = composer.read(new ObservationRequest(COMPANY,
+                ObservationOperation.COMPANY_METER_REPORT, Map.of("kind", "statistics", "scopeLevel", "all",
+                        "from", "2026-10-01T00:00:00+08:00", "to", "2026-10-08T00:00:00+08:00"))).block().payload();
+
+        assertThat(((Number) ((Map<?, ?>) report.get("coverage")).get("dataMeters")).intValue()).isEqualTo(1);
+        assertThat(((Map<?, ?>) report.get("total")).get("value")).isEqualTo(25.0d);
+        Map<?, ?> span = (Map<?, ?>) ((Map<?, ?>) report.get("params")).get("span");
+        Map<?, ?> observed = (Map<?, ?>) span.get("observed");
+        assertThat(observed.get("from")).isEqualTo("2026-09-30T20:00:00+08:00");
+        assertThat(observed.get("to")).isEqualTo("2026-10-07T20:00:00+08:00");
+    }
+
+    @Test
+    void statisticsRejectsSingleSampleAndResetFromTheTotal() {
+        CompanyEnergyObservationComposer interior = composer(page(List.of(
+                row("a", "2026-10-02 09:00:00", "meter-1", 100)), true));
+        ObservationResponse interiorResponse = interior.read(new ObservationRequest(COMPANY,
+                ObservationOperation.COMPANY_METER_REPORT, Map.of("kind", "statistics", "scopeLevel", "all",
+                        "from", "2026-10-02T08:00:00+08:00", "to", "2026-10-03T08:00:00+08:00"))).block();
+        assertThat(((Map<?, ?>) interiorResponse.payload().get("total")).get("value")).isNull();
+        assertThat((List<?>) ((Map<?, ?>) interiorResponse.payload().get("coverage")).get("partial")).hasSize(1);
+
+        CompanyEnergyObservationComposer shortened = composer(page(List.of(
+                row("a", "2026-10-02 08:00:00", "meter-1", 100),
+                row("b", "2026-10-03 07:00:00", "meter-1", 90)), true));
+        ObservationResponse shortenedResponse = shortened.read(new ObservationRequest(COMPANY,
+                ObservationOperation.COMPANY_METER_REPORT, Map.of("kind", "statistics", "scopeLevel", "all",
+                        "from", "2026-10-02T08:00:00+08:00", "to", "2026-10-03T08:00:00+08:00"))).block();
+        assertThat(((Map<?, ?>) shortenedResponse.payload().get("total")).get("value")).isNull();
+        assertThat((List<?>) ((Map<?, ?>) shortenedResponse.payload().get("coverage")).get("partial")).hasSize(1);
+    }
+
+    @Test
+    void nightWindowWithMissingEightBoundaryIsNotTreatedAsMeasured() {
+        CompanyEnergyObservationComposer composer = composer(page(List.of(
+                row("a", "2026-10-01 20:00:00", "meter-1", 100),
+                row("b", "2026-10-02 07:00:00", "meter-1", 112)), true));
+
+        Map<String, Object> payload = composer.read(new ObservationRequest(COMPANY, ObservationOperation.COMPANY_METER_REPORT,
+                Map.of("kind", "statistics", "scopeLevel", "all", "windowFrom", "20:00", "windowTo", "08:00",
+                        "from", "2026-10-01T08:00:00+08:00", "to", "2026-10-02T08:00:00+08:00"))).block().payload();
+
+        assertThat(((Map<?, ?>) payload.get("total")).get("value")).isNull();
+        assertThat(((Map<?, ?>) payload.get("windowSummary")).get("validMeterNights")).isEqualTo(0);
+        assertThat((List<?>) ((Map<?, ?>) payload.get("coverage")).get("partial")).hasSize(1);
+    }
+
+
+    @Test
+    void defaultDailyAnchorsLatestCompleteMeteringDayAndReadsOnlyRequestedDays() {
+        CompanyEnergyObservationComposer composer = composer(page(List.of(
+                row("a", "2026-10-01 08:00:00", "meter-1", 100),
+                row("b", "2026-10-02 08:00:00", "meter-1", 125)), true));
+
+        Map<String, Object> payload = composer.read(new ObservationRequest(COMPANY,
+                ObservationOperation.COMPANY_ENERGY_DAILY, Map.of("days", "1"))).block().payload();
+
+        assertThat((List<?>) payload.get("days")).hasSize(1);
+        Map<?, ?> day = (Map<?, ?>) ((List<?>) payload.get("days")).get(0);
+        assertThat(day.get("date")).isEqualTo("2026-10-01");
+        assertThat(day.get("usage")).isEqualTo(25.0d);
+    }
+
     @Test
     void defaultDailyWindowIsThirtyMeteringDaysAndMissingSamplesStayNull() {
         CompanyEnergyObservationComposer composer = composer(page(List.of(), true));
@@ -68,7 +178,7 @@ class CompanyEnergyObservationComposerContractTest {
                     pages.incrementAndGet();
                     return Mono.just(ObservationResponse.available(pageBody(List.of(
                             row("1", "2026-10-02 08:00:00", "meter-1", 100)), false)));
-                }), iot(COMPANY, List.of(METER)), CLOCK, 1, 1);
+                }), iot(COMPANY, List.of(METER)), CLOCK, 1, 1000);
         ObservationResponse response = composer.read(new ObservationRequest(COMPANY,
                 ObservationOperation.COMPANY_METER_REPORT, Map.of("kind", "statistics", "scopeLevel", "location",
                         "meterId", "meter-1", "from", "2026-10-02T08:00:00+08:00", "to", "2026-10-03T08:00:00+08:00"))).block();

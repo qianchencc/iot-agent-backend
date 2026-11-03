@@ -1,5 +1,6 @@
 package ltd.qianc.iotagent.agent.internal;
 
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
@@ -48,12 +49,21 @@ final class AgentReferenceResolver {
     private final TaskFacade tasks;
     private final ReportService reports;
     private final IotAdapter iot;
+    private final Clock clock;
 
-    AgentReferenceResolver(ObservationAdapter observations, TaskFacade tasks, ReportService reports, IotAdapter iot) {
+    AgentReferenceResolver(ObservationAdapter observations, TaskFacade tasks, ReportService reports,
+            IotAdapter iot, Clock clock) {
         this.observations = observations;
         this.tasks = tasks;
         this.reports = reports;
         this.iot = iot;
+        this.clock = java.util.Objects.requireNonNull(clock, "clock");
+    }
+
+    List<Map<String, Object>> savedReportFacts(AgentToolContext context, List<String> reportIds) {
+        if (reportIds.isEmpty()) return List.of();
+        if (reports == null) throw unavailable("历史报告事实暂不可读取");
+        return reports.conversationFacts(context.conversationId(), reportIds, identity(context, parseSource(context.source())));
     }
 
     ReferenceResolution resolve(AgentToolContext context) {
@@ -159,9 +169,17 @@ final class AgentReferenceResolver {
             throw unavailable("安全台账原事件时间不可解析");
         }
         if (occurred == null) throw unavailable("安全台账原事件时间不可解析");
+        // Frozen Runtime semantics: the review window spans ±15 minutes around the
+        // original event and never extends past the current time.
+        Instant windowFrom = occurred.minus(Duration.ofMinutes(15));
+        Instant windowTo = occurred.plus(Duration.ofMinutes(15));
+        if (windowTo.isAfter(clock.instant())) windowTo = clock.instant();
+        if (!windowTo.isAfter(windowFrom)) {
+            throw unavailable("安全台账记录时间晚于当前时间，请核对记录时间");
+        }
         Map<String, Object> window = new LinkedHashMap<>();
-        window.put("from", occurred.minus(Duration.ofMinutes(15)).toString());
-        window.put("to", occurred.plus(Duration.ofMinutes(15)).toString());
+        window.put("from", windowFrom.toString());
+        window.put("to", windowTo.toString());
         window.put("timezone", "Asia/Shanghai");
         String name = textOr(record, "deviceName", textOr(record, "recordedDeviceName", "安全设备"));
         Map<String, Object> reference = new LinkedHashMap<>();
@@ -229,7 +247,12 @@ final class AgentReferenceResolver {
             reference.put("status", textOr(report, "status", ""));
             reference.put("generatedAt", textOr(report, "generatedAt", ""));
             reference.put("verified", true);
-            return new ReferenceResolution(reference, Map.of("report", report));
+            Map<String, Object> facts = new LinkedHashMap<>();
+            if (report.get("evidenceNotes") instanceof List<?> notes && !notes.isEmpty()) {
+                facts.put("evidenceNotes", notes);
+            }
+            facts.put("report", report);
+            return new ReferenceResolution(reference, facts);
         } catch (BusinessException error) {
             throw error;
         } catch (RuntimeException error) {

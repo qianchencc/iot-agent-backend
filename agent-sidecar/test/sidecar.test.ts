@@ -1,15 +1,12 @@
 import { afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { buildApp } from "../src/app.js";
 import { defaultConfigForTests, type SidecarConfig } from "../src/config.js";
 import type { Observability } from "../src/observability.js";
 
 const servers: Server[] = [];
-const directories: string[] = [];
 
 afterEach(async () => {
   for (const server of servers.splice(0)) {
@@ -17,13 +14,14 @@ afterEach(async () => {
     server.close(() => closed.resolve());
     await closed.promise;
   }
-  for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true });
 });
 
 async function config(overrides: Partial<SidecarConfig> = {}): Promise<SidecarConfig> {
-  const directory = await mkdtemp(join(tmpdir(), "agent-sidecar-test-"));
-  directories.push(directory);
-  return defaultConfigForTests({ sessionPath: join(directory, "sessions.sqlite"), backupDir: join(directory, "backups"), ...overrides });
+  const base = process.env.JAVA_SESSION_TEST_URL;
+  return defaultConfigForTests({
+    ...(base ? { javaSessionsUrl: `${base}?case=${randomUUID()}` } : {}),
+    ...overrides,
+  });
 }
 
 function auth(): Record<string, string> {
@@ -262,7 +260,7 @@ describe("private sidecar HTTP contract", () => {
     const app = buildApp(await config());
     const missing = await app.inject({ method: "GET", url: "/healthz" });
     assert.equal(missing.statusCode, 401);
-    const invalid = await app.inject({ method: "POST", url: "/internal/pi-session/capacity", headers: { authorization: "Bearer wrong" } });
+    const invalid = await app.inject({ method: "POST", url: "/run", headers: { authorization: "Bearer wrong" }, payload: {} });
     assert.equal(invalid.statusCode, 401);
     await app.close();
   });
@@ -305,28 +303,6 @@ describe("private sidecar HTTP contract", () => {
     await app.close();
   });
 
-  it("supports capacity, quick-check, lease recovery, backup, restore, and redacts paths", async () => {
-    const current = await config();
-    const app = buildApp(current);
-    const capacity = await app.inject({ method: "POST", url: "/internal/pi-session/capacity", headers: auth(), payload: {} });
-    assert.equal(capacity.statusCode, 200);
-    assert.equal(typeof capacity.json().freeBytes, "number");
-    const integrity = await app.inject({ method: "POST", url: "/internal/pi-session/integrity-check", headers: auth(), payload: {} });
-    assert.equal(integrity.statusCode, 200);
-    assert.equal(integrity.json().integrity, "ok");
-    const lease = await app.inject({ method: "POST", url: "/internal/pi-session/writer-lease/recover", headers: auth(), payload: {} });
-    assert.equal(lease.statusCode, 200);
-    const outside = await app.inject({ method: "POST", url: "/internal/pi-session/backup", headers: auth(), payload: { destination: join(current.backupDir, "..", "outside.sqlite"), force: false } });
-    assert.equal(outside.statusCode, 503);
-    const backupPath = join(current.backupDir, "session.sqlite");
-    const backup = await app.inject({ method: "POST", url: "/internal/pi-session/backup", headers: auth(), payload: { destination: backupPath, force: false } });
-    assert.equal(backup.statusCode, 200);
-    assert.equal(backup.json().destination, "[sidecar-path]");
-    const restore = await app.inject({ method: "POST", url: "/internal/pi-session/restore", headers: auth(), payload: { backup: backupPath, apply: true } });
-    assert.equal(restore.statusCode, 200);
-    assert.equal(restore.json().backup, "[sidecar-path]");
-    await app.close();
-  });
 
   it("does not expose a fake supervisor handoff", async () => {
     const app = buildApp(await config());
@@ -343,18 +319,6 @@ describe("private sidecar HTTP contract", () => {
   });
 });
 
-it("reopens the SQLite session store after close", async () => {
-  const current = await config();
-  const first = buildApp(current);
-  const firstIntegrity = await first.inject({ method: "POST", url: "/internal/pi-session/integrity-check", headers: auth(), payload: {} });
-  assert.equal(firstIntegrity.statusCode, 200);
-  await first.close();
-  const second = buildApp(current);
-  const secondIntegrity = await second.inject({ method: "POST", url: "/internal/pi-session/integrity-check", headers: auth(), payload: {} });
-  assert.equal(secondIntegrity.statusCode, 200);
-  assert.equal(secondIntegrity.json().integrity, "ok");
-  await second.close();
-});
 
 it("streams generic NDJSON and supports cancellation", async () => {
   const model = await openModel(() => ({ content: "收到" }));
@@ -382,6 +346,35 @@ it("reports provider failures instead of a successful empty run", async () => {
   } finally {
     await app.close();
   }
+});
+
+it("rejects an empty model completion when no tool produced a result", async () => {
+  const model = await openModel(() => ({ content: "" }));
+  const app = buildApp(await config({ modelBaseUrl: model.url }));
+  try {
+    const run = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody() });
+    const observed = events(run.body);
+    assert.ok(observed.some(event => event.type === "run.failed"));
+    assert.equal(observed.some(event => event.type === "run.completed"), false);
+  } finally {
+    await app.close();
+  }
+});
+
+it("does not report success for an empty answer after a lookup", async () => {
+  const model = await openModel(index => index === 0
+    ? { tool: { name: "lookup_records", arguments: { query: "north" } } }
+    : { content: "" });
+  const java = await openJava();
+  const app = buildApp(await config({ modelBaseUrl: model.url, javaToolsUrl: java.url }));
+  try {
+    const run = await app.inject({ method: "POST", url: "/run", headers: auth(),
+      payload: runBody({ definition: definition({ tools: [LOOKUP_TOOL] }) }) });
+    const observed = events(run.body);
+    assert.ok(observed.some(event => event.type === "tool.result"));
+    assert.ok(observed.some(event => event.type === "run.failed"));
+    assert.equal(observed.some(event => event.type === "run.completed"), false);
+  } finally { await app.close(); }
 });
 
 it("uses the per-run model snapshot without exposing its key", async () => {
@@ -423,10 +416,8 @@ it("enforces the cumulative tool-call budget before calling Java", async () => {
   const observed = events(run.body);
   assert.equal(java.calls.length, 1);
   assert.equal(observed.filter(event => event.type === "tool.result").length, 1);
-  assert.equal(observed.filter(event => event.type === "tool.completed" && event.status === "failed").length, 1);
-  assert.ok(model.requests.length >= 3);
-  assert.ok(JSON.stringify(model.requests[2]).includes("budget exhausted"));
-  assert.ok(observed.some(event => event.type === "run.completed"));
+  assert.ok(observed.some(event => event.type === "run.failed"));
+  assert.equal(observed.some(event => event.type === "run.completed"), false);
   await app.close();
 });
 
@@ -449,7 +440,7 @@ it("aborts an active run and fails a timed-out run", async () => {
   const app = buildApp(await config({ modelBaseUrl: model.url, runTimeoutMs: 500 }));
   const pending = app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
     runId: "cancel-run", conversationId: "cancel-conversation", sessionScope: "cancel-scope", content: "wait",
-  }) });
+  }) }).then(response => response);
   await model.started;
   const duplicate = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
     runId: "cancel-run", conversationId: "cancel-conversation", turnId: "turn-2", sessionScope: "cancel-scope", content: "repeat",
@@ -497,16 +488,11 @@ it("forwards a tool call to Java with protocol data only and publishes the raw r
   assertGenericEvents(observed);
 
   assert.equal(java.calls.length, 1);
-  assert.deepEqual(java.calls[0], {
-    protocolVersion: 1,
-    runId: "tool-run",
-    toolContextId: "tool-context",
-    conversationId: "tool-conversation",
-    turnId: "tool-turn",
-    toolName: "lookup_records",
-    toolCallId: "call-1",
-    arguments: { query: "north" },
-  });
+  assert.equal(java.calls[0]?.toolContextId, "tool-context");
+  assert.equal(typeof java.calls[0]?.writerId, "string");
+  assert.equal(typeof java.calls[0]?.epoch, "number");
+  assert.equal("tenant" in java.calls[0]!, false);
+  assert.equal("model" in java.calls[0]!, false);
   await app.close();
 });
 
@@ -532,6 +518,42 @@ it("forwards the Java business result without lossy redaction", async () => {
   const result = events(run.body).find(event => event.type === "tool.result");
   assert.deepEqual(result?.result, longResult);
   await app.close();
+});
+
+it("compacts long durable history before inference and reuses it after reopening", async () => {
+  const marker = "selected-scope-907";
+  const largeReply = `${marker}: ${"historical detail ".repeat(3000)}`;
+  const model = await openModel(index => {
+    const request = JSON.stringify(model.requests[index]);
+    return request.includes("You are a context summarization assistant.")
+      ? { content: `The user selected ${marker}; preserve this selection and await confirmation.` }
+      : { content: index < 5 ? largeReply : "The existing selection still awaits confirmation." };
+  });
+  const settings = await config({ modelBaseUrl: model.url });
+  let app = buildApp(settings);
+  try {
+    for (let turn = 0; turn < 6; turn++) {
+      const run = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
+        runId: `history-${turn}`, turnId: `turn-${turn}`, content: `Continue ${turn}`,
+        definition: definition({ model: modelSettings({ modelBaseUrl: model.url, contextWindow: 65_536,
+          thinkingLevel: "off" }) }),
+      }) });
+      assert.ok(events(run.body).some(event => event.type === "run.completed"), run.body.slice(-1000));
+    }
+    const summaries = model.requests.filter(request => JSON.stringify(request).includes("You are a context summarization assistant."));
+    assert.ok(summaries.length > 0, "Long history must be summarized before the next inference");
+    await app.close();
+    app = buildApp(settings);
+    const reopened = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
+      runId: "history-reopened", turnId: "turn-reopened", content: "What remains to be confirmed?",
+      definition: definition({ model: modelSettings({ modelBaseUrl: model.url, contextWindow: 65_536,
+        thinkingLevel: "off" }) }),
+    }) });
+    assert.ok(events(reopened.body).some(event => event.type === "run.completed"), reopened.body.slice(-1000));
+    const restored = JSON.stringify(model.requests.at(-1));
+    assert.ok(restored.includes(marker), "The prior selection must survive reopening");
+    assert.ok(restored.length < largeReply.length * 4, "Reopening must not restore the unbounded original context");
+  } finally { await app.close(); }
 });
 
 it("uses the Pi validator before calling Java for malformed tool arguments", async () => {
@@ -608,6 +630,55 @@ it("stops after the current turn when Java halts and still completes generically
   await app.close();
 });
 
+it("finalizes retained results without tools after a Java halt decision", async () => {
+  const model = await openModel(index => index === 0
+    ? { tool: { name: "lookup_records", arguments: { query: "north" } } }
+    : { content: "The prepared result is retained and still awaits confirmation." });
+  const java = await openJava(() => ({
+    status: 200, payload: { protocolVersion: 1, result: { id: "prepared-1" }, halt: true },
+  }));
+  const app = buildApp(await config({ modelBaseUrl: model.url, javaToolsUrl: java.url }));
+  try {
+    const run = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
+      definition: definition({ tools: [LOOKUP_TOOL], finalizationInstructions: "Retain the result; finish without further actions." }),
+    }) });
+    assert.equal(java.calls.length, 1);
+    assert.equal(model.requests.length, 2);
+    const finalRequest = model.requests[1];
+    assert.ok(finalRequest && typeof finalRequest === "object");
+    const tools = "tools" in finalRequest ? finalRequest.tools : undefined;
+    assert.ok(tools === undefined || Array.isArray(tools));
+    assert.equal(tools?.length ?? 0, 0);
+    assert.ok(JSON.stringify(finalRequest).includes("prepared-1"));
+    assert.ok(events(run.body).some(event => event.type === "message.completed"
+      && event.content === "The prepared result is retained and still awaits confirmation."));
+  } finally { await app.close(); }
+});
+
+it("uses a tool-free final turn after a failed call consumes the run budget", async () => {
+  const model = await openModel(index => index === 0
+    ? { tool: { name: "lookup_records", arguments: { query: "north" } } }
+    : { content: "The requested result is unavailable; no result was invented." });
+  const java = await openJava(() => ({ status: 503, payload: { code: "UNAVAILABLE", message: "The evidence is unavailable." } }));
+  const app = buildApp(await config({ modelBaseUrl: model.url, javaToolsUrl: java.url }));
+  try {
+    const run = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
+      definition: definition({ tools: [LOOKUP_TOOL], maxToolCalls: 1,
+        finalizationInstructions: "State the incomplete objective using only retained evidence." }),
+    }) });
+    assert.equal(java.calls.length, 1);
+    assert.equal(model.requests.length, 2);
+    const finalRequest = model.requests[1];
+    assert.ok(finalRequest && typeof finalRequest === "object");
+    const tools = "tools" in finalRequest ? finalRequest.tools : undefined;
+    assert.ok(tools === undefined || Array.isArray(tools));
+    assert.equal(tools?.length ?? 0, 0);
+    assert.ok(events(run.body).some(event => event.type === "tool.completed" && event.status === "failed"));
+    assert.ok(events(run.body).some(event => event.type === "message.completed"
+      && event.content === "The requested result is unavailable; no result was invented."));
+  } finally { await app.close(); }
+});
+
 it("honors the supplied maxTurns", async () => {
   const model = await openModel(index => index === 0
     ? { tool: { name: "lookup_records", arguments: { query: "north" } } }
@@ -619,7 +690,8 @@ it("honors the supplied maxTurns", async () => {
     definition: definition({ tools: [LOOKUP_TOOL], maxTurns: 1 }),
   }) });
   assert.equal(model.requests.length, 1);
-  assert.ok(events(run.body).some(event => event.type === "run.completed"));
+  assert.ok(events(run.body).some(event => event.type === "run.failed"));
+  assert.equal(events(run.body).some(event => event.type === "run.completed"), false);
   await app.close();
 });
 

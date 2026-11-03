@@ -52,3 +52,11 @@
 ## 本票尚未验收
 
 本票仅发布规格，尚未执行任何验收；隔离执行通过不等于生产任务或真实设备执行已验收。
+
+## 实现备注（TaskExecutionCorrections，2026-11-02）
+
+- 已修复 P1 执行缺陷：受受理未回读不再记为 adjusted；聚合改为按设备结果（verified/satisfied/observed 为成功，unconfirmed/unknown 计未确认），整点仅在全部成功时 COMPLETED，无回读最多 UNCONFIRMED/PARTIAL。
+- 已落地每任务每设备持久调温预约（新表 `task_device_dispatch_reservations`，PK(task_id, device_id)）：单设备下发前原子 reserve，逐台现读状态+复核任务可下发性与授权；取消/操作员变更/窗口结束/重启都不会二次调整；让行也记为持久事实，后续检查点不再重试。`TaskSchemaInitializer` 启动时按既有 adjust 模式检查点结果回填预约（保留既有事实；历史 INTERRUPTED 阶段无可回填设备事实，按原阶段级不重放语义处理）。
+- 安全读检查点（safety 设备 + alertWindow previous_day/previous_week 或 alertDays，缺省近 7 天至当前）改为经组合 ObservationAdapter（SAFETY_EVENTS）真实台账窗口读取：窗口锚点为计划日北京时间零点（日历窗半开区间），逐台账 smoke/gas/water 分页到游标耗尽或 20 页上限，按本检查点设备过滤并输出 alerts 证据块（总数/分类/覆盖/失败/最近记录）；某类台账失败只影响该子类设备（read_failed），不用当前状态伪造告警，也不因无关类别失败而误伤。
+- 新增行为回归 `RealTaskExecutionGatewayBehaviorTest`（未运行）：未确认不算完成、两台之间取消/操作员改参阻止后续下发、预约跨检查点/重启去重、巡检只读计 observed 成功并给潜在节能估算（potential 标记）、安全窗口含/排除边界记录与部分失败。
+- 待验证：编译、既有 178 项回归、新行为回归、隔离库迁移回填与真实 MySQL/Redis 全量构建均未运行（由统一验证方执行）。

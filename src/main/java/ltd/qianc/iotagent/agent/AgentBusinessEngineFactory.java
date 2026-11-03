@@ -56,4 +56,11 @@ public final class AgentBusinessEngineFactory {
             ActionDraftFacade actions, TaskFacade tasks, ObjectMapper mapper, ReportGenerationPort reports) {
         return toolBridge(conversations, iot, null, null, actions, tasks, mapper, reports);
     }
+
+    public static AgentCheckpointBridge checkpointBridge(ObjectMapper mapper, ObservationAdapter observations,
+            ltd.qianc.iotagent.report.ReportEvidencePort evidence, ltd.qianc.iotagent.report.ReportFactStore reports,
+            Supplier<AdminConfigurationStore> configurations, String baseUrl, String token, Clock clock) {
+        return new ltd.qianc.iotagent.agent.internal.DefaultAgentCheckpointBridge(
+                mapper, observations, evidence, reports, configurations, baseUrl, token, clock);
+    }
 }

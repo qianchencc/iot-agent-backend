@@ -1,19 +1,19 @@
-# 04: 现有对话切至 MySQL，替换 Node 仍可继续
+# 04: 不导入旧会话，直接启用 MySQL 新会话
 
-**What to build:** 把已有小程序会话与通用引擎一起切到唯一 MySQL 权威，并验证旧业务卡片、引用、轮次状态和历史在 Node 替换后仍正确；在同一集成分支切换，不发布双权威中间版本。
+**What to build:** 停旧隔离实例后直接启用 MySQL。一次性结束旧公开会话，但保留所有业务事实；新会话在 Node/Java 更换后仍可继续，不伪装继承未导入的上下文。
 
-**Blocked by:** [02 在途检查点、并发与中断可解释恢复](02-run-checkpoints-recovery.md)、[03 旧 SQLite 会话保真导入且不重复业务事实](03-existing-session-import.md)
+**Blocked by:** [02 在途检查点、并发与中断可解释恢复](02-run-checkpoints-recovery.md)
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
-**Execution:** not-started
+**Execution:** implementing
 
 规格：[统一 MySQL 会话持久化](../spec.md)。验收：[预期效果与验收](../acceptance.md)。工程通过不等于业务通过；不修改或关闭原业务恢复父票。
 
 ## Acceptance criteria
 
-- [ ] 停接新 run、等待可结算工作或记录受控中断，备份并导入验证通过后才开放新实例；切换失败保持停止接入，不自动回写 SQLite。
-- [ ] 已有 Office 和 Company 会话不更换身份或清空历史即可继续，来源隔离、会话归属和 Java 业务事实关联保持正确。
+- [ ] 停接新 run、结算或标记中断、备份现有 MySQL 后切换；不读取或导入 SQLite，不自动回退。
+- [ ] 一次性标记旧公开会话结束，后续启动不再清新会话；Office/Company 新会话归属及既有 Java 业务事实不变。
 - [ ] 移除运行中的 SQLite 仓储路径、缓存失效对象复用及 SQLite 自动回退；保持原小程序业务接口，不用前端兼容层掩盖上下文丢失。
 - [ ] 已有草案、任务提案及报告引用在节点替换后关联原事实；草案过期需重核，不自动执行；任务不自动创建；恢复不重复卡片或提案。
 - [ ] 无本地会话文件的新 Node 实例可以读取同一 MySQL 历史，旧实例即使延迟恢复也不能继续写或调用工具。

@@ -44,7 +44,7 @@ import reactor.core.publisher.Mono;
  * adapter seam. Production wiring remains fail-closed; fixture wiring is local-only
  * and enabled only by the explicit control mode.
  */
-public final class ActionDraftFacade {
+public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.ConversationDrafts {
     private final ObjectMapper mapper;
     private final ActionDraftStore store;
     private final IotAdapter iot;
@@ -134,12 +134,13 @@ public final class ActionDraftFacade {
             }
         }
         ObjectNode payload = object(payloadJson);
-        AuthorizedDeviceScope scope = loadScope(principal, iotSource);
+        AuthorizedDeviceScope catalogScope = loadScope(principal, iotSource);
+        AuthorizedDeviceScope scope = catalogScope;
         if (iotSource == IotSource.OFFICE && focusRegionId != null && !focusRegionId.isBlank()) {
             scope = focusScope(principal, iotSource, scope, focusRegionId);
             payload.put("focusRegionId", focusRegionId);
         }
-        Page page = materialize(payload, scope, principal, conversationId, iotSource);
+        Page page = materialize(payload, scope, catalogScope, principal, conversationId, iotSource);
         Instant now = clock.instant();
         payload.put("source", iotSource.wireValue());
         payload.put("tenantCode", principal.tenantCode());
@@ -212,14 +213,51 @@ public final class ActionDraftFacade {
 
     private ActionDraftFact currentChecked(ActionDraftFact draft, PrincipalInfo principal) {
         if (draft.status().equals(ActionDraftStatus.PENDING_CONFIRMATION.name()) && expired(draft)) {
-            expire(draft);
-            return store.find(draft.draftId()).orElse(draft);
+            return expire(draft);
         }
         if (draft.status().equals(ActionDraftStatus.PENDING_CONFIRMATION.name())
                 || draft.status().equals(ActionDraftStatus.EXECUTING.name())) {
             verifyScope(principal, payload(draft));
         }
         return draft;
+    }
+
+    /** Current, owner-bound draft projections for a verified conversation replay. */
+    public Map<String, Map<String, Object>> conversationDrafts(PrincipalInfo principal, String conversationId, String source) {
+        IotSource expected = parseSource(source);
+        Map<String, Map<String, Object>> result = new LinkedHashMap<>();
+        for (ActionDraftFact draft : store.findByConversation(conversationId)) {
+            ObjectNode body = payload(draft);
+            if (principal.tenantCode().equals(tenantOf(draft))
+                    && ownerKey(principal).equals(body.path("ownerKey").asText(""))
+                    && expected.wireValue().equals(body.path("source").asText(""))
+                    && conversationId.equals(body.path("conversationId").asText(""))) {
+                if (draft.status().equals(ActionDraftStatus.PENDING_CONFIRMATION.name()) && expired(draft)) {
+                    draft = expire(draft);
+                }
+                result.put(draft.draftId(), view(draft));
+            }
+        }
+        return result;
+    }
+
+    /** A new expression supersedes pending/expired cards, never an executing or confirmed action. */
+    public List<String> retireForConversation(PrincipalInfo principal, String conversationId, String source) {
+        String expected = parseSource(source).wireValue();
+        List<String> retired = new ArrayList<>();
+        for (ActionDraftFact draft : store.findByConversation(conversationId)) {
+            ObjectNode body = payload(draft);
+            if (!principal.tenantCode().equals(tenantOf(draft)) || !ownerKey(principal).equals(body.path("ownerKey").asText())
+                    || !expected.equals(body.path("source").asText()) || !conversationId.equals(body.path("conversationId").asText())) continue;
+            if (!ActionDraftStatus.PENDING_CONFIRMATION.name().equals(draft.status())
+                    && !ActionDraftStatus.EXPIRED.name().equals(draft.status())) continue;
+            body.put("status", ActionDraftStatus.CANCELLED.name());
+            ActionDraftFact cancelled = cas(draft, body, ActionDraftStatus.CANCELLED.name());
+            emit(cancelled, "action.resolved");
+            audit(cancelled, "ACTION_DRAFT_CANCELLED");
+            retired.add(cancelled.draftId());
+        }
+        return retired;
     }
 
     public ActionDraftFact select(PrincipalInfo principal, String draftId, long revision, List<String> ids) {
@@ -833,16 +871,19 @@ public final class ActionDraftFacade {
         }
     }
 
-    private void expire(ActionDraftFact draft) {
+    private ActionDraftFact expire(ActionDraftFact draft) {
         ObjectNode body = payload(draft);
         body.put("status", ActionDraftStatus.EXPIRED.name());
         try {
-            store.update(draft.draftId(), draft.revision(),
+            return store.update(draft.draftId(), draft.revision(),
                     new ActionDraftFact(draft.draftId(), draft.revision() + 1, ActionDraftStatus.EXPIRED.name(), json(body), draft.idempotencyKey()));
         } catch (ActionDraftUnavailableException unavailable) {
             throw unavailable;
-        } catch (RuntimeException ignored) {
-            // Another request may have won the expiry CAS; the caller still gets the typed expiry result.
+        } catch (RuntimeException conflict) {
+            ActionDraftFact current = store.find(draft.draftId()).orElseThrow(() ->
+                    new ActionDraftUnavailableException("草案过期状态无法读取", conflict));
+            if (current.revision() <= draft.revision()) throw conflict;
+            return current;
         }
     }
 
@@ -1072,9 +1113,10 @@ public final class ActionDraftFacade {
      * real states once, and classifies every considered device as operate, excluded
      * or already-satisfied. The model's list of ids is never treated as the final set.
      */
-    private Page materialize(ObjectNode payload, AuthorizedDeviceScope scope, PrincipalInfo principal,
+    private Page materialize(ObjectNode payload, AuthorizedDeviceScope scope,
+                             AuthorizedDeviceScope catalogScope, PrincipalInfo principal,
                              String conversationId, IotSource source) {
-        List<CandidateView> sets = resolveCandidateSets(payload, scope, principal, conversationId, source);
+        List<CandidateView> sets = resolveCandidateSets(payload, "candidateSetIds", scope, catalogScope, principal, conversationId, source);
         if (sets.isEmpty()) {
             throw new BusinessException("CANDIDATE_SET_REQUIRED", "操作草案必须引用已核验的候选集", 422);
         }
@@ -1089,6 +1131,20 @@ public final class ActionDraftFacade {
         if (universe.isEmpty()) throw new BusinessException("INVALID_ACTION_DRAFT", "候选范围没有设备");
         List<ExplicitAction> explicit = explicitActions(rawActions, scope, universe);
         Set<String> excluded = excludedIds(payload, universe);
+        if (payload.has("excludeCandidateSetIds")) {
+            for (CandidateView exclusion : resolveCandidateSets(payload, "excludeCandidateSetIds", scope,
+                    catalogScope, principal, conversationId, source)) {
+                if (exclusion.members().isEmpty()) {
+                    throw new BusinessException("INVALID_ACTION_DRAFT", "排除子集为空，尚未查明真实排除范围");
+                }
+                for (AuthorizedDevice member : exclusion.members()) {
+                    if (!universe.containsKey(member.id())) {
+                        throw new BusinessException("INVALID_ACTION_DRAFT", "排除项必须完全属于本次包含范围");
+                    }
+                    excluded.add(member.id());
+                }
+            }
+        }
         Map<String, JsonNode> explicitCommands = new LinkedHashMap<>();
         Map<String, Boolean> explicitSelection = new LinkedHashMap<>();
         Map<String, List<JsonNode>> commandsByKind = new LinkedHashMap<>();
@@ -1102,6 +1158,7 @@ public final class ActionDraftFacade {
         }
         Map<String, JsonNode> defaultCommands = new LinkedHashMap<>();
         for (Map.Entry<String, List<JsonNode>> entry : commandsByKind.entrySet()) {
+            if (!payload.path("expandCandidates").asBoolean(false)) continue;
             JsonNode first = entry.getValue().get(0);
             if (entry.getValue().stream().allMatch(first::equals)) defaultCommands.put(entry.getKey(), first);
             else if (universe.values().stream().anyMatch(device -> device.kind().equals(entry.getKey())
@@ -1173,12 +1230,13 @@ public final class ActionDraftFacade {
         return new Page(actions, selected, inventory, counts, summary, question, read.observedAt());
     }
 
-    private List<CandidateView> resolveCandidateSets(ObjectNode payload, AuthorizedDeviceScope scope,
+    private List<CandidateView> resolveCandidateSets(ObjectNode payload, String field, AuthorizedDeviceScope scope,
+                                                     AuthorizedDeviceScope catalogScope,
                                                      PrincipalInfo principal, String conversationId,
                                                      IotSource source) {
-        JsonNode raw = payload.get("candidateSetIds");
+        JsonNode raw = payload.get(field);
         if (raw == null || raw.isNull()) return List.of();
-        if (!raw.isArray()) throw new BusinessException("INVALID_ACTION_DRAFT", "candidateSetIds 无效");
+        if (!raw.isArray() || raw.isEmpty()) throw new BusinessException("INVALID_ACTION_DRAFT", field + " 无效");
         List<CandidateView> sets = new ArrayList<>();
         Set<String> seen = new HashSet<>();
         for (JsonNode value : raw) {
@@ -1196,16 +1254,24 @@ public final class ActionDraftFacade {
                     || !conversationId.equals(record.conversationId())) {
                 throw new BusinessException("CANDIDATE_SET_NOT_FOUND", "设备候选集不存在或已过期", 404);
             }
+            boolean exclusion = "excludeCandidateSetIds".equals(field);
+            if (!"exact".equals(record.resolutionMode())
+                    && (exclusion || !"browse".equals(record.resolutionMode()))) {
+                throw new BusinessException("CANDIDATE_SCOPE_UNRESOLVED", "候选范围或排除子集尚未精确查明，请重新检索", 422);
+            }
+            if (record.members().size() != record.totalMatches()) {
+                throw new BusinessException("CANDIDATE_SET_INCOMPLETE", "候选范围成员不完整，尚未生成草案", 422);
+            }
             // Presentation may be bounded, but the persisted member list is complete:
             // server-side expansion is exactly what prevents the model from owning the
             // final id list.
-            AuthorizedDeviceScope candidateScope = candidateScope(scope, record);
+            AuthorizedDeviceScope candidateScope = candidateScope(catalogScope, record);
             if (!candidateScope.catalogFingerprint().equals(record.catalogFingerprint())) {
                 throw new BusinessException("CANDIDATE_SET_STALE", "设备候选集已过期，请重新检索", 409);
             }
             List<AuthorizedDevice> members = new ArrayList<>();
             for (AuthorizedDevice member : record.members()) {
-                AuthorizedDevice current = candidateScope.device(member.id())
+                AuthorizedDevice current = scope.device(member.id())
                         .filter(device -> device.kind().equals(member.kind()))
                         .orElseThrow(ActionDraftScopeChangedException::new);
                 members.add(current);
@@ -1287,7 +1353,7 @@ public final class ActionDraftFacade {
 
     private Set<String> excludedIds(ObjectNode payload, Map<String, AuthorizedDevice> universe) {
         JsonNode raw = payload.get("excludedDeviceIds");
-        if (raw == null || raw.isNull()) return Set.of();
+        if (raw == null || raw.isNull()) return new HashSet<>();
         if (!raw.isArray()) throw new BusinessException("INVALID_ACTION_DRAFT", "excludedDeviceIds 无效");
         Set<String> excluded = new HashSet<>();
         for (JsonNode value : raw) {
@@ -1433,6 +1499,7 @@ public final class ActionDraftFacade {
         event.put("revision", draft.revision());
         event.put("expiresAt", body.path("expiresAt").asText(null));
         if (body.has("conversationId")) event.put("conversationId", body.path("conversationId").asText());
+        if (body.has("turnId")) event.put("turnId", body.path("turnId").asText());
         if (body.has("summary")) event.put("summary", body.path("summary").asText(""));
         if (body.has("question") && !body.get("question").isNull()) event.put("question", body.path("question").asText());
         event.set("selectedActionIds", array(body, "selectedActionIds").deepCopy());

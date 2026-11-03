@@ -123,12 +123,19 @@ export function errorOf(error: unknown, fallback: string): AdminError {
   return { code: "NETWORK", message: "无法连接后端服务，请确认已启动" };
 }
 
+export interface PiSessionHealth {
+  code: string;
+  message: string;
+  details: { status: string; backend: "mysql"; scopes: number; documents: number; invalidJournals: number };
+}
+
 export const adminApi = {
   login: (password: string) => http.post<{ csrfToken: string }>("/login", { password }),
   session: () => http.get<{ csrfToken: string }>("/session"),
   logout: () => http.post<{ ok: boolean }>("/logout"),
   passwordPolicy: () => http.get<{ editable: boolean; minimumLength: number }>("/password"),
   config: () => http.get<AdminConfigView>("/config"),
+  piSessionHealth: () => http.get<PiSessionHealth>("/pi-session/health"),
   saveConfig: (expectedRevision: number, changes: ConfigChangeSet) =>
     http.patch<AdminConfigView>("/config", { expectedRevision, changes }),
   changeHistory: () => http.get<{ changes: AdminChangeRecord[] }>("/changes"),

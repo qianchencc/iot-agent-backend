@@ -13,6 +13,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
@@ -244,10 +246,72 @@ class TaskManagementContractTest {
                 .containsEntry("nextCheckpointAt", "2026-10-09T10:00:00Z");
     }
 
+    @Test
+    void restoredProposalExpiresAtItsBoundaryWithoutCreatingATaskOrReplacingTerminalState() {
+        TaskPlanStore plans = org.mockito.Mockito.mock(TaskPlanStore.class);
+        TaskProposalStore proposals = org.mockito.Mockito.mock(TaskProposalStore.class);
+        TaskFactStore tasks = org.mockito.Mockito.mock(TaskFactStore.class);
+        TaskFacade facade = facade(plans, proposals, tasks);
+        TaskProposalFact pending = new TaskProposalFact("expired-card", 3, "PENDING_CONFIRMATION",
+                "{\"source\":\"office\",\"tenantCode\":\"LOCAL\",\"ownerKey\":\"" + PRINCIPAL.ownerKey() + "\"}",
+                "proposal-key", "TASK", "{}", "{}", "{}", "create",
+                "LOCAL", PRINCIPAL.ownerKey(), "office", NOW);
+        when(proposals.find("expired-card")).thenReturn(Optional.of(pending));
+        assertThat(facade.conversationProposalState(PRINCIPAL, "expired-card", "office"))
+                .containsEntry("status", "EXPIRED").containsEntry("version", 3L)
+                .containsEntry("expiresAt", NOW.toString());
+        TaskProposalFact cancelled = new TaskProposalFact(pending.proposalId(), 4, "CANCELLED",
+                pending.payloadJson(), pending.idempotencyKey(), pending.kind(), pending.targetJson(),
+                pending.beforeJson(), pending.afterJson(), pending.operation(), pending.tenantCode(),
+                pending.ownerKey(), pending.source(), pending.expiresAt());
+        when(proposals.find("expired-card")).thenReturn(Optional.of(cancelled));
+        assertThat(facade.conversationProposalState(PRINCIPAL, "expired-card", "office"))
+                .containsEntry("status", "CANCELLED").containsEntry("version", 4L);
+        verify(tasks, never()).save(any());
+    }
+
     private static TaskFacade facade(TaskPlanStore plans, TaskProposalStore proposals, TaskFactStore tasks) {
         return new TaskFacade(new ObjectMapper(), tasks, proposals, plans,
                 org.mockito.Mockito.mock(TaskNotificationStore.class), org.mockito.Mockito.mock(TaskScheduler.class),
                 Clock.fixed(NOW, ZoneOffset.UTC));
+    }
+
+    @Test
+    void taskEditCancelsOnlyReplacedOldPhaseAndNeverSchedulesItAgain() {
+        TaskPlanStore plans = org.mockito.Mockito.mock(TaskPlanStore.class);
+        TaskProposalStore proposals = org.mockito.Mockito.mock(TaskProposalStore.class);
+        TaskFactStore tasks = org.mockito.Mockito.mock(TaskFactStore.class);
+        RecordingScheduler scheduler = new RecordingScheduler();
+        TaskFacade facade = new TaskFacade(new ObjectMapper(), tasks, proposals, plans,
+                org.mockito.Mockito.mock(TaskNotificationStore.class), scheduler,
+                Clock.fixed(NOW, ZoneOffset.UTC));
+        String owner = PRINCIPAL.ownerKey();
+        String before = "{\"source\":\"office\",\"tenantCode\":\"LOCAL\",\"ownerKey\":\"" + owner
+                + "\",\"phases\":[{\"phaseId\":\"keep\",\"at\":\"2026-10-10T10:00:00Z\",\"actions\":[]},"
+                + "{\"phaseId\":\"replace\",\"at\":\"2026-10-10T11:00:00Z\",\"actions\":[]}]}";
+        String after = "{\"source\":\"office\",\"tenantCode\":\"LOCAL\",\"ownerKey\":\"" + owner
+                + "\",\"phases\":[{\"phaseId\":\"keep\",\"at\":\"2026-10-10T10:00:00Z\",\"actions\":[]},"
+                + "{\"phaseId\":\"replace\",\"at\":\"2026-10-10T12:00:00Z\",\"actions\":[]}]}";
+        TaskFact current = new TaskFact("task-edit", 1, "SCHEDULED", before, "task-edit-key");
+        TaskProposalFact proposal = new TaskProposalFact("proposal-edit", 1, "PENDING_CONFIRMATION", "{}",
+                "idem-edit", "CHANGE", "{\"type\":\"task\",\"taskId\":\"task-edit\"}", before, after,
+                "edit", "LOCAL", owner, "office", NOW.plusSeconds(60));
+        when(tasks.find("task-edit")).thenReturn(Optional.of(current));
+        when(proposals.find("proposal-edit")).thenReturn(Optional.of(proposal));
+        when(proposals.updateIfVersion(any(), anyLong())).thenAnswer(invocation -> Optional.of(invocation.getArgument(0)));
+        when(tasks.updateIfVersion(any(), anyLong())).thenAnswer(invocation -> Optional.of(invocation.getArgument(0)));
+
+        facade.confirmChange(PRINCIPAL, "proposal-edit", 1);
+
+        assertThat(scheduler.cancelled).containsExactly("replace");
+        assertThat(scheduler.scheduled).hasSize(2).contains("keep").doesNotContain("replace");
+    }
+
+    private static final class RecordingScheduler implements TaskScheduler {
+        private final List<String> scheduled = new ArrayList<>();
+        private final List<String> cancelled = new ArrayList<>();
+        @Override public void schedule(String taskId, String phaseId, Instant at) { scheduled.add(phaseId); }
+        @Override public void cancel(String taskId, String phaseId) { cancelled.add(phaseId); }
     }
 
     private static TaskPlanFact plan(String id) {

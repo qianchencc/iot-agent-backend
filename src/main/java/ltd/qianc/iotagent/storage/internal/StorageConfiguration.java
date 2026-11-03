@@ -115,6 +115,11 @@ public class StorageConfiguration {
 
     @Bean
     @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
+    @ConditionalOnMissingBean(ltd.qianc.iotagent.task.TaskDispatchGuard.class)
+    JdbcTaskDispatchGuard jdbcTaskDispatchGuard(JdbcTemplate jdbc) { return new JdbcTaskDispatchGuard(jdbc); }
+
+    @Bean
+    @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
     @ConditionalOnMissingBean(TaskScheduler.class)
     JdbcTaskScheduler jdbcTaskScheduler(JdbcTemplate jdbc, ObjectMapper mapper) { return new JdbcTaskScheduler(jdbc, mapper); }
     @Bean

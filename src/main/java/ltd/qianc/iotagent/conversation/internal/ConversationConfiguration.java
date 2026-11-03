@@ -8,6 +8,8 @@ import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import ltd.qianc.iotagent.conversation.ConversationDrafts;
+import ltd.qianc.iotagent.conversation.ConversationTaskCards;
 import ltd.qianc.iotagent.conversation.AgentEngineBridge;
 import ltd.qianc.iotagent.conversation.AgentRunPolicyProvider;
 import ltd.qianc.iotagent.conversation.ConversationEventStore;
@@ -59,10 +61,10 @@ public class ConversationConfiguration {
     }
     @Bean
     ConversationFacade conversationFacade(ObjectMapper mapper, ConversationStore conversations,
-            ConversationEventStore events, AgentEngineBridge bridge,
+            ConversationEventStore events, AgentEngineBridge bridge, ConversationDrafts drafts, ConversationTaskCards taskCards,
             @Qualifier("conversationExecutor") ExecutorService executor,
             @Qualifier("conversationScheduler") ScheduledExecutorService conversationScheduler,
             @Value("${agent.heartbeat-ms:15000}") long heartbeatMs) {
-        return new ConversationFacade(mapper, conversations, events, bridge, executor, conversationScheduler, heartbeatMs);
+        return new ConversationFacade(mapper, conversations, events, bridge, executor, conversationScheduler, heartbeatMs, drafts, taskCards);
     }
 }

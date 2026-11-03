@@ -10,7 +10,7 @@ import ltd.qianc.iotagent.iot.IotSource;
 import ltd.qianc.iotagent.iot.ReportDownload;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.report.ReportService;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -22,7 +22,7 @@ import org.springframework.web.bind.annotation.RestController;
 /** Durable Company report read/download boundary. */
 @RestController
 @RequestMapping("/api/agent/reports")
-@ConditionalOnBean(ReportService.class)
+@ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
 public final class ReportController {
     private final ReportService reports;
 

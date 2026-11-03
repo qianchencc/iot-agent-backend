@@ -1,18 +1,19 @@
 package ltd.qianc.iotagent.report.internal;
 
 import java.io.ByteArrayOutputStream;
-import java.nio.charset.StandardCharsets;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.PDPage;
+import org.apache.pdfbox.pdmodel.PDPageContentStream;
+import org.apache.pdfbox.pdmodel.common.PDRectangle;
+import org.apache.pdfbox.pdmodel.font.PDType0Font;
 
 /**
- * Dependency-free, paginated PDF projection of saved report facts.
- *
- * <p>Text is written through the predefined Adobe STSong-Light UniGB-UCS2-H
- * CMap so Chinese content remains readable without bundling a font binary. The
- * renderer never recalculates measurements; it only projects the immutable saved
- * report map that was previewed to the user.</p>
+ * Paginated projection of saved report facts with a bundled, subset-embedded
+ * Chinese font. Rendering never recalculates the previewed measurements.
  */
 public final class ReportPdfRenderer {
     private static final int LINES_PER_PAGE = 44;
@@ -21,77 +22,55 @@ public final class ReportPdfRenderer {
     private ReportPdfRenderer() { }
 
     public static byte[] render(Map<String, Object> report) {
-        List<String> lines = lines(report);
-        List<List<String>> pages = new ArrayList<>();
-        for (int index = 0; index < lines.size(); index += LINES_PER_PAGE) {
-            pages.add(lines.subList(index, Math.min(lines.size(), index + LINES_PER_PAGE)));
-        }
-        if (pages.isEmpty()) pages.add(List.of("报告"));
-        try {
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            List<String> objects = new ArrayList<>();
-            int pageCount = pages.size();
-            int fontId = 3 + 2 * pageCount;
-            int descendantId = fontId + 1;
-            StringBuilder kids = new StringBuilder();
-            for (int index = 0; index < pageCount; index++) {
-                if (index > 0) kids.append(' ');
-                kids.append(3 + index).append(" 0 R");
+        try (PDDocument document = new PDDocument();
+                InputStream asset = ReportPdfRenderer.class.getResourceAsStream("/reports/NotoSansSC-Regular.ttf");
+                ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            if (asset == null) throw new IllegalStateException("Report font asset is unavailable");
+            PDType0Font font = PDType0Font.load(document, asset, true);
+            List<String> content = pageLines(lines(report), font);
+            for (int index = 0; index < content.size(); index += LINES_PER_PAGE) {
+                PDPage page = new PDPage(PDRectangle.A4);
+                document.addPage(page);
+                try (PDPageContentStream stream = new PDPageContentStream(document, page)) {
+                    stream.beginText();
+                    stream.setFont(font, 10.5f);
+                    stream.setLeading(17);
+                    stream.newLineAtOffset(42, 802);
+                    int end = Math.min(content.size(), index + LINES_PER_PAGE);
+                    for (int line = index; line < end; line++) {
+                        if (line > index) stream.newLine();
+                        stream.showText(content.get(line));
+                    }
+                    stream.endText();
+                }
             }
-            objects.add("<< /Type /Catalog /Pages 2 0 R >>");
-            objects.add("<< /Type /Pages /Kids [" + kids + "] /Count " + pageCount + " >>");
-            for (int index = 0; index < pageCount; index++) {
-                int contentId = 3 + pageCount + index;
-                objects.add("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] "
-                        + "/Resources << /Font << /F1 " + fontId + " 0 R >> >> /Contents " + contentId + " 0 R >>");
-            }
-            for (List<String> page : pages) {
-                String content = content(page);
-                objects.add("<< /Length " + content.getBytes(StandardCharsets.US_ASCII).length
-                        + " >>\nstream\n" + content + "\nendstream");
-            }
-            objects.add("<< /Type /Font /Subtype /Type0 /BaseFont /STSong-Light "
-                    + "/Encoding /UniGB-UCS2-H /DescendantFonts [" + descendantId + " 0 R] >>");
-            objects.add("<< /Type /Font /Subtype /CIDFontType0 /BaseFont /STSong-Light "
-                    + "/CIDSystemInfo << /Registry (Adobe) /Ordering (GB1) /Supplement 2 >> >>");
-
-            write(out, "%PDF-1.4\n%\u00e2\u00e3\u00cf\u00d3\n");
-            List<Integer> offsets = new ArrayList<>();
-            for (int index = 0; index < objects.size(); index++) {
-                offsets.add(out.size());
-                write(out, (index + 1) + " 0 obj\n" + objects.get(index) + "\nendobj\n");
-            }
-            int xref = out.size();
-            write(out, "xref\n0 " + (objects.size() + 1) + "\n0000000000 65535 f \n");
-            for (int offset : offsets) write(out, String.format("%010d 00000 n \n", offset));
-            write(out, "trailer\n<< /Size " + (objects.size() + 1) + " /Root 1 0 R >>\nstartxref\n" + xref + "\n%%EOF\n");
+            document.save(out);
             return out.toByteArray();
         } catch (Exception error) {
             throw new IllegalStateException("PDF rendering failed", error);
         }
     }
 
-    private static String content(List<String> page) {
-        StringBuilder stream = new StringBuilder("BT\n/F1 10.5 Tf\n1 0 0 1 42 802 Tm\n");
-        for (int index = 0; index < page.size(); index++) {
-            if (index > 0) stream.append("0 -17 Td\n");
-            stream.append('<').append(utf16Hex(clip(page.get(index)))).append("> Tj\n");
+    private static List<String> pageLines(List<String> lines, PDType0Font font) throws java.io.IOException {
+        List<String> result = new ArrayList<>();
+        for (String source : lines) {
+            String line = source.replace('\n', ' ').replace('\r', ' ');
+            int start = 0;
+            float width = 0;
+            for (int offset = 0; offset < line.length();) {
+                int end = offset + Character.charCount(line.codePointAt(offset));
+                float characterWidth = font.getStringWidth(line.substring(offset, end)) * 10.5f / 1000;
+                if (width + characterWidth > 511 && offset > start) {
+                    result.add(line.substring(start, offset));
+                    start = offset;
+                    width = 0;
+                }
+                width += characterWidth;
+                offset = end;
+            }
+            result.add(line.substring(start));
         }
-        return stream.append("ET").toString();
-    }
-
-    private static String utf16Hex(String value) {
-        StringBuilder hex = new StringBuilder(value.length() * 4);
-        for (int index = 0; index < value.length(); index++) {
-            hex.append(String.format("%04X", (int) value.charAt(index)));
-        }
-        return hex.toString();
-    }
-
-    private static String clip(String value) {
-        if (value == null) return "";
-        String oneLine = value.replace('\n', ' ').replace('\r', ' ');
-        return oneLine.length() <= MAX_LINE_CHARS ? oneLine : oneLine.substring(0, MAX_LINE_CHARS - 1) + "…";
+        return result;
     }
 
     private static List<String> lines(Map<String, Object> report) {
@@ -120,6 +99,9 @@ public final class ReportPdfRenderer {
                 } else if ("meter_report".equals(type) && block.get("report") instanceof Map<?, ?> fact) {
                     lines.add("");
                     lines.addAll(meterLines(fact));
+                } else if ("ac_inspection".equals(type)) {
+                    lines.add("");
+                    lines.addAll(acInspectionLines(block));
                 } else if ("safety_ledger".equals(type)) {
                     lines.add("");
                     lines.add("安全台账：" + text(block.get("ledger"), ""));
@@ -161,6 +143,7 @@ public final class ReportPdfRenderer {
         if (span instanceof Map<?, ?> spanMap && spanMap.get("requested") instanceof Map<?, ?> requested) {
             lines.add("期间：" + text(requested.get("from"), "") + " 至 " + text(requested.get("to"), ""));
         }
+        lines.addAll(MeterExportEvidence.notes(fact));
         Object total = fact.get("total");
         if (total instanceof Map<?, ?> totalMap) {
             lines.add("总量：" + text(totalMap.get("value"), "—") + " " + text(totalMap.get("unit"), "度"));
@@ -184,6 +167,10 @@ public final class ReportPdfRenderer {
                 lines.add("- " + text(meter.get("name"), text(meter.get("id"), ""))
                         + " / " + text(meter.get("areaName"), "")
                         + " / " + text(meterValue, "—") + " 度 / " + text(status, ""));
+                String currentSamples = MeterExportEvidence.sampleLine(meter, "a");
+                if (!currentSamples.isEmpty()) lines.add(currentSamples);
+                String baselineSamples = MeterExportEvidence.sampleLine(meter, "b");
+                if (!baselineSamples.isEmpty()) lines.add(baselineSamples);
                 if (coverage != null) {
                     lines.add("  覆盖 " + text(coverage.get("dataMeters"), "") + "/" + text(coverage.get("meters"), "")
                             + (Boolean.TRUE.equals(coverage.get("truncated")) ? "（读取截断）" : ""));
@@ -202,6 +189,144 @@ public final class ReportPdfRenderer {
         return lines;
     }
 
+    /** Human-readable AC inspection projection: command facts stay commands, readback is labeled, estimates are never measured savings. */
+    private static List<String> acInspectionLines(Map<?, ?> block) {
+        List<String> lines = new ArrayList<>();
+        boolean adjust = "adjust_to_26".equals(text(block.get("mode"), ""));
+        Object target = acTarget(block);
+        lines.add(adjust ? "空调调温检查" : "空调巡检");
+        lines.add("检查时间：" + text(block.get("at"), ""));
+        lines.add("检查方式：" + (adjust
+                ? "符合条件时调整到目标 " + text(target, "26") + "℃（只调整开机、制冷且设定温度更低的空调）"
+                : "只读检查，不调整空调"));
+        String phaseOutcome = acPhaseOutcome(block);
+        if (!phaseOutcome.isBlank()) lines.add("检查点结果：" + phaseOutcome);
+        Object devices = block.get("devices");
+        if (devices instanceof List<?> rows && !rows.isEmpty()) {
+            lines.add("设备检查结果：");
+            for (Object value : rows) {
+                if (!(value instanceof Map<?, ?> device)) continue;
+                StringBuilder row = new StringBuilder("- " + text(device.get("name"), text(device.get("deviceId"), "未知设备")));
+                String location = text(device.get("location"), "");
+                if (!location.isBlank()) row.append("（").append(location).append("）");
+                String state = acStateText(device);
+                if (!state.isBlank()) row.append(" / 检查前：").append(state);
+                row.append(" / ").append(acDispositionText(device, target));
+                String readback = acReadbackText(device);
+                if (!readback.isBlank()) row.append(" / ").append(readback);
+                lines.addAll(wrap(row.toString(), MAX_LINE_CHARS));
+                String reason = text(device.get("reason"), "");
+                if (!reason.isBlank()) lines.addAll(wrap("  说明：" + reason, MAX_LINE_CHARS));
+            }
+        } else {
+            lines.add("设备检查结果：本检查点没有取得设备结果");
+        }
+        if (block.get("energyEstimate") instanceof Map<?, ?> estimate) {
+            lines.addAll(acEstimateLines(estimate));
+        }
+        return lines;
+    }
+
+    private static Object acTarget(Map<?, ?> block) {
+        if (block.get("criteria") instanceof Map<?, ?> criteria
+                && criteria.get("setpoint") instanceof Map<?, ?> setpoint
+                && setpoint.get("value") != null) {
+            return setpoint.get("value");
+        }
+        return block.get("target");
+    }
+
+    private static String acPhaseOutcome(Map<?, ?> block) {
+        String outcome = text(block.get("outcome"), text(block.get("status"), ""));
+        return switch (outcome) {
+            case "" -> "";
+            case "COMPLETED" -> "完成";
+            case "FAILED" -> "失败";
+            case "PARTIAL" -> "部分完成";
+            case "INTERRUPTED" -> "中断";
+            case "MISSED" -> "错过";
+            case "SKIPPED" -> "跳过";
+            default -> outcome;
+        };
+    }
+
+    private static String acStateText(Map<?, ?> device) {
+        List<String> parts = new ArrayList<>();
+        Object power = device.get("power");
+        if ("on".equals(power)) parts.add("开机");
+        else if ("off".equals(power)) parts.add("关机");
+        else if (power != null) parts.add("电源" + power);
+        Object mode = device.get("mode");
+        if (mode != null) parts.add(switch (String.valueOf(mode)) {
+            case "cool" -> "制冷";
+            case "heat" -> "制热";
+            case "dry" -> "除湿";
+            case "fan" -> "送风";
+            case "auto" -> "自动";
+            default -> String.valueOf(mode);
+        });
+        if (device.get("setpoint") instanceof Number setpoint) parts.add("设定 " + setpoint + "℃");
+        return String.join(" · ", parts);
+    }
+
+    private static String acDispositionText(Map<?, ?> device, Object target) {
+        String disposition = text(device.get("disposition"), "");
+        return switch (disposition) {
+            case "adjusted" -> target instanceof Number
+                    ? "已下发调到" + target + "℃" : "已下发调温指令";
+            case "unconfirmed" -> "已下发，未确认回读";
+            case "not_dispatched" -> "这次未调整";
+            case "not_needed" -> "无需调整";
+            case "adjustable" -> "可调";
+            case "unknown" -> "已下发";
+            default -> "状态未知";
+        };
+    }
+
+    private static String acReadbackText(Map<?, ?> device) {
+        return device.get("afterSetpoint") instanceof Number value ? "平台回读 " + value + "℃" : "";
+    }
+
+    private static List<String> acEstimateLines(Map<?, ?> estimate) {
+        List<String> lines = new ArrayList<>();
+        StringBuilder headline = new StringBuilder("节电估算（估算值，非电表实测）");
+        if (estimate.get("value") instanceof Number value) {
+            headline.append("：约 ").append(value).append(" ").append(text(estimate.get("unit"), "度"));
+        }
+        if (estimate.get("costValue") instanceof Number cost) {
+            headline.append("，折合电费约 ").append(cost).append(" ").append(text(estimate.get("costUnit"), "元"));
+        }
+        lines.add(headline.toString());
+        List<String> parts = new ArrayList<>();
+        Map<?, ?> assumptions = estimate.get("assumptions") instanceof Map<?, ?> map ? map : Map.of();
+        if (assumptions.get("ratePerDegree") instanceof Number rate) {
+            parts.add("每升高 1℃ 约节电 " + percent(rate) + "%");
+        }
+        if (assumptions.get("powerKw") instanceof Number power) parts.add("单台功率 " + power + "kW");
+        if (assumptions.get("pricePerKwh") instanceof Number price) parts.add("电价 " + price + " 元/度");
+        Map<?, ?> baseline = estimate.get("baseline") instanceof Map<?, ?> map ? map : Map.of();
+        if (baseline.get("averageSetpoint") instanceof Number average) parts.add("调前平均设定 " + average + "℃");
+        if (baseline.get("target") instanceof Number target) parts.add("统一目标 " + target + "℃");
+        if (baseline.get("averageRise") instanceof Number rise) parts.add("平均调升 " + rise + "℃");
+        Map<?, ?> coverage = estimate.get("coverage") instanceof Map<?, ?> map ? map : Map.of();
+        if (coverage.get("adjusted") instanceof Number adjusted) parts.add("实际调节 " + adjusted + " 台");
+        if (coverage.get("estimated") instanceof Number estimated) parts.add("参与估算 " + estimated + " 台");
+        if (!parts.isEmpty()) lines.addAll(wrap("估算假设：" + String.join("；", parts), MAX_LINE_CHARS));
+        String calculation = text(estimate.get("calculation"), "");
+        if (!calculation.isBlank()) lines.add("计算式：" + calculation);
+        String reason = text(estimate.get("reason"), "");
+        if (!reason.isBlank()) lines.add("口径说明：" + reason);
+        if (Boolean.TRUE.equals(estimate.get("potential"))) {
+            lines.add("本估算为可调节潜力，设备未实际调节。");
+        }
+        return lines;
+    }
+
+    private static String percent(Number rate) {
+        double value = Math.round(rate.doubleValue() * 1000) / 10.0;
+        return value == Math.floor(value) ? String.valueOf((long) value) : String.valueOf(value);
+    }
+
     private static List<String> wrap(String value, int width) {
         List<String> result = new ArrayList<>();
         if (value == null || value.isBlank()) return result;
@@ -216,9 +341,6 @@ public final class ReportPdfRenderer {
         return result;
     }
 
-    private static void write(ByteArrayOutputStream out, String value) {
-        out.writeBytes(value.getBytes(StandardCharsets.ISO_8859_1));
-    }
 
     private static String text(Object value, String fallback) {
         return value == null ? fallback : String.valueOf(value);

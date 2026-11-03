@@ -42,11 +42,14 @@ public final class ReportXlsxRenderer {
         }
 
         List<Row> energy = new ArrayList<>();
-        energy.add(Row.texts("电表", "位置", "期间", "本期用量(度)", "基期用量(度)", "状态", "覆盖", "数据来源"));
+        energy.add(Row.texts("电表", "位置", "期间", "本期用量(度)", "基期用量(度)", "状态", "覆盖", "数据来源",
+                "本期起始采样时间", "本期起始累计示数", "本期结束采样时间", "本期结束累计示数",
+                "基期起始采样时间", "基期起始累计示数", "基期结束采样时间", "基期结束累计示数"));
         if (blocks instanceof List<?> list) {
             for (Object value : list) {
                 if (!(value instanceof Map<?, ?> block) || !"meter_report".equals(text(block.get("type"), ""))) continue;
                 if (!(block.get("report") instanceof Map<?, ?> fact)) continue;
+                for (String note : MeterExportEvidence.notes(fact)) summary.add(Row.text("计量口径", note));
                 String from = "", to = "";
                 if (fact.get("params") instanceof Map<?, ?> params && params.get("span") instanceof Map<?, ?> span
                         && span.get("requested") instanceof Map<?, ?> requested) {
@@ -76,6 +79,8 @@ public final class ReportXlsxRenderer {
                     values.add(factCoverage == null ? "" : text(factCoverage.get("dataMeters"), "") + "/"
                             + text(factCoverage.get("meters"), ""));
                     values.add("ENERGY_HISTORY/epf");
+                    values.addAll(MeterExportEvidence.samples(meter, "a"));
+                    values.addAll(MeterExportEvidence.samples(meter, "b"));
                     energy.add(Row.values(values));
                 }
             }
@@ -102,7 +107,72 @@ public final class ReportXlsxRenderer {
                 }
             }
         }
-
+        List<Row> inspection = new ArrayList<>();
+        inspection.add(Row.texts("检查时间", "检查方式", "设备", "位置", "检查前状态", "处置结果", "平台回读(℃)", "说明", "节电估算(度)"));
+        if (blocks instanceof List<?> list) {
+            for (Object value : list) {
+                if (!(value instanceof Map<?, ?> block) || !"ac_inspection".equals(text(block.get("type"), ""))) continue;
+                String at = text(block.get("at"), "");
+                Object target = null;
+                if (block.get("criteria") instanceof Map<?, ?> criteria
+                        && criteria.get("setpoint") instanceof Map<?, ?> setpoint) {
+                    target = setpoint.get("value");
+                }
+                if (target == null) target = block.get("target");
+                String modeText = "adjust_to_26".equals(text(block.get("mode"), ""))
+                        ? "调温巡检（目标 " + text(target, "26") + "℃）" : "只读巡检";
+                if (block.get("devices") instanceof List<?> rows) {
+                    for (Object row : rows) {
+                        if (!(row instanceof Map<?, ?> device)) continue;
+                        inspection.add(Row.values(java.util.Arrays.asList(
+                                at,
+                                modeText,
+                                text(device.get("name"), text(device.get("deviceId"), "未知设备")),
+                                text(device.get("location"), ""),
+                                xlsxAcState(device),
+                                xlsxAcDisposition(device, target),
+                                device.get("afterSetpoint") instanceof Number readback ? readback : "",
+                                text(device.get("reason"), ""),
+                                "")));
+                    }
+                }
+                if (block.get("energyEstimate") instanceof Map<?, ?> estimate) {
+                    List<String> basis = new ArrayList<>();
+                    if (estimate.get("assumptions") instanceof Map<?, ?> assumptions) {
+                        if (assumptions.get("ratePerDegree") instanceof Number rate) {
+                            basis.add("每升高 1℃ 约节电 " + percent(rate) + "%");
+                        }
+                        if (assumptions.get("powerKw") instanceof Number power) basis.add("单台功率 " + power + "kW");
+                        if (assumptions.get("pricePerKwh") instanceof Number price) basis.add("电价 " + price + " 元/度");
+                    }
+                    if (estimate.get("baseline") instanceof Map<?, ?> baseline) {
+                        if (baseline.get("averageSetpoint") instanceof Number average) basis.add("调前平均设定 " + average + "℃");
+                        if (baseline.get("target") instanceof Number aim) basis.add("统一目标 " + aim + "℃");
+                        if (baseline.get("averageRise") instanceof Number rise) basis.add("平均调升 " + rise + "℃");
+                    }
+                    if (estimate.get("coverage") instanceof Map<?, ?> estimateCoverage) {
+                        if (estimateCoverage.get("adjusted") instanceof Number adjusted) basis.add("实际调节 " + adjusted + " 台");
+                        if (estimateCoverage.get("estimated") instanceof Number estimated) basis.add("参与估算 " + estimated + " 台");
+                    }
+                    String calculation = text(estimate.get("calculation"), "");
+                    if (!calculation.isBlank()) basis.add(calculation);
+                    String reason = text(estimate.get("reason"), "");
+                    if (!reason.isBlank()) basis.add(reason);
+                    if (Boolean.TRUE.equals(estimate.get("potential"))) basis.add("可调节潜力估算，设备未实际调节");
+                    inspection.add(Row.values(java.util.Arrays.asList(
+                            at,
+                            modeText,
+                            "节电估算（估算值，非电表实测）",
+                            "",
+                            "",
+                            estimate.get("costValue") instanceof Number cost
+                                    ? "折合电费约 " + cost + " " + text(estimate.get("costUnit"), "元") : "折合电费未知",
+                            "",
+                            String.join("；", basis),
+                            estimate.get("value") instanceof Number saved ? saved : "")));
+                }
+            }
+        }
         try {
             ByteArrayOutputStream bytes = new ByteArrayOutputStream();
             try (ZipOutputStream zip = new ZipOutputStream(bytes, StandardCharsets.UTF_8)) {
@@ -111,6 +181,7 @@ public final class ReportXlsxRenderer {
                 entry(zip, "xl/workbook.xml", workbook());
                 entry(zip, "xl/_rels/workbook.xml.rels", workbookRelationships());
                 entry(zip, "xl/worksheets/sheet1.xml", sheet(summary));
+                entry(zip, "xl/worksheets/sheet4.xml", sheet(inspection));
                 entry(zip, "xl/worksheets/sheet2.xml", sheet(energy));
                 entry(zip, "xl/worksheets/sheet3.xml", sheet(safety));
             }
@@ -129,6 +200,7 @@ public final class ReportXlsxRenderer {
                 + "<Override PartName=\"/xl/worksheets/sheet1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>"
                 + "<Override PartName=\"/xl/worksheets/sheet2.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>"
                 + "<Override PartName=\"/xl/worksheets/sheet3.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>"
+                + "<Override PartName=\"/xl/worksheets/sheet4.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>"
                 + "</Types>";
     }
 
@@ -145,7 +217,8 @@ public final class ReportXlsxRenderer {
                 + "xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">"
                 + "<sheets><sheet name=\"Report\" sheetId=\"1\" r:id=\"rId1\"/>"
                 + "<sheet name=\"Energy\" sheetId=\"2\" r:id=\"rId2\"/>"
-                + "<sheet name=\"Safety\" sheetId=\"3\" r:id=\"rId3\"/></sheets></workbook>";
+                + "<sheet name=\"Safety\" sheetId=\"3\" r:id=\"rId3\"/>"
+                + "<sheet name=\"Inspection\" sheetId=\"4\" r:id=\"rId4\"/></sheets></workbook>";
     }
 
     private static String workbookRelationships() {
@@ -154,7 +227,45 @@ public final class ReportXlsxRenderer {
                 + "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet1.xml\"/>"
                 + "<Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet2.xml\"/>"
                 + "<Relationship Id=\"rId3\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet3.xml\"/>"
+                + "<Relationship Id=\"rId4\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet4.xml\"/>"
                 + "</Relationships>";
+    }
+
+    private static String xlsxAcState(Map<?, ?> device) {
+        List<String> parts = new ArrayList<>();
+        Object power = device.get("power");
+        if ("on".equals(power)) parts.add("开机");
+        else if ("off".equals(power)) parts.add("关机");
+        else if (power != null) parts.add("电源" + power);
+        Object mode = device.get("mode");
+        if (mode != null) parts.add(switch (String.valueOf(mode)) {
+            case "cool" -> "制冷";
+            case "heat" -> "制热";
+            case "dry" -> "除湿";
+            case "fan" -> "送风";
+            case "auto" -> "自动";
+            default -> String.valueOf(mode);
+        });
+        if (device.get("setpoint") instanceof Number setpoint) parts.add("设定 " + setpoint + "℃");
+        return String.join(" · ", parts);
+    }
+
+    private static String xlsxAcDisposition(Map<?, ?> device, Object target) {
+        String disposition = text(device.get("disposition"), "");
+        return switch (disposition) {
+            case "adjusted" -> target instanceof Number ? "已下发调到" + target + "℃" : "已下发调温指令";
+            case "unconfirmed" -> "已下发，未确认回读";
+            case "not_dispatched" -> "这次未调整";
+            case "not_needed" -> "无需调整";
+            case "adjustable" -> "可调";
+            case "unknown" -> "已下发";
+            default -> "状态未知";
+        };
+    }
+
+    private static String percent(Number rate) {
+        double value = Math.round(rate.doubleValue() * 1000) / 10.0;
+        return value == Math.floor(value) ? String.valueOf((long) value) : String.valueOf(value);
     }
 
     private static String sheet(List<Row> rows) {

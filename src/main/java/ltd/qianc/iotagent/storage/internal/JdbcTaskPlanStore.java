@@ -80,13 +80,15 @@ public final class JdbcTaskPlanStore extends JdbcFactSupport implements TaskPlan
                     (rs, index) -> rs.getString(1), planId);
             for (String taskId : taskIds) {
                 jdbc.update("UPDATE task_phases SET status='CANCELLED',version=version+1,ended_at=?,update_time=? "
-                                + "WHERE task_id=? AND status NOT IN ('EXECUTING','COMPLETED','PARTIAL','FAILED','UNCONFIRMED','INTERRUPTED','CANCELLED')",
+                                + "WHERE task_id=? AND status='PENDING'",
                         time(now), time(now), taskId);
                 Integer executing = jdbc.queryForObject("SELECT COUNT(*) FROM task_phases WHERE task_id=? AND status='EXECUTING'",
                         Integer.class, taskId);
                 if (executing == null || executing == 0) {
                     jdbc.update("UPDATE task_facts SET status='CANCELLED',version=version+1,update_time=? "
-                                    + "WHERE task_id=? AND status='SCHEDULED'", time(now), taskId);
+                                    + "WHERE task_id=? AND status='SCHEDULED' "
+                                    + "AND NOT EXISTS (SELECT 1 FROM task_phases p WHERE p.task_id=task_facts.task_id "
+                                    + "AND p.status NOT IN ('PENDING','CANCELLED'))", time(now), taskId);
                 }
             }
             int changed = jdbc.update("UPDATE task_plans SET status='DELETED',version=?,next_at=NULL,next_date=NULL,update_time=? "

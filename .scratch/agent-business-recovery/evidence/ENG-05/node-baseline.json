@@ -1,0 +1,28 @@
+{
+  "frozen_at": "2026-11-01T19:12:18.968268+00:00",
+  "source_checkpoint": "f9fff16",
+  "protocol_version": 1,
+  "verification": [
+    "TypeScript typecheck passed",
+    "19 Node behavioral tests passed",
+    "TypeScript build passed",
+    "real independent Node process contract passed against isolated fake model"
+  ],
+  "scope": "engineering only; Java-only real business extension and frontend proof pending",
+  "sha256": {
+    "agent-sidecar/src/agent.ts": "6ab59ff5305b94c598f49877e31b640192701e18d553dc80e799ebb3e388973a",
+    "agent-sidecar/src/app.ts": "f7c10f60126a5b9b806417c40d8e55da3afa3914bc425c5db4733f135d8384cf",
+    "agent-sidecar/src/config.ts": "e5ccef4a246ac93ca4c969619f17b385ef8ed7c5e79f4b0beac698332977874d",
+    "agent-sidecar/src/observability.ts": "afb3e90b54abacfce6a31d1cf26b212e94e8198e7ca5ba6b97a077e22855be4d",
+    "agent-sidecar/src/redaction.ts": "6d51d6bd74a917ed9d72adaf9d47968e00e13cc403ceca0f6b4f5975d7915ce1",
+    "agent-sidecar/src/server.ts": "be03e6be956c658a584edc189a657ef7014fb3f5c4f06426711b999ae282bc89",
+    "agent-sidecar/src/session.ts": "18eb095f254528b8510c7d8f2c6a9aae1a1ae08a812a5220ceeccb278b1d2123",
+    "agent-sidecar/dist/agent.js": "e6a1e96dbb0561e72dcca1e85d53b41748997e57390cca8a3fd1acfc420229bc",
+    "agent-sidecar/dist/app.js": "7dad657c83d7504cccef1a5f99f6b9d421e70b578f18689343186fcbe97d967f",
+    "agent-sidecar/dist/config.js": "bc3a049a0fcc4c6c96ac85ca9d5f012e8cb5accbdd1b43b5f3d97a15b86b2a31",
+    "agent-sidecar/dist/observability.js": "a9ce3c8e0d6b15e4d28a228868ef865317bff20be29c251f31974799cfb0a4a9",
+    "agent-sidecar/dist/redaction.js": "5c90d43b0316d2e1626e6adcfd98eaebc292d52bdf7d7d1d7d0911dd3f25515a",
+    "agent-sidecar/dist/server.js": "ea7e0c50df19407e5c505435d81f329c1e15bbdc00e35cb13b0aadb5abc74463",
+    "agent-sidecar/dist/session.js": "7d7e9496a8a28788013ebacc23b70c4beddb7310ab56e7b1e8dd2dafddf477ca"
+  }
+}

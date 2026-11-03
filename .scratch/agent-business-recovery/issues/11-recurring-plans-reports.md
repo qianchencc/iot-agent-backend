@@ -50,6 +50,13 @@
 
 证据落在 `.scratch/agent-business-recovery/evidence/<CASE-ID>/`，覆盖 `OFF-TASK-02` 及验收矩阵中的周期报表案例；含确认单、周期安排、物化/重启/去重记录（脱敏）、报表样本、构建/账号/来源/区域。隔离环境需明确标注，不冒充生产。
 
+## 实现笔记（2026-11-02，源码修改完成、验证待统一运行）
+
+- `storage/internal/JdbcTaskRecurrenceMaterializer.java`：迟到/恢复判定改为基于**有效发生**（按 next_date 平移的模板，或 task_plan_occurrences 的覆盖负载），不再用锚定在创建日的原始模板判断"是否还有未来检查点"；此前重启进入后续发生超过 10 分钟会被整场 SKIPPED，丢掉仍活跃窗口的未来检查点。宽限（10 分钟，对齐 Runtime missPhase/补执行窗口）内准点/轻微延迟物化保留全部检查点，起始检查点保持 PENDING 交由调度执行；超宽限恢复时已过检查点落为 `MISSED` 行（failure_reason=服务重启时检查点已过，未下发），不再静默从快照删除、也不重放过期指令；仅当有效发生再无可执行检查点才记 SKIPPED 并推进计划指针（对齐 Runtime skipElapsedStarts/recoverInterrupted）。
+- `task/internal/TaskProposalNormalizer.java`：同一阶段混用非空 `actions` 与 `read`（或阶段级 `reportRequest`）在确认前直接拒绝（INVALID_TASK_PAYLOAD 400："设备控制与只读检查不能在同一阶段混用，请拆分为不同的检查点"）。此前会被接受，而执行网关按 AC 检查 > 控制动作 > 只读的优先级只执行其一、静默丢弃另一半。未发现编码了该非法组合的既有测试夹具，无需迁移；无旧兼容分支。
+- 行为回归（新增/修改，**尚未运行**，按约定由主代理统一构建测试）：daily 模板昨日锚点+今日活跃区间迟到重启物化未来部分、覆盖窗口迟到重启物化未来部分、准点物化保留到期起始阶段、全过期发生 SKIPPED 且指针推进、恢复期已过检查点记 MISSED 不重放、混用阶段（阶段级与根级合成路径）确认前报错、空 actions+read 仍接受。文件：`JdbcTaskRecurrenceMaterializerTest`、`TaskProposalNormalizationContractTest`。
+- 本票其余验收（前端确认单、隔离实例报表产物等）仍未执行，不得宣称完成。
+
 ## 本票尚未验收
 
 本票仅发布规格，尚未执行任何验收；不得以计划创建成功、调度日志或报表接口成功宣称业务完成。

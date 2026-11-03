@@ -26,7 +26,7 @@ import org.springframework.stereotype.Service;
 
 /** Company report authorization, durable fact projection, and rendering seam. */
 @Service
-@org.springframework.boot.autoconfigure.condition.ConditionalOnBean(ReportFactStore.class)
+@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
 public final class DefaultReportService implements ReportService {
     private static final Duration SCOPE_TIMEOUT = Duration.ofSeconds(30);
     private static final TypeReference<Map<String, Object>> MAP = new TypeReference<>() { };
@@ -67,22 +67,8 @@ public final class DefaultReportService implements ReportService {
     @Override
     public Map<String, Object> read(String reportId, RequestIdentity identity) {
         if (identity == null || identity.source() != IotSource.COMPANY) throw new ReportNotFoundException();
-        ReportFact fact;
-        try {
-            fact = store.find(reportId).orElseThrow(ReportNotFoundException::new);
-        } catch (ReportNotFoundException missing) {
-            throw missing;
-        } catch (RuntimeException error) {
-            throw new ReportUnavailableException("REPORT_FACT_UNAVAILABLE", "报告事实暂不可读取");
-        }
-        Map<String, Object> report = parse(fact);
-        if (!"company".equals(fact.source()) || !"company".equals(text(report, "source", fact.source()))) {
-            throw new ReportNotFoundException();
-        }
-        if (!identity.tenantCode().equals(text(report, "tenantCode", ""))
-                || !identity.ownerKey().equals(text(report, "ownerKey", ""))) {
-            throw new ReportNotFoundException();
-        }
+        ReportFact fact = find(reportId);
+        Map<String, Object> report = ownedReport(fact, identity);
         AuthorizedDeviceScope scope = loadScope(identity);
         try {
             for (ReportReferenceExtractor.Reference reference : ReportReferenceExtractor.extract(mapper.valueToTree(report))) {
@@ -101,8 +87,79 @@ public final class DefaultReportService implements ReportService {
         report.putIfAbsent("id", fact.reportId());
         report.put("source", "company");
         report.put("contentHash", contentHash);
+        java.util.List<String> evidenceNotes = MeterExportEvidence.reportNotes(report);
+        if (!evidenceNotes.isEmpty()) report.put("evidenceNotes", evidenceNotes);
         return report;
     }
+    @Override
+    public java.util.List<Map<String, Object>> conversationFacts(String conversationId,
+            java.util.List<String> reportIds, RequestIdentity identity) {
+        if (identity == null || identity.source() != IotSource.COMPANY) throw new ReportNotFoundException();
+        java.util.List<Map<String, Object>> result = new java.util.ArrayList<>();
+        for (String id : new java.util.LinkedHashSet<>(reportIds)) {
+            ReportFact fact = find(id);
+            Map<String, Object> report = ownedReport(fact, identity);
+            if (!conversationId.equals(object(report.get("origin")).get("conversationId"))) {
+                throw new ReportNotFoundException();
+            }
+            Map<String, Object> saved = new java.util.LinkedHashMap<>();
+            saved.put("reportId", fact.reportId());
+            for (String key : java.util.List.of("title", "generatedAt", "summary", "coverage")) {
+                if (report.get(key) != null) saved.put(key, report.get(key));
+            }
+            saved.put("historical", true);
+            saved.put("currentDeviceAuthorization", false);
+            saved.put("evidenceNotes", MeterExportEvidence.reportNotes(report));
+            java.util.List<Map<String, Object>> values = new java.util.ArrayList<>();
+            if (report.get("blocks") instanceof java.util.List<?> blocks) {
+                for (Object value : blocks) {
+                    Map<?, ?> block = object(value);
+                    if (!"meter_report".equals(block.get("type"))) continue;
+                    Map<?, ?> meter = object(block.get("report"));
+                    Map<?, ?> params = object(meter.get("params"));
+                    Map<String, Object> totals = new java.util.LinkedHashMap<>();
+                    for (String key : java.util.List.of("total", "diff", "coverage")) {
+                        if (meter.get(key) != null) totals.put(key, meter.get(key));
+                    }
+                    for (String key : java.util.List.of("span", "baseline")) {
+                        if (params.get(key) != null) totals.put(key, params.get(key));
+                    }
+                    Map<?, ?> sides = object(meter.get("sides"));
+                    for (String side : java.util.List.of("a", "b")) {
+                        Object total = object(sides.get(side)).get("total");
+                        if (total != null) totals.put(side + "Total", total);
+                    }
+                    values.add(totals);
+                }
+            }
+            saved.put("meterFacts", values);
+            result.add(saved);
+        }
+        return java.util.List.copyOf(result);
+    }
+
+    private ReportFact find(String reportId) {
+        try {
+            return store.find(reportId).orElseThrow(ReportNotFoundException::new);
+        } catch (ReportNotFoundException missing) {
+            throw missing;
+        } catch (RuntimeException error) {
+            throw new ReportUnavailableException("REPORT_FACT_UNAVAILABLE", "报告事实暂不可读取");
+        }
+    }
+
+    private Map<String, Object> ownedReport(ReportFact fact, RequestIdentity identity) {
+        Map<String, Object> report = parse(fact);
+        if (!"company".equals(fact.source()) || !"company".equals(text(report, "source", fact.source()))
+                || !identity.tenantCode().equals(text(report, "tenantCode", ""))
+                || !identity.ownerKey().equals(text(report, "ownerKey", ""))) {
+            throw new ReportNotFoundException();
+        }
+        return report;
+    }
+
+    private static Map<?, ?> object(Object value) { return value instanceof Map<?, ?> map ? map : Map.of(); }
+
 
     @Override
     public ReportDownload download(String reportId, String format, RequestIdentity identity) {

@@ -1,24 +1,21 @@
 # 03: 旧 SQLite 会话保真导入且不重复业务事实
 
-**What to build:** 已有新后端用户的 Pi 历史经一致性备份导入 MySQL，迁移后保留可继续使用的上下文，而不是要求用户清空会话；本票可与02并行。
+**What changed:** 用户明确要求“不必导入旧会话，直接切换即可”。本票取消，不实现、不验收 SQLite 导入。
 
-**Blocked by:** [01 新会话经 Java/MySQL 保存并完整重开](01-new-session-mysql-contract.md)
+**Blocked by:** 无
 
-**Status:** ready-for-agent
+**Status:** wontfix
 
-**Execution:** not-started
+**Execution:** cancelled-by-user
 
 规格：[统一 MySQL 会话持久化](../spec.md)。验收：[预期效果与验收](../acceptance.md)。工程通过不等于业务通过；不修改或关闭原业务恢复父票。
 
-## Acceptance criteria
+## Scope decision
 
-- [ ] 迁移输入仅为新 Java 后端 sidecar 的受控一致性备份；不读取或修改原 Runtime 的生产数据库，不复制原缓存工作区运行文件。
-- [ ] 备份包含 WAL 已提交内容并在导入窗口停写，不直接复制一个可能不一致的 SQLite 主文件；原源库和备份不删除。
-- [ ] 完整导入 Session/Entry/Record/lane/parent/seq、名称标签、用量和压缩摘要；迁移租约不直接继承，导入不重放任何业务工具。
-- [ ] 与 Java 既有会话事实核对租户、主体、source 和会话映射；无法核对的会话有只读隔离清单，活跃会话未映射阻止切换，不能猜测默认租户。
-- [ ] 对所有导入会话逐项比对规范内容、顺序、分支和统计，并使用 Pi 构建模型上下文比较；不能仅比记录总数。
-- [ ] 重复导入相同快照不产生重复记录；源数据变化、已有目标冲突、损坏记录、版本不匹配时明确失败且不覆盖；中途失败可安全重试。
-- [ ] 真实旧会话在独立目标实例重开并继续引用迁移前设备清单，界面给出当前真实状态；证据和迁移摘要不含凭据或完整私人内容。
+- 不读取、导入或修改原 Runtime 的任何会话数据。
+- 不导入旧 sidecar 的 SQLite；原文件保留为离线遗留数据，不成为运行依赖。
+- 旧公开会话仅标记结束；既有草案、任务、报告及执行事实不删除、不重建。
+- [04](04-existing-conversation-cutover.md) 只依赖02，切换后创建新会话；新 MySQL 会话必须在 Node/Java 重启后继续。
 
 ## Execution contract
 

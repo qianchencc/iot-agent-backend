@@ -62,6 +62,7 @@ public final class AgentBusinessToolDispatcher implements AgentToolBridge {
     private final TaskFacade tasks;
     private final ObjectMapper mapper;
     private final ReportGenerationPort reports;
+    private final AgentRunGuard guard;
 
     public AgentBusinessToolDispatcher(ConversationFacade conversations, IotAdapter iot,
             ObservationAdapter observations, TaskProjectionStore projections,
@@ -73,6 +74,7 @@ public final class AgentBusinessToolDispatcher implements AgentToolBridge {
         this.actions = actions;
         this.tasks = tasks;
         this.mapper = mapper;
+        this.guard = new AgentRunGuard(mapper);
         this.reports = reports;
     }
 
@@ -91,7 +93,7 @@ public final class AgentBusinessToolDispatcher implements AgentToolBridge {
         AgentToolCatalog.Definition definition = AgentToolCatalog.find(source.wireValue(), toolName);
         Map<String, Object> arguments = normalizeArguments(definition, request.get("arguments"), context,
                 turnId, toolCallId);
-        return switch (definition.name()) {
+        return guard.invoke(toolContextId, toolCallId, definition, arguments, () -> switch (definition.name()) {
             case "list_office_regions" -> officeRegions(principal, arguments);
             case "find_device_candidates" -> findCandidates(principal, source, conversationId,
                     context.focusRegionId(), arguments);
@@ -116,9 +118,7 @@ public final class AgentBusinessToolDispatcher implements AgentToolBridge {
                     source == IotSource.COMPANY ? ObservationOperation.COMPANY_METER_REPORT : ObservationOperation.ENERGY_COMPARISON,
                     arguments);
             case "prepare_video_playback" -> prepareVideoPlayback(principal, source, arguments);
-            case "review_safety_event" -> observation(principal, source,
-                    arguments.containsKey("cameraDeviceId") ? ObservationOperation.SAFETY_EVENT_CAMERAS : ObservationOperation.SAFETY_EVENT,
-                    arguments);
+            case "review_safety_event" -> reviewSafetyEvent(principal, source, arguments);
             case "create_energy_report" -> generateReport(principal, source, conversationId, turnId, arguments);
             case "propose_task" -> proposeTask(principal, source, conversationId, turnId, arguments);
             case "propose_task_change" -> proposeTaskChange(principal, source, conversationId, turnId, arguments);
@@ -127,7 +127,7 @@ public final class AgentBusinessToolDispatcher implements AgentToolBridge {
             case "list_task_plans" -> listTaskPlans(principal, source);
             case "get_task" -> getTask(principal, source, arguments);
             default -> throw new BusinessException("AGENT_TOOL_UNAVAILABLE", "工具未接入", 404);
-        };
+        });
     }
 
     private Map<String, Object> officeRegions(PrincipalInfo principal, Map<String, Object> args) {
@@ -200,7 +200,7 @@ public final class AgentBusinessToolDispatcher implements AgentToolBridge {
         normalized.put("source", context.source());
         normalized.remove("focusRegionId");
         normalized.remove("idempotencyKey");
-        if ("find_device_candidates".equals(definition.name()) && !isBlank(context.focusRegionId())) {
+        if (Set.of("find_device_candidates", "propose_task").contains(definition.name()) && !isBlank(context.focusRegionId())) {
             normalized.put("focusRegionId", context.focusRegionId());
         }
         if (definition.confirmation() != AgentToolCatalog.Confirmation.NONE
@@ -225,8 +225,14 @@ public final class AgentBusinessToolDispatcher implements AgentToolBridge {
     private Map<String, Object> prepareVideoPlayback(PrincipalInfo principal, IotSource source, Map<String, Object> args) {
         String deviceId = text(args, "deviceId", "");
         if (deviceId.isBlank()) throw new BusinessException("INVALID_DEVICE_REFERENCE", "设备引用无效");
-        OffsetDateTime start = parseVideoTime(text(args, "beginTime", ""));
-        OffsetDateTime finish = parseVideoTime(text(args, "endTime", ""));
+        return Map.of("videoPlayback", playbackCard(principal, source, deviceId,
+                text(args, "beginTime", ""), text(args, "endTime", "")));
+    }
+
+    private Map<String, Object> playbackCard(PrincipalInfo principal, IotSource source, String deviceId,
+            String beginTime, String endTime) {
+        OffsetDateTime start = parseVideoTime(beginTime);
+        OffsetDateTime finish = parseVideoTime(endTime);
         if (!finish.isAfter(start) || Duration.between(start.toInstant(), finish.toInstant()).toMillis() > 3 * 86_400_000L) {
             throw new BusinessException("INVALID_VIDEO_WINDOW", "录像窗口须带时区，结束晚于开始，单次最多三天", 400);
         }
@@ -242,7 +248,54 @@ public final class AgentBusinessToolDispatcher implements AgentToolBridge {
         report.put("location", prepared.location());
         report.put("beginTime", prepared.beginTime());
         report.put("endTime", prepared.endTime());
-        return Map.of("videoPlayback", report);
+        return report;
+    }
+
+    /**
+     * Resolves the source safety record and its real ±15-minute window through the
+     * composed observation adapter, then validates and prepares playback only for
+     * one server-authorized candidate selected by the user or the sole candidate.
+     */
+    private Map<String, Object> reviewSafetyEvent(PrincipalInfo principal, IotSource source, Map<String, Object> args) {
+        if (source != IotSource.COMPANY) {
+            throw new BusinessException("SAFETY_SOURCE_UNAVAILABLE", "安全记录监控复盘仅支持公司来源", 404);
+        }
+        Map<String, Object> parameters = new LinkedHashMap<>();
+        parameters.put("eventId", text(args, "eventId", ""));
+        parameters.put("deviceId", text(args, "deviceId", ""));
+        parameters.put("ledger", text(args, "ledger", ""));
+        Map<String, Object> payload = observation(principal, source,
+                ObservationOperation.SAFETY_EVENT_CAMERAS, parameters);
+        List<Map<String, Object>> candidates = new ArrayList<>();
+        for (Object item : list(payload.get("candidates"))) {
+            Map<String, Object> candidate = map(item);
+            if (!candidate.isEmpty()) candidates.add(candidate);
+        }
+        Map<String, Object> selected = null;
+        String requestedCamera = text(args, "cameraDeviceId", "");
+        if (!requestedCamera.isBlank()) {
+            selected = candidates.stream()
+                    .filter(candidate -> requestedCamera.equals(text(candidate, "deviceId", "")))
+                    .findFirst().orElse(null);
+            if (selected == null) {
+                throw new BusinessException("SAFETY_EVENT_CAMERA_UNAVAILABLE",
+                        "所选监控不在该安全记录的当前授权候选中，请重新选择", 404);
+            }
+        } else if (candidates.size() == 1) {
+            selected = candidates.get(0);
+        }
+        if (selected != null) {
+            String cameraDeviceId = text(selected, "deviceId", "");
+            if (cameraDeviceId.isBlank()) {
+                throw new BusinessException("SAFETY_EVENT_CAMERA_UNAVAILABLE", "候选监控身份无效", 404);
+            }
+            Map<String, Object> report = playbackCard(principal, source, cameraDeviceId,
+                    text(selected, "beginTime", ""), text(selected, "endTime", ""));
+            Map<String, Object> safetyContext = map(selected.get("safetyContext"));
+            if (!safetyContext.isEmpty()) report.put("safetyContext", safetyContext);
+            payload.put("videoPlayback", report);
+        }
+        return payload;
     }
 
     private static OffsetDateTime parseVideoTime(String value) {
@@ -529,13 +582,8 @@ public final class AgentBusinessToolDispatcher implements AgentToolBridge {
 
     private Map<String, Object> readStates(PrincipalInfo principal, IotSource source,
             String conversationId, Map<String, Object> args) {
-        List<DeviceCapabilityRequest.DeviceCapabilitySelection> selections = new ArrayList<>();
-        for (Object value : list(args.get("candidateSets"))) {
-            Map<String, Object> item = map(value);
-            selections.add(new DeviceCapabilityRequest.DeviceCapabilitySelection(text(item, "candidateSetId", ""),
-                    strings(item.get("deviceIds"))));
-        }
-        if (selections.isEmpty()) throw new BusinessException("INVALID_DEVICE_REFERENCE", "设备引用无效");
+        List<DeviceCapabilityRequest.DeviceCapabilitySelection> selections =
+                capabilitySelections(principal, source, conversationId, args);
         DeviceStateReadResult result = iot.readDeviceStates(identity(principal, source),
                 new DeviceCapabilityRequest(selections), conversationId).block(TIMEOUT);
         if (result == null) throw new BusinessException("AGENT_TOOL_UNAVAILABLE", "设备状态暂不可用", 404);
@@ -544,16 +592,35 @@ public final class AgentBusinessToolDispatcher implements AgentToolBridge {
 
     private Map<String, Object> inspectCapabilities(PrincipalInfo principal, IotSource source,
             String conversationId, Map<String, Object> args) {
-        List<DeviceCapabilityRequest.DeviceCapabilitySelection> selections = new ArrayList<>();
-        for (Object value : list(args.get("candidateSets"))) {
-            Map<String, Object> item = map(value);
-            selections.add(new DeviceCapabilityRequest.DeviceCapabilitySelection(text(item, "candidateSetId", ""),
-                    strings(item.get("deviceIds"))));
-        }
+        List<DeviceCapabilityRequest.DeviceCapabilitySelection> selections =
+                capabilitySelections(principal, source, conversationId, args);
         DeviceCapabilityInspection result = iot.inspectDeviceCapabilities(identity(principal, source),
                 new DeviceCapabilityRequest(selections), conversationId).block(TIMEOUT);
         if (result == null) throw new BusinessException("AGENT_TOOL_UNAVAILABLE", "设备能力暂不可用", 404);
         return mapper.convertValue(result, Map.class);
+    }
+
+    private List<DeviceCapabilityRequest.DeviceCapabilitySelection> capabilitySelections(
+            PrincipalInfo principal, IotSource source, String conversationId, Map<String, Object> args) {
+        List<DeviceCapabilityRequest.DeviceCapabilitySelection> selections = new ArrayList<>();
+        for (Object value : list(args.get("candidateSets"))) {
+            Map<String, Object> item = map(value);
+            String setId = text(item, "candidateSetId", "");
+            List<String> ids = strings(item.get("deviceIds"));
+            if (Boolean.TRUE.equals(item.get("all"))) {
+                if (item.containsKey("deviceIds")) throw new BusinessException(
+                        "INVALID_DEVICE_REFERENCE", "完整候选范围与精确设备选择不能混用");
+                var stored = iot.resolveDeviceCandidateSet(identity(principal, source), setId, conversationId).block(TIMEOUT);
+                if (stored == null || stored.members().size() != stored.totalMatches()) throw new BusinessException(
+                        "CANDIDATE_SET_INCOMPLETE", "候选范围尚未完整取得，不能按全部读取", 409);
+                ids = stored.members().stream().map(ltd.qianc.iotagent.iot.AuthorizedDevice::id).toList();
+            }
+            if (ids.isEmpty()) throw new BusinessException(
+                    "INVALID_DEVICE_REFERENCE", "请选择明确设备或显式指定完整候选范围");
+            selections.add(new DeviceCapabilityRequest.DeviceCapabilitySelection(setId, ids));
+        }
+        if (selections.isEmpty()) throw new BusinessException("INVALID_DEVICE_REFERENCE", "设备引用无效");
+        return selections;
     }
 
     private Map<String, Object> proposeAction(PrincipalInfo principal, IotSource source,
@@ -601,8 +668,10 @@ public final class AgentBusinessToolDispatcher implements AgentToolBridge {
     private Map<String, Object> proposeTask(PrincipalInfo principal, IotSource source,
             String conversationId, String turnId, Map<String, Object> args) {
         try {
+            Map<String, Object> payload = businessArguments(args);
+            if (source == IotSource.OFFICE && args.containsKey("focusRegionId")) payload.put("focusRegionId", args.get("focusRegionId"));
             return tasks.proposalView(tasks.propose(principal, source.wireValue(), conversationId, turnId,
-                    mapper.writeValueAsString(businessArguments(args)), text(args, "idempotencyKey", "")));
+                    mapper.writeValueAsString(payload), text(args, "idempotencyKey", "")));
         } catch (JsonProcessingException error) {
             throw new BusinessException("INVALID_TASK_PAYLOAD", "任务内容无效");
         }

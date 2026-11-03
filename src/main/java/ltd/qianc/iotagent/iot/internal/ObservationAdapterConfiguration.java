@@ -61,9 +61,6 @@ public class ObservationAdapterConfiguration {
             configured.put(ObservationOperation.SAFETY_EVENTS,
                     route(environment, ObservationOperation.SAFETY_EVENTS,
                             "/micro-api/api/perception/fire/{ledger}/alarm/page"));
-            configured.put(ObservationOperation.SAFETY_EVENT,
-                    route(environment, ObservationOperation.SAFETY_EVENT,
-                            "/micro-api/api/perception/fire/{ledger}/alarm/page"));
             configured.put(ObservationOperation.SAFETY_EVENT_CAMERAS,
                     route(environment, ObservationOperation.SAFETY_EVENT_CAMERAS, null));
             configured.put(ObservationOperation.ENERGY_COMPARISON,
@@ -103,8 +100,51 @@ public class ObservationAdapterConfiguration {
         CompanyEnergyObservationComposer energyComposer = configuredPolicy == null
                 ? CompanyEnergyObservationComposerFactory.composed(delegate, iot, clock)
                 : CompanyEnergyObservationComposerFactory.composed(delegate, iot, clock, configuredPolicy);
+        SafetyLedgerComposer safetyLedger = new SafetyLedgerComposer(delegate, iot,
+                metadataReader(builder, baseUrl, environment, timeoutMs),
+                cursorMacKey(environment), clock);
         return ObservationAdapterFactory.composed(
-                delegate, iot, automationReader, regionSeen.getIfAvailable(), energyComposer, clock);
+                delegate, iot, automationReader, regionSeen.getIfAvailable(), energyComposer, safetyLedger, clock);
+    }
+
+    /**
+     * HMAC key for safety-ledger continuation cursors. Falls back to the shared
+     * CONFIG_SECRET_KEY convention; without any secret the composer signs with an
+     * ephemeral process key and restarts honestly invalidate outstanding cursors.
+     */
+    private static byte[] cursorMacKey(Environment environment) {
+        String secret = environment.getProperty("iot.observation.safety-cursor-secret");
+        if (secret == null) return null;
+        secret = secret.trim();
+        if (secret.isEmpty()) return null;
+        if (secret.matches("(?i)[0-9a-f]{64}")) {
+            byte[] key = new byte[32];
+            for (int index = 0; index < 32; index++) {
+                key[index] = (byte) Integer.parseInt(secret.substring(index * 2, index * 2 + 2), 16);
+            }
+            return key;
+        }
+        byte[] key = secret.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        return key.length >= 16 ? key : null;
+    }
+
+    /**
+     * Current device metadata comes from the iot-center detail path behind the same
+     * gateway as the safety ledger itself; without a configured gateway there is no
+     * enrichment source and current-device fields stay honestly unverified.
+     */
+    private static SafetyLedgerComposer.MetadataSource metadataReader(
+            WebClient.Builder builder, String baseUrl, Environment environment, long timeoutMs) {
+        if (baseUrl == null || baseUrl.isBlank()) return null;
+        try {
+            return new WebClientSafetyMetadataReader(
+                    builder.build(),
+                    environment.getProperty("iot.gateway.company-safety-detail-path",
+                            "/micro-api/api/iot-center/device"),
+                    Duration.ofMillis(timeoutMs));
+        } catch (RuntimeException invalidConfiguration) {
+            return null;
+        }
     }
 
     private static String route(Environment environment, ObservationOperation operation, String fallback) {

@@ -4,9 +4,9 @@
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
-**Execution:** not-started
+**Execution:** implemented; MySQL官方契约30/30、U01/U03真实查询与只读新Node恢复有截图；等待最终集成验收与审查，不以工程绿灯闭票。
 
 规格：[统一 MySQL 会话持久化](../spec.md)。验收：[预期效果与验收](../acceptance.md)。工程通过不等于业务通过；不修改或关闭原业务恢复父票。
 
@@ -19,6 +19,10 @@
 - [ ] 不强制 UUID，不大小写折叠或静默截断 Pi 标识；规范载荷和顺序保真，Pi 表不与业务 tasks/事件表混用。
 - [ ] Node 不持有 MySQL 凭据；私有协议只允许受限会话操作，不接受 SQL、文件路径或代码执行。
 - [ ] 记录各 SDK 语义到公共协议操作的完整映射与失败语义；不能满足官方契约时停止依赖票，不先扩散未验证实现。
+
+## 2026-11-03进展
+
+`pisession`公开入口隐藏Jdbc实现；Node用公开Pi JsonlSessionRepo与远程虚拟文件系统。运行实例已无SQLite；Node启动环境白名单不含DB/Redis/Admin凭据。真实证据见[验收账本](../acceptance.md)，失败与限制同页公开。
 
 ## Execution contract
 

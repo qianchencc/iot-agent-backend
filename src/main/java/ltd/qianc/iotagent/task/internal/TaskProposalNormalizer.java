@@ -72,6 +72,7 @@ public final class TaskProposalNormalizer {
         JsonNode parsed = read(payloadJson);
         if (!parsed.isObject()) throw invalid("任务内容无效");
         ObjectNode root = (ObjectNode) parsed.deepCopy();
+        TaskTargetResolver.materialize(mapper, iot, scopeTimeout, principal, normalizedSource, root);
         if (plan && !root.path("repeat").isObject()) throw invalid("周期计划必须包含重复规则");
 
         ObjectNode reportRequest = validateReportRequest(root.get("reportRequest"));
@@ -107,9 +108,12 @@ public final class TaskProposalNormalizer {
             dropElapsedIntervalPhases(phases, interval);
             if (phases.isEmpty()) throw new BusinessException("TASK_TIME_PASSED", "任务时间已过，请重新选择执行时间", 409);
         } else {
-            if (phases.size() != 1) throw invalid("一次性任务只能包含一个执行阶段");
+            if (phases.size() > 2) throw invalid("无区间任务最多包含两个执行阶段");
             Instant at = Instant.parse(phases.get(0).path("at").asText());
-            if (!at.isAfter(clock.instant())) {
+            // Runtime ten-minute rule (pi-runner/app.ts): a windowless checkpoint
+            // stays schedulable for ten minutes after its moment; later phases
+            // are already strictly after it via validateOrdering.
+            if (at.isBefore(clock.instant().minus(Duration.ofMinutes(10)))) {
                 throw new BusinessException("TASK_TIME_PASSED", "任务时间已过，请重新选择执行时间", 409);
             }
             root.put("taskKind", hasConditional(phases) ? "conditional" : "one_time");
@@ -167,6 +171,13 @@ public final class TaskProposalNormalizer {
             }
             normalizeActions(phase, source);
             normalizeRead(phase);
+            // A checkpoint controls devices or observes them — never both. The execution
+            // gateway dispatches exactly one of the two, so accepting the mix would
+            // silently discard half of the user's intent after confirmation.
+            if (phase.path("actions").size() > 0
+                    && (phase.path("read").isObject() || phase.path("reportRequest").isObject())) {
+                throw invalid("设备控制与只读检查不能在同一阶段混用，请拆分为不同的检查点");
+            }
             if (phase.has("requiresVerification") && !phase.get("requiresVerification").isBoolean()) {
                 throw invalid("任务阶段核验标记无效");
             }
@@ -299,6 +310,24 @@ public final class TaskProposalNormalizer {
         if (read == null || read.isMissingNode() || read.isNull()) return;
         if (!read.isObject()) throw invalid("只读检查参数无效");
         ObjectNode value = (ObjectNode) read;
+        for (String key : iterable(value.fieldNames())) {
+            if (!Set.of("deviceIds", "devices", "alertWindow", "alertDays", "ac", "agent").contains(key)) {
+                throw invalid("只读检查包含不支持的字段：" + key);
+            }
+        }
+        boolean alerts = value.has("alertWindow") || value.has("alertDays");
+        if ((alerts ? 1 : 0) + (value.has("ac") ? 1 : 0) + (value.has("agent") ? 1 : 0) > 1) {
+            throw invalid("告警、空调与智能只读指令不能在同一检查点混用");
+        }
+        if (value.has("alertWindow") && (value.has("alertDays")
+                || !Set.of("previous_day", "previous_week").contains(value.path("alertWindow").asText()))) {
+            throw invalid("安全告警窗口参数无效");
+        }
+        if (value.has("alertDays") && (!value.path("alertDays").isIntegralNumber()
+                || value.path("alertDays").asInt() < 1 || value.path("alertDays").asInt() > 365)) {
+            throw invalid("安全告警窗口参数无效");
+        }
+        if (value.has("agent")) normalizeCheckpointAssignment(value);
         JsonNode ac = value.get("ac");
         if (ac != null && ac.isObject()) value.set("ac", normalizeAcSpec((ObjectNode) ac));
         JsonNode devices = value.get("devices");
@@ -310,6 +339,32 @@ public final class TaskProposalNormalizer {
         JsonNode deviceIds = value.get("deviceIds");
         if (deviceIds != null && (!deviceIds.isArray()
                 || deviceIds.isEmpty())) throw invalid("只读设备范围无效");
+    }
+
+    private void normalizeCheckpointAssignment(ObjectNode read) {
+        if (!(read.get("agent") instanceof ObjectNode agent)
+                || !agent.path("objective").isTextual() || agent.path("objective").asText().isBlank()
+                || agent.path("objective").asText().length() > 2000
+                || !Set.of("result", "report").contains(agent.path("output").asText())) {
+            throw invalid("只读指令需要明确目标与result/report输出类型");
+        }
+        for (String key : iterable(agent.fieldNames())) {
+            if (!Set.of("objective", "output", "spec").contains(key)) throw invalid("只读指令包含不支持的字段");
+        }
+        if (agent.has("spec")) {
+            JsonNode spec = agent.get("spec");
+            if (!spec.isObject() || spec.size() != 2 || !spec.path("comparisons").isArray()) {
+                throw invalid("只读统计要求须包含period与comparisons");
+            }
+            ObjectNode report = mapper.createObjectNode().put("kind", "energy");
+            report.set("period", spec.path("period"));
+            report.set("comparisons", spec.path("comparisons"));
+            ObjectNode validated = validateReportRequest(report);
+            ObjectNode normalized = mapper.createObjectNode();
+            normalized.set("period", validated.path("period"));
+            normalized.set("comparisons", validated.path("comparisons"));
+            agent.set("spec", normalized);
+        }
     }
 
     private ObjectNode normalizeAcSpec(ObjectNode ac) {
@@ -392,11 +447,22 @@ public final class TaskProposalNormalizer {
         }
         if (template == null) return;
         if (cadence == 0) {
-            if (repeat != null && interval != null && interval.path("startsAt").asText("").equals(interval.path("endsAt").asText(""))) {
-                return;
-            }
-            if (interval != null && !interval.path("startsAt").asText("").equals(interval.path("endsAt").asText(""))) {
+            if (interval != null) {
+                // A window without a cadence stays the user's decision; the
+                // server never fills a default frequency, so clarification is
+                // returned instead of saving a misleading proposal.
                 throw new BusinessException("AC_CADENCE_REQUIRED", "空调区间巡检需要明确15、30或60分钟的检查频率", 400);
+            }
+            long acPhases = 0;
+            for (JsonNode phase : phases) if (phase.path("read").path("ac").isObject()) acPhases++;
+            if (repeat != null && acPhases > 0) {
+                throw new BusinessException("AC_WINDOW_REQUIRED", "空调周期检查需要明确的监测窗口起止时间与检查频率", 400);
+            }
+            // Single check vs window check (Runtime pi-runner): without a window
+            // an AC condition is exactly one checkpoint; checkpoint time lists
+            // are only produced by the server from an interval plus cadence.
+            if (acPhases > 0 && phases.size() > 1) {
+                throw invalid("空调检查必须给出监测窗口的开始和结束时间，或明确只检查一次");
             }
             return;
         }
@@ -625,6 +691,12 @@ public final class TaskProposalNormalizer {
                     }
                 }
             }
+            if (read.has("agent")) {
+                if (requested != IotSource.COMPANY || normalized.isEmpty()) throw invalid("用电检查点缺少公司电表范围");
+                for (JsonNode device : normalized) {
+                    if (!"energy".equals(device.path("kind").asText())) throw invalid("用电检查点只能绑定电表");
+                }
+            }
         }
         root.put("catalogFingerprint", scope.catalogFingerprint());
         root.put("bindingFingerprint", scope.bindingFingerprint());
@@ -706,7 +778,7 @@ public final class TaskProposalNormalizer {
         for (String key : iterable(request.fieldNames())) {
             boolean common = Set.of("kind", "title", "period", "objective").contains(key);
             boolean energy = "energy".equals(kind) && Set.of("comparisons", "scope", "grain").contains(key);
-            boolean safety = "safety".equals(kind) && "types".equals(key);
+            boolean safety = "safety".equals(kind) && Set.of("types", "fixedDeviceIds").contains(key);
             if (!common && !energy && !safety) throw invalid("报表请求包含不支持的字段：" + key);
         }
         if (request.has("title") && !request.get("title").isTextual()) throw invalid("报表标题无效");
@@ -768,6 +840,15 @@ public final class TaskProposalNormalizer {
                 if (!types.isArray() || types.isEmpty()) throw invalid("安全报表类型无效");
                 for (JsonNode type : types) {
                     if (!SAFETY_TYPES.contains(type.asText(""))) throw invalid("安全报表类型无效");
+                }
+            }
+            JsonNode fixedDevices = request.get("fixedDeviceIds");
+            if (fixedDevices != null) {
+                // Server-authored fact from TaskTargetResolver; the model cannot
+                // provide it (materialize rejects it before this validation).
+                if (!fixedDevices.isArray() || fixedDevices.isEmpty()) throw invalid("安全报表固定成员无效");
+                for (JsonNode id : fixedDevices) {
+                    if (!id.isTextual() || id.asText("").isBlank()) throw invalid("安全报表固定成员无效");
                 }
             }
         }

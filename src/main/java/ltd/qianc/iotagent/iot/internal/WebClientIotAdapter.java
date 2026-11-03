@@ -155,7 +155,7 @@ public final class WebClientIotAdapter implements IotAdapter {
                         candidateStore.save(new DeviceCandidateRecord(setId, binding.conversationId(),
                                 identity.tenantCode(), identity.ownerKey(), identity.source(),
                                 scope.catalogFingerprint(), query, result.members(), result.complete(),
-                                result.totalMatches(), Instant.now().toString()));
+                                result.totalMatches(), Instant.now().toString(), result.resolution().mode()));
                     }
                     return set;
                 }));
@@ -321,21 +321,44 @@ public final class WebClientIotAdapter implements IotAdapter {
         Mono<Map<String, Object>> observationStates = observed.isEmpty()
                 ? Mono.just(Map.of())
                 : readObservationStates(identity, observed).map(DeviceStateReadResult::states);
-        Mono<Map<String, Object>> smartStates = Flux.fromIterable(requested.stream()
-                        .filter(device -> !observed.contains(device)).toList())
-                .concatMap(device -> {
-                    if ("lighting".equals(device.kind()) || "video".equals(device.kind())) {
-                        String family = "video".equals(device.kind()) ? "monitor" : device.kind();
-                        return page(routes.companySmartBasePath() + "/" + family + "/devicePage",
-                                        Map.of("areaFullCode", device.smartAreaCode()), identity)
-                                .map(rows -> entry(device.id(), companySmartState(device, rows)));
-                    }
-                    if ("ac".equals(device.kind())) {
-                        return companyAcState(identity, device).map(state -> entry(device.id(), state));
-                    }
-                    return Mono.just(entry(device.id(), (Object) null));
-                })
-                .collectMap(Map.Entry::getKey, Map.Entry::getValue, LinkedHashMap::new);
+        // Runtime groups coarse lighting/video reads by kind + area, not by device.
+        // One batch must use one area observation; share the bounded three-read queue with AC.
+        record SmartArea(String kind, String code) { }
+        Map<SmartArea, List<AuthorizedDevice>> areas = new LinkedHashMap<>();
+        List<Mono<Map<String, Object>>> reads = new ArrayList<>();
+        for (AuthorizedDevice device : requested) {
+            if ("lighting".equals(device.kind()) || "video".equals(device.kind())) {
+                if (device.smartAreaCode() != null && !device.smartAreaCode().isBlank()) {
+                    areas.computeIfAbsent(new SmartArea(device.kind(), device.smartAreaCode()),
+                            ignored -> new ArrayList<>()).add(device);
+                }
+            } else if ("ac".equals(device.kind())) {
+                reads.add(companyAcState(identity, device).map(state -> {
+                    Map<String, Object> result = new LinkedHashMap<>();
+                    result.put(device.id(), state);
+                    return result;
+                }));
+            }
+        }
+        areas.forEach((area, devices) -> {
+            String family = "video".equals(area.kind()) ? "monitor" : area.kind();
+            reads.add(page(routes.companySmartBasePath() + "/" + family + "/devicePage",
+                    Map.of("areaFullCode", area.code()), identity).map(rows -> {
+                Map<String, JsonNode> byId = new LinkedHashMap<>();
+                for (JsonNode row : rows) {
+                    String id = text(row, "id", "officeDeviceRef");
+                    if (id != null) byId.putIfAbsent(id, row);
+                }
+                Map<String, Object> result = new LinkedHashMap<>();
+                for (AuthorizedDevice device : devices) {
+                    result.put(device.id(), companySmartState(device, byId.get(device.officeDeviceRef())));
+                }
+                return result;
+            }));
+        });
+        Mono<Map<String, Object>> smartStates = Flux.fromIterable(reads)
+                .flatMap(read -> read, 3)
+                .collect(LinkedHashMap::new, Map::putAll);
         return Mono.zip(observationStates, smartStates).map(tuple -> {
             Map<String, Object> states = new LinkedHashMap<>(tuple.getT1());
             states.putAll(tuple.getT2());
@@ -395,16 +418,13 @@ public final class WebClientIotAdapter implements IotAdapter {
         return videos.isEmpty() ? List.of() : List.of(Map.of("type", "video", "devices", videos));
     }
 
-    private static Object companySmartState(AuthorizedDevice device, List<JsonNode> rows) {
-        for (JsonNode row : rows) {
-            if (!device.officeDeviceRef().equals(text(row, "id", "officeDeviceRef"))) continue;
-            if ("lighting".equals(device.kind())) {
-                return row.has("switchStatus") && !row.get("switchStatus").isNull() ? row.get("switchStatus").asBoolean() : null;
-            }
-            String status = text(row, "netStatus");
-            return "ON_LINE".equalsIgnoreCase(status) ? Boolean.TRUE : "OFF_LINE".equalsIgnoreCase(status) ? Boolean.FALSE : null;
+    private static Object companySmartState(AuthorizedDevice device, JsonNode row) {
+        if (row == null) return null;
+        if ("lighting".equals(device.kind())) {
+            return row.has("switchStatus") && !row.get("switchStatus").isNull() ? row.get("switchStatus").asBoolean() : null;
         }
-        return null;
+        String status = text(row, "netStatus");
+        return "ON_LINE".equalsIgnoreCase(status) ? Boolean.TRUE : "OFF_LINE".equalsIgnoreCase(status) ? Boolean.FALSE : null;
     }
 
     private Mono<Object> companyAcState(RequestIdentity identity, AuthorizedDevice device) {
@@ -693,6 +713,12 @@ public final class WebClientIotAdapter implements IotAdapter {
         return set;
     }
 
+    @Override
+    public Mono<DeviceCandidateRecord> resolveDeviceCandidateSet(
+            RequestIdentity identity, String candidateSetId, String conversationId) {
+        return Mono.fromCallable(() -> requiredCandidateSet(identity, candidateSetId, conversationId));
+    }
+
     private static Map<String, AuthorizedDevice> membersById(DeviceCandidateRecord set) {
         Map<String, AuthorizedDevice> members = new LinkedHashMap<>();
         for (AuthorizedDevice member : set.members()) members.put(member.id(), member);
@@ -888,9 +914,9 @@ public final class WebClientIotAdapter implements IotAdapter {
     private Mono<List<AuthorizedDevice>> collectCompanySmart(RequestIdentity identity, String family) {
         return areaLeaves(routes.companySmartBasePath() + "/" + family + "/myAreaList", identity)
                 .flatMapMany(Flux::fromIterable)
-                .concatMap(leaf -> page(routes.companySmartBasePath() + "/" + family + "/devicePage",
+                .flatMapSequential(leaf -> page(routes.companySmartBasePath() + "/" + family + "/devicePage",
                                 Map.of("areaFullCode", leaf.code()), identity)
-                        .map(rows -> rows.stream().map(row -> parseSmart(row, family, leaf)).toList()))
+                        .map(rows -> rows.stream().map(row -> parseSmart(row, family, leaf)).toList()), 3)
                 .collectList().map(groups -> {
                     Map<String, AuthorizedDevice> unique = new LinkedHashMap<>();
                     for (List<AuthorizedDevice> group : groups) {
@@ -937,8 +963,8 @@ public final class WebClientIotAdapter implements IotAdapter {
     private Mono<List<AuthorizedDevice>> collectCompanyAc(RequestIdentity identity) {
         Mono<List<AuthorizedDevice>> scoped = areaLeaves(routes.companyAcAreaPath(), identity)
                 .flatMapMany(Flux::fromIterable)
-                .concatMap(leaf -> page(routes.companyAcDevicePath(), Map.of("areaFullCode", leaf.code()), identity)
-                        .map(rows -> rows.stream().map(row -> parseAc(row, leaf)).toList()))
+                .flatMapSequential(leaf -> page(routes.companyAcDevicePath(), Map.of("areaFullCode", leaf.code()), identity)
+                        .map(rows -> rows.stream().map(row -> parseAc(row, leaf)).toList()), 3)
                 .collectList().map(this::mergeAcDevices);
         return scoped.zipWith(pageAcBinding(routes.companyAcBindingPath(), identity))
                 .map(tuple -> {

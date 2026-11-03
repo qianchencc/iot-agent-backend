@@ -12,7 +12,6 @@ import java.util.UUID;
 import ltd.qianc.iotagent.iot.IotSource;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.report.ReportFactProducer;
-import ltd.qianc.iotagent.task.internal.TaskReportComposer;
 
 /**
  * Recovery-safe scanner. A phase must be claimed by durable CAS before gateway
@@ -25,7 +24,7 @@ public final class TaskScanner {
     private final TaskExecutionGateway gateway;
     private final TaskNotificationStore notifications;
     private final ReportFactProducer reports;
-    private final TaskReportComposer reportComposer;
+    private final TaskReportCheckpointComposer reportComposer;
     private final TaskReportRetryStore reportRetries;
     private final TaskExecutionIdentityStore executionIdentities;
     private final Clock clock;
@@ -43,7 +42,7 @@ public final class TaskScanner {
 
     public TaskScanner(TaskPhaseStore phases, TaskFactStore tasks, TaskExecutionGateway gateway,
                        TaskNotificationStore notifications, ReportFactProducer reports,
-                       TaskReportComposer reportComposer, TaskReportRetryStore reportRetries,
+                       TaskReportCheckpointComposer reportComposer, TaskReportRetryStore reportRetries,
                        TaskExecutionIdentityStore executionIdentities, Clock clock) {
         this.phases = Objects.requireNonNull(phases, "phases");
         this.tasks = Objects.requireNonNull(tasks, "tasks");
@@ -133,7 +132,7 @@ public final class TaskScanner {
                 String recoveredStatus = task.status();
                 try {
                     String aggregate = aggregateOutcome(phases.outcomes(task.taskId()), task.status());
-                    if ("PARTIAL".equals(task.status()) && "COMPLETED".equals(aggregate)) {
+                    if ("PARTIAL".equals(task.status()) && !aggregate.equals(task.status())) {
                         var updated = tasks.updateIfVersion(new TaskFact(task.taskId(), task.version() + 1,
                                 aggregate, task.payloadJson(), task.idempotencyKey()), task.version());
                         if (updated.isPresent()) recoveredStatus = updated.get().status();
@@ -160,12 +159,12 @@ public final class TaskScanner {
         if (reports == null || reportComposer == null) return null;
         List<TaskPhaseStore.PhaseResult> results;
         try { results = phases.terminalPhases(task.taskId()); }
-        catch (RuntimeException unavailable) { return "任务阶段结果暂不可读"; }
+        catch (RuntimeException unavailable) { return reportFailure(task, "任务阶段结果暂不可读"); }
         String payload;
         try { payload = reportComposer.compose(task, results, outcome, clock.instant()); }
         catch (RuntimeException invalid) {
-            return invalid.getMessage() == null || invalid.getMessage().isBlank()
-                    ? "任务检查点证据无效" : invalid.getMessage();
+            return reportFailure(task, invalid.getMessage() == null || invalid.getMessage().isBlank()
+                    ? "任务检查点证据无效" : invalid.getMessage());
         }
         if (payload == null) return null;
         String phaseId = results.isEmpty() ? task.taskId() : results.get(results.size() - 1).phaseId();
@@ -174,24 +173,24 @@ public final class TaskScanner {
         String owner = field(task.payloadJson(), "ownerKey", "");
         String source = field(task.payloadJson(), "source", "office");
         String objective = field(task.payloadJson(), "objective", field(task.payloadJson(), "title", ""));
-        if (executionIdentities == null) return "任务报表执行身份存储未配置";
+        if (executionIdentities == null) return reportFailure(task, "任务报表执行身份存储未配置");
         RequestIdentity identity;
         try {
             var stored = executionIdentities.loadForTask(task.taskId()).orElse(null);
-            if (stored == null) return "任务报表执行身份缺失";
+            if (stored == null) return reportFailure(task, "任务报表执行身份缺失");
             if (!tenant.equals(stored.tenantCode()) || !owner.equals(stored.ownerKey())) {
-                return "任务报表执行身份与任务归属不一致";
+                return reportFailure(task, "任务报表执行身份与任务归属不一致");
             }
             identity = new RequestIdentity(stored.authorization(), stored.tenantCode(),
                     IotSource.parse(source), stored.ownerKey());
         } catch (RuntimeException unavailable) {
-            return "任务报表执行身份不可用";
+            return reportFailure(task, "任务报表执行身份不可用");
         }
         try {
             java.util.Optional<ltd.qianc.iotagent.report.ReportFact> report = reports.produce(
                     new ReportFactProducer.ReportCheckpoint(task.taskId(), phaseId, source, tenant, owner,
                             objective, outcome, checkpointAt, clock.instant(), payload), identity);
-            if (report == null || report.isEmpty()) return "报表生成未返回持久事实";
+            if (report == null || report.isEmpty()) return reportFailure(task, "报表生成未返回持久事实");
             if (reportRetries != null) {
                 try { reportRetries.succeeded(task.taskId()); } catch (RuntimeException ignored) { }
             }
@@ -199,11 +198,18 @@ public final class TaskScanner {
         } catch (RuntimeException failure) {
             String message = failure.getMessage() == null || failure.getMessage().isBlank()
                     ? "报表生成失败" : failure.getMessage();
-            if (reportRetries != null) {
-                try { reportRetries.failed(task.taskId(), message); } catch (RuntimeException ignored) { }
-            }
-            return message;
+            return reportFailure(task, message);
         }
+    }
+
+    private String reportFailure(TaskFact task, String message) {
+        if (reportRetries != null) {
+            try { reportRetries.failed(task.taskId(), message); }
+            catch (RuntimeException persistenceFailure) {
+                return message + "；报表失败状态未能持久化: " + persistenceFailure.getMessage();
+            }
+        }
+        return message;
     }
 
     private static String quote(String value) {

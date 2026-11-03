@@ -1,28 +1,30 @@
 # 独立开发者工具验收环境
 
-日期：2026-11-02。状态：独立Java/Node/数据与开发者工具已启动；真实Office只读单例有界面结果。不是完整说明书验收，不关闭业务票，也不证明Java/Node职责切换已完成。
+日期：2026-11-03。隔离Java/Node/MySQL/Redis及开发者工具已启动，Pi Session已直接切换Java/MySQL，无旧会话导入。业务验收仍未全部完成；以[实时证据与缺口](../pi-session-mysql/acceptance.md)为准，不以启动、接口或测试结果闭票。
 
 ## 1. 固定工作区和链路
 
 |用途|本轮位置/地址|
 |---|---|
-|后端源码|`/Users/qianchen/works/新发展/iot-agent-backend-business`；`refactor/java-agent-business`|
+|后端源码|`/Users/qianchen/works/新发展/iot-agent-backend-mysql-final`；`refactor/pi-session-mysql-final`；原business worktree保留|
 |前端源码|`/Users/qianchen/works/新发展/mp-agent-business`；`refactor/java-agent-business-preview`|
 |前端生成目录|`mp-agent-business/unpackage/dist/dev/mp-weixin`|
-|可见新窗口|`Agent Business WT - Java 3215`；原窗口不关闭、不清缓存|
-|自动化|`ws://127.0.0.1:9441`；原9431不动|
+|可见验收窗口|`MySQL Session Frozen - Java 3215`，使用已冻结的小程序构建；旧9441/缓存9431不操作|
+|自动化|`ws://127.0.0.1:9444`；旧9441及原9431不动|
 |Java|`127.0.0.1:3215`，从本worktree重新构建的jar启动|
 |Pi sidecar|`127.0.0.1:3235`，从本worktree的agent-sidecar重新构建启动|
 |只读上游代理|`127.0.0.1:3245`→客户真实物联上游；不指向生产Runtime|
 |MySQL|独立容器、`127.0.0.1:3338/iot_agent_business`|
 |Redis|独立容器、`127.0.0.1:6398/0`，不共享原实例|
-|Pi Session/Admin|本worktree `var/business-preview/`下独立路径，私密配置不提交|
+|Pi Session/Admin|Pi上下文与业务事实同在本轮MySQL；Node无本地会话卷，私密配置不提交|
 |本地视频静态页|`http://127.0.0.1:9419/owner/h5player/index.html`|
 |develop Agent/视频API|均为`http://127.0.0.1:3215/api`；trial/release不变|
 
 主链路：小程序3215→本地Java→3235真实Pi/模型→Java工具→3245只读上游。业务事实只落本轮独立库，真实用户权限由Java及客户上游核验。模型供应商配置复用合法本机配置，但bridge、管理员和数据库密钥重新生成，不复制客户身份。
 
-本轮实际服务名：`business-preview-java-3215`、`business-preview-sidecar-3235`、`business-preview-upstream-3245-v3`、`business-preview-player-9419-v2`。Docker项目为`iot-agent-business-preview`，命名卷`business-mysql`/`business-redis`由该项目独占。不要运行原compose或删除任何持久卷。
+当前固定发布：Java `business-preview-java-3215-mysql-v19`（`var/business-preview/iot-agent-mysql-session-preview-v19-20261103.jar`），Node `business-preview-sidecar-3235-mysql-ro-v10`（`var/business-preview/sidecar-mysql-ro-v10`，应用目录只读、无SQLite卷）；上游 `business-preview-upstream-3245-v3`，播放器 `business-preview-player-9419-v2`，Admin `business-preview-admin-5185`。Docker项目 `iot-agent-business-preview` 独占MySQL/Redis卷，不删除持久卷。
+
+2026-11-03后续：原business worktree同一Java文件在构建间持续变化，已另建上述final worktree，并转移当前源码改动；不反向覆盖原worktree。转移前tracked checkpoint为`01053baf1ba62c7e2dc8ac8f9396d07eff9efd29`。本目录后续构建/部署结果以Pi Session验收账本为准，不把原worktree的中间态当成可信构建。
 
 ## 2. 重启/恢复前检查
 
@@ -48,18 +50,21 @@ set -a; . ./.env; set +a
 /opt/homebrew/opt/node@22/bin/node tools/business-preview-upstream.mjs
 
 # 终端B：Java（从后端worktree运行）
+# 视频页与Java不同源时，必须显式给出来源；未配置时跨域取流保持关闭。
 set -a; . ./.env; set +a
-/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home/bin/java -jar target/iot-agent-backend-0.1.0.jar
+/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home/bin/java \
+  -Dagent.video.allowed-origin=http://127.0.0.1:9419 \
+  -jar target/iot-agent-backend-0.1.0.jar
 
-# 终端C：Pi（从agent-sidecar目录运行）
-set -a; . ../.env; set +a
-/opt/homebrew/opt/node@22/bin/node dist/server.js
+# 终端C：从后端worktree启动Pi；白名单启动器不向Node传递DB/Redis/Admin凭据。
+set -a; . ./.env; set +a
+/Users/qianchen/anaconda3/bin/python tools/start-sidecar.py var/business-preview/sidecar-mysql-ro-v10
 
 # 终端D：从后端worktree启动独立静态页。禁止默认http.server记录带token的URL。
 python3 tools/business-preview-player.py --port 9419 --directory '/Users/qianchen/works/新发展/iot-agent-video-player/public'
 ```
 
-本轮没有宣称测试通过。每个业务票仍必须完成约定工程回归及双轴审查；`maven.test.skip=true`只是本次环境应用构建的事实，不是后续闭票方法。
+工程回归与真实UI证据独立记录。MySQL官方一致性30/30、Node20条工程通过不等于业务验收；Java全套仍有已记录失败。不得用测试或HTTP状态替代选定真实业务路径。
 
 前端仅编译独立项目，不触发上传或发布：
 
@@ -71,6 +76,8 @@ python3 tools/business-preview-player.py --port 9419 --directory '/Users/qianche
 
 生成配置中的projectname可设为`Agent Business WT - Java 3215`用于区分窗口，不改AppID或注入业务数据。启动自动化使用已安装的`miniprogram-automator`，projectPath明确指向上述生成目录、端口9441、trustProject=true；已有9441时用connect，不重复launch或关闭原IDE。CLI auto实际使用`auto --project <生成目录> --auto-port 9441 --trust-project`。自动化包当前在`/tmp/mp-automator/node_modules`，若目录被系统清理，在新的本地工具目录正常安装同版本依赖，不修改程序业务依赖。
 
+2026-11-03新增冻结项目：`iot-agent-backend-business/var/business-preview/mp-mysql-v17-node10`，窗口名`MySQL Session Frozen - Java 3215`，自动化9444。只复制编译源码，未复制或注入登录凭据；原9441和缓存9431不关闭。构建摘要见[记录](../pi-session-mysql/evidence/builds-20261103.json)。该窗口当前蓝牙权限弹层需真实点击“拒绝”；SDK取消未生效、系统辅助访问被拒绝，未取得无遮挡结果的路径保持未验收，不点“创建任务”。
+
 ## 4. 真正的环境/路由核实
 
 仅启动成功或healthz不够。每次切换构建后：
@@ -81,7 +88,27 @@ python3 tools/business-preview-player.py --port 9419 --directory '/Users/qianche
 4. 真实输入说明书只读问题并发送，观察界面结果、截图；同时确认请求经历本轮Java、Pi和授权上游。接口日志只用于定位链路，业务判定仍看界面。
 5. 记录Java jar、sidecar构建文件和miniapp生成文件SHA256以及来源commit/未提交变更，避免旧产物截图被当新构建。
 
-本轮已走完的只读单例：[OFF-QRY-01基线证据](evidence/OFF-QRY-01/README.md)。界面实际显示4盏灯且均为关，没有执行控制或创建任务。该证据必须在最终集成构建重验；当前Node仍有旧业务定义，不能因此关闭01。
+### 视频跨域配置与预检
+
+播放页`http://127.0.0.1:9419`与Java`127.0.0.1:3215`不同源，浏览器的`OPTIONS`预检不会携带`Authorization`/`Tenantcode`，因此Java必须显式允许该播放页来源：
+
+- 属性：`agent.video.allowed-origin`（环境变量`AGENT_VIDEO_ALLOWED_ORIGIN`），值为精确的`scheme://host[:port]`，默认空=跨域关闭；
+- 仅覆盖`/api/agent/devices/{id}/video-stream`，只允许`GET`/`OPTIONS`和`Authorization`/`Tenantcode`（及播放器`no-store`取流可能产生的缓存提示头），不启用cookie、不覆盖`/internal`或`/api/admin`，也不接受通配符/带路径的来源（配置错误会启动失败）；
+- 实际取流`GET`仍经过`AgentIdentityFilter`，缺少真实`Authorization`+`Tenantcode`仍是401；预检只绕过认证不返回业务数据。
+
+重新构建并带该属性启动后，用不带凭据的本地预检确认工程链路（业务播放仍看前端真实画面）：
+
+```sh
+curl -sS -i -X OPTIONS \
+  'http://127.0.0.1:3215/api/agent/devices/DEVICE_ID/video-stream?source=office&mode=live' \
+  -H 'Origin: http://127.0.0.1:9419' \
+  -H 'Access-Control-Request-Method: GET' \
+  -H 'Access-Control-Request-Headers: authorization,tenantcode'
+```
+
+预期`200`且`Access-Control-Allow-Origin`精确等于播放页来源；同一地址的无凭据`GET`仍应返回`401 UNAUTHORIZED`。旧构建/未配置该属性时预检返回`401`且无CORS头，属预期失败，不能当作播放验收。
+
+早期[OFF-QRY-01](evidence/OFF-QRY-01/README.md)是旧构建/旧时点4盏全关的历史证据。MySQL新会话在2026-11-02真实看到3盏、2开1关；之后重新核验状态又已变化。不得把历史清单与状态硬编码到模型或测试；当前结果见[Pi Session真实验收](../pi-session-mysql/acceptance.md)。
 
 ## 5. 自动化与截图陷阱
 
@@ -100,10 +127,17 @@ python3 tools/business-preview-player.py --port 9419 --directory '/Users/qianche
 
 当前前端其他客户菜单仍属于原小程序，不在本轮Agent验收范围，不从这些菜单进行设备控制。新环境也没有生产任务/通知事实；需要历史管理证据按票13取得合法来源并导入独立库，不能把当前空列表认成已迁移历史。
 
-视频静态页和API已本地分流，但真实视频播放、CORS/WebView、SDK加载和摄像头/录像源尚未验收，由09完成；不以静态页200或取流URL证明视频成功。
+视频静态页和API已本地分流；Java已按上述显式来源属性支持该路由的跨域预检与响应头，但新构建的预检烟测、WebView/SDK加载、真实摄像头动帧和录像推进仍未验收，由09完成；不以静态页200、预检200或取流URL证明视频成功。
 
 ## 7. 关闭业务票的终点
 
 先完成本票业务实现、代表路径与风险验证，再按[共享CASE规则](README.md#共享case闭票与并行交接)交接；票内UI步骤不另加全量客户验收。09必须等08，14必须等08/13；01以后可以并行调查，但共享文件/证据有唯一集成人。
 
 最终16按用户最新口径采用约20条灵活代表业务路径，数量和清单不严格，不要求149条全过。候选库保留，未抽到项标未验收、不阻塞抽样收口；工程验证独立记录，不充业务数量或追加全量客户门禁。缓存集成后复验所选受影响路径，Java-only真实扩展与完整实现要求不变。主验收可不下发控制、不创建生产任务；新窗口、单例成功、请求200和测试全绿都不等于完整交付。
+
+## 9. 当前已知业务修复预览（2026-11-02 13:49）
+
+- Java 3215 当前进程：`business-preview-java-3215-business-v11`；运行 `var/business-preview/iot-agent-business-fixes-preview-v11-20261102.jar`，SHA256 `0fd0d0ac3f67b2d308f4f5f43280d3b0c767f77b1ad983e803cb3f57d20e8d7c`。
+- 这是隔离业务修复预览，不是整个工作区最新源码的完整构建：以先前 v7 完整运行包为基线（SHA256 `9167dd874bf825a7cdf27dfa1e7d2a2ce3f3fa0f3b83784c33391b15546a0b01`），仅替换已独立编译/定向验证的能耗组合、报告模块注册、PDF/XLSX 投影、巡检结果类，并加入必要 PDFBox 依赖、静态字体及许可证。保留原包，未带入并行线程尚在推进的 Java/MySQL Pi Session 迁移，不应作为整体迁移发布包。
+- 当前已验证报告真实前端路径及下载文件见 [COMP-ENE-04](evidence/COMP-ENE-04/README.md)。MySQL 会话迁移合并后的完整源构建与集成复验由后续集成收口，不能沿用此包宣称已切换 MySQL Pi Session。
+- 用户已取消“逐类遍历全部卡片”的待办；本轮只收口已遇到问题。草案真实控制仍停在安全边界，不解除只读上游代理。

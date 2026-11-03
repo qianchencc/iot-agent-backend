@@ -50,4 +50,20 @@
 
 ## 本票尚未验收
 
-本票仅发布规格，尚未执行任何验收；不得以生成接口成功、文件存在或单测通过宣称报表业务完成。
+本票已完成公司真实对话生成报告附件、打开预览、重启隔离 Java 后重开同一报告，以及前端按钮下载 PDF/XLSX 的定向验收，见 [COMP-ENE-04 证据](../evidence/COMP-ENE-04/README.md)。引用追问、其他期间/安全报告及真机原生阅读器未在本轮复验；不得将本次定向成功扩展为本票全部验收。
+
+## 实现记录（2026-11-02，ReportConsumerCorrections）
+
+- 定时相对期间锚定（P1）：`DefaultReportFactProducer` 对 checkpoint 触发的报表先以 `checkpoint.checkpointAt`（阶段 bound 时间）把 `previous day/week/month` 解析为绝对窗口再取证；重试跨日/跨月仍回到原检查点窗口，解析结果随事实持久化（`requirements.period.from/to`），reportId 由 taskId+phaseId 决定、重试命中已存事实直接复用。对话自然查询（`DefaultReportGenerationService` → `ReportEvidenceService.build` 单参入口）保持按当前时钟解析，显式 absolute 期间语义不变。锚定语义与 Runtime `resolveEnergyReportSpec(spec, anchor)` 一致（按发生时刻而非执行时刻）；backend 沿用既有 08:00 计量日界，未改边界口径。
+- 巡检块渲染（P2）：`ReportPdfRenderer`/`ReportXlsxRenderer` 新增 `ac_inspection` 分支（XLSX 第 4 张 Inspection 表，数值仍写数值单元格）。逐设备呈现检查前状态（开/关机·模式·设定温度）、处置（已下发调到X℃ / 已下发未确认回读 / 这次未调整 / 无需调整 / 状态未知）、平台回读值与服务端原因；节能估算恒标「估算值，非电表实测」，假设参数（每升 1℃ 节电比例、单台功率、电价、调前均值、目标、平均调升、台数）、计算式、原因与 potential 标记全部保留；缺设备行的检查点显示「本检查点没有取得设备结果」，无估算块不产生任何节电表述。前端 `shared/ReportPreviewContent.vue` 增加同口径区块（视图模型 `pages/agent/domains/reports/report-view.mjs`，经 `lib/reports.mjs` 引入），沿用 rpc 样式体系，不改版式。
+- 新增回归：`ReportFactProducerContractTest` 两个定时锚定用例（两次发生各自解析到各自前一窗口；跨日/月延迟重试产出与原事实一致，且取证 span 断言实际采窗）；`ReportExportRendererTest`（PDF 内容流解码文本与 XLSX sheet4 单元格断言，含缺设备/缺估算不造数）；前端 `test/agent-report-inspection.test.mjs`（指令与回读分离、未确认/未调整保留、估算口径与空态）。
+- 协同口径：`disposition=unconfirmed` 为 TaskExecutionCorrections 票 10/12 新增值，本票渲染按「已下发，未确认回读」处理，不计入已调整；safety 台账渲染未改动（属 SafetyLedgerCompletion 票 08 面）。
+- 历史实现时状态：当时测试与构建尚未执行。2026-11-02 本轮定向验证及真实前端/下载文件结果已更新在下方；真机和未抽验分支仍不宣称完成。
+
+## 已发现问题收口（2026-11-02）
+
+- 报告工具“未接入”的实际原因：报告生成、读取、检查点产物及 Controller 在组件扫描阶段使用 `ConditionalOnBean`；后声明的 MySQL 存储 Bean 尚不可见，导致整个报告模块被跳过。改为与存储模块一致的 `agent.storage.mysql.enabled=true` 显式条件，依赖由构造注入强制满足；未修改 Node、未加入假报告或成功兜底。`ReportApplicationLifecycleTest` 按真实扫描顺序复现 `ReportGenerationPort` 缺失，修复后经公开生成/读取/导出路径通过。
+- 真实按钮下载的旧 PDF 发现中文乱码：手写 PDF 声称使用 STSong-Light，但没有内嵌可移植字体；仅解码内容流的旧测试不能证明阅读器可用。已切换 Apache PDFBox 3.0.8 和内嵌子集化 NotoSansSC 字体，按真实字宽换行、不裁掉长行；测试改为标准 PDF 解析器，验证中文事实、数值及字体嵌入，另用独立阅读器渲染真实下载文件。
+- PDF/XLSX 补齐原预览已有的实际采样覆盖、逐表起止累计示数、客户模拟补数披露；共享 `MeterExportEvidence` 只投影已保存事实，不重算或重取测量值。XLSX 保留用量和累计示数的数值单元格，缺值仍为空，不补零。
+- 字体来源：[Noto CJK 官方字体](https://github.com/notofonts/noto-cjk/blob/main/Sans/Variable/TTF/Subset/NotoSansSC-VF.ttf)，按 wght=400 固化为静态 TTF；源 SHA256 `d68bafcb48a2707749396aa12bbbd833cb70401f3a9a689fd2902c7e0d295964`，资源 SHA256 `07c3c75fc1e95052a40d1b0267a8f79fe3220b20c136da185984690738c76bca`。版权元数据保留，SIL OFL 1.1 随 `src/main/resources/reports/LICENSE` 分发。PDFBox 来自 [Maven Central](https://repo.maven.apache.org/maven2/org/apache/pdfbox/pdfbox/3.0.8/)。
+- 本轮 9 组定向回归共 66 项通过，覆盖报告生成/导出/扫描生命周期、取证、能耗、台账、草案恢复及巡检结果；不是全仓测试全绿声明。删除了以表头存在推断“虚构估算”的错误测试及依赖精确换行/措辞的断言，不为通过测试改写真实业务事实。

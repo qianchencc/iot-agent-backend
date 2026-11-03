@@ -1,0 +1,55 @@
+{
+  "date": "2026-11-03",
+  "sourceState": "Dirty integration worktree; intervening business changes preserved. Not an all-capabilities acceptance claim.",
+  "backendWorktree": "iot-agent-backend-business",
+  "frontendWorktree": "mp-agent-business",
+  "java": {
+    "service": "business-preview-java-3215-mysql-v19",
+    "port": 3215,
+    "jar": "var/business-preview/iot-agent-mysql-session-preview-v19-20261103.jar",
+    "sha256": "3b33811851b20083e15b6fe1b2dbbcd50863253f6d66e8eea86dac5f71d237b0"
+  },
+  "node": {
+    "service": "business-preview-sidecar-3235-mysql-ro-v10",
+    "port": 3235,
+    "release": "var/business-preview/sidecar-mysql-ro-v10",
+    "agentJsSha256": "dd2fb0c2a67474e17c0c0eb767af461cca690b9e956cadb70685cddb5b30abe6",
+    "applicationReadOnly": true,
+    "sqliteVolume": false,
+    "databaseCredentials": false
+  },
+  "devtools": {
+    "projectName": "MySQL Session Frozen - Java 3215",
+    "project": "var/business-preview/mp-mysql-v17-node10",
+    "automationPort": 9444,
+    "treeSha256": "92e36a2a699d10c5bd0e226bba8ca3e1b2b40481f08a20e8622db296da697820",
+    "originalBusinessWindowRetained": 9441,
+    "cacheWindowUntouched": 9431,
+    "remainingHumanAction": "Click Reject on the Bluetooth permission sheet in the frozen project; native SDK cancel did not dismiss it and macOS Accessibility was denied. Do not click Create task."
+  },
+  "recovery": {
+    "database": "iot_agent_business_restore_v17_20261103",
+    "backupBytes": 6601942,
+    "backupSha256": "234aa6d929ffea786e84280b02a53f38e04f3981eb890eedfc12dd2a1f07115f",
+    "rawBackupCommitted": false,
+    "actualUiEvidence": "O02/integrated-v17/03-result.png",
+    "canonicalDatabaseRestoredAfterRehearsal": "iot_agent_business"
+  },
+  "engineeringOnly": {
+    "unmodifiedPiConformancePassed": 30,
+    "latestNodeRegressionPassed": 22,
+    "targetedJavaRegressionPassed": 41,
+    "fullJavaSuitePassedBeforeStateBatchCorrection": true,
+    "stateBatchCorrectionTargetedRegressionPassed": true,
+    "latestFullSuiteAfterStateBatchCorrection": "not rerun",
+    "operationsDiagnostic": "sidecar agent-sidecar; backend mysql; status ok; scopes 4; documents 4",
+    "neverBusinessAcceptance": true
+  },
+  "safety": {
+    "deviceControlConfirmed": false,
+    "tasksCreatedByThisWork": false,
+    "notificationSent": false,
+    "originalRuntimeExecuted": false,
+    "subagentsStarted": false
+  }
+}

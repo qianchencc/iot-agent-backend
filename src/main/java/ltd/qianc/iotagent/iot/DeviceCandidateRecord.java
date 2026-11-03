@@ -17,7 +17,8 @@ public record DeviceCandidateRecord(
         List<AuthorizedDevice> members,
         boolean complete,
         int totalMatches,
-        String createdAt) {
+        String createdAt,
+        String resolutionMode) {
 
     public DeviceCandidateRecord {
         if (candidateSetId == null || candidateSetId.isBlank()) {
@@ -38,6 +39,7 @@ public record DeviceCandidateRecord(
         }
         query = java.util.Objects.requireNonNull(query, "query");
         members = List.copyOf(members == null ? List.of() : members);
+        resolutionMode = resolutionMode == null ? "unresolved" : resolutionMode;
         if (totalMatches < members.size()) throw new IllegalArgumentException("totalMatches is smaller than members");
         if (createdAt == null || createdAt.isBlank()) createdAt = java.time.Instant.now().toString();
     }

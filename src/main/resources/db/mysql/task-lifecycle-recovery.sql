@@ -27,3 +27,22 @@ CREATE TABLE IF NOT EXISTS task_report_attempts (
     update_time DATETIME NOT NULL,
     PRIMARY KEY (task_id)
 ) ENGINE=InnoDB;
+
+-- Ticket 10/12: durable per-task device dispatch facts. One row per (task, device)
+-- is written atomically immediately before each single AC adjust dispatch; yields
+-- are recorded with kind='yielded'. PK(task_id, device_id) makes a repeat dispatch
+-- by a later checkpoint, concurrent scanner or restarted process impossible.
+-- TaskSchemaInitializer applies the same DDL defensively at startup and seeds
+-- historical adjust-mode checkpoint results so existing once-per-task facts are
+-- preserved across the migration.
+CREATE TABLE IF NOT EXISTS task_device_dispatch_reservations (
+    task_id VARCHAR(64) NOT NULL,
+    device_id VARCHAR(64) NOT NULL,
+    phase_id VARCHAR(64) NOT NULL,
+    kind VARCHAR(16) NOT NULL,
+    reserved_at DATETIME NOT NULL,
+    create_time DATETIME NOT NULL,
+    update_time DATETIME NOT NULL,
+    PRIMARY KEY (task_id, device_id),
+    KEY ix_task_dispatch_reservation_phase (phase_id)
+) ENGINE=InnoDB;

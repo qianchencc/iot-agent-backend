@@ -93,8 +93,8 @@ class ActionDraftEditRevalidationContractTest {
     }
 
     @Test
-    void revalidationReadsFreshStatesIntoANewDraftAndConsumesTheOldOne() throws Exception {
-        ObjectNode payload = basePayload("EXPIRED", "2026-10-30T08:00:00Z");
+    void replayedExpiryKeepsRevisionUsableAfterStateReadAndRevalidatesIntoANewDraft() throws Exception {
+        ObjectNode payload = basePayload("PENDING_CONFIRMATION", "2026-10-30T08:00:00Z");
         ArrayNode actions = payload.putArray("actions");
         actions.add(action("old-light-1", "light-1", "灯1", 1));
         actions.add(action("old-light-2", "light-2", "灯2", 1));
@@ -104,7 +104,7 @@ class ActionDraftEditRevalidationContractTest {
                         "command", Map.of("closeOrOpen", 1), "disposition", "operate", "satisfied", false),
                 Map.of("deviceId", "light-2", "kind", "lighting", "state", false,
                         "command", Map.of("closeOrOpen", 1), "disposition", "operate", "satisfied", false))));
-        ActionDraftFact old = fact("draft-old", 2, payload);
+        ActionDraftFact old = fact("draft-old", 1, payload);
         InMemoryActionDraftStore store = new InMemoryActionDraftStore(old);
         AuthorizedDevice one = light("light-1", "灯1");
         AuthorizedDevice two = light("light-2", "灯2");
@@ -112,7 +112,12 @@ class ActionDraftEditRevalidationContractTest {
                 identity -> Map.of("light-1", true, "light-2", false));
         ActionDraftFacade facade = facade(store, iot);
 
-        ActionDraftFact fresh = facade.revalidate(PRINCIPAL, old.draftId(), 2);
+        Map<String,Object> replayed = facade.conversationDrafts(PRINCIPAL, CONVERSATION, "office").get(old.draftId());
+        assertThat(replayed).containsEntry("status", "EXPIRED");
+        long replayedRevision = ((Number)replayed.get("revision")).longValue();
+        facade.deviceStates(PRINCIPAL, old.draftId());
+        assertThat(store.find(old.draftId()).orElseThrow().revision()).isEqualTo(replayedRevision);
+        ActionDraftFact fresh = facade.revalidate(PRINCIPAL, old.draftId(), replayedRevision);
 
         assertThat(fresh.draftId()).isNotEqualTo(old.draftId());
         Map<String, Object> view = facade.view(fresh);

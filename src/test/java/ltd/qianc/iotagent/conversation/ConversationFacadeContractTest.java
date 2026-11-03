@@ -2,6 +2,7 @@ package ltd.qianc.iotagent.conversation;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -28,7 +29,7 @@ class ConversationFacadeContractTest {
         MemoryConversationStore conversations = new MemoryConversationStore();
         MemoryEventStore events = new MemoryEventStore();
         RecordingBridge bridge = new RecordingBridge(false);
-        ConversationFacade facade = new ConversationFacade(new ObjectMapper(), conversations, events, bridge, Runnable::run);
+        ConversationFacade facade = new ConversationFacade(new ObjectMapper(), conversations, events, bridge, Runnable::run, mock(ConversationDrafts.class), mock(ConversationTaskCards.class));
         Map<String, Object> created = facade.create(PRINCIPAL, "company");
 
         facade.message(PRINCIPAL, (String) created.get("id"), "查询状态", "idem-1", "company");
@@ -46,7 +47,7 @@ class ConversationFacadeContractTest {
         MemoryEventStore events = new MemoryEventStore();
         RecordingBridge bridge = new RecordingBridge(false, () -> events.append(new ConversationEventFact(
                 "conversation-1", "turn-1", 2L, "action.proposed", "{}", "action-event-1")));
-        ConversationFacade facade = new ConversationFacade(new ObjectMapper(), conversations, events, bridge, Runnable::run);
+        ConversationFacade facade = new ConversationFacade(new ObjectMapper(), conversations, events, bridge, Runnable::run, mock(ConversationDrafts.class), mock(ConversationTaskCards.class));
         String id = (String) facade.create(PRINCIPAL, "office").get("id");
 
         facade.message(PRINCIPAL, id, "生成控制草案", "idem-action-sequence");
@@ -61,7 +62,7 @@ class ConversationFacadeContractTest {
         MemoryConversationStore conversations = new MemoryConversationStore();
         MemoryEventStore events = new MemoryEventStore();
         RecordingBridge bridge = new RecordingBridge(true);
-        ConversationFacade facade = new ConversationFacade(new ObjectMapper(), conversations, events, bridge, Runnable::run);
+        ConversationFacade facade = new ConversationFacade(new ObjectMapper(), conversations, events, bridge, Runnable::run, mock(ConversationDrafts.class), mock(ConversationTaskCards.class));
         String id = (String) facade.create(PRINCIPAL, "office").get("id");
 
         facade.message(PRINCIPAL, id, "停止前运行", "idem-cancel");
@@ -76,7 +77,7 @@ class ConversationFacadeContractTest {
         MemoryConversationStore conversations = new MemoryConversationStore();
         MemoryEventStore events = new MemoryEventStore();
         RecordingBridge bridge = new RecordingBridge(false);
-        ConversationFacade facade = new ConversationFacade(new ObjectMapper(), conversations, events, bridge, Runnable::run);
+        ConversationFacade facade = new ConversationFacade(new ObjectMapper(), conversations, events, bridge, Runnable::run, mock(ConversationDrafts.class), mock(ConversationTaskCards.class));
         String id = (String) facade.create(PRINCIPAL, "office").get("id");
 
         facade.message(PRINCIPAL, id, "重复安全", "idem-replay");
@@ -90,7 +91,7 @@ class ConversationFacadeContractTest {
     void callbacksRequireTheExactActiveRunAndAreRevokedOnCancel() {
         RecordingBridge bridge = new RecordingBridge(true);
         ConversationFacade facade = new ConversationFacade(new ObjectMapper(), new MemoryConversationStore(),
-                new MemoryEventStore(), bridge, Runnable::run);
+                new MemoryEventStore(), bridge, Runnable::run, mock(ConversationDrafts.class), mock(ConversationTaskCards.class));
         String id = (String) facade.create(PRINCIPAL, "company").get("id");
         facade.message(PRINCIPAL, id, "查询", "bound-run", "company", "region-1", null);
         AgentRunRequest run = bridge.request.get();
@@ -154,7 +155,7 @@ class ConversationFacadeContractTest {
 
         @Override
         public ConversationRecord create(String tenantCode, String ownerKey, String source, Instant createdAt) {
-            conversation = new ConversationRecord("conversation-1", tenantCode, ownerKey, source, createdAt, false);
+            conversation = new ConversationRecord("conversation-1", tenantCode, ownerKey, source, createdAt, createdAt, false);
             return conversation;
         }
 

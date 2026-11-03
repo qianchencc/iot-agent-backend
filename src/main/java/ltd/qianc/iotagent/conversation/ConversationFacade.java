@@ -20,11 +20,11 @@ import org.springframework.web.servlet.mvc.method.annotation.ResponseBodyEmitter
 public final class ConversationFacade {
  // Business-owned Java projection converts private engine events before they reach this facade.
  private static final Set<String> TERMINALS=Set.of("run.completed","run.awaiting_confirmation","run.failed","run.aborted");
- private final ObjectMapper mapper; private final ConversationStore store; private final ConversationEventStore events; private final AgentEngineBridge bridge; private final Executor executor; private final ScheduledExecutorService scheduler; private final long heartbeatMs; private final Map<String,Run> active=new ConcurrentHashMap<>(); private final Map<String,Run> toolContextsById=new ConcurrentHashMap<>();
- public ConversationFacade(ObjectMapper m,ConversationStore s,ConversationEventStore e,AgentEngineBridge b,Executor x){this(m,s,e,b,x,null,0);}
- public ConversationFacade(ObjectMapper m,ConversationStore s,ConversationEventStore e,AgentEngineBridge b,Executor x,ScheduledExecutorService scheduler,long heartbeatMs){mapper=m;store=s;events=e;bridge=b;executor=x;this.scheduler=scheduler;this.heartbeatMs=heartbeatMs;}
+ private final ObjectMapper mapper; private final ConversationStore store; private final ConversationEventStore events; private final AgentEngineBridge bridge; private final Executor executor; private final ScheduledExecutorService scheduler; private final long heartbeatMs; private final ConversationDrafts drafts; private final ConversationTaskCards taskCards; private final Map<String,Run> active=new ConcurrentHashMap<>(); private final Map<String,Run> toolContextsById=new ConcurrentHashMap<>();
+ public ConversationFacade(ObjectMapper m,ConversationStore s,ConversationEventStore e,AgentEngineBridge b,Executor x,ConversationDrafts d,ConversationTaskCards taskCards){this(m,s,e,b,x,null,0,d,taskCards);}
+ public ConversationFacade(ObjectMapper m,ConversationStore s,ConversationEventStore e,AgentEngineBridge b,Executor x,ScheduledExecutorService scheduler,long heartbeatMs,ConversationDrafts d,ConversationTaskCards taskCards){mapper=m;store=s;events=e;bridge=b;executor=x;this.scheduler=scheduler;this.heartbeatMs=heartbeatMs;drafts=Objects.requireNonNull(d);this.taskCards=Objects.requireNonNull(taskCards);}
  public Map<String,Object> create(PrincipalInfo p,String source){String s=source==null?"office":source; validSource(s); ConversationRecord c=store.create(p.tenantCode(),owner(p),s,Instant.now());return Map.of("id",c.id(),"source",c.source(),"createdAt",c.createdAt().toString());}
- public Map<String,Object> current(PrincipalInfo p,String source){String s=source==null?"office":source;validSource(s);Optional<ConversationRecord> o=store.current(p.tenantCode(),owner(p),s,Instant.now().minus(Duration.ofHours(6)));if(o.isEmpty()){Map<String,Object> x=new HashMap<>();x.put("conversation",null);return x;}ConversationRecord c=o.get();List<Map<String,Object>> ts=new ArrayList<>();for(ConversationTurn t:store.turns(c.id()))ts.add(turn(c.id(),t));return Map.of("conversation",Map.of("id",c.id(),"source",c.source(),"turns",ts,"running",active.containsKey(c.id()),"phase",active.containsKey(c.id())?"running":"idle"));}
+ public Map<String,Object> current(PrincipalInfo p,String source){String s=source==null?"office":source;validSource(s);Optional<ConversationRecord> o=store.current(p.tenantCode(),owner(p),s,Instant.now().minus(Duration.ofHours(6)));if(o.isEmpty()){Map<String,Object> x=new HashMap<>();x.put("conversation",null);return x;}ConversationRecord c=o.get();Map<String,Map<String,Object>> authoritative=drafts.conversationDrafts(p,c.id(),s);List<Map<String,Object>> ts=new ArrayList<>();for(ConversationTurn t:store.turns(c.id()))ts.add(turn(c.id(),t,authoritative,p,s));return Map.of("conversation",Map.of("id",c.id(),"source",c.source(),"turns",ts,"running",active.containsKey(c.id()),"phase",active.containsKey(c.id())?"running":"idle"));}
  public Map<String,Object> clear(PrincipalInfo p,String id){return clear(p,id,null);}
  public Map<String,Object> clear(PrincipalInfo p,String id,String source){verify(p,id,source);if(active.containsKey(id))throw new BusinessException("CONVERSATION_BUSY","请等待当前请求结束后清除",409);store.clear(id);return Map.of("cleared",true);}
  public Map<String,Object> discard(PrincipalInfo p,String id,String tid){return discard(p,id,tid,null);}
@@ -71,6 +71,27 @@ public final class ConversationFacade {
   if(r==null||r.terminal.get()||!r.conversationId.equals(conversationId)||!r.turnId.equals(turnId)||!r.runId.equals(runId))
    throw new BusinessException("AGENT_TOOL_RUN_UNAVAILABLE","Agent 运行上下文不可用或不匹配",409);
   return r.context;
+ }
+ public List<String> retireDrafts(String toolContextId,String conversationId,String turnId,String runId){
+  AgentToolContext context=toolContext(toolContextId,conversationId,turnId,runId);
+  return drafts.retireForConversation(context.principal(),conversationId,context.source());
+ }
+ public List<String> reportArtifactIds(String toolContextId,String conversationId,String turnId,String runId){
+  toolContext(toolContextId,conversationId,turnId,runId);
+  Set<String> ids=new LinkedHashSet<>();
+  for(ConversationEventFact event:events.read(conversationId)){
+   if(!"observation.reported".equals(event.type()))continue;
+   try{
+    var root=mapper.readTree(event.payloadJson());
+    for(var block:root.path("blocks")){
+     if("report_artifact".equals(block.path("type").asText())){
+      String id=block.path("report").path("id").asText("");
+      if(!id.isBlank())ids.add(id);
+     }
+    }
+   }catch(Exception invalid){throw new BusinessException("REPORT_HISTORY_UNAVAILABLE","历史报告身份暂不可读取",503);}
+  }
+  return List.copyOf(ids);
  }
  private void fail(Run r,Throwable failure){
   synchronized(r){
@@ -122,10 +143,59 @@ public final class ConversationFacade {
  }
  private void append(Run r,ObjectNode n){events.append(new ConversationEventFact(r.conversationId,r.turnId,r.sequence,n.get("type").asText(),n.toString(),r.runId+":"+r.sequence));}
  private void send(Run r,ObjectNode n){try{if(!r.disconnected.get())r.out.send(n.toString()+"\n");}catch(Exception e){r.disconnected.set(true);}}
- private Map<String,Object> turn(String id,ConversationTurn t){List<Object> es=new ArrayList<>();for(ConversationEventFact f:events.read(id).stream().filter(x->x.turnId().equals(t.id())).sorted(Comparator.comparingLong(ConversationEventFact::sequence)).toList())try{es.add(mapper.readTree(f.payloadJson()));}catch(Exception ignored){}return Map.of("id",t.id(),"content",t.content(),"startedAt",t.startedAt().toString(),"events",es);}
+ private Map<String,Object> turn(String id,ConversationTurn t,Map<String,Map<String,Object>> authoritative,PrincipalInfo principal,String source){
+  List<Object> es=new ArrayList<>();
+  ObjectNode draft=null,result=null;
+  Map<String,ObjectNode> tasks=new LinkedHashMap<>();
+  for(ConversationEventFact f:events.read(id).stream().filter(x->x.turnId().equals(t.id())).sorted(Comparator.comparingLong(ConversationEventFact::sequence)).toList()){
+   try{
+    if(!(mapper.readTree(f.payloadJson()) instanceof ObjectNode recorded))continue;
+    es.add(mapper.convertValue(recorded,Map.class));
+    String draftId=recorded.path("draftId").asText("");
+    if("action.proposed".equals(f.type())&&!draftId.isBlank()){
+     draft=recorded.deepCopy();
+    }else if("action.resolved".equals(f.type())&&draft!=null&&draftId.equals(draft.path("draftId").asText(""))){
+     draft.put("status",recorded.path("status").asText(draft.path("status").asText("PENDING_CONFIRMATION")));
+     if(recorded.path("revision").isNumber())draft.put("revision",recorded.path("revision").asLong());
+     if(recorded.path("result").isObject()){result=(ObjectNode)recorded.get("result").deepCopy();draft.set("result",result.deepCopy());}
+    }
+    if(recorded.path("task").isObject()){
+     ObjectNode task=(ObjectNode)recorded.get("task").deepCopy();
+     String key=task.path("changeId").asText(task.path("cancellationId").asText(task.path("taskId").asText("")));
+     if(!key.isBlank())tasks.put(key,task);
+    }
+    if("task.resolved".equals(f.type())&&!recorded.path("taskId").asText("").isBlank()){
+     ObjectNode task=tasks.get(recorded.path("taskId").asText());
+     if(task!=null)task.put("status",recorded.path("status").asText(task.path("status").asText("")));
+    }else if("task.change.resolved".equals(f.type())&&!recorded.path("changeId").asText("").isBlank()){
+     ObjectNode task=tasks.get(recorded.path("changeId").asText());
+     if(task!=null)task.put("status",recorded.path("status").asText(task.path("status").asText("")));
+    }else if("task.cancellation.resolved".equals(f.type())&&!recorded.path("cancellationId").asText("").isBlank()){
+     ObjectNode task=tasks.get(recorded.path("cancellationId").asText());
+     if(task!=null)task.put("status",recorded.path("status").asText(task.path("status").asText("")));
+    }
+   }catch(Exception ignored){}
+  }
+  Map<String,Object> view=new LinkedHashMap<>();
+  view.put("id",t.id());view.put("content",t.content());view.put("startedAt",t.startedAt().toString());view.put("events",es);
+  if(draft!=null){Map<String,Object> current=authoritative.get(draft.path("draftId").asText(""));if(current!=null){view.put("draft",current);if(current.get("result")!=null)view.put("result",current.get("result"));}}
+  if(!tasks.isEmpty()){
+   List<Map<String,Object>> list=new ArrayList<>();
+   for(Map.Entry<String,ObjectNode> entry:tasks.entrySet()){
+    ObjectNode task=entry.getValue();
+    if(!task.path("created").asBoolean(false)){
+     Map<String,Object> current=Objects.requireNonNull(taskCards.conversationProposalState(principal,entry.getKey(),source));
+     current.forEach((key,value)->task.set(key,mapper.valueToTree(value)));
+    }
+    list.add(mapper.convertValue(task,Map.class));
+   }
+   view.put("tasks",list);view.put("task",list.get(0));
+  }
+  return view;
+ }
  private ConversationRecord verify(PrincipalInfo p,String id,String source){
   ConversationRecord conversation=store.find(id,p.tenantCode(),owner(p)).orElseThrow(()->new BusinessException("CONVERSATION_UNAVAILABLE","会话已过期或不可用，请清除后重新开始",404));
-  if(conversation.cleared()||conversation.createdAt().isBefore(Instant.now().minus(Duration.ofHours(6))))throw new BusinessException("CONVERSATION_UNAVAILABLE","会话已过期或不可用，请清除后重新开始",404);
+  if(conversation.cleared()||!conversation.lastActiveAt().isAfter(Instant.now().minus(Duration.ofHours(6))))throw new BusinessException("CONVERSATION_UNAVAILABLE","会话已过期或不可用，请清除后重新开始",404);
   String effectiveSource=source==null?"office":source;validSource(effectiveSource);if(!effectiveSource.equals(conversation.source()))throw new BusinessException("CONVERSATION_SOURCE_MISMATCH","会话来源与当前请求不一致",404);
   return conversation;
 }

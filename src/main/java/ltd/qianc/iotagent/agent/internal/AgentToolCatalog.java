@@ -85,19 +85,21 @@ final class AgentToolCatalog {
                         prop("deviceIds", stringArray("候选集内设备标识", 1, 50)))),
                 BOTH, Confirmation.NONE));
         add(tools, definition("read_device_states", "查询设备状态",
-                "批量读取当前授权候选设备的真实状态和观测时间。照明返回开关，空调返回参数，视频返回在线态，环境/能耗/安全返回只读观察事实。未知不是关闭；历史观测不代表当前状态；查询不产生控制或草案。",
+                "批量读取当前授权候选设备的真实状态和观测时间。用户明确要求完整候选范围时，每组传all=true由服务器展开全部固定成员，不受前50条展示限制；精确选择则传deviceIds，二者不可混用。照明返回开关，空调返回参数，视频返回在线态，环境/能耗/安全返回只读观察事实。未知不是关闭；历史观测不代表当前状态；查询不产生控制或草案。",
                 object(required("candidateSets"), props(
                         prop("candidateSets", arrayOf(candidateSet("候选集及其中的真实设备标识"), 1, 10)))),
                 BOTH, Confirmation.NONE));
         add(tools, definition("inspect_device_capabilities", "查询设备能力",
-                "一次查询一个或多个候选集中指定设备实际支持的原子操作。只读，不生成草案，也不控制设备。",
+                "查询一个或多个候选集中设备实际支持的原子操作。完整范围用all=true由服务器展开；精确选择用deviceIds，二者不可混用。只读，不生成草案，也不控制设备。",
                 object(required("candidateSets"), props(
                         prop("candidateSets", arrayOf(candidateSet("待核验能力的候选集"), 1, 10)))),
                 BOTH, Confirmation.NONE));
         add(tools, definition("propose_action_draft", "生成操作草案",
-                "基于已查明的完整候选集生成一份待人工确认的操作草案。candidateSetIds 必填且是唯一成员宇宙；actions 可按每种设备类型给一个代表动作，由服务器展开该候选集内同类型全部成员并应用同一命令，不要逐台抄写。每个动作只传对应类型参数：照明 closeOrOpen、空调 ac、门禁 controlType=2；selected=false 仅用于明确排除，未列出的展开成员默认保留。服务器重新核验当前授权、能力、成员和状态；不会下发控制，模型不能确认或执行。",
+                "基于已查明候选集生成一份待人工确认草案。candidateSetIds界定唯一成员宇宙。默认actions仅操作逐台明确选择的成员，不扩成整个候选集；只有用户明确要求完整范围统一操作时传expandCandidates=true，此时可每种设备给一个代表命令，由服务器展开该类型全部成员。地点排除须先取得exact真实子集，通过excludeCandidateSetIds整体相减，不逐台抄写、不以模糊命中代替。每个动作只传对应参数：照明closeOrOpen、空调ac、门禁controlType=2。服务器重核授权、范围、排除及状态；不会下发控制，模型不能确认。",
                 object(required("summary", "candidateSetIds", "actions"), props(
                         prop("candidateSetIds", stringArray("已查明的完整候选集标识；草案只在这些服务器成员内展开", 1, 10)),
+                        prop("expandCandidates", bool("仅用户明确要求完整候选范围统一操作时true；省略或false只操作actions逐台明确成员")),
+                        prop("excludeCandidateSetIds", stringArray("已精确查明且完全属于包含范围的排除子集，合并去重后整体相减", 1, 10)),
                         prop("summary", string("草案摘要，说明范围与目标", 1, 200)),
                         prop("question", string("需要用户确认或澄清的问题", 1, 500)),
                         prop("excludedDeviceIds", stringArray("明确排除的设备标识", 0, 50)),
@@ -130,7 +132,7 @@ final class AgentToolCatalog {
                         prop("from", string("带时区的窗口起点；仅与 to 成对使用", 1, 64)),
                         prop("to", string("带时区的窗口终点；不晚于当前时间", 1, 64)),
                         prop("unreportedOnly", bool("只看平台标记未上报的记录")))),
-                COMPANY, Confirmation.NONE));
+                BOTH, Confirmation.NONE));
         add(tools, definition("query_environment_history", "查询环境趋势",
                 "只读查询 Company 站点环境历史。起止时间必须带时区；温湿度和 PM 指标来自真实采样。deviceCode 缺失不归属具体房间，颗粒物单位未知，不判断达标；覆盖不完整时如实说明。",
                 object(required("from", "to"), props(
@@ -184,8 +186,8 @@ final class AgentToolCatalog {
                         prop("cameraDeviceId", string("用户明确选择的候选摄像头标识", 1, 300)))),
                 COMPANY, Confirmation.NONE));
         add(tools, definition("propose_task", "编排定时任务",
-                "把用户明确要求的一次性或周期安排保存为待人工确认的任务提案；不会直接创建或执行任务。只安排用户给出的日期、重复规则、区间和检查点，不补造终点动作；未来目标保留当前已满足设备。相对日期按本轮 current_time 的理解固化为带时区绝对时间。",
-                object(required("label", "candidateSetIds", "phases"), props(
+                "准备待人工确认的一次性或周期任务，不执行控制。公司照明/空调每阶段用targets声明allAuthorized全部当前授权成员、scopeTexts地点及excludeTexts保留，或selection精确选择；服务器展开完整固定成员、核验和预检，不受模型明细窗口限制，不逐台抄大集合。targets与actions/read互斥。只读检查全范围必须显式read.all=true，缺设备列表不默认全部。窗口条件检查同时给interval与cadenceMinutes。只保留用户明确要求的阶段、范围与重复规则，未来目标保留当前已满足设备；时间按本轮current_time固定为带时区绝对值。",
+                object(required("label", "phases"), props(
                         prop("label", string("用动作与范围命名的任务名称", 1, 80)),
                         prop("title", string("用户明确指定时的短标题", 1, 20)),
                         prop("candidateSetIds", stringArray("已查明的候选集标识", 1, 10)),
@@ -279,9 +281,10 @@ final class AgentToolCatalog {
     }
 
     private static Map<String, Object> candidateSet(String description) {
-        return object(required("candidateSetId", "deviceIds"), props(
+        return object(required("candidateSetId"), props(
                 prop("candidateSetId", string("候选集标识", 1, 300)),
-                prop("deviceIds", stringArray("候选集中的真实设备标识", 1, 50))), Map.of("type", "object",
+                prop("all", bool("仅用户明确要求完整候选范围时true；服务器展开该候选集全部固定成员，不与deviceIds并用")),
+                prop("deviceIds", stringArray("精确选择的真实设备标识；与all=true二选一，省略不代表全部", 1, 50))), Map.of("type", "object",
         "additionalProperties", false,
         "description", description));
     }
@@ -317,12 +320,49 @@ final class AgentToolCatalog {
     }
 
     private static Map<String, Object> taskPhase() {
-        return object(required("at", "actions"), props(
-                prop("at", string("带时区的阶段时刻", 1, 64)),
+        return object(required("at"), props(
+                prop("at", string("带时区的阶段时刻；无区间允许1–2个独立阶段", 1, 64)),
+                prop("targets", arrayOf(companyControlTarget(), 1, 20)),
                 prop("actions", arrayOf(taskAction(), 0, 50)),
-                prop("read", object(required(), props(), Map.of("type", "object",
-                        "additionalProperties", true, "description", "只读检查要求，与控制动作不能混用")))), Map.of("type", "object",
-        "additionalProperties", false));
+                prop("read", taskRead())), Map.of("type", "object", "additionalProperties", false));
+    }
+
+    private static Map<String, Object> taskRead() {
+        return object(required(), props(
+                prop("deviceIds", stringArray("已明确选择的设备；全范围用all，不逐台搬运", 1, 50)),
+                prop("all", Map.of("type", "boolean", "const", true,
+                        "description", "显式读取当前授权范围该类型的全部固定成员；与deviceIds互斥，不含将来新增")),
+                prop("alertDays", integer("近N天滚动告警窗口；不与alertWindow混用", 1, 365)),
+                prop("alertWindow", stringEnum("以阶段计划at的上海自然日期锚定，右端不含", "previous_day", "previous_week")),
+                prop("ac", object(required("mode"), props(
+                        prop("mode", stringEnum("只读检查或仅对满足条件设备有界调温", "inspect", "adjust_to_26")),
+                        prop("target", integer("目标设定温度，不是室温；缺省26", 16, 30)),
+                        prop("cadenceMinutes", integerEnum("窗口检查频率；用户未给出先澄清，不补造", 15, 30, 60))))),
+                prop("agent", object(required("objective", "output"), props(
+                        prop("objective", string("已确认的到时只读指令；确认前不取数或执行", 1, 2000)),
+                        prop("output", stringEnum("result只保存结果；report另保存报告附件", "result", "report")),
+                        prop("spec", object(required("period", "comparisons"), props(
+                                prop("period", reportPeriod("按检查点计划时间解析的统计期间")),
+                                prop("comparisons", stringArray("明确要求的比较项，不要求则空数组", 0, 2,
+                                        "previousPeriod", "yearOverYear"))))))))));
+    }
+
+    private static Map<String, Object> companyControlTarget() {
+        return object(required("kind", "command"), props(
+                prop("kind", stringEnum("控制种类", "lighting", "ac")),
+                prop("command", object(required(), props(
+                        prop("closeOrOpen", integerEnum("照明开关", 0, 1)),
+                        prop("power", stringEnum("空调电源；不隐含设温或开机", "on", "off")),
+                        prop("temperature", number("整数设温", 16, 30, true)),
+                        prop("mode", stringEnum("空调模式", "cool", "heat", "dry", "fan")),
+                        prop("fanSpeed", stringEnum("空调风速", "low", "high"))))),
+                prop("allAuthorized", bool("用户明确要求该类型全部公司授权成员时为true；与scopeTexts/selection互斥")),
+                prop("scopeTexts", stringArray("每个明确地点，服务器取成员并集；与allAuthorized/selection互斥", 1, 8)),
+                prop("excludeTexts", stringArray("包含范围内明确保留地点，无法核验不忽略", 0, 8)),
+                prop("excludeCandidateSetIds", stringArray("已查明exact排除子集；可用scopeTerms先查交集，不搬运逐台成员；须完全属于本阶段包含范围", 1, 10)),
+                prop("selection", object(required("candidateSetId", "deviceIds"), props(
+                        prop("candidateSetId", string("已明确的候选集", 1, 300)),
+                        prop("deviceIds", stringArray("仅精确选择这些成员，不扩大范围", 1, 50)))))));
     }
 
     private static Map<String, Object> taskInterval(String description) {

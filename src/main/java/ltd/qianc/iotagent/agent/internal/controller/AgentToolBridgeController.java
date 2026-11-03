@@ -4,6 +4,8 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import ltd.qianc.iotagent.agent.AgentToolBridge;
 import ltd.qianc.iotagent.agent.internal.AgentToolCatalogSupport;
+import ltd.qianc.iotagent.pisession.PiSessionService;
+import org.springframework.beans.factory.ObjectProvider;
 import ltd.qianc.iotagent.error.BusinessException;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -16,9 +18,11 @@ import org.springframework.web.bind.annotation.RestController;
 public final class AgentToolBridgeController {
 
     private final AgentToolBridge bridge;
+    private final ObjectProvider<PiSessionService> sessions;
 
-    public AgentToolBridgeController(AgentToolBridge bridge) {
+    public AgentToolBridgeController(AgentToolBridge bridge, ObjectProvider<PiSessionService> sessions) {
         this.bridge = bridge;
+        this.sessions = sessions;
     }
 
     @PostMapping
@@ -28,13 +32,29 @@ public final class AgentToolBridgeController {
         if (!(protocolVersion instanceof Number number) || number.intValue() != 1) {
             throw new BusinessException("AGENT_PROTOCOL_VERSION_UNSUPPORTED", "Agent 工具协议版本不支持", 400);
         }
+        PiSessionService store = sessions.getIfAvailable();
+        if (store != null) {
+            Map<String,Object> proof = new LinkedHashMap<>();
+            for (String key : new String[] {"protocolVersion", "runId", "conversationId", "turnId", "toolContextId", "writerId", "epoch"}) {
+                proof.put(key, body.get(key));
+            }
+            proof.put("operation", "check");
+            store.execute(proof);
+        }
         Map<String, Object> result = bridge.execute(body);
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("protocolVersion", 1);
         response.put("result", result);
-        response.put("halt", AgentToolCatalogSupport.requiresConfirmation(
+        response.put("halt", AgentToolCatalogSupport.haltsRun(
                 text(body.get("toolName")), result));
         return response;
+    }
+
+    @org.springframework.web.bind.annotation.ExceptionHandler(ltd.qianc.iotagent.agent.AgentToolHaltException.class)
+    public org.springframework.http.ResponseEntity<Map<String, Object>> halt(
+            ltd.qianc.iotagent.agent.AgentToolHaltException failure) {
+        return org.springframework.http.ResponseEntity.status(failure.httpStatus()).body(Map.of(
+                "protocolVersion", 1, "code", failure.code(), "message", failure.getMessage(), "halt", true));
     }
 
     private static String text(Object value) {

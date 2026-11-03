@@ -16,7 +16,6 @@
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.84.4",
     "@earendil-works/pi-ai": "0.84.4",
-    "@earendil-works/pi-session-backend-sqlite-node": "0.84.4",
     "@langfuse/otel": "5.11.1",
     "@langfuse/tracing": "5.11.1",
     "@opentelemetry/sdk-node": "0.222.0",

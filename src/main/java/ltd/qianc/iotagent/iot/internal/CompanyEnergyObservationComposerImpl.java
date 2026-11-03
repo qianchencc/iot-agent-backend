@@ -140,7 +140,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
     }
 
     private Mono<List<AuthorizedDevice>> loadMeters(RequestIdentity identity) {
-        return iot.loadAuthorizedDeviceScope(identity)
+        return iot.loadAuthorizedEnergyScope(identity)
                 .switchIfEmpty(Mono.error(new ObservationUnavailableException("公司电表授权范围为空")))
                 .flatMap(scope -> {
                     validateScope(identity, scope);
@@ -164,31 +164,41 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         if (requestedEnd != null && requestedEnd.isAfter(today)) {
             return Mono.error(new BusinessException("INVALID_ENERGY_WINDOW", "结束日期不能晚于今天", 400));
         }
-        LocalDate streamEnd = requestedEnd != null ? requestedEnd : today;
-        LocalDate streamStart = streamEnd.minusDays(MAX_DAILY_DAYS);
-        Instant stopBefore = boundary(streamStart).minusMillis(LOOKBACK_MS);
         Instant endAt = boundary(today.plusDays(1));
-        return readStream(request.identity(), ids(meters), stopBefore, endAt).map(stream -> {
-            LocalDate end = requestedEnd;
-            if (end == null) {
-                Instant latest = stream.latest();
-                if (latest == null) {
-                    end = today.minusDays(1);
-                } else {
-                    LocalDate latestDate = dateOf(latest);
-                    LocalTime latestTime = latest.atZone(SHANGHAI).toLocalTime();
-                    // Metering day D ends at D+1 08:00. A sample before 08:00 belongs
-                    // to the day that has not ended yet, so the latest complete day is
-                    // two calendar days back until the 08:00 boundary is crossed.
-                    end = latestTime.isBefore(LocalTime.of(8, 0))
-                            ? latestDate.minusDays(2) : latestDate.minusDays(1);
-                }
-                if (end.isAfter(today.minusDays(1))) end = today.minusDays(1);
-            }
-            LocalDate start = end.minusDays(days - 1L);
-            boolean adjusted = requestedEnd != null && requestedEnd.isAfter(end);
-            return energyResponse(dailyPayload(request.identity(), meters, stream, start, end, days, adjusted));
-        });
+        if (requestedEnd != null) {
+            LocalDate start = requestedEnd.minusDays(days - 1L);
+            Instant stopBefore = boundary(start).minusMillis(LOOKBACK_MS);
+            return readStream(request.identity(), ids(meters), stopBefore, endAt)
+                    .map(stream -> energyResponse(dailyPayload(request.identity(), meters, stream,
+                            start, requestedEnd, days, false)));
+        }
+        // Probe the newest unified page, anchor the default to the latest complete
+        // metering day, then read only the requested days. Reading a fixed 90-day
+        // prefix for a 30-day tile tripled upstream work and could exceed the HTTP
+        // read deadline even though only 30 days were requested.
+        return fetchPage(request.identity(), 0)
+                .onErrorResume(error -> isFatalEnergyError(error) ? Mono.error(error) : Mono.just(PageData.failure(0)))
+                .flatMap(first -> {
+                    Instant latest = latestFrom(first);
+                    LocalDate end;
+                    if (latest == null) {
+                        end = today.minusDays(1);
+                    } else {
+                        LocalDate latestDate = dateOf(latest);
+                        LocalTime latestTime = latest.atZone(SHANGHAI).toLocalTime();
+                        // Metering day D ends at D+1 08:00. A sample before 08:00 belongs
+                        // to the day that has not ended yet, so the latest complete day is
+                        // two calendar days back until the 08:00 boundary is crossed.
+                        end = latestTime.isBefore(LocalTime.of(8, 0))
+                                ? latestDate.minusDays(2) : latestDate.minusDays(1);
+                    }
+                    LocalDate effectiveEnd = end.isAfter(today.minusDays(1)) ? today.minusDays(1) : end;
+                    LocalDate start = effectiveEnd.minusDays(days - 1L);
+                    Instant stopBefore = boundary(start).minusMillis(LOOKBACK_MS);
+                    return readStream(request.identity(), ids(meters), stopBefore, endAt, first)
+                            .map(stream -> energyResponse(dailyPayload(request.identity(), meters, stream,
+                                    start, effectiveEnd, days, false)));
+                });
     }
 
     private Map<String, Object> dailyPayload(RequestIdentity identity, List<AuthorizedDevice> meters,
@@ -203,18 +213,22 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
             Instant dayFrom = boundary(day);
             Instant dayTo = boundary(day.plusDays(1));
             int covered = 0;
+            int partial = 0;
             double sum = 0;
             for (AuthorizedDevice meter : meters) {
                 PeriodFact period = comparisonPeriod(samples(byMeter, meter.id()), dayFrom, dayTo, !stream.truncated());
-                if (period.usage() != null) {
+                if ("comparable".equals(period.status()) && period.usage() != null) {
                     covered++;
                     sum += scaled(meter, period.usage(), identity);
+                } else if (period.usage() != null) {
+                    partial++;
                 }
             }
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("date", day.toString());
             row.put("usage", covered == meters.size() ? round(sum) : null);
             row.put("coveredMeters", covered);
+            row.put("partialMeters", partial);
             row.put("expectedMeters", meters.size());
             row.put("complete", covered == meters.size() && !stream.truncated());
             row.put("elapsedUsage", null);
@@ -1796,12 +1810,23 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
             Instant stopBefore, Instant endAt) {
         return fetchPage(identity, 0)
                 .onErrorResume(error -> isFatalEnergyError(error) ? Mono.error(error) : Mono.just(PageData.failure(0)))
-                .flatMap(first -> {
-                    StreamAccumulator accumulator = new StreamAccumulator(meterIds, stopBefore, endAt, maxRows);
-                    accumulator.add(first);
-                    if (accumulator.stop()) return Mono.just(accumulator.result());
-                    return readStreamPages(identity, 1, accumulator);
-                });
+                .flatMap(first -> readStream(identity, meterIds, stopBefore, endAt, first));
+    }
+
+    private Mono<StreamResult> readStream(RequestIdentity identity, Set<String> meterIds,
+            Instant stopBefore, Instant endAt, PageData first) {
+        StreamAccumulator accumulator = new StreamAccumulator(meterIds, stopBefore, endAt, maxRows);
+        accumulator.add(first);
+        if (accumulator.stop()) return Mono.just(accumulator.result());
+        return readStreamPages(identity, 1, accumulator);
+    }
+
+    private static Instant latestFrom(PageData page) {
+        Instant latest = null;
+        for (StreamRow row : page.rows()) {
+            if (latest == null || row.readTime().isAfter(latest)) latest = row.readTime();
+        }
+        return latest;
     }
 
     private Mono<StreamResult> readStreamPages(RequestIdentity identity, int page, StreamAccumulator accumulator) {
@@ -1937,8 +1962,12 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         }
 
         private boolean stop() {
-            return lastSeen || orderBroken || crossed || truncated || pageCount >= maxPages
-                    || rowCount >= rowLimit || clock.millis() >= deadlineAt;
+            if (lastSeen || orderBroken || crossed || truncated) return true;
+            if (pageCount >= maxPages || rowCount >= rowLimit || clock.millis() >= deadlineAt) {
+                truncated = true;
+                return true;
+            }
+            return false;
         }
 
         private void truncate() { truncated = true; }
@@ -1990,6 +2019,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         return new PeriodFact(from, to, first, last, usage, status, notes);
     }
 
+
     private static WindowResult meterWindow(List<Sample> samples, Instant from, Instant to) {
         Sample fromSample = null, toSample = null;
         for (Sample sample : samples) {
@@ -2018,32 +2048,15 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
     }
 
     private static Double completeWindowEnergy(List<Sample> samples, Instant start, Instant end) {
+        // A complete measured window needs readings exactly at both boundaries. The
+        // previous interpolation path silently turned a missing 20:00/08:00 reading
+        // into a complete measured value; missing boundaries now stay unavailable.
         WindowResult exact = meterWindow(samples, start, end);
-        if (exact.value() != null && exact.from() != null && exact.to() != null
-                && exact.from().readTime().equals(start) && exact.to().readTime().equals(end)) {
-            return exact.value();
+        if (exact.value() == null || exact.from() == null || exact.to() == null
+                || !exact.from().readTime().equals(start) || !exact.to().readTime().equals(end)) {
+            return null;
         }
-        Map<Long, Double> slots = new HashMap<>();
-        for (Sample sample : samples) {
-            long time = sample.readTime().toEpochMilli();
-            if (slots.containsKey(time) && !Objects.equals(slots.get(time), sample.value())) slots.put(time, null);
-            else slots.put(time, sample.value());
-        }
-        List<Map.Entry<Long, Double>> ordered = new ArrayList<>(slots.entrySet());
-        ordered.sort(Map.Entry.comparingByKey());
-        double energy = 0, covered = 0;
-        for (int index = 1; index < ordered.size(); index++) {
-            Map.Entry<Long, Double> previous = ordered.get(index - 1), current = ordered.get(index);
-            if (current.getKey() <= start.toEpochMilli() || previous.getKey() >= end.toEpochMilli()) continue;
-            if (previous.getValue() == null || current.getValue() == null
-                    || current.getValue() < previous.getValue()
-                    || current.getKey() - previous.getKey() > MAX_GAP_MS) return null;
-            long overlap = Math.min(current.getKey(), end.toEpochMilli()) - Math.max(previous.getKey(), start.toEpochMilli());
-            if (overlap <= 0) continue;
-            energy += (current.getValue() - previous.getValue()) * overlap / (double) (current.getKey() - previous.getKey());
-            covered += overlap;
-        }
-        return covered == end.toEpochMilli() - start.toEpochMilli() ? round(energy) : null;
+        return exact.value();
     }
 
     private static Long bucketCellValue(List<Sample> samples, Instant from, Instant to) {
@@ -2051,7 +2064,8 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
                 sample.readTime().isAfter(from) && !sample.readTime().isAfter(to));
         if (!progress) return null;
         WindowResult window = meterWindow(samples, from, to);
-        return window.value() == null ? null : Math.round(window.value() * 100);
+        if (window.value() == null) return null;
+        return Math.round(window.value() * 100);
     }
 
     private static Instant effectiveEndOf(List<AuthorizedDevice> devices, Map<String, List<Sample>> byMeter,
@@ -2378,7 +2392,8 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         WindowResult window = meterWindow(samples, from, to);
         long effSpan = Math.max(HOUR_MS, effTo.toEpochMilli() - from.toEpochMilli());
         boolean stale = window.to() == null || effTo.toEpochMilli() - window.to().readTime().toEpochMilli() > effSpan / 2;
-        String status = !inSpan ? "noData" : window.value() == null || stale ? "partial" : "ok";
+        String status = !inSpan ? "noData"
+                : window.value() == null || stale ? "partial" : "ok";
         double value = status.equals("ok") ? scaled(device, window.value(), identity) : 0;
         return new StatisticsRow(device.id(), device.name(), device.installAddress(), floorOf(device.installAddress()),
                 value, status, sampleMap(window.from()), sampleMap(window.to()));
@@ -2429,7 +2444,8 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         WindowResult window = meterWindow(samples, from, to);
         long effSpan = Math.max(HOUR_MS, effTo.toEpochMilli() - from.toEpochMilli());
         boolean stale = window.to() == null || effTo.toEpochMilli() - window.to().readTime().toEpochMilli() > effSpan / 2;
-        String status = !inSpan ? "noData" : window.value() == null || stale ? "partial" : "ok";
+        String status = !inSpan ? "noData"
+                : window.value() == null || stale ? "partial" : "ok";
         double value = status.equals("ok") ? scaled(device, window.value(), identity) : 0;
         return new StatisticsRow(device.id(), device.name(), device.installAddress(), floorOf(device.installAddress()),
                 value, status, sampleMap(window.from()), sampleMap(window.to()));

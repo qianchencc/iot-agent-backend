@@ -101,7 +101,7 @@ class RuntimeContractGateTest {
         private final List<ConversationTurn> turns = new ArrayList<>();
         private final List<ConversationEventFact> events = new ArrayList<>();
         @Override public ConversationRecord create(String tenant, String owner, String source, Instant at) {
-            conversation = new ConversationRecord("fixture-conversation", tenant, owner, source, at, false); return conversation;
+            conversation = new ConversationRecord("fixture-conversation", tenant, owner, source, at, at, false); return conversation;
         }
         @Override public Optional<ConversationRecord> find(String id, String tenant, String owner) {
             return conversation != null && conversation.id().equals(id) && conversation.tenantCode().equals(tenant) && conversation.ownerKey().equals(owner) ? Optional.of(conversation) : Optional.empty();
