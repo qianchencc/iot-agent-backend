@@ -237,7 +237,7 @@ class TaskRangeTargetContractTest {
                 {"label":"全量日报","reportRequest":{"kind":"energy","period":{"kind":"previous","unit":"day"},
                  "scope":{"level":"all"}},
                  "phases":[{"at":"2026-11-02T05:03:00Z","read":{"all":true,
-                   "agent":{"objective":"统计昨日全部用电","output":"report"}}}}]}
+                   "agent":{"objective":"统计昨日全部用电","output":"report"}}}]}
                 """, "pin-energy-full");
         JsonNode scope = mapper.readTree(proposal.payloadJson()).path("reportRequest").path("scope");
         assertThat(scope.path("level").asText()).isEqualTo("selection");
@@ -360,6 +360,10 @@ class TaskRangeTargetContractTest {
         private final java.util.Map<String, ltd.qianc.iotagent.iot.DeviceCandidateRecord> candidates = new java.util.HashMap<>();
 
         RangeAdapter(AuthorizedDevice... extra) { this.extra = List.of(extra); }
+
+        void seed(String id, String scopeText, List<AuthorizedDevice> members, String resolutionMode, int totalMatches) {
+            seeds.put(id, new Seed(scopeText, List.copyOf(members), resolutionMode, totalMatches));
+        }
 
         private final java.util.Set<String> incapable = new java.util.HashSet<>();
         private final java.util.Map<String, Object> stateOverrides = new java.util.HashMap<>();

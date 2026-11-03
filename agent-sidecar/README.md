@@ -41,7 +41,7 @@ All Node routes require `Authorization: Bearer $AGENT_BRIDGE_TOKEN`.
 
 Run fields: `protocolVersion:1`, `runId`, `conversationId`, `turnId`, `toolContextId`, `content`, opaque `sessionScope`, and `definition`. Unknown fields are rejected.
 
-`definition` contains Java-owned `instructions`, `tools` (`name`, `label`, `description`, JSON Schema `parameters`), `maxTurns`, optional `maxToolCalls`, `runTimeoutMs`, `finalizationInstructions` and `model`. A model snapshot contains `modelId`, `modelBaseUrl`, `modelApiKey`, `contextWindow`, `maxOutputTokens`, `reasoning`, `thinkingLevel`, `supportsDeveloperRole`, `supportsReasoningEffort`, `supportsUsageInStreaming`, `maxTokensField`. Keys and private URLs are never emitted in public events or operational errors.
+`definition` contains Java-owned `instructions`, `tools` (`name`, `label`, `description`, JSON Schema `parameters`), `maxTurns`, optional `maxToolCalls`, `runTimeoutMs`, `finalizationInstructions`, `compactionInstructions` and `model`. A model snapshot contains `modelId`, `modelBaseUrl`, `modelApiKey`, `contextWindow`, `maxOutputTokens`, `reasoning`, `thinkingLevel`, `supportsDeveloperRole`, `supportsReasoningEffort`, `supportsUsageInStreaming`, `maxTokensField`. Keys and private URLs are never emitted in public events or operational errors.
 
 Node enforces the supplied loop/tool/time budgets. Java may return `halt:true` on a successful or failed tool response. Optional Java-supplied finalization instructions permit a tool-free final answer; no business fallback is embedded in Node.
 
@@ -53,8 +53,11 @@ The public Pi `JsonlSessionRepo` runs against a remote virtual filesystem backed
 
 Tool intent and outcomes are checkpointed. After interruption, a committed outcome is recovered; an uncertain outcome becomes an explicit interrupted tool result. Node does not automatically replay a business effect. A running model request is not promised seamless continuation after process replacement.
 
-### Public Pi API to private storage mapping
+Before inference, native Pi compaction keeps the model context within its window. Java owns the optional compaction policy; Node stores its hash with the native compaction entry. A changed policy rebuilds from original journal messages rather than summarizing an already-lossy old summary. Original entries remain durable. Empty or length-truncated summaries fail explicitly rather than erasing history.
 
+Native summaries truncate large individual tool results; they are not the business fact store. Java separately reprojects compact immutable report facts from this authenticated conversation, validating tenant, owner, source and conversation identity. These historical values and evidence restrictions do not grant current device authorization. Node has no report, device or task schema knowledge.
+
+### Public Pi API to private storage mapping
 | Public API | Owner and durable operation |
 | --- | --- |
 | `SessionRepo.create/open/list/delete/fork/close` | Thin opaque-ID wrapper delegates to Pi's native repository. Only physical filename IDs are JSON/base64url encoded; public IDs and parent IDs round-trip unchanged. Deleted/recreated handles are invalidated. |

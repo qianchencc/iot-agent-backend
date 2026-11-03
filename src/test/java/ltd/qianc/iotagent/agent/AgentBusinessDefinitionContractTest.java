@@ -26,6 +26,7 @@ import ltd.qianc.iotagent.conversation.ConversationFacade;
 import ltd.qianc.iotagent.error.BusinessException;
 import ltd.qianc.iotagent.iot.AuthorizedDevice;
 import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
+import ltd.qianc.iotagent.iot.IotAdapter;
 import ltd.qianc.iotagent.iot.IotSource;
 import ltd.qianc.iotagent.iot.OfficeRegion;
 import ltd.qianc.iotagent.iot.ObservationAdapter;

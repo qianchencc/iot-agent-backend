@@ -6,11 +6,11 @@
 
 |用途|本轮位置/地址|
 |---|---|
-|后端源码|`/Users/qianchen/works/新发展/iot-agent-backend-business`；`refactor/java-agent-business`|
+|后端源码|`/Users/qianchen/works/新发展/iot-agent-backend-mysql-final`；`refactor/pi-session-mysql-final`；原business worktree保留|
 |前端源码|`/Users/qianchen/works/新发展/mp-agent-business`；`refactor/java-agent-business-preview`|
 |前端生成目录|`mp-agent-business/unpackage/dist/dev/mp-weixin`|
-|可见新窗口|`Agent Business WT - Java 3215`；原窗口不关闭、不清缓存|
-|自动化|`ws://127.0.0.1:9441`；原9431不动|
+|可见验收窗口|`MySQL Session Frozen - Java 3215`，使用已冻结的小程序构建；旧9441/缓存9431不操作|
+|自动化|`ws://127.0.0.1:9444`；旧9441及原9431不动|
 |Java|`127.0.0.1:3215`，从本worktree重新构建的jar启动|
 |Pi sidecar|`127.0.0.1:3235`，从本worktree的agent-sidecar重新构建启动|
 |只读上游代理|`127.0.0.1:3245`→客户真实物联上游；不指向生产Runtime|
@@ -23,6 +23,8 @@
 主链路：小程序3215→本地Java→3235真实Pi/模型→Java工具→3245只读上游。业务事实只落本轮独立库，真实用户权限由Java及客户上游核验。模型供应商配置复用合法本机配置，但bridge、管理员和数据库密钥重新生成，不复制客户身份。
 
 当前固定发布：Java `business-preview-java-3215-mysql-v19`（`var/business-preview/iot-agent-mysql-session-preview-v19-20261103.jar`），Node `business-preview-sidecar-3235-mysql-ro-v10`（`var/business-preview/sidecar-mysql-ro-v10`，应用目录只读、无SQLite卷）；上游 `business-preview-upstream-3245-v3`，播放器 `business-preview-player-9419-v2`，Admin `business-preview-admin-5185`。Docker项目 `iot-agent-business-preview` 独占MySQL/Redis卷，不删除持久卷。
+
+2026-11-03后续：原business worktree同一Java文件在构建间持续变化，已另建上述final worktree，并转移当前源码改动；不反向覆盖原worktree。转移前tracked checkpoint为`01053baf1ba62c7e2dc8ac8f9396d07eff9efd29`。本目录后续构建/部署结果以Pi Session验收账本为准，不把原worktree的中间态当成可信构建。
 
 ## 2. 重启/恢复前检查
 
