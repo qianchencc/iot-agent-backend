@@ -52,6 +52,22 @@ class TaskRangeTargetContractTest {
     }
 
     @Test
+    void companyCannotPersistAPresentationWindowAsAWholeScopeTask() {
+        var request = mapper.createObjectNode().put("label", "公司全部照明统一关闭");
+        var actions = request.putArray("phases").addObject().put("at", "2026-11-02T05:03:00Z")
+                .putArray("actions");
+        for (int light = 1; light <= 50; light++) {
+            actions.addObject().put("deviceId", "light-" + light).put("closeOrOpen", 0);
+        }
+        assertThatThrownBy(() -> facade().propose(PRINCIPAL, "company", "conversation", "turn",
+                request.toString(), "truncated-company-actions"))
+                .isInstanceOfSatisfying(BusinessException.class, error -> {
+                    assertThat(error.code()).isEqualTo("INVALID_TASK_PAYLOAD");
+                    assertThat(error.httpStatus()).isEqualTo(400);
+                });
+    }
+
+    @Test
     void fullScopeHonorsAnExplicitExcludedLocation() throws Exception {
         TaskProposalFact proposal = facade().propose(PRINCIPAL, "company", "conversation", "turn",
                 """
@@ -84,7 +100,9 @@ class TaskRangeTargetContractTest {
         assertThatThrownBy(() -> facade().propose(PRINCIPAL, "company", "conversation", "turn",
                 """
                 {"label":"点选灯","candidateSetIds":["foreign-or-invented"],"phases":[
-                  {"at":"2026-11-02T05:03:00Z","actions":[{"deviceId":"light-1","closeOrOpen":0}]}
+                  {"at":"2026-11-02T05:03:00Z","targets":[{"kind":"lighting",
+                    "selection":{"candidateSetId":"foreign-or-invented","deviceIds":["light-1"]},
+                    "command":{"closeOrOpen":0}}]}
                 ]}
                 """, "forged-set")).isInstanceOf(BusinessException.class);
     }
@@ -126,7 +144,7 @@ class TaskRangeTargetContractTest {
         assertThatThrownBy(() -> facade().propose(PRINCIPAL, "company", "conversation", "turn",
                 """
                 {"label":"伪造范围证明","candidateSetIds":["foreign"],"phases":[{"at":"2026-11-02T05:03:00Z",
-                  "scopeFacts":{"allAuthorized":true},"actions":[{"deviceId":"light-1","closeOrOpen":0}]}]}
+                  "scopeFacts":{"allAuthorized":true},"read":{"deviceIds":["meter-1"]}}]}
                 """, "forged-scope-proof")).isInstanceOf(BusinessException.class);
     }
 
@@ -408,8 +426,11 @@ class TaskRangeTargetContractTest {
         assertThat(found.complete()).isFalse();
         var request = mapper.createObjectNode().put("label", "只选一台");
         request.putArray("candidateSetIds").add(found.candidateSetId());
-        request.putArray("phases").addObject().put("at", "2026-11-02T05:03:00Z")
-                .putArray("actions").addObject().put("deviceId", "light-1").put("closeOrOpen", 0);
+        var target = request.putArray("phases").addObject().put("at", "2026-11-02T05:03:00Z")
+                .putArray("targets").addObject().put("kind", "lighting");
+        target.putObject("selection").put("candidateSetId", found.candidateSetId())
+                .putArray("deviceIds").add("light-1");
+        target.putObject("command").put("closeOrOpen", 0);
         var saved = facade(adapter).propose(PRINCIPAL, "company", "conversation", "turn",
                 request.toString(), "precise-from-large-set");
         var actions = mapper.readTree(saved.payloadJson()).path("phases").get(0).path("actions");

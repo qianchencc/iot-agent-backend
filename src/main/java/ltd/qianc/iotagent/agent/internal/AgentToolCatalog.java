@@ -80,8 +80,8 @@ final class AgentToolCatalog {
         if (company) properties.put("reportRequest",
                 reportRequest("可选声明式报告要求；服务器取证，禁止 blocks/totals"));
         String scope = company
-                ? "公司照明/空调每阶段用targets声明allAuthorized全部当前授权成员、scopeTexts地点及excludeTexts保留，或selection精确选择；服务器展开完整固定成员、核验和预检，不受模型明细窗口限制，不逐台抄大集合。targets与actions/read互斥。只读检查全范围必须显式read.all=true，缺设备列表不默认全部。"
-                : "办公室每阶段使用actions逐项声明已查明设备的deviceId、kind和command，并提供对应candidateSetIds；范围为当前区域全部时也要包含该区域全部已查明成员，不因当前已满足而遗漏未来目标。只读检查使用read.deviceIds明确成员。办公室不使用公司范围targets、read.all或报告要求。";
+                ? "公司照明/空调每阶段用targets声明allAuthorized全部当前授权成员、scopeTexts地点及excludeTexts保留，或selection精确选择；服务器展开完整固定成员、核验和预检，不受模型明细窗口限制，不逐台抄大集合。targets与read互斥。只读检查全范围必须显式read.all=true，缺设备列表不默认全部。"
+                : "办公室每阶段使用actions逐项声明已查明设备的deviceId及closeOrOpen/ac参数，并提供对应candidateSetIds；范围为当前区域全部时也要包含该区域全部已查明成员，不因当前已满足而遗漏未来目标。只读检查使用read.deviceIds明确成员。办公室不使用公司范围targets、read.all或报告要求。";
         return definition("propose_task", "编排定时任务",
                 "准备待人工确认的一次性或周期任务，不执行控制。" + scope
                         + "窗口条件检查同时给interval与cadenceMinutes。只保留用户明确要求的阶段、范围与重复规则，未来目标保留当前已满足设备；时间按本轮current_time固定为带时区绝对值。",
@@ -334,9 +334,9 @@ final class AgentToolCatalog {
     private static Map<String, Object> taskPhase(boolean company) {
         Map<String, Object> properties = props(
                 prop("at", string("带时区的阶段时刻；无区间允许1–2个独立阶段", 1, 64)),
-                prop("actions", arrayOf(taskAction(), 0, 50)),
                 prop("read", taskRead(company)));
         if (company) properties.put("targets", arrayOf(companyControlTarget(), 1, 20));
+        else properties.put("actions", arrayOf(taskAction(), 0, 50));
         return object(required("at"), properties, Map.of("type", "object", "additionalProperties", false));
     }
 

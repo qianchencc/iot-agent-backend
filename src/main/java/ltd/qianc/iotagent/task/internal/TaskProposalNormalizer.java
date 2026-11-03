@@ -77,6 +77,14 @@ public final class TaskProposalNormalizer {
         ObjectNode repeat = normalizeRepeat(root.get("repeat"));
         ObjectNode interval = normalizeInterval(root.get("interval"));
         preparePhases(root, interval, repeat);
+        // Proposals declare scope; stored plans already contain server-materialized actions.
+        if (!plan && "company".equals(normalizedSource)) {
+            for (JsonNode phase : root.path("phases")) {
+                if (!phase.path("actions").isEmpty()) {
+                    throw invalid("公司控制任务必须用targets声明范围；全部使用allAuthorized，精确设备使用selection");
+                }
+            }
+        }
         TaskTargetResolver.materialize(mapper, iot, scopeTimeout, principal, normalizedSource, root);
         ObjectNode reportRequest = validateReportRequest(root.get("reportRequest"));
         ArrayNode phases = normalizePhases(root, normalizedSource);
