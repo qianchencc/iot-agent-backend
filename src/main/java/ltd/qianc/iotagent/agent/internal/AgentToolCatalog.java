@@ -42,12 +42,15 @@ final class AgentToolCatalog {
     private static final Set<String> COMPANY = Set.of("company");
     private static final Set<String> BOTH = Set.of("office", "company");
     private static final Map<String, Definition> TOOLS = build();
+    private static final Definition OFFICE_TASK = proposeTask(false);
 
     private AgentToolCatalog() { }
 
     static List<Definition> forSource(String source) {
         requireSource(source);
-        return TOOLS.values().stream().filter(tool -> tool.sources().contains(source)).toList();
+        return TOOLS.values().stream().filter(tool -> tool.sources().contains(source))
+                .map(tool -> "office".equals(source) && "propose_task".equals(tool.name()) ? OFFICE_TASK : tool)
+                .toList();
     }
 
     static Definition find(String source, String name) {
@@ -56,11 +59,33 @@ final class AgentToolCatalog {
         if (definition == null || !definition.sources().contains(source)) {
             throw new BusinessException("AGENT_TOOL_UNAVAILABLE", "工具未接入或当前来源不可用", 404);
         }
-        return definition;
+        return "office".equals(source) && "propose_task".equals(name) ? OFFICE_TASK : definition;
     }
 
     static Definition definition(String name) {
         return TOOLS.get(name);
+    }
+
+    private static Definition proposeTask(boolean company) {
+        Map<String, Object> properties = props(
+                prop("label", string("用动作与范围命名的任务名称", 1, 80)),
+                prop("title", string("用户明确指定时的短标题", 1, 20)),
+                prop("candidateSetIds", stringArray("已查明的候选集标识", 1, 10)),
+                prop("taskKind", stringEnum("任务种类；由用户意图明确时填写",
+                        "one_time", "interval", "conditional", "recurring")),
+                prop("interval", taskInterval("任务起止区间，仅在用户给出区间时提供")),
+                prop("repeat", repeat("用户明确给出的重复规则")),
+                prop("checkpointCount", integer("条件/区间检查点数量", 1, 1000)),
+                prop("phases", arrayOf(taskPhase(company), 1, 32)));
+        if (company) properties.put("reportRequest",
+                reportRequest("可选声明式报告要求；服务器取证，禁止 blocks/totals"));
+        String scope = company
+                ? "公司照明/空调每阶段用targets声明allAuthorized全部当前授权成员、scopeTexts地点及excludeTexts保留，或selection精确选择；服务器展开完整固定成员、核验和预检，不受模型明细窗口限制，不逐台抄大集合。targets与actions/read互斥。只读检查全范围必须显式read.all=true，缺设备列表不默认全部。"
+                : "办公室每阶段使用actions逐项声明已查明设备的deviceId、kind和command，并提供对应candidateSetIds；范围为当前区域全部时也要包含该区域全部已查明成员，不因当前已满足而遗漏未来目标。只读检查使用read.deviceIds明确成员。办公室不使用公司范围targets、read.all或报告要求。";
+        return definition("propose_task", "编排定时任务",
+                "准备待人工确认的一次性或周期任务，不执行控制。" + scope
+                        + "窗口条件检查同时给interval与cadenceMinutes。只保留用户明确要求的阶段、范围与重复规则，未来目标保留当前已满足设备；时间按本轮current_time固定为带时区绝对值。",
+                object(required("label", "phases"), properties), BOTH, Confirmation.TASK);
     }
 
     private static Map<String, Definition> build() {
@@ -73,9 +98,9 @@ final class AgentToolCatalog {
                 "按当前来源、当前关注区域和当前授权目录检索设备候选。位置条件放 scopeText/scopeTerms，设备名称或型号放 deviceText/nameHints；不要把地点拼进设备名称。返回真实候选及 candidateSetId；候选不是用户已选择的操作范围，空候选必须如实处理，不得发明设备。",
                 object(required("kind"), props(
                         prop("kind", stringEnum("设备类型", "lighting", "ac", "access", "video", "environment", "energy", "safety", "unknown")),
-                        prop("scopeText", string("位置或区域描述；当前区域由服务端绑定，不要传内部 focusRegionId", 1, 120)),
+                        prop("scopeText", string("用户明确的位置或区域描述；全公司范围用公司，不附加照明等设备词；当前区域由服务端绑定，不传内部focusRegionId", 1, 120)),
                         prop("deviceText", string("设备名称或型号片段", 1, 80)),
-                        prop("scopeTerms", stringArray("拆分的真实位置条件", 0, 8)),
+                        prop("scopeTerms", stringArray("用户明确要求同时满足的位置条件（AND）；不生成同义词、楼层写法或改写变体。单一地点只填scopeText", 0, 8)),
                         prop("nameHints", stringArray("设备名称候选词", 0, 8)))),
                 BOTH, Confirmation.NONE));
         add(tools, definition("get_device_details", "读取设备详情",
@@ -185,20 +210,7 @@ final class AgentToolCatalog {
                         prop("ledger", stringEnum("台账类型", "gas", "smoke", "flooding")),
                         prop("cameraDeviceId", string("用户明确选择的候选摄像头标识", 1, 300)))),
                 COMPANY, Confirmation.NONE));
-        add(tools, definition("propose_task", "编排定时任务",
-                "准备待人工确认的一次性或周期任务，不执行控制。公司照明/空调每阶段用targets声明allAuthorized全部当前授权成员、scopeTexts地点及excludeTexts保留，或selection精确选择；服务器展开完整固定成员、核验和预检，不受模型明细窗口限制，不逐台抄大集合。targets与actions/read互斥。只读检查全范围必须显式read.all=true，缺设备列表不默认全部。窗口条件检查同时给interval与cadenceMinutes。只保留用户明确要求的阶段、范围与重复规则，未来目标保留当前已满足设备；时间按本轮current_time固定为带时区绝对值。",
-                object(required("label", "phases"), props(
-                        prop("label", string("用动作与范围命名的任务名称", 1, 80)),
-                        prop("title", string("用户明确指定时的短标题", 1, 20)),
-                        prop("candidateSetIds", stringArray("已查明的候选集标识", 1, 10)),
-                        prop("taskKind", stringEnum("任务种类；由用户意图明确时填写",
-                                "one_time", "interval", "conditional", "recurring")),
-                        prop("interval", taskInterval("任务起止区间，仅在用户给出区间时提供")),
-                        prop("repeat", repeat("用户明确给出的重复规则")),
-                        prop("checkpointCount", integer("条件/区间检查点数量", 1, 1000)),
-                        prop("reportRequest", reportRequest("可选声明式报告要求；服务器取证，禁止 blocks/totals")),
-                        prop("phases", arrayOf(taskPhase(), 1, 32)))),
-                BOTH, Confirmation.TASK));
+        add(tools, proposeTask(true));
         add(tools, definition("propose_task_change", "提出任务修改",
                 "用本端精确 task/plan 标识提出修改、周期启停、删除或跳过，绝不直接写入。必须先 get_task 核对。仅本次发生用虚拟 occurrence task 标识，整个周期用 task_plan 标识。只生成待确认差异卡。",
                 object(required("target", "operation"), props(
@@ -319,23 +331,22 @@ final class AgentToolCatalog {
         "additionalProperties", false));
     }
 
-    private static Map<String, Object> taskPhase() {
-        return object(required("at"), props(
+    private static Map<String, Object> taskPhase(boolean company) {
+        Map<String, Object> properties = props(
                 prop("at", string("带时区的阶段时刻；无区间允许1–2个独立阶段", 1, 64)),
-                prop("targets", arrayOf(companyControlTarget(), 1, 20)),
                 prop("actions", arrayOf(taskAction(), 0, 50)),
-                prop("read", taskRead())), Map.of("type", "object", "additionalProperties", false));
+                prop("read", taskRead(company)));
+        if (company) properties.put("targets", arrayOf(companyControlTarget(), 1, 20));
+        return object(required("at"), properties, Map.of("type", "object", "additionalProperties", false));
     }
 
-    private static Map<String, Object> taskRead() {
-        return object(required(), props(
-                prop("deviceIds", stringArray("已明确选择的设备；全范围用all，不逐台搬运", 1, 50)),
-                prop("all", Map.of("type", "boolean", "const", true,
-                        "description", "显式读取当前授权范围该类型的全部固定成员；与deviceIds互斥，不含将来新增")),
+    private static Map<String, Object> taskRead(boolean company) {
+        Map<String, Object> properties = props(
+                prop("deviceIds", stringArray("已明确选择的设备；不得遗漏所选范围成员", 1, 50)),
                 prop("alertDays", integer("近N天滚动告警窗口；不与alertWindow混用", 1, 365)),
                 prop("alertWindow", stringEnum("以阶段计划at的上海自然日期锚定，右端不含", "previous_day", "previous_week")),
                 prop("ac", object(required("mode"), props(
-                        prop("mode", stringEnum("只读检查或仅对满足条件设备有界调温", "inspect", "adjust_to_26")),
+                        prop("mode", stringEnum("inspect仅只读评估，condition/target不是控制；adjust_to_26且有action才按条件调温", "inspect", "adjust_to_26")),
                         prop("target", integer("目标设定温度，不是室温；缺省26", 16, 30)),
                         prop("cadenceMinutes", integerEnum("窗口检查频率；用户未给出先澄清，不补造", 15, 30, 60))))),
                 prop("agent", object(required("objective", "output"), props(
@@ -344,7 +355,10 @@ final class AgentToolCatalog {
                         prop("spec", object(required("period", "comparisons"), props(
                                 prop("period", reportPeriod("按检查点计划时间解析的统计期间")),
                                 prop("comparisons", stringArray("明确要求的比较项，不要求则空数组", 0, 2,
-                                        "previousPeriod", "yearOverYear"))))))))));
+                                        "previousPeriod", "yearOverYear")))))))));
+        if (company) properties.put("all", Map.of("type", "boolean", "const", true,
+                "description", "显式读取当前授权范围该类型的全部固定成员；与deviceIds互斥，不含将来新增"));
+        return object(required(), properties);
     }
 
     private static Map<String, Object> companyControlTarget() {

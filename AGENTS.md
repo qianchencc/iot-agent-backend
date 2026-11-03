@@ -18,7 +18,7 @@ Java 21（`--release 21` 编译，本机 JDK 25 运行）、Spring Boot 3.5.16�
 
 - 版本权威：Java 21 LTS、Spring Boot 3.5.x、Maven 3.9.x、springdoc-openapi 2.x、MyBatis-Plus 3.5.17、Spring Security 6.x、Spring WebClient、Resilience4j 2.x——均与 Boot 3.5 兼容，按模块落地时引入。
 - ehe-core 5.0.0.0-SNAPSHOT 与 Boot 3.5 不兼容（Java 11 字节码 / javax.servlet / springfox）：等客户 jakarta 版再接；过渡期认证上下文自实现，保留 `LocalVariable.getPrincipalInfo()` 同名 API 形状。见 ADR-0002。
-- 存储方向已采纳：MySQL 保存业务事实、Redis 承载非事实能力、Pi Session 首期使用 Node sidecar SQLite；环境版本、连接和账号证据仍待补齐。见 ADR-0001，考察材料在 `.scratch/persistence-route/`。
+- 持久化以 [ADR 0005](docs/adr/0005-java-owned-mysql-pi-session.md) 为准：业务事实与 Pi Session 均由 Java/MySQL 管理，Redis只作协调/缓存。处理会话、重启恢复、Node部署或运维时先读 [.scratch/pi-session-mysql/acceptance.md](.scratch/pi-session-mysql/acceptance.md) 的当前入口与证据；不导入旧会话，Node无SQLite或本地会话卷。
 
 技术规范硬性条目（编码/建表/部署时强制）：
 

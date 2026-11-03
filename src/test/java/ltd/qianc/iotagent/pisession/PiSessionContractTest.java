@@ -28,6 +28,12 @@ class PiSessionContractTest {
         Map<String,Object> append = request("append", "writer-1", epoch, 1);
         append.put("key", "/sessions/history"); append.put("content", "tool-result\n"); append.put("commitId", "append-1");
         service.execute(append); service.execute(append);
+        // Upgrade the original composite-key schema without losing acknowledged messages or receipts.
+        for (String table : java.util.List.of("pi_session_scopes", "pi_session_documents", "pi_session_chunks", "pi_session_commits")) {
+            jdbc.execute("ALTER TABLE " + table + " DROP COLUMN id");
+        }
+        jdbc.execute("ALTER TABLE pi_session_chunks DROP COLUMN update_time");
+        jdbc.execute("ALTER TABLE pi_session_commits DROP COLUMN update_time");
         PiSessionService reopened = service(jdbc);
         Map<String,Object> read = request("read", "writer-1", epoch, 2); read.put("key", "/sessions/history");
         assertThat(reopened.execute(read).get("value")).isEqualTo("header\ntool-result\n");

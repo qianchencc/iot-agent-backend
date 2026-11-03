@@ -70,7 +70,9 @@ final class DeviceCandidateMatcher {
         List<String> normalizedHints = nameHints.stream().map(DeviceCandidateMatcher::normalize).toList();
 
         boolean browse = normalizedTerms.isEmpty() && normalizedEffectiveScope.isEmpty();
-        if (browse && nameHints.isEmpty() && query.deviceIds().isEmpty()) {
+        boolean explicitAuthorizedScope = genericScope(scopeText)
+                || submittedScopeTerms.stream().anyMatch(DeviceCandidateMatcher::genericScope);
+        if (browse && !explicitAuthorizedScope && nameHints.isEmpty() && query.deviceIds().isEmpty()) {
             throw new UpstreamUnavailableException("至少需要设备范围或设备描述");
         }
 
