@@ -270,6 +270,32 @@ class IotAdapterContractTest {
     }
 
     @Test
+    void genericLocationIsAnActionableScopeErrorNotAnUpstreamOutage() {
+        ExchangeFunction fixture = ignored -> Mono.just(json("""
+                {"code":200,"content":[
+                  {"id":"light-26","kind":"lighting","name":"灯","installAddress":"26楼"},
+                  {"id":"light-27","kind":"lighting","name":"灯","installAddress":"27楼"}
+                ]}
+                """));
+        IotAdapter adapter = IotAdapterFactory.webClient(
+                WebClient.builder().exchangeFunction(fixture).build(),
+                new IotGatewayRoutes("/office-scope", "/company-scope"),
+                Duration.ofSeconds(1), IotCallPolicy.passThrough());
+        RequestIdentity identity = new RequestIdentity("Bearer fixture", "TENANT", IotSource.COMPANY);
+        assertThatThrownBy(() -> adapter.findDeviceCandidates(identity,
+                new DeviceCandidateQuery("lighting", List.of(), "公司", List.of(), List.of(), null, null)).block())
+                .isInstanceOf(BusinessException.class)
+                .satisfies(error -> {
+                    BusinessException failure = (BusinessException) error;
+                    assertThat(failure.code()).isEqualTo("INVALID_DEVICE_QUERY");
+                    assertThat(failure.httpStatus()).isEqualTo(400);
+                });
+        DeviceCandidateSet repaired = adapter.findDeviceCandidates(identity,
+                new DeviceCandidateQuery("lighting", List.of(), "26楼", List.of(), List.of(), null, null)).block();
+        assertThat(repaired.devices()).extracting(AuthorizedDevice::id).containsExactly("light-26");
+    }
+
+    @Test
     void companyCandidateMeterStateReadUsesOnlyTheEnergyFamily() {
         java.util.List<String> requests = new java.util.ArrayList<>();
         ExchangeFunction fixture = candidate -> {
@@ -607,6 +633,57 @@ class IotAdapterContractTest {
         assertThat(result.states()).containsOnlyKeys("light-a", "light-b");
         assertThat(result.states().get("light-a")).isInstanceOf(Boolean.class)
                 .isEqualTo(result.states().get("light-b"));
+    }
+
+    @Test
+    void unknownAcStatePreservesOtherDeviceEvidenceButAuthorizationStillFailsClosed() {
+        AtomicInteger detailStatus = new AtomicInteger(200);
+        ExchangeFunction fixture = candidate -> {
+            String path = candidate.url().getPath();
+            String query = candidate.url().getQuery() == null ? "" : candidate.url().getQuery();
+            if (path.contains("/interactive/")) {
+                return detailStatus.get() == 200 ? Mono.just(json("{\"code\":200,\"content\":null}"))
+                        : Mono.just(ClientResponse.create(HttpStatus.valueOf(detailStatus.get())).build());
+            }
+            if (path.endsWith("/myAreaList")) {
+                if (query.contains("parentId") || path.contains("/monitor/") || path.contains("/access/")) {
+                    return Mono.just(json("[]"));
+                }
+                return Mono.just(json("[{\"id\":\"leaf\",\"fullCode\":\"leaf\",\"name\":\"27楼\"}]"));
+            }
+            if (path.endsWith("/lighting/devicePage")) {
+                return Mono.just(json("[{\"id\":\"light-a\",\"hubDeviceId\":\"hub-light\",\"name\":\"灯\",\"switchStatus\":true}]"));
+            }
+            if (path.endsWith("/ac/devicePage")) {
+                return Mono.just(json("[{\"id\":\"ac-a\",\"hubDeviceId\":\"hub-ac\",\"name\":\"空调\"}]"));
+            }
+            if (path.endsWith("/iot-center/device/page") && !query.contains("YQ-ENV-SENSOR")) {
+                return Mono.just(json("""
+                        {"code":200,"content":{"content":[{"id":"hub-ac","modelCode":"YQ_AIR_CONDITION",
+                          "code":"provider-ac","actionList":[{"id":"ac-control","actionType":"airCondition"},
+                          {"id":"ac-detail","actionType":"acDetail"}]}],"last":true}}
+                        """));
+            }
+            return Mono.just(json("{\"code\":204,\"content\":null}"));
+        };
+        IotAdapter adapter = IotAdapterFactory.webClient(
+                WebClient.builder().exchangeFunction(fixture).build(),
+                IotGatewayRoutes.runtimeCompany("/office-scope", null,
+                        "/micro-api/api/iot-center/device/page", "/micro-api/api/energy/equipment/page",
+                        "/micro-api/api/perception/device/page", "/micro-api/api/iot-center/device",
+                        "/micro-api/api/office/app/device", "/micro-api/api/office/app/device/ac/myAreaList",
+                        "/micro-api/api/office/app/device/ac/devicePage", "/micro-api/api/iot-center/device/page"),
+                Duration.ofSeconds(1), IotCallPolicy.passThrough());
+        RequestIdentity identity = new RequestIdentity("Bearer fixture", "TENANT", IotSource.COMPANY);
+        for (int status : List.of(200, 503)) {
+            detailStatus.set(status);
+            DeviceStateReadResult result = adapter.readDeviceStates(identity, List.of("light-a", "hub-ac"))
+                    .block(Duration.ofSeconds(2));
+            assertThat(result.states()).containsEntry("light-a", true).containsEntry("hub-ac", null);
+        }
+        detailStatus.set(403);
+        assertThatThrownBy(() -> adapter.readDeviceStates(identity, List.of("light-a", "hub-ac"))
+                .block(Duration.ofSeconds(2))).isInstanceOf(GatewayAuthorizationException.class);
     }
 
     @Test

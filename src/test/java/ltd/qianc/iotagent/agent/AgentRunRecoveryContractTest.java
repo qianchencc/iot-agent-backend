@@ -99,6 +99,55 @@ class AgentRunRecoveryContractTest {
                 () -> bridge.execute(request("26楼", "retry-with-new-evidence"))).code()).isEqualTo("UPSTREAM_UNAVAILABLE");
     }
 
+    @Test
+    void capabilityReadsDoNotResetFailuresJustBecauseCandidateIdsChange() {
+        var conversations = mock(ConversationFacade.class);
+        when(conversations.toolContext(anyString(), anyString(), anyString(), anyString())).thenReturn(
+                new AgentToolContext(new PrincipalInfo("Bearer fixture", "TENANT", "owner", "fixture"),
+                        "run", "conversation", "turn", "company", null, Map.of()));
+        var version = new AtomicInteger();
+        IotAdapter iot = new IotAdapter() {
+            @Override public Mono<ltd.qianc.iotagent.iot.AuthorizedDeviceScope> loadAuthorizedDeviceScope(RequestIdentity identity) {
+                throw new UnsupportedOperationException();
+            }
+            @Override public Mono<DeviceCandidateSet> findDeviceCandidates(RequestIdentity identity,
+                    DeviceCandidateQuery query, DeviceCandidateBinding binding) {
+                return Mono.error(new BusinessException("UPSTREAM_UNAVAILABLE", "暂不可读", 503));
+            }
+            @Override public Mono<ltd.qianc.iotagent.iot.DeviceCapabilityInspection> inspectDeviceCapabilities(
+                    RequestIdentity identity, ltd.qianc.iotagent.iot.DeviceCapabilityRequest request) {
+                return Mono.just(new ltd.qianc.iotagent.iot.DeviceCapabilityInspection(
+                        request.candidateSets().stream().map(
+                                ltd.qianc.iotagent.iot.DeviceCapabilityRequest.DeviceCapabilitySelection::candidateSetId).toList(),
+                        List.of(new ltd.qianc.iotagent.iot.DeviceCapabilityInspection.DeviceCapability(
+                                "light-1", "lighting", List.of(Map.of("closeOrOpen", version.get())), null))));
+            }
+        };
+        var bridge = AgentToolBridgeFactory.local(conversations, iot, mock(ActionDraftFacade.class),
+                mock(TaskFacade.class), new ObjectMapper(), null);
+        bridge.execute(capabilityRequest("set-1", "cap-1"));
+        for (int i = 0; i < 2; i++) {
+            assertThat(catchThrowableOfType(BusinessException.class,
+                    () -> bridge.execute(request("26楼", "failed-cap-" + version.getAndIncrement()))).code())
+                    .isEqualTo("UPSTREAM_UNAVAILABLE");
+        }
+        version.set(0);
+        bridge.execute(capabilityRequest("set-2", "cap-2"));
+        assertThat(catchThrowableOfType(BusinessException.class,
+                () -> bridge.execute(request("26楼", "still-blocked-cap"))).code()).isEqualTo("AGENT_NO_PROGRESS");
+        version.set(1);
+        bridge.execute(capabilityRequest("set-3", "cap-3"));
+        assertThat(catchThrowableOfType(BusinessException.class,
+                () -> bridge.execute(request("26楼", "new-capability"))).code()).isEqualTo("UPSTREAM_UNAVAILABLE");
+    }
+
+    private static Map<String, Object> capabilityRequest(String set, String call) {
+        return Map.of("runId", "run", "toolContextId", "context", "conversationId", "conversation",
+                "turnId", "turn", "toolName", "inspect_device_capabilities", "toolCallId", call,
+                "arguments", Map.of("candidateSets", List.of(
+                        Map.of("candidateSetId", set, "deviceIds", List.of("light-1")))));
+    }
+
     private static Map<String, Object> request(String scope, String call) {
         return Map.of("runId", "run", "toolContextId", "context", "conversationId", "conversation",
                 "turnId", "turn", "toolName", "find_device_candidates", "toolCallId", call,

@@ -72,13 +72,14 @@ public final class TaskProposalNormalizer {
         JsonNode parsed = read(payloadJson);
         if (!parsed.isObject()) throw invalid("任务内容无效");
         ObjectNode root = (ObjectNode) parsed.deepCopy();
-        TaskTargetResolver.materialize(mapper, iot, scopeTimeout, principal, normalizedSource, root);
         if (plan && !root.path("repeat").isObject()) throw invalid("周期计划必须包含重复规则");
 
-        ObjectNode reportRequest = validateReportRequest(root.get("reportRequest"));
         ObjectNode repeat = normalizeRepeat(root.get("repeat"));
         ObjectNode interval = normalizeInterval(root.get("interval"));
-        ArrayNode phases = normalizePhases(root, interval, repeat, reportRequest, normalizedSource);
+        preparePhases(root, interval, repeat);
+        TaskTargetResolver.materialize(mapper, iot, scopeTimeout, principal, normalizedSource, root);
+        ObjectNode reportRequest = validateReportRequest(root.get("reportRequest"));
+        ArrayNode phases = normalizePhases(root, normalizedSource);
         if (phases == null) throw invalid("任务内容无效");
 
         if (reportRequest != null) root.set("reportRequest", reportRequest);
@@ -133,15 +134,13 @@ public final class TaskProposalNormalizer {
         return TaskPayloadSafety.withoutCredentials(mapper, root).toString();
     }
 
-    private ArrayNode normalizePhases(ObjectNode root, ObjectNode interval, ObjectNode repeat,
-                                      ObjectNode reportRequest, String source) {
+    private void preparePhases(ObjectNode root, ObjectNode interval, ObjectNode repeat) {
         JsonNode raw = root.get("phases");
         if (raw == null || raw.isMissingNode() || raw.isNull()) {
             JsonNode actions = root.get("actions");
             JsonNode read = root.get("read");
-            if ((actions == null || !actions.isArray()) && (read == null || !read.isObject()) && reportRequest == null) {
-                return null;
-            }
+            if ((actions == null || !actions.isArray()) && (read == null || !read.isObject())
+                    && !root.path("reportRequest").isObject()) return;
             String at = firstText(root, "at", "executeAt", "startsAt");
             if (at == null && interval != null) at = interval.path("startsAt").asText(null);
             if (at == null && repeat != null) throw invalid("周期任务缺少时间锚点");
@@ -153,6 +152,11 @@ public final class TaskProposalNormalizer {
             raw = mapper.createArrayNode().add(phase);
             root.set("phases", raw);
         }
+    }
+
+    private ArrayNode normalizePhases(ObjectNode root, String source) {
+        JsonNode raw = root.get("phases");
+        if (raw == null) return null;
         if (!raw.isArray() || raw.isEmpty()) throw invalid("任务阶段无效");
         ArrayNode phases = mapper.createArrayNode();
         for (JsonNode value : raw) {

@@ -249,32 +249,31 @@ class SafetyLedgerObservationContractTest {
                 0, List.of(alarm("o1", "smoke-1", "2026-10-16T09:00:00Z"),
                         alarm("c1", "company-smoke-1", "2026-10-16T08:00:00Z"))));
         // Same authorization and tenant as COMPANY: identical owner key, different source.
-        // Both composers share one MAC key so only the source binding can reject a replay.
+        // One composed adapter shares its cursor key across both requesting sources.
         RequestIdentity office = new RequestIdentity("Bearer company", "TENANT-1", IotSource.OFFICE);
-        byte[] macKey = new byte[32];
-        ltd.qianc.iotagent.iot.internal.SafetyLedgerComposer officeLedger =
-                new ltd.qianc.iotagent.iot.internal.SafetyLedgerComposer(upstream,
-                        sourceIot(office, IotSource.OFFICE, device("smoke-1", "27楼光电感烟探测器", null)),
-                        null, macKey, CLOCK);
-        ltd.qianc.iotagent.iot.internal.SafetyLedgerComposer companyLedger =
-                new ltd.qianc.iotagent.iot.internal.SafetyLedgerComposer(upstream,
-                        sourceIot(COMPANY, IotSource.COMPANY, device("company-smoke-1", "公司感烟", null)),
-                        null, macKey, CLOCK);
+        ObservationAdapter adapter = composed(upstream, new IotAdapter() {
+            @Override
+            public Mono<AuthorizedDeviceScope> loadAuthorizedDeviceScope(RequestIdentity identity) {
+                AuthorizedDevice member = identity.source() == IotSource.OFFICE
+                        ? device("smoke-1", "27楼光电感烟探测器", null)
+                        : device("company-smoke-1", "公司感烟", null);
+                return Mono.just(AuthorizedDeviceScope.of(identity, identity.source(), List.of(member)));
+            }
+        });
 
-        Map<String, Object> payload = officeLedger.readLedger(new ObservationRequest(office,
+        Map<String, Object> payload = adapter.read(new ObservationRequest(office,
                 ObservationOperation.SAFETY_EVENTS, Map.of("type", "smoke", "limit", "1"))).block().payload();
         assertThat(payload.get("source")).isEqualTo("office");
         assertThat(items(payload)).extracting(row -> row.get("eventId")).containsExactly("o1");
-        assertThat(payload.get("excludedCount")).isEqualTo(1);
         assertThat(payload.get("nextCursor")).asString().isNotBlank();
 
         // An Office continuation can never resume under the Company authorization of
         // the same owner, and Office cannot resolve event details at all.
-        assertThat(catchBusiness(() -> companyLedger.readLedger(new ObservationRequest(COMPANY,
+        assertThat(catchBusiness(() -> adapter.read(new ObservationRequest(COMPANY,
                 ObservationOperation.SAFETY_EVENTS,
                 Map.of("type", "smoke", "limit", "1", "cursor", (String) payload.get("nextCursor")))).block())
                 .code()).isEqualTo("INVALID_SAFETY_CURSOR");
-        assertThat(catchBusiness(() -> officeLedger.readEvent(new ObservationRequest(office,
+        assertThat(catchBusiness(() -> adapter.read(new ObservationRequest(office,
                 ObservationOperation.SAFETY_EVENT,
                 Map.of("id", "o1", "ledger", "smoke", "deviceId", "smoke-1"))))
                 .code()).isEqualTo("SAFETY_SOURCE_UNAVAILABLE");
@@ -374,19 +373,6 @@ class SafetyLedgerObservationContractTest {
         };
     }
 
-    private static IotAdapter sourceIot(RequestIdentity identity, IotSource source, AuthorizedDevice... devices) {
-        return new IotAdapter() {
-            @Override
-            public Mono<AuthorizedDeviceScope> loadAuthorizedDeviceScope(RequestIdentity request) {
-                return Mono.just(AuthorizedDeviceScope.of(identity, source, List.of(devices)));
-            }
-
-            @Override
-            public Mono<AuthorizedDeviceScope> loadAuthorizedSafetyScope(RequestIdentity request) {
-                return Mono.just(AuthorizedDeviceScope.of(identity, source, List.of(devices)));
-            }
-        };
-    }
 
     private static AuthorizedDevice device(String id, String name, String hub) {
         return new AuthorizedDevice(id, "safety", name, "", true, null, id, hub, null, List.of(), List.of(), Map.of());

@@ -418,6 +418,7 @@ public final class AgentBusinessRunPolicyProvider implements AgentRunPolicyProvi
                     + "按原业务标识和原时间窗口重新核验，不得按标题猜测或改用其他对象。";
             case "environment_window" -> "引用只表示用户选择了该对象，期间固定。samples 是站点级历史采样，不能归属具体房间或设备；"
                     + "覆盖不完整或仍有下一页时不得声称已读全或补零；颗粒物单位未确认，不判断达标。"
+                    + "展示时间使用服务器environmentTimeLabels的上海时间，不把带Z的UTC原文标成上海时间，不自行加减时差。"
                     + "解释同一期间直接使用保存事实，不重复查询同一窗口；需要其他期间用 query_environment_history。"
                     + "不得按标题猜测或改用其他对象。";
             case "task", "task_plan" -> "引用只表示用户选择了该对象。已登记对象按真实ID读取，事实仅作上下文，修改需另行提案确认；"

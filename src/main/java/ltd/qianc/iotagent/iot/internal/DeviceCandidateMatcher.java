@@ -13,6 +13,7 @@ import ltd.qianc.iotagent.iot.AuthorizedDevice;
 import ltd.qianc.iotagent.iot.DeviceCandidateQuery;
 import ltd.qianc.iotagent.iot.DeviceCandidateSet;
 import ltd.qianc.iotagent.iot.UpstreamUnavailableException;
+import ltd.qianc.iotagent.error.BusinessException;
 
 /**
  * Runtime-compatible candidate search: exact scope matching, bounded presentation,
@@ -71,7 +72,10 @@ final class DeviceCandidateMatcher {
 
         boolean browse = normalizedTerms.isEmpty() && normalizedEffectiveScope.isEmpty();
         if (browse && nameHints.isEmpty() && query.deviceIds().isEmpty()) {
-            throw new UpstreamUnavailableException("至少需要设备范围或设备描述");
+            throw new BusinessException("INVALID_DEVICE_QUERY",
+                    "检索需要具体地点、设备描述或精确成员；公司、全部等不是具体地点。"
+                            + "若用户要求全公司定时控制，请在propose_task的targets中显式设置allAuthorized=true，"
+                            + "并保留原excludeTexts、动作和全部阶段；不要重复同一无范围查询。", 400);
         }
 
         List<String> explicitEnergyFloors = "energy".equalsIgnoreCase(query.kind())

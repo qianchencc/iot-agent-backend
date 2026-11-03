@@ -357,7 +357,7 @@ final class AgentToolCatalog {
                         prop("mode", stringEnum("空调模式", "cool", "heat", "dry", "fan")),
                         prop("fanSpeed", stringEnum("空调风速", "low", "high"))))),
                 prop("allAuthorized", bool("用户明确要求该类型全部公司授权成员时为true；与scopeTexts/selection互斥")),
-                prop("scopeTexts", stringArray("每个明确地点，服务器取成员并集；与allAuthorized/selection互斥", 1, 8)),
+                prop("scopeTexts", stringArray("每个具体地点，服务器取成员并集；公司/全部不是地点，应使用allAuthorized=true；与allAuthorized/selection互斥", 1, 8)),
                 prop("excludeTexts", stringArray("包含范围内明确保留地点，无法核验不忽略", 0, 8)),
                 prop("excludeCandidateSetIds", stringArray("已查明exact排除子集；可用scopeTerms先查交集，不搬运逐台成员；须完全属于本阶段包含范围", 1, 10)),
                 prop("selection", object(required("candidateSetId", "deviceIds"), props(
