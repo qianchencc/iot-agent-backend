@@ -141,7 +141,11 @@
     "baseline": "25c7d99",
     "sourceBranch": "refactor/pi-session-mysql-final",
     "sourceCommit": "221f73e",
+    "mergeCommit": "9eb5da9",
     "mainBuild": "mvn -q package passed; engineering verification only",
+    "nodeRegression": {"passed": 26, "failed": 0, "buildSucceeded": true},
+    "officialPiConformance": {"passed": 30, "total": 30},
+    "verificationNote": "Initial npm test omitted the required Java/MySQL fixture. With that prerequisite supplied, cancellation teardown exposed deliberately hanging model connections; the test harness now closes its own connections and separates cancellation from startup deadlines. Full suite/build and unchanged official conformance subsequently passed; production behavior was not changed.",
     "frozenArtifactsPreserved": true,
     "postRelocationCounts": {"conversations": 2, "reports": 2, "tasks": 0, "sessionChunks": 217},
     "privateBackup": "/Users/qianchen/works/新发展/.worktree-backups/mysql-final-221f73e-20261103/worktree-private.tar.gz",
@@ -150,6 +154,8 @@
     "businessAcceptance": "No new acceptance claimed by build, SQL counts, process startup or relocation; existing permission-overlay limitation remains."
   },
   "cleanup": {
+    "sourceWorktreeRemoved": true,
+    "sourceBranchRetained": true,
     "engineeringConformanceFixture3297": "stopped",
     "staleAdmin5185TargetingOther3215": "stopped only our owned preview",
     "finalJavaAndNode": "restarted with identical frozen artifacts under main, same ports and database",

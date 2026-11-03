@@ -12,6 +12,7 @@ afterEach(async () => {
   for (const server of servers.splice(0)) {
     const closed = Promise.withResolvers<void>();
     server.close(() => closed.resolve());
+    server.closeAllConnections();
     await closed.promise;
   }
 });
@@ -437,11 +438,12 @@ it("uses the per-request run timeout override", async () => {
 
 it("aborts an active run and fails a timed-out run", async () => {
   const model = await openHangingModel();
-  const app = buildApp(await config({ modelBaseUrl: model.url, runTimeoutMs: 500 }));
+  const app = buildApp(await config({ modelBaseUrl: model.url, runTimeoutMs: 120_000 }));
   const pending = app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
     runId: "cancel-run", conversationId: "cancel-conversation", sessionScope: "cancel-scope", content: "wait",
   }) }).then(response => response);
-  await model.started;
+  const endedBeforeModelStart = await Promise.race([model.started.then(() => null), pending]);
+  assert.equal(endedBeforeModelStart, null, endedBeforeModelStart?.body);
   const duplicate = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
     runId: "cancel-run", conversationId: "cancel-conversation", turnId: "turn-2", sessionScope: "cancel-scope", content: "repeat",
   }) });

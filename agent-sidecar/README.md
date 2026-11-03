@@ -76,6 +76,6 @@ The former SQLite capacity, integrity, backup, restore and writer-lease HTTP ope
 
 ## Engineering verification versus acceptance
 
-`npm test` exercises generic loop/transport/recovery behavior. MySQL contract tests require the separate local Java conformance fixture and isolated test database documented in the Pi Session tickets. The unchanged upstream SessionBackendConformance suite runs through Node → Java → real MySQL. No customer gateway or historical Runtime is contacted by those fixtures.
+`npm test` exercises generic loop/transport/recovery behavior against the Java/MySQL session adapter; it also requires the separate local `PiSessionConformanceServer` and an isolated contract/test database. Use Node 22 and set `JAVA_SESSION_TEST_URL=http://127.0.0.1:3297/internal/agent/sessions` (and `JAVA_SESSION_TEST_TOKEN` if the fixture token differs) before running `npm test`. With the same fixture, run `npm run build` then `node test/mysql-session-contract.mjs` for the unchanged upstream SessionBackendConformance suite through Node → Java → real MySQL. No customer gateway or historical Runtime is contacted by those fixtures.
 
 These are engineering checks, **not business acceptance**. Business acceptance requires real WeChat DevTools operations and screenshots, linked from `.scratch/pi-session-mysql/acceptance.md`. Never execute device control, create tasks or send production notifications during acceptance.
