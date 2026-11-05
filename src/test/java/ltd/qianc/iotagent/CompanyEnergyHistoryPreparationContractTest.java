@@ -49,7 +49,7 @@ class CompanyEnergyHistoryPreparationContractTest {
 
     @Test
     void dailyReadsKeepUnvisitedHistoryOnDemandAndRecoverAfterUpstreamReturns() throws Exception {
-        var visible = read(query("3", null));
+        var visible = read(query("3", fixture.today.minusDays(1).toString()));
         assertDailyUsage(visible, 3);
 
         YearMonth unvisited = YearMonth.from(fixture.today).minusMonths(6);
@@ -97,7 +97,7 @@ class CompanyEnergyHistoryPreparationContractTest {
     }
 
     static final class Fixture {
-        final Instant now = Instant.now();
+        final Instant now = Instant.parse("2026-10-28T04:00:00Z");
         final ZoneId shanghai = ZoneId.of("Asia/Shanghai");
         final LocalDate today = now.atZone(shanghai).toLocalDate();
         final Clock clock = Clock.fixed(now, shanghai);

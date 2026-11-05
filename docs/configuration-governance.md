@@ -12,9 +12,9 @@
 
 不使用 `.env`，包括本地开发、shell source、Node dotenv 和 Compose 隐式发现。尚未切换的现有实例和历史 runbook 不因此自动迁移；不得在其他线程运行中更改其凭据、端口或数据卷。正式切换必须一次迁移全部启动调用方，去掉旧入口，保留带时间和来源的历史证据。
 
-现行仓内入口（2026-11-05）：仓库不再提供 `.env.example`。非机密模板为 `fixed-backend.example.yaml`（java／node／console 分进程显式环境；Java 独占数据库、任务凭据、管理员与配置加密等安全根，Node 不获任何数据库／管理员／模型／Langfuse 引导值）与 `local-tools.example.yaml`（`infrastructure-local`／`infrastructure-business`／`upstream-probe`）。私密实例分别复制为 `var/fixed-backend/launch.yaml` 与 `var/local-tools/launch.yaml`（0600，Git 忽略），经 `tools/start-fixed-backend.py` 与 `tools/run-local.py` 执行；两个入口都只执行选定条目、只传条目自身的显式环境。Compose 文件不提供 MySQL 密码默认值，必须显式注入；compose 条目固定 `--env-file /dev/null` 并设置 `COMPOSE_DISABLE_ENV_FILE='1'`，遗留 `.env` 即使存在也不会被隐式加载。历史 runbook 与 `.scratch` 证据保持原貌，仅以本段指明替代入口；私密实例的生成、迁移与根 `.env` 的归档／删除由部署所有者执行并留证，不因模板或文档存在而视为已完成。
+现行仓内入口（2026-11-06）：启动为常规命令，无启动器脚本、无自定义进程清单：Java `java -jar <backend.jar> --spring.config.additional-location=file:/absolute/application.yaml`，Node `node dist/server.js --config /absolute/agent-engine.yaml`，控制台在 `web/admin` 执行 `npm run dev`。非机密模板为仓根 `application.example.yaml`（原生 Spring Boot 层级属性，独占数据库、任务凭据、管理员与配置加密安全根；经 `spring.config.import: 'configtree:/absolute/shared/'` 引入共享目录中唯一私密文件 `agent.bridge.token`）与 `agent-engine.example.yaml`（Node 通用引擎，全部 kebab-case 键，仅传输／资源设置）。私密副本 0600、Git 忽略，由部署所有者维护；Node 只读桥接 token 文件，不接触 Java 的 `application.yaml`、管理员或数据库凭据。基础设施密码经原生 Compose secrets 文件（`var/config/infrastructure/local/` 与 `var/config/infrastructure/business/` 下的 `mysql-password`、`mysql-root-password`）注入，标准命令 `docker compose --env-file /dev/null -f compose.yaml …`（业务预览栈单独用 `compose.business-preview.yaml`），无密码变量注入，也无隐式 `.env` 发现。`tools/` 启动器与 launch-YAML 模板（`fixed-backend.example.yaml`／`local-tools.example.yaml`）已删除；历史 runbook 与 `.scratch` 证据保持原貌，仅以本段指明替代入口；私密实例的迁移由部署所有者执行并留证，不因模板或文档存在而视为已完成。
 
-本机根 `.env` 已完成38项分类、私密归档及删除，必要基础设施／探针配置已迁入 `var/local-tools/launch.yaml`（0600）；旧模型、管理员、数据库与加密值未覆盖当前固定配置或 MySQL 修订。两套 Compose 在删除前后解析一致，固定启动器无 `.env` 重入、15项工具回归及隔离探针实跑通过，现有进程／数据保持。见[清理与运行证据](../.scratch/root-dotenv-retirement/evidence/result.json)。该结果不代表其他工作区的历史部署已迁移。
+（2026-11-05 历史记录）本机根 `.env` 已完成38项分类、私密归档及删除，当时的必要基础设施／探针配置迁入 `var/local-tools/launch.yaml`（该入口已随 `tools/` 退役，现以上一段 Compose secrets 为准）；旧模型、管理员、数据库与加密值未覆盖当时固定配置或 MySQL 修订。两套 Compose 在删除前后解析一致，固定启动器无 `.env` 重入、15项工具回归及隔离探针实跑通过，现有进程／数据保持。见[清理与运行证据](../.scratch/root-dotenv-retirement/evidence/result.json)。该结果不代表其他工作区的历史部署已迁移。
 
 优先级按分类决定，而不是全局“环境变量永远覆盖”：部署参数允许显式平台覆盖；首次有效业务修订建立后，运行业务参数以 MySQL 为权威。启动文件中的模型等初始值不得永久锁死控制台。缺少关键安全根时 fail closed，不能以弱默认或旧快照掩盖。
 
@@ -48,7 +48,7 @@
 
 Java 拥有业务定义、授权、事实库及 Pi Session（ADR0004/0005）。普通公司、办公室及任务检查点都应获得完整、带版本的 Java 运行配置；Node 仅验证通用执行契约，不保留可悄悄覆盖 Java 的业务模型默认。
 
-Node 启动配置仅含监听、Java 回调、私有认证、引擎通用资源和确有需要的观测传输；不传数据库、Redis、管理员或配置加密主密钥。桥接方向和凭据必须显式配对，不能假定 `agent.bridge.token` 与 `agent.bridge-token` 是同一 Spring 键。
+Node 启动配置仅含监听、Java 回调、私有认证、引擎通用资源和确有需要的观测传输；不传数据库、Redis、管理员或配置加密主密钥。桥接凭据必须显式配对：Java 侧 `agent.bridge.token`（经 `spring.config.import` configtree 导入共享目录）与 Node 侧 `bridge.token-file` 指向同一共享 token 文件，值不一致时 fail closed。
 
 Langfuse 不是业务审计。若由控制台管理，其 enable、连接及凭据必须真实传达到 Node 并确认采用；尚未接通时显示未接通，不允许保存即宣称启用。其可能包含请求／工具内容，必须独立治理。
 

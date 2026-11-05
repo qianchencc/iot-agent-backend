@@ -54,7 +54,7 @@ public final class AdminController {
 
     public AdminController(AdminSessionManager sessions, AdminConfigurationStore store, AdminApplyCoordinator apply,
             AdminModelTester modelTester,
-            @Value("${admin.origin:${ADMIN_ORIGIN:http://127.0.0.1:3200}}") String origin) {
+            @Value("${admin.origin:http://127.0.0.1:5185}") String origin) {
         this.sessions = sessions;
         this.store = store;
         this.apply = apply;
@@ -186,7 +186,7 @@ public final class AdminController {
         deploymentSettings.put("controlTimeoutMs", deploymentControlTimeoutMs);
         return new AdminConfigurationStore.ConfigurationView(
                 current.revision(), current.activeRevision(), current.saved(), current.active(),
-                current.secrets(), current.locked(), current.pendingRestart(), current.changedFields(),
+                current.secrets(), current.pendingRestart(), current.changedFields(),
                 apply.enabled(), current.deployment(), current.fields(), deploymentSettings,
                 Map.of("observability", observabilityRuntime()));
     }
@@ -196,7 +196,6 @@ public final class AdminController {
         body.put("code", result.code());
         body.put("message", switch (result.code()) {
             case "CONFIG_VERSION_CONFLICT" -> "配置已被其他操作修改，请刷新后重试";
-            case "CONFIG_ENV_LOCKED" -> "环境锁定字段不能修改";
             case "CONFIG_REVISION_NOT_FOUND" -> "配置版本不存在";
             case "CONFIG_READONLY_DEPLOYMENT" -> "部署参数只读，请在部署配置中修改后重启";
             default -> "配置无效，请检查修改字段";

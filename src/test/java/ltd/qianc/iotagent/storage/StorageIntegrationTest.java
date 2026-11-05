@@ -19,9 +19,14 @@ import org.springframework.boot.test.context.SpringBootTest;
 @SpringBootTest(properties = {
         "agent.storage.mysql.enabled=true",
         "agent.storage.redis.enabled=true",
-        "iot.identity.verify=false"
+        "iot.identity.verify=false",
+        "spring.datasource.url=${AGENT_MYSQL_URL}",
+        "spring.datasource.username=${AGENT_MYSQL_USERNAME}",
+        "spring.datasource.password=${AGENT_MYSQL_PASSWORD}",
+        "spring.data.redis.url=${AGENT_REDIS_URL}"
 })
-@EnabledIfEnvironmentVariable(named = "AGENT_MYSQL_URL", matches = ".+")
+@EnabledIfEnvironmentVariable(named = "AGENT_MYSQL_USERNAME", matches = ".+")
+@EnabledIfEnvironmentVariable(named = "AGENT_MYSQL_PASSWORD", matches = ".+")
 @EnabledIfEnvironmentVariable(named = "AGENT_REDIS_URL", matches = ".+")
 class StorageIntegrationTest {
     @Autowired

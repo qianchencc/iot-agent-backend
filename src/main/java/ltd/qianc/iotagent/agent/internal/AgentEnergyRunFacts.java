@@ -81,9 +81,10 @@ final class AgentEnergyRunFacts {
     static Map<String, Object> modelFacts(Map<String, Object> report) {
         Map<String, Object> facts = new LinkedHashMap<>();
         boolean comparison = "comparison".equals(report.get("kind"));
-        List<String> fields = comparison ? List.of("reportId", "kind", "params", "diff", "sides", "metrics", "overlapMeterIds", "contribution", "context", "coverage", "meters", "authorizationMeterIds", "cache")
+        List<String> fields = comparison ? List.of("reportId", "kind", "params", "diff", "sides", "metrics", "overlapMeterIds", "contribution", "context", "coverage", "authorizationMeterIds", "cache")
                 : List.of("reportId", "kind", "params", "total", "buckets", "shape24", "metrics", "context", "peer", "composition", "coverage", "windowSummary", "authorizationMeterIds", "cache");
         for (String field : fields) if (report.containsKey(field)) facts.put(field, report.get(field));
+        compact(facts);
         Map<String, Object> params = map(report.get("params"));
         Map<String, Object> requested = map(map(params.get("span")).get("requested"));
         boolean simulated = false;
@@ -93,20 +94,9 @@ final class AgentEnergyRunFacts {
                 + (simulated ? "所选期间包含2024年之后的上游模拟补数，仅可展示已计算数值与覆盖，不能据恒定增量推断真实用电模式、基础负荷、节能空间或设备异常。" : ""));
         facts.put("metricDefinitions", Map.of("nightBase", Map.of("label", "夜间负荷", "meaning", "20:00至次日08:00完整窗口用电量除以12小时", "unit", "度/时", "window", "20:00-08:00"),
                 "nightShare", Map.of("label", "夜间用电占比", "meaning", "完整计量日夜间用电量占全天用电量的比例", "unit", "%")));
-        if (!comparison) {
-            List<Map<String, Object>> rows = new ArrayList<>();
-            if (report.get("meters") instanceof List<?> rawRows) for (Object item : rawRows) {
-                Map<String, Object> row = new LinkedHashMap<>(map(item));
-                if (row.get("night") instanceof Map<?, ?> night) {
-                    Map<String, Object> summary = new LinkedHashMap<>(map(night)); summary.remove("windows"); row.put("night", summary);
-                }
-                rows.add(row);
-            }
-            facts.put("meters", rows);
-            if (params.containsKey("dailyWindow")) {
-                facts.put("rankingBasis", "每日20:00至次日08:00已取得的完整窗口用电量；逐表有效天数见night，覆盖不等不能直接归因或据排名认定浪费");
-                facts.put("dataProvenance", simulated ? "upstream-simulated-backfill" : "upstream-history");
-            }
+        if (!comparison && params.containsKey("dailyWindow")) {
+            facts.put("rankingBasis", "每日20:00至次日08:00已取得的完整窗口用电量；逐表有效天数见night，覆盖不等不能直接归因或据排名认定浪费");
+            facts.put("dataProvenance", simulated ? "upstream-simulated-backfill" : "upstream-history");
         }
         if (!hasData(report)) {
             facts.put("cardEmitted", false);
@@ -115,6 +105,59 @@ final class AgentEnergyRunFacts {
         }
         return facts;
     }
+    private static void compact(Map<String, Object> facts) {
+        if (facts.get("coverage") instanceof Map<?, ?> coverage) facts.put("coverage", coverageSummary(coverage));
+        if (facts.get("sides") instanceof Map<?, ?> sides) {
+            Map<String, Object> compactSides = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> entry : sides.entrySet()) {
+                if (entry.getValue() instanceof Map<?, ?> side) compactSides.put(String.valueOf(entry.getKey()), sideSummary(side));
+            }
+            facts.put("sides", compactSides);
+        }
+        if (facts.get("composition") instanceof Map<?, ?> composition) {
+            Map<String, Object> value = new LinkedHashMap<>();
+            copy(composition, value, "kind", "unit", "total");
+            value.put("rowCount", size(composition.get("rows")));
+            facts.put("composition", value);
+        }
+        if (facts.get("contribution") instanceof Map<?, ?> contribution) {
+            Map<String, Object> value = new LinkedHashMap<>();
+            copy(contribution, value, "unit", "rest");
+            value.put("rowCount", size(contribution.get("rows")));
+            facts.put("contribution", value);
+        }
+        compactCount(facts, "metrics", "metricCount");
+        compactCount(facts, "buckets", "bucketCount");
+        compactCount(facts, "shape24", "shapeCount");
+    }
+
+    private static Map<String, Object> sideSummary(Map<?, ?> side) {
+        Map<String, Object> value = new LinkedHashMap<>();
+        copy(side, value, "total", "value", "unit", "dataMeters", "basis", "pct", "pctNote");
+        if (side.get("coverage") instanceof Map<?, ?> coverage) value.put("coverage", coverageSummary(coverage));
+        return value;
+    }
+
+    private static Map<String, Object> coverageSummary(Map<?, ?> coverage) {
+        Map<String, Object> value = new LinkedHashMap<>();
+        copy(coverage, value, "meters", "dataMeters", "truncated", "latestSampleAt");
+        value.put("noDataCount", size(coverage.get("noData")));
+        value.put("partialCount", size(coverage.get("partial")));
+        return value;
+    }
+
+    private static void compactCount(Map<String, Object> facts, String key, String countKey) {
+        if (facts.containsKey(key)) facts.put(key, Map.of("count", size(facts.get(key))));
+    }
+
+    private static void copy(Map<?, ?> source, Map<String, Object> target, String... keys) {
+        for (String key : keys) if (source.containsKey(key)) target.put(key, source.get(key));
+    }
+
+    private static int size(Object value) {
+        return value instanceof Map<?, ?> map ? map.size() : value instanceof List<?> list ? list.size() : 0;
+    }
+
     private static String summary(Map<String, Object> report) {
         Map<String, Object> params = map(report.get("params")), scope = map(params.get("scope")), span = map(map(params.get("span")).get("requested"));
         String label = "comparison".equals(report.get("kind")) ? "用电对比" : "用电统计";

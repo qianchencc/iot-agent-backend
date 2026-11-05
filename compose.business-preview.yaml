@@ -7,16 +7,19 @@ services:
     environment:
       MYSQL_DATABASE: iot_agent_business
       MYSQL_USER: iot_agent_business
-      MYSQL_PASSWORD: ${BUSINESS_MYSQL_PASSWORD:?Inject BUSINESS_MYSQL_PASSWORD explicitly}
-      MYSQL_ROOT_PASSWORD: ${BUSINESS_MYSQL_ROOT_PASSWORD:?Inject BUSINESS_MYSQL_ROOT_PASSWORD explicitly}
+      MYSQL_PASSWORD_FILE: /run/secrets/mysql_password
+      MYSQL_ROOT_PASSWORD_FILE: /run/secrets/mysql_root_password
       TZ: Asia/Shanghai
     ports:
       - "127.0.0.1:3338:3306"
     volumes:
       - business-mysql:/var/lib/mysql
       - ./src/main/resources/db/mysql/agent-facts.sql:/docker-entrypoint-initdb.d/001-agent-facts.sql:ro
+    secrets:
+      - mysql_password
+      - mysql_root_password
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u$${MYSQL_USER} -p$${MYSQL_PASSWORD} --silent"]
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$(cat /run/secrets/mysql_password)\" mysqladmin ping -h 127.0.0.1 -u\"$$MYSQL_USER\" --silent"]
       interval: 5s
       timeout: 5s
       retries: 30
@@ -38,3 +41,9 @@ services:
 volumes:
   business-mysql:
   business-redis:
+
+secrets:
+  mysql_password:
+    file: ./var/config/infrastructure/business/mysql-password
+  mysql_root_password:
+    file: ./var/config/infrastructure/business/mysql-root-password

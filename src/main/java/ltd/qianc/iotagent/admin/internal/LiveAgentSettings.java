@@ -16,10 +16,6 @@ final class LiveAgentSettings {
 
     private LiveAgentSettings() { }
 
-    static boolean contains(String field) {
-        return FIELDS.contains(field);
-    }
-
     static Map<String, Object> effective(Map<String, Object> started, Map<String, Object> saved) {
         Map<String, Object> result = new LinkedHashMap<>(started);
         for (String field : FIELDS) {

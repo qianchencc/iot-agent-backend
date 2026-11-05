@@ -69,20 +69,6 @@ class BusinessFactRepositoryContractTest {
         assertThat(audit.findByEventId("missing")).isEmpty();
     }
 
-    @Test
-    void storageSettingsFailClosedWhenRequiredEnvironmentIsMissing() {
-        assertThatThrownBy(() -> StorageSettings.required(Map.of()))
-                .isInstanceOf(StorageConfigurationException.class)
-                .hasMessageContaining("AGENT_MYSQL_URL");
-
-        assertThat(StorageSettings.required(Map.of(
-                "AGENT_MYSQL_URL", "jdbc:mysql://db/agent",
-                "AGENT_MYSQL_USERNAME", "agent",
-                "AGENT_MYSQL_PASSWORD", "secret",
-                "AGENT_REDIS_URL", "redis://cache"))).isEqualTo(
-                new StorageSettings("jdbc:mysql://db/agent", "agent", "secret", "redis://cache"));
-    }
-
     private static ConversationEventFact event(String conversationId, long sequence, String type, String payload) {
         return new ConversationEventFact(conversationId, "turn-1", sequence, type, payload, "event-" + sequence);
     }

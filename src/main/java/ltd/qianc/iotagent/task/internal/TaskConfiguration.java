@@ -80,7 +80,7 @@ public class TaskConfiguration {
     @ConditionalOnMissingBean(TaskExecutionIdentityStore.class)
     TaskExecutionIdentityStore taskExecutionIdentityStore(
             JdbcTemplate jdbc, ObjectMapper mapper,
-            @Value("${TASK_CREDENTIAL_KEY:${agent.task.credential-key:}}") String credentialKey) {
+            @Value("${agent.task.credential-key:}") String credentialKey) {
         return ltd.qianc.iotagent.task.TaskExecutionIdentityStoreFactory.jdbc(jdbc, mapper, credentialKey);
     }
 

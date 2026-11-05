@@ -2,51 +2,49 @@
 
 Node 22 / published Pi 0.84.4. Java owns business instructions, tool schemas, authorization, device/task/report behavior, model policy and durable Pi Session storage in MySQL. Node owns the generic Pi loop, streaming, tool transport and checkpoint/recovery mechanics. It has no runtime dependency on `../iot-agent-runtime`, no database credentials and no SQLite or local session volume.
 
-> 配置迁移状态（2026-11-05）：显式外置 YAML 已是仓内唯一启动路径，仓库不再提供 `.env` 模板。固定实例由 `tools/start-fixed-backend.py` 以私密 `var/fixed-backend/launch.yaml` 启动（模板 [`fixed-backend.example.yaml`](../fixed-backend.example.yaml)）。改动前先读[统一治理规范](../docs/configuration-governance.md)和[盘点／交付入口](../.scratch/admin-console-governance/README.md)；不要绕过该入口重启现有实例。
+> 配置迁移状态（2026-11-06）：sidecar 以常规命令 `node dist/server.js --config <agent-engine.yaml>` 启动，配置为原生 YAML 键（kebab-case），不再是环境变量／launch 清单；仓库不提供 `.env` 模板，`tools/` 启动器已删除。改动前先读[统一治理规范](../docs/configuration-governance.md)。
 
 ## Build and run
 
 ```sh
 npm ci
 npm run build
+node dist/server.js --config /absolute/path/to/agent-engine.yaml
 ```
 
-The deployment process provides an explicit environment to the launcher, never an implicit dotenv file. The fixed deployment starts this component as the `node` entry of the private launch YAML through `tools/start-fixed-backend.py` (single foreground component: `tools/start-fixed-backend.py --run node`, started only after Java serves its configuration):
+`agent-engine.yaml`（仓根非机密模板 [`agent-engine.example.yaml`](../agent-engine.example.yaml)；私密副本 0600、Git 忽略，由部署所有者维护）只含通用传输／资源设置，全部 kebab-case：
 
 ```yaml
-node:
-  executable: /opt/homebrew/opt/node@22/bin/node
-  artifact: /Users/yourname/dev/iot-agent-backend/var/fixed-latest-YYYYMMDD-HHMMSS/agent-sidecar/dist/server.js
-  working_directory: /Users/yourname/dev/iot-agent-backend/var/fixed-latest-YYYYMMDD-HHMMSS/agent-sidecar
-  environment:
-    SIDECAR_HOST: '127.0.0.1'               # private bridge; the frontend never calls Node
-    SIDECAR_PORT: '3382'
-    AGENT_BRIDGE_TOKEN: ''                   # same random local-only token as the java entry
-    JAVA_AGENT_TOOLS_URL: 'http://127.0.0.1:3381/internal/agent/tools'
-    JAVA_AGENT_TOOLS_TOKEN: ''               # must equal the java entry's AGENT_BRIDGE_TOKEN
-    JAVA_AGENT_SESSIONS_URL: 'http://127.0.0.1:3381/internal/agent/sessions'
+server:
+  host: 127.0.0.1            # private bridge; the frontend never calls Node
+  port: 3382
+bridge:
+  token-file: /absolute/var/shared/agent.bridge.token
+java:
+  tools-url: http://127.0.0.1:3381/internal/agent/tools
+  # sessions-url: http://127.0.0.1:3381/internal/agent/sessions   # 可选，缺省按 tools-url 派生
+  # token-file: /absolute/var/shared/agent.bridge.token            # 可选，缺省同 bridge.token-file
+resources:
+  # java-tool-timeout-ms / run-timeout-ms / heartbeat-ms：可选通用引擎限额
 ```
 
-Empty secrets fail closed until the private copy is filled; the node entry receives no database, Redis, admin, model or Langfuse bootstrap values. `tools/start-sidecar.py` remains the allowlist exec wrapper for starting a standalone release with an explicit environment.
-
-The wrapper never reads `.env` or another implicit dotenv file and passes only the sidecar environment allowlist. An optional directory argument selects an immutable release containing `dist/`, `package.json` and installed dependencies; the application directory may be read-only and session data is not written there.
-
+共享 `agent.bridge.token` 文件是 Node 收到的唯一秘密——与 Java 经 `spring.config.import` configtree 导入的是同一个私密文件。Node 不接触 Java 的 `application.yaml`、管理员、数据库、Redis、模型或 Langfuse 凭据；token 文件缺失即 fail closed。
 
 ## Configuration
 
-- `SIDECAR_HOST` / `SIDECAR_PORT`: default `127.0.0.1:3382`; private bridge only. Java's fixed frontend-facing port is `3381`; the frontend never calls Node directly.
-- `AGENT_BRIDGE_TOKEN`: Java → Node bearer authentication.
-- `JAVA_AGENT_TOOLS_URL` / `JAVA_AGENT_TOOLS_TOKEN`: private Java tool callback. The callback token must equal Java's `AGENT_BRIDGE_TOKEN`; an independently generated value is rejected before tools or Pi Session access.
-- `JAVA_AGENT_SESSIONS_URL`: private Java `/internal/agent/sessions`; defaults to the tools URL's origin plus that path. Uses the same private callback token.
-- Model and observability settings are no longer environment inputs. Every `/run` request must carry a complete `definition.model` snapshot; when the Java admin console has not configured a model yet, runs fail explicitly with a clear error while the sidecar itself stays up for configuration.
-- Observability (Langfuse) is fetched once at process start from Java's private `GET /internal/agent/observability` (same callback token) and never swapped at runtime: one process owns one OTel SDK, and adopting new saved values requires the supervised restart path. `/healthz` reports the adopted `observability` state (`enabled`, `revision`, `baseUrl`, `credentialsDigest`) without secrets.
-- `SIDECAR_RUN_TIMEOUT_MS`, `JAVA_AGENT_TOOL_TIMEOUT_MS`, `SIDECAR_HEARTBEAT_MS`: optional runtime limits (`SIDECAR_HEARTBEAT_MS` is the bridge stream heartbeat, independent of Java's console-managed conversation heartbeat).
+- `server.host` / `server.port`: default `127.0.0.1:3382`; private bridge only. Java's fixed frontend-facing port is `3381`; the frontend never calls Node directly.
+- `bridge.token-file`: Java → Node bearer authentication; the single shared token file owned by the deployment.
+- `java.tools-url` / `java.token-file`: private Java tool callback. The callback token file defaults to the bridge token file; an independently generated value is rejected before tools or Pi Session access. Isolated engineering fixtures may point `java.token-file` at an explicit independent callback token.
+- `java.sessions-url`: private Java `/internal/agent/sessions`; defaults to the tools URL's origin plus that path. Uses the same private callback token.
+- Model and observability settings are not startup inputs. Every `/run` request must carry a complete `definition.model` snapshot; when the Java admin console has not configured a model yet, runs fail explicitly with a clear error while the sidecar itself stays up for configuration.
+- Observability (Langfuse) is fetched once at process start from Java's private `GET /internal/agent/observability` (same callback token) and never swapped at runtime: one process owns one OTel SDK, and adopting new saved values requires restarting the Node process. `/healthz` reports the adopted `observability` state (`enabled`, `revision`, `baseUrl`, `credentialsDigest`) without secrets.
+- `resources.java-tool-timeout-ms` / `resources.run-timeout-ms` / `resources.heartbeat-ms`: optional runtime limits (`heartbeat-ms` is the bridge stream heartbeat, independent of Java's console-managed conversation heartbeat).
 
 Java must have MySQL enabled and available. There is no SQLite fallback and no old-session import. The one-time Java cutover retires old public conversations while preserving historical business facts. New MySQL conversations survive subsequent Java/Node replacement within the application's conversation retention policy.
 
 ## Private HTTP contract
 
-All Node routes require `Authorization: Bearer $AGENT_BRIDGE_TOKEN`.
+All Node routes require `Authorization: Bearer <token from bridge.token-file>`.
 
 - `POST /run`: versioned generic run request; NDJSON response.
 - `POST /cancel/:runId`: cancel the matching in-flight run.

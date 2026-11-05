@@ -1,6 +1,6 @@
 server:
-  address: ${SERVER_ADDRESS:127.0.0.1}
-  port: ${SERVER_PORT:3381}
+  address: 127.0.0.1
+  port: 3381
 
 spring:
   application:
@@ -8,76 +8,81 @@ spring:
   # Customer history pages are large: a 500-row energy page is ~650KB, well past the
   # 256KB codec default, which surfaced as "上游请求失败" instead of data.
   codec:
-    max-in-memory-size: ${SPRING_CODEC_MAX_IN_MEMORY_SIZE:8MB}
+    max-in-memory-size: 8MB
 
 agent:
   bridge:
-    base-url: ${AGENT_BRIDGE_BASE_URL:}
-    token: ${AGENT_BRIDGE_TOKEN:}
-    run-timeout-ms: ${AGENT_BRIDGE_RUN_TIMEOUT_MS:120000}
-  heartbeat-ms: ${AGENT_HEARTBEAT_MS:15000}
+    # Token arrives from the shared secret file via the external native config's
+    # configtree import (file agent.bridge.token in the dedicated shared dir).
+    base-url: ''
+    token: ''
+    run-timeout-ms: 120000
+  report:
+    # Stamp written into generated reports; deployments override from external config.
+    build-id: local
+  heartbeat-ms: 15000
   video:
     # Exact browser origin of the video player page; empty keeps cross-origin
     # playback closed. Never a wildcard, cookie or general Agent API CORS policy.
-    allowed-origin: ${AGENT_VIDEO_ALLOWED_ORIGIN:}
+    allowed-origin: ''
   storage:
+    # Explicit external decision: durable stores stay disabled unless the
+    # deployment's native config enables them with real connection settings.
     mysql:
-      enabled: ${AGENT_STORAGE_MYSQL_ENABLED:false}
+      enabled: false
     redis:
-      enabled: ${AGENT_STORAGE_REDIS_ENABLED:false}
-
-
+      enabled: false
   control:
-    mode: ${AGENT_CONTROL_MODE:}
+    mode: ''
     fixture:
-      outcome: ${AGENT_CONTROL_FIXTURE_OUTCOME:accepted}
-      readback: ${AGENT_CONTROL_FIXTURE_READBACK:confirmed}
-      task-outcome: ${AGENT_CONTROL_FIXTURE_TASK_OUTCOME:COMPLETED}
+      outcome: accepted
+      readback: confirmed
+      task-outcome: COMPLETED
 iot:
   gateway:
-    base-url: ${IOT_GATEWAY_BASE_URL:}
-    office-scope-path: ${IOT_GATEWAY_OFFICE_SCOPE_PATH:}
-    company-scope-path: ${IOT_GATEWAY_COMPANY_SCOPE_PATH:}
-    office-membership-path: ${IOT_GATEWAY_OFFICE_MEMBERSHIP_PATH:/micro-api/api/office/office/member/my/office}
-    office-ac-path: ${IOT_GATEWAY_OFFICE_AC_PATH:/micro-api/api/office/app/device/ac/myOffice/pageByAc}
-    office-lighting-path: ${IOT_GATEWAY_OFFICE_LIGHTING_PATH:/micro-api/api/office/device/page}
-    office-access-path: ${IOT_GATEWAY_OFFICE_ACCESS_PATH:/micro-api/api/office/device/page}
-    office-video-path: ${IOT_GATEWAY_OFFICE_VIDEO_PATH:/micro-api/api/office/device/page}
-    office-ac-association-path: ${IOT_GATEWAY_OFFICE_AC_ASSOCIATION_PATH:/micro-api/api/office/acAreaDevice/page}
-    office-lighting-association-path: ${IOT_GATEWAY_OFFICE_LIGHTING_ASSOCIATION_PATH:/micro-api/api/office/lightingAreaDevice/page}
-    office-access-association-path: ${IOT_GATEWAY_OFFICE_ACCESS_ASSOCIATION_PATH:/micro-api/api/office/accessAreaDevice/page}
-    call-timeout-ms: ${IOT_GATEWAY_CALL_TIMEOUT_MS:30000}
-    company-energy-path: ${IOT_GATEWAY_COMPANY_ENERGY_PATH:/micro-api/api/energy/equipment/page}
-    company-safety-path: ${IOT_GATEWAY_COMPANY_SAFETY_PATH:/micro-api/api/perception/device/page}
-    company-safety-detail-path: ${IOT_GATEWAY_COMPANY_SAFETY_DETAIL_PATH:/micro-api/api/iot-center/device}
-    company-smart-base-path: ${IOT_GATEWAY_COMPANY_SMART_BASE_PATH:/micro-api/api/office/app/device}
-    company-ac-area-path: ${IOT_GATEWAY_COMPANY_AC_AREA_PATH:/micro-api/api/office/app/device/ac/myAreaList}
-    company-ac-device-path: ${IOT_GATEWAY_COMPANY_AC_DEVICE_PATH:/micro-api/api/office/app/device/ac/devicePage}
-    company-ac-binding-path: ${IOT_GATEWAY_COMPANY_AC_BINDING_PATH:/micro-api/api/iot-center/device/page}
+    base-url: ''
+    office-scope-path: ''
+    company-scope-path: ''
+    office-membership-path: /micro-api/api/office/office/member/my/office
+    office-ac-path: /micro-api/api/office/app/device/ac/myOffice/pageByAc
+    office-lighting-path: /micro-api/api/office/device/page
+    office-access-path: /micro-api/api/office/device/page
+    office-video-path: /micro-api/api/office/device/page
+    office-ac-association-path: /micro-api/api/office/acAreaDevice/page
+    office-lighting-association-path: /micro-api/api/office/lightingAreaDevice/page
+    office-access-association-path: /micro-api/api/office/accessAreaDevice/page
+    call-timeout-ms: 30000
+    company-energy-path: /micro-api/api/energy/equipment/page
+    company-safety-path: /micro-api/api/perception/device/page
+    company-safety-detail-path: /micro-api/api/iot-center/device
+    company-smart-base-path: /micro-api/api/office/app/device
+    company-ac-area-path: /micro-api/api/office/app/device/ac/myAreaList
+    company-ac-device-path: /micro-api/api/office/app/device/ac/devicePage
+    company-ac-binding-path: /micro-api/api/iot-center/device/page
   observation:
     routes:
-      environment-history: ${IOT_OBSERVATION_ROUTE_ENVIRONMENT_HISTORY:/micro-api/api/iot-center/env/history/page}
-      energy-history: ${IOT_OBSERVATION_ROUTE_ENERGY_HISTORY:/micro-api/api/energy/electricData/page}
-      dashboard: ${IOT_OBSERVATION_ROUTE_DASHBOARD:}
-      safety-events: ${IOT_OBSERVATION_ROUTE_SAFETY_EVENTS:}
-      safety-event: ${IOT_OBSERVATION_ROUTE_SAFETY_EVENT:}
-      safety-event-cameras: ${IOT_OBSERVATION_ROUTE_SAFETY_EVENT_CAMERAS:}
-      energy-comparison: ${IOT_OBSERVATION_ROUTE_ENERGY_COMPARISON:}
-      energy-report: ${IOT_OBSERVATION_ROUTE_ENERGY_REPORT:}
-      company-energy-daily: ${IOT_OBSERVATION_ROUTE_COMPANY_ENERGY_DAILY:}
-      company-energy-report: ${IOT_OBSERVATION_ROUTE_COMPANY_ENERGY_REPORT:}
-      company-meter-report: ${IOT_OBSERVATION_ROUTE_COMPANY_METER_REPORT:}
-      video-stream: ${IOT_OBSERVATION_ROUTE_VIDEO_STREAM:}
-      report: ${IOT_OBSERVATION_ROUTE_REPORT:}
-      report-download: ${IOT_OBSERVATION_ROUTE_REPORT_DOWNLOAD:}
+      environment-history: /micro-api/api/iot-center/env/history/page
+      energy-history: /micro-api/api/energy/electricData/page
+      dashboard: ''
+      safety-events: ''
+      safety-event: ''
+      safety-event-cameras: ''
+      energy-comparison: ''
+      energy-report: ''
+      company-energy-daily: ''
+      company-energy-report: ''
+      company-meter-report: ''
+      video-stream: ''
+      report: ''
+      report-download: ''
     # HMAC key for safety-ledger continuation cursors (hex 64 or >=16-byte text);
-    # falls back to the shared CONFIG_SECRET_KEY. Empty = per-boot ephemeral key,
-    # so a restart invalidates outstanding cursors with an honest re-query error.
-    safety-cursor-secret: ${IOT_OBSERVATION_SAFETY_CURSOR_SECRET:${CONFIG_SECRET_KEY:}}
+    # falls back to the shared admin.config-secret-key. Empty = per-boot ephemeral
+    # key, so a restart invalidates outstanding cursors with an honest re-query error.
+    safety-cursor-secret: ${admin.config-secret-key:}
   identity:
-    verify: ${IOT_IDENTITY_VERIFY:true}
-    verify-timeout-ms: ${IOT_IDENTITY_VERIFY_TIMEOUT_MS:10000}
+    verify: true
+    verify-timeout-ms: 10000
     # Verified identities refresh in the background. Outages never extend the last successful check.
-    refresh-interval-ms: ${IOT_IDENTITY_REFRESH_INTERVAL_MS:60000}
-    max-validation-age-ms: ${IOT_IDENTITY_MAX_VALIDATION_AGE_MS:86400000}
-    retry-cooldown-ms: ${IOT_IDENTITY_RETRY_COOLDOWN_MS:60000}
+    refresh-interval-ms: 60000
+    max-validation-age-ms: 86400000
+    retry-cooldown-ms: 60000

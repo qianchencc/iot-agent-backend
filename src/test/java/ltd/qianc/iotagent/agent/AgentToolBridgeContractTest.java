@@ -337,6 +337,39 @@ class AgentToolBridgeContractTest {
                 .containsEntry("to", "2026-10-02T00:00:00+08:00");
     }
 
+    @Test
+    void energyResultKeepsFullMeterRowsForCardsButHidesThemFromModelProjection() {
+        ConversationFacade conversations = mock(ConversationFacade.class);
+        ObservationAdapter observations = mock(ObservationAdapter.class);
+        bind(conversations, "company", null);
+        Map<String, Object> meter = new LinkedHashMap<>(Map.of(
+                "id", "meter-1", "name", "27楼总办公室", "areaName", "27楼",
+                "value", 5.39, "status", "ok",
+                "observed", Map.of("fromSample", Map.of("readTime", "2026-11-03T20:00:00+08:00"),
+                        "toSample", Map.of("readTime", "2026-11-04T20:00:00+08:00"))));
+        when(observations.read(any(ObservationRequest.class))).thenReturn(Mono.just(
+                ObservationResponse.available(new LinkedHashMap<>(Map.of(
+                        "type", "meter-report", "reportId", "report-1", "kind", "statistics",
+                        "params", Map.of("span", Map.of("requested", Map.of(
+                                "from", "2026-11-03T20:00:00+08:00", "to", "2026-11-04T20:00:00+08:00")),
+                                "scope", Map.of("level", "all", "label", "公司全部电表", "meterCount", 1)),
+                        "total", Map.of("value", 5.39, "unit", "度"),
+                        "coverage", Map.of("meters", 1, "dataMeters", 1),
+                        "meters", List.of(meter), "authorizationMeterIds", List.of("meter-1"))))));
+        AgentToolBridge bridge = AgentToolBridgeFactory.local(conversations, mock(IotAdapter.class),
+                observations, mock(TaskProjectionStore.class), mock(ActionDraftFacade.class),
+                mock(TaskFacade.class), mapper, null);
+
+        Map<String, Object> result = bridge.execute(request("summarize_energy", Map.of(
+                "scope", Map.of("level", "all"),
+                "from", "2026-11-03T20:00:00+08:00", "to", "2026-11-04T20:00:00+08:00")));
+
+        assertThat(result.get("meters")).isEqualTo(List.of(meter));
+        Map<String, Object> model = mapper.convertValue(result.get("modelResult"), Map.class);
+        assertThat(model).doesNotContainKey("meters");
+        assertThat(model.toString()).doesNotContain("27楼总办公室");
+    }
+
 
     @Test
     void truncatedCandidateDisplayDoesNotMeanStoredMembersAreIncomplete() {

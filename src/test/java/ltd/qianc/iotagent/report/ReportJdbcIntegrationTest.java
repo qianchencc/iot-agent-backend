@@ -24,9 +24,14 @@ import reactor.core.publisher.Mono;
 @SpringBootTest(properties = {
         "agent.storage.mysql.enabled=true",
         "agent.storage.redis.enabled=false",
-        "iot.identity.verify=false"
+        "iot.identity.verify=false",
+        "spring.datasource.url=${AGENT_MYSQL_URL}",
+        "spring.datasource.username=${AGENT_MYSQL_USERNAME}",
+        "spring.datasource.password=${AGENT_MYSQL_PASSWORD}"
 })
 @EnabledIfEnvironmentVariable(named = "AGENT_MYSQL_URL", matches = ".+")
+@EnabledIfEnvironmentVariable(named = "AGENT_MYSQL_USERNAME", matches = ".+")
+@EnabledIfEnvironmentVariable(named = "AGENT_MYSQL_PASSWORD", matches = ".+")
 class ReportJdbcIntegrationTest {
     private final RequestIdentity identity = new RequestIdentity("Bearer report-jdbc", "REPORT_JDBC_TEST",
             IotSourceEnum.COMPANY, "owner-report-jdbc");

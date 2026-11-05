@@ -19,7 +19,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
  * MySQL-backed protected execution identity. Only AES-GCM ciphertext is stored;
- * decryption requires the deployment's TASK_CREDENTIAL_KEY and the result never
+ * decryption requires the deployment's agent.task.credential-key and the result never
  * leaves this adapter except as the gateway identity used for one execution.
  */
 public final class JdbcTaskExecutionIdentityStore implements TaskExecutionIdentityStore {
@@ -136,14 +136,14 @@ public final class JdbcTaskExecutionIdentityStore implements TaskExecutionIdenti
     }
 
     private void requireKey() {
-        if (key == null) throw new IllegalStateException("TASK_CREDENTIAL_KEY 未配置，无法保管任务执行身份");
+        if (key == null) throw new IllegalStateException("agent.task.credential-key 未配置，无法保管任务执行身份");
     }
 
     private static byte[] parseKey(String credentialKey) {
         if (credentialKey == null || credentialKey.isBlank()) return null;
         String normalized = credentialKey.trim();
         if (!normalized.matches("[a-fA-F0-9]{64}")) {
-            throw new IllegalArgumentException("TASK_CREDENTIAL_KEY must be 32 bytes of hex");
+            throw new IllegalArgumentException("agent.task.credential-key must be 32 bytes of hex");
         }
         byte[] result = new byte[32];
         for (int index = 0; index < result.length; index++) {

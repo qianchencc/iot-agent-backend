@@ -24,9 +24,9 @@ import org.springframework.test.annotation.DirtiesContext;
 
 @SpringBootTest(properties = {"agent.storage.mysql.enabled=true", "agent.storage.redis.enabled=false",
         "iot.identity.verify=false", "agent.heartbeat-ms=0", "agent.task.scanner.poll-ms=3600000",
-        "AGENT_MYSQL_URL=${AGENT_TASK_FIXTURE_MYSQL_URL}",
-        "AGENT_MYSQL_USERNAME=${AGENT_TASK_FIXTURE_MYSQL_USERNAME}",
-        "AGENT_MYSQL_PASSWORD=${AGENT_TASK_FIXTURE_MYSQL_PASSWORD}"})
+        "spring.datasource.url=${AGENT_TASK_FIXTURE_MYSQL_URL}",
+        "spring.datasource.username=${AGENT_TASK_FIXTURE_MYSQL_USERNAME}",
+        "spring.datasource.password=${AGENT_TASK_FIXTURE_MYSQL_PASSWORD}"})
 @EnabledIfEnvironmentVariable(named = "AGENT_TASK_FIXTURE_MYSQL_URL", matches = ".+")
 @EnabledIfEnvironmentVariable(named = "AGENT_TASK_FIXTURE_MYSQL_USERNAME", matches = ".+")
 @EnabledIfEnvironmentVariable(named = "AGENT_TASK_FIXTURE_MYSQL_PASSWORD", matches = ".+")

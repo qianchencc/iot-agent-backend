@@ -1,8 +1,10 @@
 # 独立开发者工具验收环境
 
-> 固定开发后端的最新入口为 Java `3381` / Node `3382`，已改为 tmux 常驻；统一使用 `tools/start-fixed-backend.py`，见[当前启动说明](../../README.md#固定开发后端tmux-常驻)。下文3217、13215等为历史独立验收环境，不应据此启动或覆盖当前固定后端。
+> 固定开发后端的最新入口为 Java `3381` / Node `3382` / 控制台 `5185`；2026-11-06 起以常规命令启动（Java `java -jar … --spring.config.additional-location`、Node `node dist/server.js --config`、`web/admin` 内 `npm run dev`），见[仓根常规本地启动](../../README.md#常规本地启动)；Python／tmux 统一启动器与 launch-YAML 已随 `tools/` 退役。下文3217、13215等端口及 `tools/start-sidecar.py` 等命令为历史独立验收环境记录，不应据此启动或覆盖当前固定后端。
 
-> 2026-11-05 固定实例已按当前完整源码更新：Java `3381`／Node `3382` 使用 `var/fixed-latest-20261105-181818/` 的冻结产物，637 项 Java、34 项 Node 与 30/30 Pi Session 工程契约通过。固定业务库先备份／独立恢复预演再升级，原配置修订8、候选集及 Pi 会话保留；控制台 `5185`、MySQL、Redis 未重启。实际 PID、产物哈希、只读健康与事实核对见[最新运行证据](../technical-spec-compliance/evidence/fixed-latest-20261105.json)，不据此追加真实微信或设备执行验收。
+> 2026-11-06 原生启动已实际切换：固定 Java `3381`／Node `3382` 运行 `var/fixed-native-20261106-014739/` 冻结产物，控制台 `5185` 通过 `npm run dev` 启动；助手仅在既有 tmux 窗口逐条执行常规命令，无 Python／启动脚本。私密配置统一为 `var/config/application.yaml`、`agent-engine.yaml` 与 `shared/agent.bridge.token`，配置修订9及原业务事实／Pi fencing 均保留，原 MySQL／Redis 未重启。640项 Java、34项 Node、8项启动安全、进程／重启契约、30/30 Pi 契约及真实配置页核对见[当前运行证据](../technical-spec-compliance/evidence/native-startup-20261106.json)。这是工程启动验证，不追加真实微信或设备执行验收。
+
+> 历史：2026-11-05 固定实例曾按当时源码更新，Java `3381`／Node `3382` 使用 `var/fixed-latest-20261105-181818/` 的冻结产物，637 项 Java、34 项 Node 与 30/30 Pi Session 工程契约通过。固定业务库先备份／独立恢复预演再升级，原配置修订8、候选集及 Pi 会话保留；控制台 `5185`、MySQL、Redis 未重启。实际 PID、产物哈希、只读健康与事实核对见[当轮运行证据](../technical-spec-compliance/evidence/fixed-latest-20261105.json)，已由上述原生启动版本替代。
 
 > 2026-11-05 草案排除已对齐原Runtime：补查设备短引用来源、候选集按当前对话查找、顶层／照明按真实ID合并。固定Java3381已更新并保留此前其他业务产物；516项隔离回归、4种参数实跑通过，真实小程序短引用提案首次成功并取消，未确认下发。见[设计、失败留档与界面证据](../draft-exclusion-alignment/evidence/DRAFT-EXCLUSION-REF/README.md)。
 

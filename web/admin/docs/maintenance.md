@@ -6,35 +6,36 @@
 
 ## 部署配置
 
-管理员密码由部署层显式提供：Spring 属性 `admin.password` 或环境变量 `ADMIN_PASSWORD`；不满足密码策略时后端以“凭据未配置或无效”拒绝登录（503），需在部署配置修正后重启。不存在 `var/admin-config.properties` 密码文件，控制台也没有修改密码的接口。
+管理员密码由部署层显式提供：外置 `application.yaml` 中的 Spring 属性 `admin.password`（`ADMIN_PASSWORD` 等环境变量只是同一属性的标准平台注入形式，不是第二套机制）；不满足密码策略时后端以“凭据未配置或无效”拒绝登录（503），需在部署配置修正后重启。不存在 `var/admin-config.properties` 密码文件，控制台也没有修改密码的接口。
+
+Java 以 `java -jar <backend.jar> --spring.config.additional-location=file:/absolute/application.yaml` 启动（见[仓根常规本地启动](../../../README.md#常规本地启动)），下表前五行 YAML 键均写在该文件：
 
 | 配置项 | 作用 | 缺省/后果 |
 |---|---|---|
-| `ADMIN_ORIGIN` | 控制台浏览器源，非 GET 请求 `Origin` 必须精确相等 | 默认 `http://127.0.0.1:3200`；配错 → 所有写操作 403 |
-| `ADMIN_PASSWORD` | 单管理员部署凭据（或外置 YAML `admin.password`） | 缺失/非法 → 登录 503，提示联系部署人员 |
-| `ADMIN_PASSWORD_MIN_LENGTH` | 密码最小长度 | 默认 6，范围 1–128 |
-| `ADMIN_CONFIG_FILE` | 加密业务配置存储（MySQL 关闭时） | 默认 `var/admin-config.bin` |
-| `CONFIG_SECRET_KEY` | 配置加密密钥（64 hex / 32 字节） | 缺失 → 配置接口 503 |
-| `ADMIN_API_TARGET` | 前端 dev 代理目标 | 默认 `http://127.0.0.1:3381`，仅 dev server 用 |
-| `ADMIN_PROXY_ORIGIN` | 同源开发代理使用的 Java 管理端规范源 | 默认 `http://127.0.0.1:5185`；必须与 Java `ADMIN_ORIGIN`／`admin.origin` 一致，不填 `0.0.0.0` |
+| `admin.origin` | 控制台浏览器源，非 GET 请求 `Origin` 必须精确相等 | 默认 `http://127.0.0.1:3200`；配错 → 所有写操作 403 |
+| `admin.password` | 单管理员部署凭据 | 缺失/非法 → 登录 503，提示联系部署人员 |
+| `admin.password-minimum` | 密码最小长度 | 默认 6，范围 1–128 |
+| `admin.config-file` | 加密业务配置存储（MySQL 关闭时） | 默认 `var/admin-config.bin` |
+| `admin.config-secret-key` | 配置加密密钥（64 hex / 32 字节） | 缺失 → 配置接口 503 |
+| `ADMIN_API_TARGET` | 前端 dev 代理目标（仅 Vite dev server 环境变量） | 默认 `http://127.0.0.1:3381`，仅 dev server 用 |
+| `ADMIN_PROXY_ORIGIN` | 同源开发代理使用的 Java 管理端规范源（仅 Vite dev server 环境变量） | 默认 `http://127.0.0.1:5185`；必须与 Java `admin.origin` 一致，不填 `0.0.0.0` |
 
-`ADMIN_API_TARGET` 与 `ADMIN_PROXY_ORIGIN` 均为非秘密的部署 URL 字符串，由 `console.environment` 显式提供、Vite启动时读取，不是控制台可写的业务修订。前者为 HTTP(S) 后端地址；后者为不带路径的规范源，须与 Java 精确一致。缺省采用上表默认值，源错配由 Java 返回403；修改这两个控制台参数后只需重启自己的 `console` 窗口，不替换存活 Java／Node。不要在 URL 中加入凭据。
+`ADMIN_API_TARGET` 与 `ADMIN_PROXY_ORIGIN` 是控制台 dev server 的非秘密部署 URL，由启动 `npm run dev` 的 shell 显式提供（缺省用上表默认值），不是控制台可写的业务修订。前者为 HTTP(S) 后端地址；后者为不带路径的规范源，须与 Java 精确一致。源错配由 Java 返回403；修改这两个控制台参数后只需重启自己的 Vite 进程，不替换存活 Java／Node。不要在 URL 中加入凭据。
 
 ## 启动
 
+三个进程均以常规命令启动，见[仓根常规本地启动](../../../README.md#常规本地启动)。控制台在自己的终端执行：
+
 ```sh
-# 仓根：显式0600部署配置，统一启动三个tmux窗口
-/Users/qianchen/anaconda3/bin/python tools/start-fixed-backend.py
-tmux -L iot-agent-backend attach -t fixed-backend
+npm ci        # 首次
+npm run dev
 ```
 
-默认部署配置包含 `java`、`node`、`console`；控制台首次安装依赖执行 `npm ci`。完整 `console` 段见[仓根启动说明](../../../README.md#固定开发后端tmux-常驻)。组件各自的显式环境相互隔离，不把后端密码、数据库或模型密钥传给 Vite；不加载 `.env`。
-
-控制台绑定 `0.0.0.0:5185`，访问 `http://127.0.0.1:5185/login` 或 `http://<本机局域网IP>:5185/login`。重复执行入口只补缺失／退出组件，不替换存活后端；未知进程占用5185则拒绝启动，不杀进程或切到5186。单独前端调试可在本目录运行 `npm run dev`，不要与统一入口重复占用端口。
+控制台绑定 `0.0.0.0:5185`，访问 `http://127.0.0.1:5185/login` 或 `http://<本机局域网IP>:5185/login`。未知进程占用5185时 Vite 直接失败，不杀进程或切到5186；需要长驻可自行用 tmux 开窗口分别运行三条命令，属可选手动方式，无自动重启。Vite 不加载 `.env`，也不接收 Java／Node 的数据库、模型或桥接秘密。
 
 这是可信开发网络上的 HTTP 服务，不是公网发布。开发代理仅转发 `/api/admin`，只改写与本请求 Host 同源的 Origin；外部 Origin 仍由 Java 拒绝，Cookie和CSRF校验不变。
 
-生产：前端 `npm run build` 产物交 nginx 静态服务；nginx 反代 `/api` 到后端（对外只开 443）。`ADMIN_ORIGIN` 填用户实际访问的 https 源。
+生产：前端 `npm run build` 产物交 nginx 静态服务；nginx 反代 `/api` 到后端（对外只开 443）。`admin.origin` 填用户实际访问的 https 源。
 
 ## 配置维护页（登录后 `/`）
 
@@ -44,7 +45,7 @@ tmux -L iot-agent-backend attach -t fixed-backend
 - **完整业务指令**：业务指令区可直接编辑办公室基础、公司基础、公共规则、公司任务、任务检查点、收尾答复、历史压缩7段完整文本；原办公室／公司／回复风格3项作为可选追加内容保留。使用现有保存入口，不增加指令版本、历史管理、预览或发布步骤。7段完整文本不可为空；收尾和压缩每段最多16000字符，其余单段最多65536字符；追加内容可清空。办公室或公司指令组装后（含分隔行）不得超过引擎65536字符上限，超限拒绝保存。它们是非秘密的业务配置，保存后由后端在新一轮或新检查点开始时读取；当前轮次保持原快照。旧配置未保存完整段时采用程序随附的原文本，既有追加内容不丢失；显式保存后的完整文本不被程序默认覆盖。
 - **指令组装**：办公室＝办公室基础＋办公室追加＋回复风格追加＋公共规则；公司＝公司基础＋公司任务＋公司追加＋回复风格追加＋公共规则；检查点使用检查点文本，收尾及压缩按各自阶段使用。时间、已授权目录、会话引用等动态事实和工具契约由后端生成，不是这些文本框的手工配置；后端鉴权、人工确认与设备参数校验不依赖管理员保留某句提示词。
 - **完整指令验收**：[实现票据与真实控制台保存／刷新／恢复原文证据](../../../.scratch/full-instructions/issues/01-complete-instruction-settings.md)；验收不等同于模型或设备业务执行验收。
-- **运行观测（Langfuse）**：`langfuseEnabled` 与地址／公钥／密钥保存后**不热生效**——sidecar 进程启动时从 Java 私有接口拉取一次快照；需通过受监督重启应用，未接入受监督通道时按部署流程手动重启后端与 sidecar。页面以 sidecar 上报的真实采用状态（enabled／地址／凭据摘要）判断是否已采用，保存成功不等于已采用。观测公钥／密钥只写不回显；关闭启用开关后可清除已保存密钥。
+- **运行观测（Langfuse）**：`langfuseEnabled` 与地址／公钥／密钥保存后**不热生效**——sidecar 进程启动时从 Java 私有接口拉取一次快照；需按常规命令重启 Node sidecar 进程后采用。页面以 sidecar 上报的真实采用状态（enabled／地址／凭据摘要）判断是否已采用，保存成功不等于已采用。观测公钥／密钥只写不回显；关闭启用开关后可清除已保存密钥。
 - **只读部署参数**：动作草稿有效期（`agent.action-draft-ttl-ms`）、状态回读等待（`iot.gateway.readback-wait-ms`）、控制调用超时（`iot.gateway.call-timeout-ms`）由部署属性在进程启动时消费；配置页只读展示当前启动值，不接受保存。
 - **生效证据边界**：配置的已保存／下一轮读取快照不是每个消费者的采用回执；Langfuse采用回执也不是云端已收到新trace。扫描间隔按扫描周期读取，不是下一轮对话。真实控制台的名单增删、审计查询、观测采用与逐组配置验证边界见[CONSOLE-REAL-01](../../../.scratch/console-integration/evidence/CONSOLE-REAL-01/README.md)；本轮沿用普通保存，没有新增指令版本、预览或发布流程。
 - **并发冲突**：另一个会话先保存时，页面显示冲突并保留本地草稿，保存暂停。`载入最新修订（保留草稿）` 会更新基线修订，之后重新保存；可能覆盖服务端新值，需先核对。`放弃草稿并刷新` 会丢弃本地修改。
@@ -64,11 +65,11 @@ tmux -L iot-agent-backend attach -t fixed-backend
 
 | 现象 | 原因 | 处置 |
 |---|---|---|
-| 登录 503（提示凭据未配置或无效） | `ADMIN_PASSWORD` 缺失或不符合策略 | 在部署配置设置后重启后端 |
+| 登录 503（提示凭据未配置或无效） | `admin.password` 缺失或不符合策略 | 在部署配置设置后重启后端 |
 | 登录一直 429 | 同 IP 5 分钟 5 次失败限流 | 等 5 分钟；别反复试错 |
 | 刷新掉登录 | cookie 过期（8h）或后端重启 | 正常，重新登录 |
-| 配置接口 503 | `CONFIG_SECRET_KEY` 缺失/非法 | 补密钥重启；密钥丢失 = 密文不可读，需重配 |
-| sidecar 启动失败提示观测配置不可用 | Java 不可达或 `/internal/agent/observability` 返回异常 | 先恢复 Java 管理配置存储，再按受监督流程重启 sidecar |
+| 配置接口 503 | `admin.config-secret-key` 缺失／非法 | 保留原密钥并检查配置路径；不要生成新密钥覆盖现有密文 |
+| sidecar 启动失败提示观测配置不可用 | Java 不可达或 `/internal/agent/observability` 返回异常 | 先恢复 Java 管理配置存储，再按常规命令重启 Node sidecar 进程 |
 | 审计报 `Route GET:/api/admin/audit/tenants not found` | 前端与实际运行包的审计契约不一致；此JSON格式也可能由Java错误处理器生成 | 核对Vite实际代理及运行JAR的控制器，不只检查工作区源码；使用具备tenants/members/events/detail的完整后端包，不能伪造空列表 |
 | 手机号表单要求园区／身份域／主体 | 实际运行的是旧身份元组名单接口，而界面使用独立手机号契约 | 对齐完整运行包；不能给手机号表单塞虚构身份字段，也不能把旧身份记录猜成手机号 |
 | Langfuse已接入但页面未上报／关闭 | 旧Node从部署环境初始化SDK却不报告采用；或新Node读取了Java中关闭的保存值 | 先区分部署凭据、Java保存值和实际SDK快照；通过普通保存安全迁移已有连接，空闲时重启并确认采用，不能以默认false静默覆盖已有集成 |
@@ -84,12 +85,12 @@ cd web/admin && npm update && npm run build
 ## 密码与密钥轮换
 
 - 管理员密码是部署凭据：轮换在部署配置（YAML／环境／secret 管理）中修改并重启后端；控制台不参与。
-- `CONFIG_SECRET_KEY` 现版本不支持在线换密钥。MySQL模式须备份整个权威schema并安全保留对应密钥，恢复先进入独立库；文件模式备份 `admin-config.bin`。不得通过更换密钥“重置”已有配置修订。
-- Langfuse 公钥／密钥：在配置页替换后需受监督重启由 sidecar 采用；轮换后以页面显示的 sidecar 采用状态确认。
+- `admin.config-secret-key` 现版本不支持在线换密钥。MySQL模式须备份整个权威schema并安全保留对应密钥，恢复先进入独立库；文件模式备份 `admin-config.bin`。不得通过更换密钥“重置”已有配置修订。
+- Langfuse 公钥／密钥：在配置页替换后需按常规命令重启 Node sidecar 进程由其采用；轮换后以页面显示的 sidecar 采用状态确认。
 
 ## 会话/安全边界（排障时先核这里）
 
-- cookie `runtime_admin`：`HttpOnly` `SameSite=Strict` `Path=/api/admin`，8h。
+- cookie `runtime_admin`：`HttpOnly` `SameSite=Strict` `Path=/api/admin`，长期有效（不显式过期；登出或后端重启失效）。
 - `x-admin-csrf`：每会话随机，登录/`GET /session` 下发；非 GET 必须带。
 - `Origin` 校验：仅非 GET；GET 不校。
 - 限流只对 login：按 IP，5 次/5 分钟。

@@ -29,17 +29,28 @@ public final class DefaultReportGenerationService implements ReportGenerationSer
     private final ObjectMapper mapper;
     private final ReportEvidenceService evidence;
 
-    @org.springframework.beans.factory.annotation.Autowired
     public DefaultReportGenerationService(ReportFactStore store, ObjectMapper mapper,
             IotAdapter iot, ObservationAdapter observations) {
-        this(store, mapper, iot, observations, Clock.systemUTC());
+        this(store, mapper, iot, observations, Clock.systemUTC(), "local");
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public DefaultReportGenerationService(ReportFactStore store, ObjectMapper mapper,
+            IotAdapter iot, ObservationAdapter observations,
+            @org.springframework.beans.factory.annotation.Value("${agent.report.build-id:local}") String buildId) {
+        this(store, mapper, iot, observations, Clock.systemUTC(), buildId);
     }
 
     public DefaultReportGenerationService(ReportFactStore store, ObjectMapper mapper,
             IotAdapter iot, ObservationAdapter observations, Clock clock) {
+        this(store, mapper, iot, observations, clock, "local");
+    }
+
+    public DefaultReportGenerationService(ReportFactStore store, ObjectMapper mapper,
+            IotAdapter iot, ObservationAdapter observations, Clock clock, String buildId) {
         this.store = store;
         this.mapper = mapper;
-        this.evidence = new ReportEvidenceService(iot, observations, clock);
+        this.evidence = new ReportEvidenceService(iot, observations, clock, buildId);
     }
 
     @Override

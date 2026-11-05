@@ -1,16 +1,12 @@
 # Ticket 21 — local migration evidence
 
-Status: **implemented locally** (dry-run validation, import-plan output, normalized shadow comparison, and process-owner trace fixture). This is not a production migration and does not claim complete 66/69 parity.
+Status: **implemented locally, driver retired 2026-11-06 with `tools/`** (dry-run validation, import-plan output, normalized shadow comparison, and process-owner trace fixture). This is not a production migration and does not claim complete 66/69 parity.
 
-## Reproducible local evidence
+## Reproducible local evidence (retired 2026-11-06)
 
-The only input is [`ticket-21-fixture.jsonl`](./ticket-21-fixture.jsonl). Run from the repository root:
+The driver `tools/migration-ticket-21.mjs` was deleted together with `tools/`; the historical command `node tools/migration-ticket-21.mjs docs/migration/ticket-21-fixture.jsonl` (run from the repository root) no longer runs and is recorded here only as provenance. The only input was [`ticket-21-fixture.jsonl`](./ticket-21-fixture.jsonl); the behavior validated at that time is documented below.
 
-```sh
-node tools/migration-ticket-21.mjs docs/migration/ticket-21-fixture.jsonl
-```
-
-The command reads JSONL and prints JSON; it does not open a socket, contact Runtime, mutate MySQL/Redis/SQLite, or overwrite the source file. A validation error stops the import plan at the first bad record. Identity (`id`), positive integer `version`, and strictly increasing `sequence` are required. Replaying an already accepted identity/version is allowed only with `retry: true` when the module API is used; the CLI defaults to fail-closed duplicate detection.
+The command read JSONL and printed JSON; it did not open a socket, contact Runtime, mutate MySQL/Redis/SQLite, or overwrite the source file. A validation error stopped the import plan at the first bad record. Identity (`id`), positive integer `version`, and strictly increasing `sequence` were required. Replaying an already accepted identity/version was allowed only with `retry: true` when the module API was used; the CLI defaulted to fail-closed duplicate detection.
 
 Recovery is append-only: it contains only records with a sequence greater than the last accepted sequence. There is no in-place repair or source overwrite path.
 

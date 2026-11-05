@@ -6,38 +6,55 @@ import com.sun.net.httpserver.HttpServer;
 import com.zaxxer.hikari.HikariDataSource;
 import java.net.InetSocketAddress;
 import java.net.URI;
-import java.nio.charset.StandardCharsets;
-import java.time.Clock;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.time.Clock;
 import ltd.qianc.iotagent.error.BusinessException;
+import org.springframework.boot.context.config.ConfigDataEnvironmentPostProcessor;
+import org.springframework.core.env.Environment;
+import org.springframework.core.env.SimpleCommandLinePropertySource;
+import org.springframework.core.env.StandardEnvironment;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
-/** Engineering-only public-SPI fixture. Never customer acceptance or a production identity route. */
+/**
+ * Engineering-only public-SPI fixture. Never customer acceptance or a production identity route.
+ * Reads standard Spring config data, so it starts exactly like the backend:
+ * {@code java -cp ... PiSessionConformanceServer --spring.config.additional-location=file:/private/fixture-application.yaml}
+ * with canonical spring.datasource.url/username/password, server.port and agent.bridge.token.
+ * Canonical Spring properties only; engineering defaults keep bare runs isolated.
+ */
 public final class PiSessionConformanceServer {
     public static void main(String[] args) throws Exception {
-        String url = required("AGENT_MYSQL_URL");
+        StandardEnvironment environment = new StandardEnvironment();
+        environment.getPropertySources().addFirst(new SimpleCommandLinePropertySource(args));
+        // Never inherit the backend's packaged application.yml here (its server.port
+        // default is the real backend port 3381); this fixture owns its own defaults.
+        environment.getSystemProperties().putIfAbsent("spring.config.name", "pi-session-conformance");
+        ConfigDataEnvironmentPostProcessor.applyTo(environment);
+        String url = required(environment, "spring.datasource.url");
         URI database = URI.create(url.substring("jdbc:".length()));
         if (!url.startsWith("jdbc:mysql:") || !java.util.Set.of("127.0.0.1", "localhost").contains(database.getHost())
                 || !database.getPath().matches("/[^/]*(contract|test)[^/]*")) {
             throw new IllegalArgumentException("Session contract fixture requires an isolated local contract/test MySQL schema");
         }
         HikariDataSource source = new HikariDataSource();
-        source.setJdbcUrl(url); source.setUsername(required("AGENT_MYSQL_USERNAME"));
-        source.setPassword(required("AGENT_MYSQL_PASSWORD")); source.setMaximumPoolSize(4);
+        source.setJdbcUrl(url);
+        source.setUsername(required(environment, "spring.datasource.username"));
+        source.setPassword(required(environment, "spring.datasource.password"));
+        source.setMaximumPoolSize(4);
         ObjectMapper mapper = new ObjectMapper();
         ThreadLocal<String> namespace = new ThreadLocal<>();
         PiSessionService sessions = PiSessionServiceFactory.jdbc(new JdbcTemplate(source),
                 new TransactionTemplate(new DataSourceTransactionManager(source)), mapper,
                 r -> new PiSessionService.Context("contract:"+namespace.get(), "fixture-owner", "office",
                         (String)r.get("conversationId"), (String)r.get("runId")), Clock.systemUTC());
-        String token = System.getenv().getOrDefault("JAVA_SESSION_TEST_TOKEN", "test-java");
-        int port = Integer.parseInt(System.getenv().getOrDefault("JAVA_SESSION_TEST_PORT", "3297"));
+        String token = environment.getProperty("agent.bridge.token", "test-java");
+        int port = environment.getProperty("server.port", Integer.class, 3297);
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 0);
         ThreadPoolExecutor executor = new ThreadPoolExecutor(4, 4, 0L, TimeUnit.MILLISECONDS,
                 new ArrayBlockingQueue<>(64), Thread.ofPlatform().daemon(true).name("pi-contract-", 0).factory(),
@@ -69,9 +86,10 @@ public final class PiSessionConformanceServer {
         server.start(); System.out.println("Pi Session MySQL engineering fixture ready on "+port);
         new CountDownLatch(1).await();
     }
-    private static String required(String key) {
-        String value = System.getenv(key);
-        if (value == null || value.isBlank()) throw new IllegalArgumentException(key+" is required");
+
+    private static String required(Environment environment, String property) {
+        String value = environment.getProperty(property);
+        if (value == null || value.isBlank()) throw new IllegalArgumentException(property + " is required");
         return value;
     }
 }

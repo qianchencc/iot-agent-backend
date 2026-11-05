@@ -30,7 +30,7 @@ import org.springframework.test.web.servlet.MvcResult;
  * 审计存储故障显式 503，不以空成功掩盖。
  */
 @SpringBootTest(properties = {
-        "agent.bridge-token=test-bridge",
+        "agent.bridge.token=test-bridge",
         "iot.identity.verify=false",
         "agent.video.allowed-origin=",
         "admin.config-file=target/test-admin-config-audit-does-not-exist.properties",
@@ -39,7 +39,7 @@ import org.springframework.test.web.servlet.MvcResult;
 @AutoConfigureMockMvc
 class AuditAdminApiTest {
 
-    private static final String ORIGIN = "http://127.0.0.1:3200";
+    private static final String ORIGIN = "http://127.0.0.1:5185";
     private static final String TENANT = "XSJ";
     private static final String REALM_A = "https://a.example.com/";
     private static final String REALM_B = "https://b.example.com/";

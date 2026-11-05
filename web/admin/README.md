@@ -8,18 +8,17 @@ Vite + Vue 3 + Element Plus + Pinia + Vue Router + Axios（纯 JavaScript，无 
 
 ## 本地开发
 
-固定开发环境从仓根执行一次：
+后端先按[仓根常规本地启动](../../README.md#常规本地启动)启动 Java（`3381`）；控制台在本目录以常规命令启动：
 
 ```sh
-/Users/qianchen/anaconda3/bin/python tools/start-fixed-backend.py
-# → Java3381、Node3382、console5185，均常驻 tmux fixed-backend
+npm ci        # 首次
+npm run dev   # http://127.0.0.1:5185/login
 ```
 
-- 默认部署配置需包含 `console` 段，结构见[仓根启动说明](../../README.md#固定开发后端tmux-常驻)。首次安装依赖执行 `npm ci`；正常启动无需再单独运行前端。
-- 控制台监听 `0.0.0.0:5185`，浏览器使用 `http://127.0.0.1:5185/login` 或本机局域网IP；仅用于可信开发网络，不作为生产公网服务。
-- 单独调试仍可在本目录 `npm run dev`，但应先停止自己的控制台窗口；5185被占用会直接失败，不切换到其他端口。
-- Vite仅将 `/api/admin` 代理到 `127.0.0.1:3381`（`ADMIN_API_TARGET` 可覆盖）。合法的同源 HTTP Origin 规范化到 `ADMIN_PROXY_ORIGIN`（默认 `http://127.0.0.1:5185`，必须与 Java 配置一致）；外部 Origin 保持原值，由 Java 拒绝。
+- 控制台监听 `0.0.0.0:5185`（strict port，被占用直接失败，不切换到其他端口），浏览器使用 `http://127.0.0.1:5185/login` 或本机局域网IP；仅用于可信开发网络，不作为生产公网服务。
+- Vite仅将 `/api/admin` 代理到 `127.0.0.1:3381`（`ADMIN_API_TARGET` 可覆盖）。合法的同源 HTTP Origin 规范化到 `ADMIN_PROXY_ORIGIN`（默认 `http://127.0.0.1:5185`，必须与 Java `admin.origin` 一致）；外部 Origin 保持原值，由 Java 拒绝。两者均为非秘密 URL，需要覆盖时在启动 `npm run dev` 的 shell 中显式设置。
 - 认证契约：`POST /api/admin/login` → `{ csrfToken }` + cookie `runtime_admin`；非 GET 带 `x-admin-csrf`。没有放宽管理员鉴权或 CSRF。
+- 历史统一启动器（`tools/start-fixed-backend.py` 的 `console` 窗口）已退役；当时的启动与重入验证记录见[控制台统一启动验证（历史）](../../.scratch/fixed-console-startup/README.md)。
 
 ## 检查
 

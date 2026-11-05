@@ -7,7 +7,6 @@ import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -125,7 +124,7 @@ class AdminInstructionConfigurationContractTest {
 
 
     private AdminConfigurationStore store(Path file, Map<String, Object> initial) {
-        return AdminConfigurationFactory.encryptedFile(new ObjectMapper(), file, new byte[32], initial, Set.of());
+        return AdminConfigurationFactory.encryptedFile(new ObjectMapper(), file, new byte[32], initial);
     }
 
     private static Map<String, Object> seededFromCatalog(String apiKey) {

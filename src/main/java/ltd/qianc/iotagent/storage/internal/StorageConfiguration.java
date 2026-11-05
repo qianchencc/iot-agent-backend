@@ -37,9 +37,9 @@ public class StorageConfiguration {
     @Bean
     @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
     DataSource agentDataSource(org.springframework.core.env.Environment environment) {
-        return DataSourceBuilder.create().url(required(environment, "AGENT_MYSQL_URL"))
-                .username(required(environment, "AGENT_MYSQL_USERNAME"))
-                .password(required(environment, "AGENT_MYSQL_PASSWORD")).build();
+        return DataSourceBuilder.create().url(required(environment, "spring.datasource.url"))
+                .username(required(environment, "spring.datasource.username"))
+                .password(required(environment, "spring.datasource.password")).build();
     }
 
     @Bean
@@ -57,7 +57,7 @@ public class StorageConfiguration {
     @Bean
     @ConditionalOnProperty(name = "agent.storage.redis.enabled", havingValue = "true")
     LettuceConnectionFactory agentRedisConnectionFactory(org.springframework.core.env.Environment environment) {
-        URI uri = URI.create(required(environment, "AGENT_REDIS_URL"));
+        URI uri = URI.create(required(environment, "spring.data.redis.url"));
         RedisStandaloneConfiguration configuration = new RedisStandaloneConfiguration(uri.getHost(), uri.getPort() > 0 ? uri.getPort() : 6379);
         if (uri.getPath() != null && uri.getPath().length() > 1) configuration.setDatabase(Integer.parseInt(uri.getPath().substring(1)));
         if (uri.getUserInfo() != null && uri.getUserInfo().contains(":")) configuration.setPassword(uri.getUserInfo().substring(uri.getUserInfo().indexOf(':') + 1));

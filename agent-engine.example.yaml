@@ -1,0 +1,46 @@
+# Nonsecret template for the generic Node agent engine (agent-sidecar).
+#
+# Copy to var/agent-engine/engine.yaml (git-ignored), adjust the absolute
+# paths, and start with:
+#
+#   node dist/server.js --config /absolute/path/to/agent-engine.yaml
+#
+# The path is required: there is no environment-variable or .env fallback, and
+# the process never reads Java's application.yaml or any business/database/
+# admin configuration. Everything not listed below stays Java-owned; do not add
+# model, Langfuse, Redis, MySQL or admin values to this file.
+#
+# Secrets never appear inline. The bridge token lives exactly once in the
+# owner-only shared file referenced below (chmod 600) — the same file Java
+# imports natively via:
+#
+#   spring.config.import: 'configtree:/absolute/path/to/var/shared/'
+#
+# Fixed local ports: Java 3381, this engine 3382 (private, behind Java),
+# console 5185.
+
+server:
+  # Loopback only: the frontend talks to Java, never to the engine directly.
+  host: 127.0.0.1
+  port: 3382
+
+bridge:
+  # Shared Java<->engine secret: one file, owner-only, value with a trailing
+  # newline is fine (it is trimmed on read).
+  token-file: /absolute/path/to/var/shared/agent.bridge.token
+
+java:
+  # Private Java callback for tool execution.
+  tools-url: http://127.0.0.1:3381/internal/agent/tools
+  # Optional; defaults to the tools-url origin + /internal/agent/sessions.
+  sessions-url: http://127.0.0.1:3381/internal/agent/sessions
+  # Optional independent Java callback token; omit it to reuse the shared
+  # bridge token file above. Only isolated engineering fixtures that issue a
+  # separate Java token need this.
+  # token-file: /absolute/path/to/var/agent-engine/java.token
+
+resources:
+  # Optional positive-integer engine limits; defaults shown.
+  java-tool-timeout-ms: 60000
+  run-timeout-ms: 120000
+  heartbeat-ms: 15000

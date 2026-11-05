@@ -2,10 +2,14 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
+import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 const sessionsBase = process.env.JAVA_SESSION_TEST_URL;
 if (!sessionsBase) throw new Error("JAVA_SESSION_TEST_URL must point to the isolated Java/MySQL engineering fixture");
 const sessionsUrl = `${sessionsBase}?case=${randomUUID()}`;
+const javaToken = process.env.JAVA_SESSION_TEST_TOKEN || "test-java";
 const token = "process-bridge";
 
 async function freePort() {
@@ -33,21 +37,53 @@ await new Promise((resolve, reject) => {
 const modelAddress = modelServer.address();
 if (!modelAddress || typeof modelAddress === "string") throw new Error("fake model address unavailable");
 const modelUrl = `http://127.0.0.1:${modelAddress.port}/v1`;
-const javaOrigin = new URL(sessionsBase).origin;
+const javaSettingsServer = createServer((request, response) => {
+  if (request.url === "/internal/agent/observability") {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ enabled: false }));
+    return;
+  }
+  response.writeHead(404).end();
+});
+await new Promise((resolve, reject) => {
+  javaSettingsServer.once("error", reject);
+  javaSettingsServer.listen(0, "127.0.0.1", resolve);
+});
+const javaOrigin = `http://127.0.0.1:${javaSettingsServer.address().port}`;
+const workDir = await mkdir(path.join(tmpdir(), `agent-engine-process-${randomUUID()}`), { recursive: true });
+const bridgeTokenFile = path.join(workDir, "agent.bridge.token");
+const javaTokenFile = path.join(workDir, "java.token");
+await writeFile(bridgeTokenFile, `${token}\n`, { mode: 0o600 });
+await writeFile(javaTokenFile, `${javaToken}\n`, { mode: 0o600 });
+await chmod(bridgeTokenFile, 0o600);
+await chmod(javaTokenFile, 0o600);
+const configFile = path.join(workDir, "agent-engine.yaml");
+await writeFile(configFile, [
+  "server:",
+  "  host: 127.0.0.1",
+  `  port: ${port}`,
+  "bridge:",
+  `  token-file: ${JSON.stringify(bridgeTokenFile)}`,
+  "java:",
+  `  tools-url: ${javaOrigin}/internal/agent/tools`,
+  `  sessions-url: ${JSON.stringify(sessionsUrl)}`,
+  `  token-file: ${JSON.stringify(javaTokenFile)}`,
+  "resources:",
+  "  heartbeat-ms: 1000",
+  "",
+].join("\n"));
 
+// The engine reads only the config file and token files above; ambient
+// environment variables and a stray .env must never reach it.
 const env = {
   PATH: process.env.PATH,
-  SIDECAR_HOST: "127.0.0.1",
-  SIDECAR_PORT: String(port),
-  AGENT_BRIDGE_TOKEN: token,
-  JAVA_AGENT_TOOLS_URL: `${javaOrigin}/internal/agent/tools`,
-  JAVA_AGENT_TOOLS_TOKEN: process.env.JAVA_SESSION_TEST_TOKEN || "test-java",
-  JAVA_AGENT_SESSIONS_URL: sessionsUrl,
-  SIDECAR_HEARTBEAT_MS: "1000",
+  AGENT_BRIDGE_TOKEN: "ambient-must-be-ignored",
+  JAVA_AGENT_TOOLS_TOKEN: "ambient-must-be-ignored",
+  SIDECAR_PORT: "9",
 };
 
 function launch() {
-  return spawn(process.execPath, ["dist/server.js"], { env, stdio: ["ignore", "pipe", "pipe"] });
+  return spawn(process.execPath, ["dist/server.js", "--config", configFile], { env, stdio: ["ignore", "pipe", "inherit"] });
 }
 async function waitForHealth() {
   const deadline = Date.now() + 30_000;
@@ -142,4 +178,6 @@ try {
 } finally {
   if (childProcess.exitCode === null) await stop(childProcess);
   await new Promise(resolve => modelServer.close(resolve));
+  await new Promise(resolve => javaSettingsServer.close(resolve));
+  await rm(workDir, { recursive: true, force: true });
 }

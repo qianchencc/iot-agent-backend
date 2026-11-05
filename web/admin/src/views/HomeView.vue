@@ -499,12 +499,6 @@
               {{ view?.saved.maxAgentTurns }} 回合 / {{ view?.saved.maxToolCalls }} 次工具 /
               {{ view?.saved.runTimeoutMs }} 毫秒
             </el-descriptions-item>
-            <el-descriptions-item label="环境锁定字段">
-              <div v-if="lockedFieldLabels.length" class="field-tags">
-                <el-tag v-for="label in lockedFieldLabels" :key="label" size="small">{{ label }}</el-tag>
-              </div>
-              <span v-else>无</span>
-            </el-descriptions-item>
             <el-descriptions-item label="配置差异">
               {{ stateHasPending ? "存在待应用字段" : "无" }}
             </el-descriptions-item>
@@ -990,9 +984,6 @@ const pendingFieldLabels = computed(() => {
   }
   return view.value?.pendingRestart ? "后端标记待应用（未提供字段明细）" : "无";
 });
-const lockedFieldLabels = computed(() =>
-  view.value ? view.value.locked.map((field) => fieldLabel(field)) : []
-);
 
 const STATIC_RULES = {
   modelBaseUrl: [

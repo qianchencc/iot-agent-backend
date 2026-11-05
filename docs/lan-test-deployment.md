@@ -55,16 +55,18 @@ Maven资源打包已排除AGENTS.md／CLAUDE.md／CONTEXT.md，修正发现的`d
 
 不引入多节点、高压场景或自动扩缩容；目标是单机可追溯发布、数据保留和基本业务闭环。平台与安全策略确定后再落定常驻容器启动／更新入口，本文不把尚未执行的切换记成完成。
 
-## 可复用镜像准备工具
+## 镜像准备（原生 Docker）
 
-`tools/fetch-container-image.py`支持无需Docker daemon联网的固定摘要镜像导出。它校验manifest、config、压缩层及解压diff ID，产生老Docker可读取的load归档，registry认证token只在内存中，错误不打印可能携带签名的重定向URL。
+原 `tools/fetch-container-image.py` 固定摘要导出工具已随 `tools/` 于 2026-11-06 退役；当前直接用原生 Docker 完成拉取、校验、导出与导入。镜像仍按发布纪律锁定 linux/amd64 的具体 manifest 摘要，归属 `iot-agent-lan/*`，不使用 Mac 的 arm64 镜像，不覆盖客户原有镜像标签：
 
 ```sh
-python tools/fetch-container-image.py \
-  --repository library/node \
-  --digest sha256:43aeff40f4afc22e83f7589a2f37e111cff5ca84529571f1c8415bcc5fcc21b2 \
-  --tag iot-agent-lan/node:43aeff40f4af \
-  --output var/lan-images/node-image.tar.gz
+# 本机（需要代理时仅对本命令设置 HTTPS_PROXY／HTTP_PROXY，不改用户或 daemon 全局代理）
+docker pull node@sha256:<manifest-digest>
+docker image inspect node@sha256:<manifest-digest> --format '{{.Architecture}} {{.RepoDigests}}'
+docker save -o node-image.tar <image-ref>
+
+# 目标机
+docker load -i node-image.tar
 ```
 
-需要代理时，仅对这条命令设置实际可达的HTTPS_PROXY／HTTP_PROXY，不修改用户或daemon的全局代理。已用该路径完成五个真实镜像的下载、摘要验证与服务器Docker17导入；镜像导入成功不代表其中的程序已通过运行门禁。
+已完成的五个真实镜像下载、摘要验证与服务器 Docker17 导入（当时由退役工具执行）记录保留在[LAN-DEPLOY-01](../.scratch/lan-test-deployment/evidence/LAN-DEPLOY-01/result.json)；镜像导入成功不代表其中的程序已通过运行门禁。

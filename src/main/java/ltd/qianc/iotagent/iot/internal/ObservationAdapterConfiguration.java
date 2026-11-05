@@ -112,7 +112,7 @@ public class ObservationAdapterConfiguration {
 
     /**
      * HMAC key for safety-ledger continuation cursors. Falls back to the shared
-     * CONFIG_SECRET_KEY convention; without any secret the composer signs with an
+     * admin.config-secret-key; without any secret the composer signs with an
      * ephemeral process key and restarts honestly invalidate outstanding cursors.
      */
     private static byte[] cursorMacKey(Environment environment) {

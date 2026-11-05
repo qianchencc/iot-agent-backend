@@ -2,6 +2,8 @@
 
 2026-11-03盘点为历史快照。**2026-11-04最新指令：白名单仅独立维护手机号与备注，不接实际业务，也不管谁能使用公司Agent；此前准入与移除取消任务解释撤回。其余范围获准实施。** 当前实现进度以票据与真实验证为准；见[ADR0008](../../docs/adr/0008-standalone-phone-list.md)。
 
+> 2026-11-06：启动与基础设施入口已切换为常规命令（Java `java -jar … --spring.config.additional-location`、Node `node dist/server.js --config`、控制台 `npm run dev`、Compose 原生 secrets 文件），`tools/` 启动器与 launch-YAML 模板已删除；见[仓根常规本地启动](../../README.md#常规本地启动)与[配置治理现行入口](../../docs/configuration-governance.md)。下文涉及 `fixed-backend.example.yaml`／`local-tools.example.yaml`／`tools/*.py` 的条目均为历史记录。
+
 ## 当前交付（2026-11-05）
 
 - 三项能力及独立管理员登录已实现；前端为纯 JavaScript / Element Plus，白名单没有业务读者。配置保存／冲突／跨页草稿／历史恢复、模型草稿连接检查、观测启动采用均已走实际页面。

@@ -2,6 +2,8 @@
 
 2026-11-05。已在实际固定开发会话生效；不是生产发布或系统开机自启。
 
+> 2026-11-06 退役：本文记录的 `tools/start-fixed-backend.py` 统一启动器及 launch-YAML `console` 清单已随 `tools/` 删除；现行启动为常规命令（Java／Node／控制台三进程），见[仓根常规本地启动](../../README.md#常规本地启动)。以下为历史验证记录，其中指向旧启动章节的链接不再维护。
+
 ## 变更
 
 - `tools/start-fixed-backend.py` 管理显式部署清单中的 Java、Node、console。默认私有清单已加入控制台；后端专用自定义清单不配置console时仍只运行Java／Node。
@@ -9,7 +11,7 @@
 - Vite开发服务监听 `0.0.0.0:5185`，`strictPort` 禁止静默漂移；npm开发脚本与统一入口使用同一配置。
 - 仅代理 `/api/admin`；浏览器Origin与来访Host同源时才规范化到Java的管理源。外部Origin保持原值，Java的管理员会话、密码及CSRF逻辑未修改。Vite不加载 `.env`，不接收Java／Node的数据库、模型或桥接秘密。
 
-操作方式及console清单见[仓根启动说明](../../README.md#固定开发后端tmux-常驻)，配置登记见[维护手册](../../web/admin/docs/maintenance.md)。部署YAML及含凭据的回退文件只在Git忽略的var内保留，0600，不提交。
+操作方式及console清单见[仓根常规本地启动（现行命令已取代当时的清单）](../../README.md#常规本地启动)，配置登记见[维护手册](../../web/admin/docs/maintenance.md)。当时的部署YAML及含凭据的回退文件只在Git忽略的var内保留，0600，不提交。
 
 ## 实际验证
 

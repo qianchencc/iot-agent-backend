@@ -24,32 +24,32 @@ import ltd.qianc.iotagent.admin.AdminConfigurationFactory;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.Set;
 
 @Configuration
 public class AdminModuleConfiguration {
     @Bean
     @ConditionalOnMissingBean
     AdminConfigurationStore adminConfigurationStore(ObjectMapper mapper, Environment environment,
-            @Value("${admin.config-file:${ADMIN_CONFIG_FILE:var/admin-config.bin}}") String configFile,
-            @Value("${admin.config-secret-key:${CONFIG_SECRET_KEY:}}") String secretKey,
+            @Value("${admin.config-file:var/admin-config.bin}") String configFile,
+            @Value("${admin.config-secret-key:}") String secretKey,
             ObjectProvider<JdbcTemplate> jdbcProvider, ObjectProvider<TransactionTemplate> transactionProvider) {
         boolean mysqlEnabled = Boolean.parseBoolean(environment.getProperty("agent.storage.mysql.enabled", "false"));
         if (!secretKey.matches("[a-fA-F0-9]{64}")) return new FailClosedAdminConfigurationStore();
+        // admin.initial.* seeds only the very first revision; existing MySQL
+        // revisions stay authoritative across restarts.
         Map<String, Object> initial = initial(environment);
-        Set<String> locked = locked(environment);
         if (mysqlEnabled) {
             JdbcTemplate jdbc = jdbcProvider.getIfAvailable();
             TransactionTemplate transactions = transactionProvider.getIfAvailable();
             if (jdbc == null || transactions == null) return new FailClosedAdminConfigurationStore();
             try {
-                return AdminConfigurationFactory.mysql(jdbc, transactions, mapper, hex(secretKey), initial, locked);
+                return AdminConfigurationFactory.mysql(jdbc, transactions, mapper, hex(secretKey), initial);
             } catch (RuntimeException e) {
                 return new FailClosedAdminConfigurationStore();
             }
         }
         try {
-            return AdminConfigurationFactory.encryptedFile(mapper, Path.of(configFile), hex(secretKey), initial, locked);
+            return AdminConfigurationFactory.encryptedFile(mapper, Path.of(configFile), hex(secretKey), initial);
         } catch (RuntimeException e) {
             return new FailClosedAdminConfigurationStore();
         }
@@ -64,9 +64,9 @@ public class AdminModuleConfiguration {
     @Bean
     @ConditionalOnMissingBean
     AdminSessionManager adminSessionManager(
-            @Value("${admin.password-minimum:${ADMIN_PASSWORD_MIN_LENGTH:6}}") int minimum,
-            @Value("${admin.password:${ADMIN_PASSWORD:}}") String configured) {
-        // Deployment-only credential: explicit Spring property or ADMIN_PASSWORD environment value.
+            @Value("${admin.password-minimum:6}") int minimum,
+            @Value("${admin.password:}") String configured) {
+        // Deployment-only credential: the native admin.password property; empty fails closed.
         return new AdminSessionManager(configured, Math.max(1, Math.min(128, minimum)));
     }
 
@@ -80,7 +80,7 @@ public class AdminModuleConfiguration {
     @Bean
     @ConditionalOnMissingBean
     FilterRegistrationBean<AdminBoundaryFilter> adminBoundaryFilter(ObjectMapper mapper, AdminSessionManager sessions,
-            @Value("${admin.origin:${ADMIN_ORIGIN:http://127.0.0.1:3200}}") String origin) {
+            @Value("${admin.origin:http://127.0.0.1:5185}") String origin) {
         FilterRegistrationBean<AdminBoundaryFilter> registration = new FilterRegistrationBean<>(
                 new AdminBoundaryFilter(mapper, sessions, origin));
         registration.addUrlPatterns("/api/admin/*");
@@ -124,44 +124,39 @@ public class AdminModuleConfiguration {
         };
     }
 
+    /**
+     * First-install managed defaults (admin.initial.*). They seed revision 1 only
+     * when the store has no existing revision; afterwards saved revisions win.
+     */
     static Map<String, Object> initial(Environment environment) {
         Map<String, Object> values = new LinkedHashMap<>();
-        values.put("modelBaseUrl", environment.getProperty("MODEL_BASE_URL", ""));
-        values.put("modelId", environment.getProperty("MODEL_ID", ""));
-        values.put("modelApiKey", environment.getProperty("MODEL_API_KEY", ""));
-        values.put("contextWindow", integer(environment, "CONTEXT_WINDOW", 128000));
-        values.put("maxOutputTokens", integer(environment, "MAX_OUTPUT_TOKENS", 16384));
-        values.put("reasoning", bool(environment, "AGENT_REASONING", true));
-        values.put("thinkingLevel", environment.getProperty("AGENT_THINKING_LEVEL", "low"));
-        values.put("supportsDeveloperRole", bool(environment, "MODEL_SUPPORTS_DEVELOPER_ROLE", false));
-        values.put("supportsReasoningEffort", bool(environment, "MODEL_SUPPORTS_REASONING_EFFORT", true));
-        values.put("supportsUsageInStreaming", bool(environment, "MODEL_SUPPORTS_USAGE_IN_STREAMING", true));
-        values.put("maxTokensField", environment.getProperty("MODEL_MAX_TOKENS_FIELD", "max_completion_tokens"));
-        values.put("maxAgentTurns", integer(environment, "MAX_AGENT_TURNS", 6));
-        values.put("maxToolCalls", integer(environment, "MAX_TOOL_CALLS", 10));
-        values.put("officeInstructions", environment.getProperty("OFFICE_INSTRUCTIONS", ""));
-        values.put("companyInstructions", environment.getProperty("COMPANY_INSTRUCTIONS", ""));
-        values.put("replyInstructions", environment.getProperty("REPLY_INSTRUCTIONS", ""));
-        values.put("runTimeoutMs", integer(environment, "RUN_TIMEOUT_MS", 300000));
-        values.put("draftTtlMs", integer(environment, "DRAFT_TTL_MS", 600000));
-        values.put("heartbeatMs", integer(environment, "HEARTBEAT_MS", 15000));
-        values.put("readbackWaitMs", integer(environment, "READBACK_WAIT_MS", 6000));
-        values.put("controlTimeoutMs", integer(environment, "CONTROL_TIMEOUT_MS", 25000));
-        values.put("scanIntervalMs", integer(environment, "SCAN_INTERVAL_MS", 1000));
-        values.put("langfuseEnabled", bool(environment, "LANGFUSE_ENABLED", false));
-        values.put("langfuseBaseUrl", environment.getProperty("LANGFUSE_BASE_URL", ""));
-        values.put("langfusePublicKey", environment.getProperty("LANGFUSE_PUBLIC_KEY", ""));
-        values.put("langfuseSecretKey", environment.getProperty("LANGFUSE_SECRET_KEY", ""));
+        values.put("modelBaseUrl", environment.getProperty("admin.initial.model-base-url", ""));
+        values.put("modelId", environment.getProperty("admin.initial.model-id", ""));
+        values.put("modelApiKey", environment.getProperty("admin.initial.model-api-key", ""));
+        values.put("contextWindow", integer(environment, "admin.initial.context-window", 128000));
+        values.put("maxOutputTokens", integer(environment, "admin.initial.max-output-tokens", 16384));
+        values.put("reasoning", bool(environment, "admin.initial.reasoning", true));
+        values.put("thinkingLevel", environment.getProperty("admin.initial.thinking-level", "low"));
+        values.put("supportsDeveloperRole", bool(environment, "admin.initial.supports-developer-role", false));
+        values.put("supportsReasoningEffort", bool(environment, "admin.initial.supports-reasoning-effort", true));
+        values.put("supportsUsageInStreaming", bool(environment, "admin.initial.supports-usage-in-streaming", true));
+        values.put("maxTokensField", environment.getProperty("admin.initial.max-tokens-field", "max_completion_tokens"));
+        values.put("maxAgentTurns", integer(environment, "admin.initial.max-agent-turns", 6));
+        values.put("maxToolCalls", integer(environment, "admin.initial.max-tool-calls", 10));
+        values.put("officeInstructions", environment.getProperty("admin.initial.office-instructions", ""));
+        values.put("companyInstructions", environment.getProperty("admin.initial.company-instructions", ""));
+        values.put("replyInstructions", environment.getProperty("admin.initial.reply-instructions", ""));
+        values.put("runTimeoutMs", integer(environment, "admin.initial.run-timeout-ms", 300000));
+        values.put("draftTtlMs", integer(environment, "admin.initial.draft-ttl-ms", 600000));
+        values.put("heartbeatMs", integer(environment, "admin.initial.heartbeat-ms", 15000));
+        values.put("readbackWaitMs", integer(environment, "admin.initial.readback-wait-ms", 6000));
+        values.put("controlTimeoutMs", integer(environment, "admin.initial.control-timeout-ms", 25000));
+        values.put("scanIntervalMs", integer(environment, "admin.initial.scan-interval-ms", 1000));
+        values.put("langfuseEnabled", bool(environment, "admin.initial.langfuse-enabled", false));
+        values.put("langfuseBaseUrl", environment.getProperty("admin.initial.langfuse-base-url", ""));
+        values.put("langfusePublicKey", environment.getProperty("admin.initial.langfuse-public-key", ""));
+        values.put("langfuseSecretKey", environment.getProperty("admin.initial.langfuse-secret-key", ""));
         return values;
-    }
-
-    static Set<String> locked(Environment environment) {
-        Set<String> result = new java.util.LinkedHashSet<>();
-        Map<String, String> fields = Map.of("modelBaseUrl", "MODEL_BASE_URL", "modelId", "MODEL_ID", "modelApiKey", "MODEL_API_KEY", "thinkingLevel", "AGENT_THINKING_LEVEL", "catalogTtlMs", "IOT_CATALOG_TTL_MS", "heartbeatMs", "HEARTBEAT_MS", "langfuseBaseUrl", "LANGFUSE_BASE_URL", "langfusePublicKey", "LANGFUSE_PUBLIC_KEY", "langfuseSecretKey", "LANGFUSE_SECRET_KEY");
-        fields.forEach((name, variable) -> {
-            if (environment.getProperty(variable) != null && !LiveAgentSettings.contains(name)) result.add(name);
-        });
-        return result;
     }
 
     private static int integer(Environment environment, String name, int fallback) {

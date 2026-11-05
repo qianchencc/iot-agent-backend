@@ -2,7 +2,9 @@
 
 本目录中的门禁只处理本地契约、迁移和切换 evidence。它们**不会**启动 Java/Node、调用 HTTP、执行部署命令、连接云端或切换任何生产路由。命令输出是一行按键排序的 JSON evidence；返回码非零即为 fail-closed。
 
-工具：[`tools/ticket10_local.py`](../../tools/ticket10_local.py)。运行环境只需要 Python 3 标准库。
+> 2026-11-06 退役：`tools/ticket10_local.py` 已随 `tools/` 目录删除，本文不再包含可运行的门禁命令；各节保留当时的门禁语义、证据契约与结果描述作迁移档案。本地契约验证的现行入口是 `mvn test`（含 `RuntimeContractGateTest` 行为代表夹具）。
+
+工具 `tools/ticket10_local.py`（已删除）当时运行环境只需 Python 3 标准库。
 
 ## Contract / 认证 / NDJSON
 
@@ -10,12 +12,7 @@
 
 `src/test/java/ltd/qianc/iotagent/RuntimeContractGateTest.java` 另提供一个不联网的代表性行为夹具：MockMvc 经过实际 Java controller/filter/facade，使用内存存储与 fixture bridge，验证认证缺失、source、状态码、错误码和 NDJSON 序列/终态。它不是 66/69 全量 parity 结果；全量 route inventory 仍是静态证据。
 
-```sh
-python3 tools/ticket10_local.py contract \
-  --runtime-root ../iot-agent-runtime \
-  --backend-root .
-```
-
+（历史门禁名为 `contract`；命令已随脚本删除。）
 当前 Java 工作树仍有任务/计划/通知等未完成路由，因此这条门禁应当明确输出 `status=failed` 和缺失路径；这不是“通过”的假证据。
 
 ## MySQL 权威备份与恢复
@@ -28,11 +25,7 @@ Java/MySQL 是业务事实与 Pi Session 的唯一在线持久权威。备份必
 
 迁移器不猜表结构，也不伪造 MySQL 已完成。先由 Runtime/Java 各自导出 JSONL，再比较四类不变量：业务身份、记录顺序、版本字段和终态字段。默认字段为 `id`、`sequence`、`version`、`status`；没有任何必需字段、重复身份、记录数差异、身份/顺序变化、版本变化或既有终态变化均失败。
 
-```sh
-python3 tools/ticket10_local.py migration \
-  --source evidence/runtime-facts.jsonl \
-  --target evidence/java-facts.jsonl
-```
+（历史门禁名为 `migration`，输入为 Runtime／Java 导出的 JSONL 对；命令已随脚本删除。）
 
 导出必须覆盖会话事件、Action Draft、Task/Plan/Notification、Report 和 Audit。迁移只允许 append/转换已在映射表中批准的字段；不得用 Redis 或 Pi session 代替业务事实证据。源和目标文件都保持不变。当前仓库没有已约定的 Runtime/Java 导出对，因此实际 import 尚未实现，也不应声称完成。
 
@@ -40,15 +33,9 @@ python3 tools/ticket10_local.py migration \
 
 Shadow 请求记录必须是 `GET`/`HEAD`/`OPTIONS`，并拒绝 confirm/cancel/apply/restore/revalidate/selection/parameters/seen/messages 等路径。它不执行控制、scanner 或 notification。
 
-```sh
-python3 tools/ticket10_local.py shadow \
-  --records evidence/shadow-requests.jsonl
+（历史门禁名为 `shadow` 与 `execution-boundary`，输入为已记录的请求／调用 JSONL；命令已随脚本删除。）
 
-python3 tools/ticket10_local.py execution-boundary \
-  --records evidence/execution-invocations.jsonl
-```
-
-当前工具只验证已记录的本地请求/调用证据；没有 live dispatcher 或 Runtime response comparator，不得声称完成 shadow parity。
+当时该工具只验证已记录的本地请求/调用证据；没有 live dispatcher 或 Runtime response comparator，不得声称完成 shadow parity。
 
 ## 单向切换与回滚
 
@@ -64,20 +51,7 @@ python3 tools/ticket10_local.py execution-boundary \
 - `config`：配置快照和必需项检查，含 `configuration`；
 - `rollback`：旧 Runtime 可恢复且无双跑，`oldRuntimeRestorable=true`、`doubleRunPrevented=true`。
 
-```sh
-python3 tools/ticket10_local.py cutover-gate \
-  --approval evidence/human-approval.json \
-  --operator operator-id \
-  --window change-window-id \
-  --health evidence/health.json \
-  --backup evidence/backup.json \
-  --migration evidence/migration.json \
-  --shadow evidence/shadow.json \
-  --execution evidence/execution.json \
-  --logs evidence/logs.json \
-  --config evidence/config.json \
-  --rollback evidence/rollback.json
-```
+（历史门禁名为 `cutover-gate`，输入为上述十类 JSON evidence 及人工 operator／window；命令已随脚本删除。）
 
 缺任一文件、任一 evidence 不是 `status=passed`、缺人工 operator/window 或审批不是 `approved=true` 时，门禁拒绝。通过只表示“具备切换资格”，输出仍明确 `gate-only`，不会切流、重启、部署或发送云命令。
 

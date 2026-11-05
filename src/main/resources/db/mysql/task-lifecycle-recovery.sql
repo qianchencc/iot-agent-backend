@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS task_execution_identities (
     update_time DATETIME NOT NULL COMMENT '行更新时间',
     UNIQUE KEY uk_task_execution_identity_owner (owner_id),
     KEY ix_task_execution_identity_kind (owner_kind)
-) ENGINE=InnoDB COMMENT='任务或计划执行身份托管：仅存 AES-256-GCM 密文，密钥来自 TASK_CREDENTIAL_KEY，不以明文回显';
+) ENGINE=InnoDB COMMENT='任务或计划执行身份托管：仅存 AES-256-GCM 密文，密钥来自 agent.task.credential-key，不以明文回显';
 
 CREATE TABLE IF NOT EXISTS task_report_attempts (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY COMMENT '代理主键，重试行标识',

@@ -44,18 +44,16 @@ public final class JdbcAdminConfigurationStore implements AdminConfigurationStor
     private final TransactionTemplate transactions;
     private final ObjectMapper mapper;
     private final byte[] key;
-    private final Set<String> locked;
     private final SecureRandom random = new SecureRandom();
     private long activeRevision;
 
     public JdbcAdminConfigurationStore(JdbcTemplate jdbc, TransactionTemplate transactions, ObjectMapper mapper,
-            byte[] key, Map<String, Object> initial, Set<String> locked) {
+            byte[] key, Map<String, Object> initial) {
         this.jdbc = Objects.requireNonNull(jdbc);
         this.transactions = Objects.requireNonNull(transactions);
         this.mapper = Objects.requireNonNull(mapper);
         this.key = Objects.requireNonNull(key).clone();
-        if (this.key.length != 32) throw new IllegalArgumentException("CONFIG_SECRET_KEY must be 32 bytes");
-        this.locked = Set.copyOf(locked);
+        if (this.key.length != 32) throw new IllegalArgumentException("admin.config-secret-key must be 32 bytes");
         new ltd.qianc.iotagent.schema.SchemaMigrations(
                 Objects.requireNonNull(jdbc.getDataSource(), "jdbc dataSource")).ensureAdminConfiguration();
         this.activeRevision = initialize(initial);
@@ -74,7 +72,7 @@ public final class JdbcAdminConfigurationStore implements AdminConfigurationStor
                     "activeConfigured", hasValue(running.get(secret))));
         }
         return new ConfigurationView(latest.revision, changed.isEmpty() ? latest.revision : active.revision, publicSettings(saved), publicSettings(running),
-                secrets, List.copyOf(locked), !changed.isEmpty(), changed, false, deployment);
+                secrets, !changed.isEmpty(), changed, false, deployment);
     }
 
     @Override
@@ -88,9 +86,6 @@ public final class JdbcAdminConfigurationStore implements AdminConfigurationStor
             return transactions.execute(status -> {
                 Revision previous = latestForUpdate();
                 if (previous.revision != expectedRevision) return new SaveResult(409, "CONFIG_VERSION_CONFLICT", List.of());
-                if (changes.keySet().stream().anyMatch(locked::contains)) {
-                    return new SaveResult(409, "CONFIG_ENV_LOCKED", List.of());
-                }
                 Map<String, Object> next = new LinkedHashMap<>(previous.settings);
                 for (Map.Entry<String, Object> change : changes.entrySet()) {
                     if (!KNOWN_KEYS.contains(change.getKey()) || change.getValue() == null) {
@@ -129,7 +124,6 @@ public final class JdbcAdminConfigurationStore implements AdminConfigurationStor
                 Map<String, Object> changes = new LinkedHashMap<>(target.settings);
                 RetiredCacheSettings.NAMES.forEach(changes::remove);
                 DeploymentReportedSettings.NAMES.forEach(changes::remove);
-                locked.forEach(changes::remove);
                 Map<String, Object> next = new LinkedHashMap<>(previous.settings);
                 next.putAll(changes);
                 List<String> issues = validate(next);

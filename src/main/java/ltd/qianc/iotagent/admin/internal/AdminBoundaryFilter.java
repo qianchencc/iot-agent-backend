@@ -18,7 +18,7 @@ public final class AdminBoundaryFilter extends OncePerRequestFilter {
     private final String origin;
 
     public AdminBoundaryFilter(ObjectMapper mapper, AdminSessionManager sessions,
-            @Value("${admin.origin:${ADMIN_ORIGIN:http://127.0.0.1:3200}}") String origin) {
+            @Value("${admin.origin:http://127.0.0.1:5185}") String origin) {
         this.mapper = mapper;
         this.sessions = sessions;
         this.origin = origin;

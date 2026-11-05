@@ -40,7 +40,7 @@ import org.springframework.test.web.servlet.MvcResult;
 @AutoConfigureMockMvc
 class PhoneAllowlistAdminApiTest {
 
-    private static final String ORIGIN = "http://127.0.0.1:3200";
+    private static final String ORIGIN = "http://127.0.0.1:5185";
     private static final RecordingAllowlist ALLOWLIST = new RecordingAllowlist();
 
     @Autowired

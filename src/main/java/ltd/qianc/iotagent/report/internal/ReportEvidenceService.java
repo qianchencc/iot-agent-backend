@@ -56,11 +56,17 @@ public final class ReportEvidenceService {
     private final IotAdapter iot;
     private final ObservationAdapter observations;
     private final Clock clock;
+    private final String buildId;
 
     public ReportEvidenceService(IotAdapter iot, ObservationAdapter observations, Clock clock) {
+        this(iot, observations, clock, "local");
+    }
+
+    public ReportEvidenceService(IotAdapter iot, ObservationAdapter observations, Clock clock, String buildId) {
         this.iot = Objects.requireNonNull(iot, "iot");
         this.observations = Objects.requireNonNull(observations, "observations");
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.buildId = buildId == null || buildId.isBlank() ? "local" : buildId.trim();
     }
 
     Map<String, Object> build(RequestIdentity identity, Map<String, Object> request) {
@@ -213,7 +219,7 @@ public final class ReportEvidenceService {
         result.put("coverage", coverage);
         result.put("meterIds", scope.meterIds());
         result.put("authorizationMeterIds", scope.allMeterIds());
-        result.put("build", buildId());
+        result.put("build", buildId);
         return result;
     }
 
@@ -333,7 +339,7 @@ public final class ReportEvidenceService {
         result.put("coverage", coverageView);
         result.put("meterIds", List.of());
         result.put("authorizationMeterIds", List.of());
-        result.put("build", buildId());
+        result.put("build", buildId);
         return result;
     }
 
@@ -614,11 +620,6 @@ public final class ReportEvidenceService {
             return nested;
         }
         return raw;
-    }
-
-    private static String buildId() {
-        String value = System.getenv("AGENT_BUILD_ID");
-        return value == null || value.isBlank() ? "local" : value.trim();
     }
 
     @SuppressWarnings("unchecked")

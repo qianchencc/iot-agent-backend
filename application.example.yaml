@@ -1,0 +1,121 @@
+# Native Spring Boot template for the fixed local backend (Java on 3381).
+#
+# Copy to a private, git-ignored location (chmod 600), replace every illustrative
+# absolute path, and fill every empty secret. Start conventionally with no custom
+# environment variables, dotenv files, launchers or wrappers:
+#
+#   java -jar iot-agent-backend.jar \
+#     --spring.config.additional-location=file:/absolute/path/to/application.yaml
+#
+# This file is ordinary hierarchical Spring configuration — not a process,
+# executable, artifact or environment manifest. Required secrets stay empty on
+# purpose: the backend fails closed instead of starting with weak defaults, and
+# no real credential ever belongs in this file or in Git.
+
+spring:
+  application:
+    name: iot-agent-backend
+  config:
+    # Required contract: the shared bridge secret lives exactly once as the file
+    # agent.bridge.token inside a dedicated shared directory, imported here as
+    # native configtree properties. Never spell the token itself in any YAML.
+    import: 'configtree:/absolute/path/to/var/shared/'
+  # Customer history pages are large: a 500-row energy page is ~650KB, well past
+  # the 256KB codec default, which surfaced as "上游请求失败" instead of data.
+  codec:
+    max-in-memory-size: 8MB
+  datasource:
+    # Durable business facts and Pi Sessions live in MySQL. Credentials must match
+    # the ones the volume was initialized with; a mismatch fails, it never resets.
+    url: jdbc:mysql://127.0.0.1:3307/iot_agent?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai
+    username: iot_agent
+    password: ''
+  data:
+    redis:
+      # Coordination only; Redis never holds durable business facts.
+      url: redis://127.0.0.1:6380
+
+server:
+  address: 127.0.0.1
+  port: 3381
+  # tomcat:
+  #   accesslog:
+  #     enabled: true
+  #     directory: /absolute/path/to/var/logs
+
+agent:
+  bridge:
+    # Private Java -> Node bridge on the fixed sidecar port. The token itself is
+    # NOT here: it arrives only through the configtree import above.
+    base-url: http://127.0.0.1:3382
+    run-timeout-ms: 120000
+  report:
+    # Stamp written into generated report facts; set per deployed build.
+    build-id: local
+  heartbeat-ms: 15000
+  video:
+    # Exact browser origin of the separately served video player page; empty keeps
+    # cross-origin video playback closed. Never a wildcard or general CORS policy.
+    allowed-origin: ''
+  storage:
+    # Explicit external decision together with the connection settings above.
+    mysql:
+      enabled: true
+    redis:
+      enabled: true
+  task:
+    # Required 64-hex (32-byte) key guarding encrypted task execution identities;
+    # stable across restarts and backups. Empty fails closed at first use.
+    credential-key: ''
+
+admin:
+  # Required 64-hex (32-byte) key encrypting the admin configuration store.
+  config-secret-key: ''
+  # Required deployment administrator password; empty keeps login closed.
+  password: ''
+  password-minimum: 6
+  # Exact console origin Java accepts for admin submissions; equals the console's
+  # own origin, never 0.0.0.0.
+  origin: http://127.0.0.1:5185
+  # Local encrypted fallback store when MySQL storage is disabled.
+  config-file: var/admin-config.bin
+  # First-install managed defaults: they seed revision 1 only when no revision
+  # exists yet. Existing MySQL revisions always stay authoritative. Model and
+  # observability settings belong to the admin store, not to deployment config.
+  initial:
+    model-base-url: ''
+    model-id: ''
+    model-api-key: ''
+    context-window: 128000
+    max-output-tokens: 16384
+    reasoning: true
+    thinking-level: low
+    supports-developer-role: false
+    supports-reasoning-effort: true
+    supports-usage-in-streaming: true
+    max-tokens-field: max_completion_tokens
+    max-agent-turns: 6
+    max-tool-calls: 10
+    run-timeout-ms: 300000
+    draft-ttl-ms: 600000
+    heartbeat-ms: 15000
+    readback-wait-ms: 6000
+    control-timeout-ms: 25000
+    scan-interval-ms: 1000
+
+iot:
+  gateway:
+    # Customer gateway for real identity, observations and confirmed device
+    # control. Empty fails identity and scope reads closed instead of skipping
+    # verification. All other native iot.* route keys keep their packaged
+    # defaults and may be overridden here with the same kebab-case names.
+    base-url: ''
+    call-timeout-ms: 15000
+    office-scope-path: /micro-api/api/office/device/page
+    company-scope-path: /micro-api/api/iot-center/device/page
+  identity:
+    verify: true
+    verify-timeout-ms: 15000
+    refresh-interval-ms: 60000
+    max-validation-age-ms: 86400000
+    retry-cooldown-ms: 60000

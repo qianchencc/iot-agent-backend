@@ -6,7 +6,7 @@
 
 联调先配置独立端口、MySQL schema、Redis命名空间、Pi Session和Admin状态，不启用工具复制的旧 `var/` 或 Compose 卷，不重启/切换其他工作区服务。当前入口与冻结实例以 `.scratch/agent-business-recovery/local-preview.md` 为准。
 
-配置、启动、持久化或控制台变更前先读 [配置与数据治理规范](docs/configuration-governance.md) 和 [控制台实施与验证入口](.scratch/admin-console-governance/README.md)。部署入口使用显式外置 YAML，不加载 `.env`；MySQL 管可管理业务修订。历史盘点不作为当前运行证据。
+配置、启动、持久化或控制台变更前先读 [配置与数据治理规范](docs/configuration-governance.md) 和 [控制台实施与验证入口](.scratch/admin-console-governance/README.md)。部署为常规命令启动：Java `java -jar <backend.jar> --spring.config.additional-location=…`、Node `node dist/server.js --config …`、控制台在 `web/admin` 执行 `npm run dev`（见 [README 常规本地启动](README.md#常规本地启动)）；外置 YAML 显式指定，不加载 `.env`，无启动器脚本；MySQL 管可管理业务修订。历史盘点不作为当前运行证据。
 
 前端控制台在 `web/admin/`，使用 Vue3 / JavaScript / Vite / Element Plus，沿用 A「成员分栏」。白名单仅维护手机号与可选备注，独立于业务准入及任务。开发规范见 `web/admin/AGENTS.md`；运行和未验边界见治理入口。
 
@@ -41,8 +41,11 @@ Java 21（`--release 21` 编译，本机 JDK 25 运行）、Spring Boot 3.5.16�
 
 ```sh
 mvn test                 # 单元测试 + ArchUnit 边界规则
-mvn spring-boot:run      # 本地启动，127.0.0.1:3200
-curl -s http://127.0.0.1:3200/healthz
+mvn package              # 构建启动用 jar（target/iot-agent-backend-<version>.jar）
+
+# 三进程常规启动与外置 YAML 见 README「常规本地启动」（tmux 仅可选手动窗口）：
+java -jar target/iot-agent-backend-<version>.jar --spring.config.additional-location=file:/absolute/application.yaml
+curl -s http://127.0.0.1:3381/healthz
 ```
 
 ## 模块边界（deep module 纪律）

@@ -1,8 +1,16 @@
 import { buildApp } from "./app.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, type SidecarConfig } from "./config.js";
 import { createObservability, credentialsDigest, fetchObservabilitySettings } from "./observability.js";
 
-const config = loadConfig();
+// One explicit YAML file plus owner-only token files; there is no environment
+// or .env fallback, so a misconfigured deployment fails closed at startup.
+let config: SidecarConfig;
+try {
+  config = await loadConfig(process.argv.slice(2));
+} catch (error) {
+  console.error("agent-sidecar startup failed:", error instanceof Error ? error.message : error);
+  process.exit(1);
+}
 
 // One process owns one observability SDK: the settings snapshot is fetched at
 // startup from the Java admin configuration and never swapped afterwards.

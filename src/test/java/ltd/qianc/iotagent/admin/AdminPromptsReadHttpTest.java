@@ -13,7 +13,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.Set;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -133,7 +132,7 @@ class AdminPromptsReadHttpTest {
             initial.put("readbackWaitMs", 6000);
             initial.put("controlTimeoutMs", 25000);
             return AdminConfigurationFactory.encryptedFile(new ObjectMapper(), DIRECTORY.resolve("config.bin"),
-                    new byte[32], initial, Set.of());
+                    new byte[32], initial);
         }
     }
 }

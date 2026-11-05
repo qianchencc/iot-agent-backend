@@ -11,7 +11,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/server.js",
     "test": "tsx --test test/**/*.test.ts",
-    "test:process": "npm run build && node test/process-contract.mjs"
+    "test:process": "npm run build && node test/process-contract.mjs",
+    "test:startup": "npm run build && node test/startup-safety.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.84.4",
@@ -19,7 +20,8 @@
     "@langfuse/otel": "5.11.1",
     "@langfuse/tracing": "5.11.1",
     "@opentelemetry/sdk-node": "0.222.0",
-    "fastify": "5.12.1"
+    "fastify": "5.12.1",
+    "yaml": "2.9.0"
   },
   "overrides": {
     "@langfuse/core": "5.11.1",

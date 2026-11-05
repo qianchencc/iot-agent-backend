@@ -33,18 +33,31 @@ public final class DefaultReportFactProducer implements ReportFactProducer {
     private final ReportFactStore store;
     private final ObjectMapper mapper;
     private final ReportEvidenceService evidence;
+    private final String buildId;
+
+    public DefaultReportFactProducer(ReportFactStore store, ObjectMapper mapper,
+            IotAdapter iot, ObservationAdapter observations) {
+        this(store, mapper, iot, observations, Clock.systemUTC(), "local");
+    }
 
     @org.springframework.beans.factory.annotation.Autowired
     public DefaultReportFactProducer(ReportFactStore store, ObjectMapper mapper,
-            IotAdapter iot, ObservationAdapter observations) {
-        this(store, mapper, iot, observations, Clock.systemUTC());
+            IotAdapter iot, ObservationAdapter observations,
+            @org.springframework.beans.factory.annotation.Value("${agent.report.build-id:local}") String buildId) {
+        this(store, mapper, iot, observations, Clock.systemUTC(), buildId);
     }
 
     public DefaultReportFactProducer(ReportFactStore store, ObjectMapper mapper,
             IotAdapter iot, ObservationAdapter observations, Clock clock) {
+        this(store, mapper, iot, observations, clock, "local");
+    }
+
+    public DefaultReportFactProducer(ReportFactStore store, ObjectMapper mapper,
+            IotAdapter iot, ObservationAdapter observations, Clock clock, String buildId) {
         this.store = store;
         this.mapper = mapper;
-        this.evidence = new ReportEvidenceService(iot, observations, clock);
+        this.evidence = new ReportEvidenceService(iot, observations, clock, buildId);
+        this.buildId = buildId == null || buildId.isBlank() ? "local" : buildId.trim();
     }
 
     @Override
@@ -211,7 +224,7 @@ public final class DefaultReportFactProducer implements ReportFactProducer {
         result.put("coverage", coverage);
         result.put("meterIds", List.of());
         result.put("authorizationMeterIds", List.of());
-        result.put("build", System.getenv("AGENT_BUILD_ID") == null ? "local" : System.getenv("AGENT_BUILD_ID"));
+        result.put("build", buildId);
         result.put("taskId", checkpoint.taskId());
         return result;
     }

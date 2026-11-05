@@ -4,7 +4,58 @@ Java public backend plus an independent Node `agent-sidecar`: Spring Boot 3.5 / 
 
 架构约定、模块边界纪律与 Runtime→Java 模块映射见 [AGENTS.md](./AGENTS.md)；issue tracker 与领域文档规则见 `docs/agents/`。
 
-控制台已切换为 Vue3 / JavaScript / Element Plus，提供独立部署管理员登录、独立手机号名单、实际参数配置与按成员组织的公司／办公室操作审计。启动入口使用显式 YAML，不加载 `.env`；Node 从 Java 获取模型运行定义与启动观测快照，不再使用模型／Langfuse 环境回退。字段、启动方式与隔离验证证据见[控制台治理入口](.scratch/admin-console-governance/README.md)和[维护手册](web/admin/docs/maintenance.md)；未部署到生产，主开发实例不因本轮验证而切换。
+控制台已切换为 Vue3 / JavaScript / Element Plus，提供独立部署管理员登录、独立手机号名单、实际参数配置与按成员组织的公司／办公室操作审计。三个进程均以常规命令启动（Java 外置 `application.yaml`、Node 外置 `agent-engine.yaml`、控制台 `npm run dev`），不加载 `.env`；Node 从 Java 获取模型运行定义与启动观测快照，不再使用模型／Langfuse 环境回退。字段、启动方式与隔离验证证据见[控制台治理入口](.scratch/admin-console-governance/README.md)和[维护手册](web/admin/docs/maintenance.md)；当前固定开发实例与核对结果见下文，不表示已部署生产或完成真实业务验收。
+
+## 常规本地启动
+
+固定端口 Java `3381`、Node `3382`、管理控制台 `5185`。三个进程都用各自的常规命令启动：无启动器脚本、无自定义进程清单、不加载 `.env`。tmux 只是可选的手动终端——需要时自己 `tmux new -s backend` 开会话、逐窗口粘贴下列命令即可，不作为必需编排，也没有自动重启。
+
+```sh
+# 0. 构建（首次先安装依赖：agent-sidecar 与 web/admin 各执行一次 npm ci）
+mvn package
+npm --prefix agent-sidecar run build
+
+# 1. Java（终端一；java 不在 PATH 时用完整路径 /opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home/bin/java）
+java -jar target/iot-agent-backend-0.1.0.jar \
+  --spring.config.additional-location=file:./var/config/application.yaml
+curl -s http://127.0.0.1:3381/healthz        # 健康后再起 Node
+
+# 2. Node Agent Engine（终端二）
+node agent-sidecar/dist/server.js --config ./var/config/agent-engine.yaml
+
+# 3. 管理控制台（终端三）
+cd web/admin && npm run dev                  # http://127.0.0.1:5185/login
+```
+
+配置来源（仓根非机密模板 `application.example.yaml`／`agent-engine.example.yaml`；私密副本 0600、Git 忽略，由部署所有者维护）：
+
+- **Java `application.yaml`**：原生 Spring Boot 层级属性，含 `spring.datasource.url/username/password`、`spring.data.redis.url`、`agent.storage.mysql.enabled`、`agent.storage.redis.enabled`、`agent.bridge.base-url/run-timeout-ms`、`agent.task.credential-key`、`admin.config-secret-key/password/origin/config-file/password-minimum` 及既有原生 `iot.*`。Java 独占数据库、任务凭据、管理员与配置加密等安全根；桥接 Token 经 `spring.config.import: 'configtree:/absolute/path/to/shared/'` 从共享 secret 目录引入。
+- **共享桥接 Token**：专用共享目录下唯一的私密文件 `agent.bridge.token`，Java（configtree 导入）与 Node（`bridge.token-file`）读同一文件；Node 只拿到这个文件，不接触 Java 的 `application.yaml`、管理员或数据库凭据。
+- **Node `agent-engine.yaml`**：仅通用传输／资源设置，全部 kebab-case：`server.host/port`、`bridge.token-file`、`java.tools-url`、`java.sessions-url`（缺省按 `tools-url` 派生）、`java.token-file`（缺省同 `bridge.token-file`，测试夹具可显式指定独立回调 token）、`resources.java-tool-timeout-ms/run-timeout-ms/heartbeat-ms`。
+- 模型、指引、生成参数与观测设置不是启动输入：MySQL 管理的可管理业务修订仍是权威，Node 每次 `/run` 从 Java 获取完整模型定义快照，启动观测从 Java 私有接口拉取。
+- 需要固定版本时，把 jar 与 `agent-sidecar/dist` 复制到 `var/` 下带时间戳的目录，再用同一命令启动该副本，避免运行中的产物被下一次 `mvn package` 覆盖。
+
+控制台监听 `0.0.0.0:5185`（strict port，被占用直接失败，不漂移到 5186），仅代理 `/api/admin` 到 `127.0.0.1:3381`（`ADMIN_API_TARGET` 可覆盖）；`ADMIN_PROXY_ORIGIN`（默认 `http://127.0.0.1:5185`）必须等于 Java 的 `admin.origin`，而不是填 `0.0.0.0`。只有与来访 Host 同源的 HTTP Origin 才规范化为 Java 配置的源；外部 Origin 不改写，管理员密码、Cookie 和 CSRF 校验仍由 Java 执行。仅限可信开发网络；不是生产部署或公网 HTTPS 方案。Node 内部监听不因此对外开放。
+
+历史统一启动器（`tools/start-fixed-backend.py`、launch-YAML 清单）已于 2026-11-06 退役并随 `tools/` 删除；当时的启动／重入、局域网登录验证记录见[控制台统一启动验证（历史）](.scratch/fixed-console-startup/README.md)。
+
+## 本地基础设施（MySQL／Redis）
+
+Compose 只是基础设施前置：标准命令、原生 Compose secrets 文件注入 MySQL 密码，不用变量注入，也不用 `.env`：
+
+```sh
+# 秘密文件一次性创建（0600，Git 忽略；业务预览栈在 var/config/infrastructure/business/）
+# var/config/infrastructure/local/mysql-password 与 mysql-root-password，各写一个密码
+
+docker compose --env-file /dev/null -f compose.yaml config        # 解析检查
+docker compose --env-file /dev/null -f compose.yaml up -d mysql redis
+```
+
+- MySQL 8.4：`127.0.0.1:3307/iot_agent`；Redis 7.4：`127.0.0.1:6380`。MySQL 初始化脚本 `src/main/resources/db/mysql/agent-facts.sql`；持久卷 `var/docker/mysql`、`var/docker/redis`（均被忽略）。项目名、端口与卷保持不变。
+- 密码只经 `var/config/infrastructure/local/mysql-password`／`mysql-root-password`（业务栈 `var/config/infrastructure/business/` 同名文件）提供；`--env-file /dev/null` 固定禁用隐式 `.env` 发现，secrets 文件缺失时 compose 直接失败，无弱默认。
+- 已初始化卷的凭据以卷当初的初始化值为准：文件值不匹配时连接／健康检查显式失败，不自动重置或重建卷。仅首次新库在确认容器与卷归属本项目后执行 `up -d`。
+- 业务预览栈单独执行：`docker compose --env-file /dev/null -f compose.business-preview.yaml …`（`127.0.0.1:3338`／`6398`，独立命名卷，凭据不轮换）。
+- 原只读上游探针条目（`upstream-probe`）随 `tools/` 退役；其历史观察保留在[本地后端准备记录](docs/local-backend-preparation.md)。
 
 Java 构建、测试、启动和本地 healthz 验证命令见 [AGENTS.md](./AGENTS.md)。独立 sidecar 的安装、构建、启动和私有 HTTP contract 见 [agent-sidecar/README.md](./agent-sidecar/README.md)。
 
@@ -13,61 +64,14 @@ Java 构建、测试、启动和本地 healthz 验证命令见 [AGENTS.md](./AGE
 - 控制指令由 `iot.DeviceCommands` 统一校验，动作提案、编辑、任务与网关均拒绝小数、文本和溢出整数；版本参数由 `error.RequestValues` 区分缺省与显式非法值。HTTP 字段、响应及错误语义见 [Java 契约补充](docs/api/java-contract.md)。
 - 任务报告汇总实现隐藏在 `task.internal.TaskReportSummaries`；零告警的合法 null 保留。任务详情与报告共用当前授权裁剪，部分设备失权时不公开无法拆分的汇总／原始事实。
 - 结构资源与旧库升级统一归 `schema.SchemaMigrations`：规范代理主键、审计时间和字段注释，保留自然唯一键、Pi fencing／提交回执与一次性迁移记录。候选集使用会话内持久序号行分配句柄及唯一索引；不会逐次扫描全部历史句柄。
-- 当前完整源码干净隔离构建 `mvn package`：637 项、0 失败／错误／跳过；Node 34 项和 Pi Session 工程契约 30/30 通过。固定 Java `3381`／Node `3382` 已切换到 `var/fixed-latest-20261105-181818/` 的冻结产物，真实业务库升级前完成私密备份和独立恢复预演，升级后33表及原业务事实核验通过。[初次改进验证](.scratch/technical-spec-compliance/evidence/result.json)／[最新固定实例证据](.scratch/technical-spec-compliance/evidence/fixed-latest-20261105.json)。这是工程证据，不是生产部署或真实微信／设备执行验收。
+- 2026-11-06 原生启动改造的可交付源码快照经 `mvn clean package`：640 项、0 失败／错误／跳过；Node 34 项、启动安全 8 项、进程／重启契约及 Pi Session 工程契约 30/30 通过，管理端构建通过。固定 Java `3381`／Node `3382`／控制台 `5185` 已由助手逐窗口手动启动，后端冻结产物为 `var/fixed-native-20261106-014739/`；配置修订9、业务事实与 Pi fencing 保留，原 MySQL／Redis 实例未重启。实际配置页已在真实 Chrome 登录核对。构建排除并发未完成改动，并保留此前已部署的能耗投影；不声称其他工作区实验已通过。[当前固定实例证据](.scratch/technical-spec-compliance/evidence/native-startup-20261106.json)。
+- 技术规范初次改进及 2026-11-05 的637项构建／旧固定版本记录作为历史保留：[初次改进验证](.scratch/technical-spec-compliance/evidence/result.json)／[当轮固定实例证据](.scratch/technical-spec-compliance/evidence/fixed-latest-20261105.json)。以上均为工程证据，不是生产部署或真实微信／设备执行验收。
 
-
-`java` 不在 PATH：直接运行 jar 用 `/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home/bin/java`。
-
-## 固定开发后端：tmux 常驻
-
-固定 Java `3381`、Node `3382` 和管理控制台 `5185` 统一通过下列入口启动，不再挂在 Agent 临时服务或普通前台终端上：
-
-```sh
-/Users/qianchen/anaconda3/bin/python tools/start-fixed-backend.py
-tmux -L iot-agent-backend attach -t fixed-backend
-```
-
-- 需要 tmux、Python 3 和 PyYAML；本机上述 Python 已具备依赖。默认部署会话含 `java`、`node`、`console` 三个窗口；`Ctrl-b d` 只脱离，不停止服务。控制台依赖先在 `web/admin` 执行 `npm ci` 安装。
-- 私密部署配置为 `var/fixed-backend/launch.yaml`（0600，Git 忽略），指定产物、工作目录和分进程环境；非机密模板为仓库内 `fixed-backend.example.yaml`，必填秘密（桥接 Token、MySQL 密码、`TASK_CREDENTIAL_KEY`／`CONFIG_SECRET_KEY`／管理员密码）留空，缺失即 fail closed。不加载 `.env`（旧 `.env.example` 已删除），不重建或自动升级后端源码；模型／可管理业务配置仍按现有 MySQL 修订消费。
-- Java／Node直接启动配置指定的冻结产物；控制台启动配置指定的 Vite 入口，以 `web/admin` 为工作目录。各进程仅接收自己的显式环境，控制台不接收 Java／Node 的密码、数据库、模型或桥接凭据。
-- 当前固定版本及 PID／SHA256 以[最新运行证据](.scratch/technical-spec-compliance/evidence/fixed-latest-20261105.json)为准；Java、Node 均在 `var/fixed-latest-20261105-181818/`，不运行可被 Maven 覆盖的 `target/` 产物。升级只改私有 YAML 的产物路径和 Node 工作目录，原分进程环境及控制台进程保持不变。
-- 重复启动保留所有存活窗口，只补起已配置但缺失／退出的组件；端口被其他进程占用则拒绝替换，不杀占用者。状态查看：`tmux -L iot-agent-backend list-panes -s -t fixed-backend -F '#{window_name} pid=#{pane_pid} dead=#{pane_dead}'`。
-- 控制台监听 `0.0.0.0:5185`，本机访问 `http://127.0.0.1:5185/login`，同网访问 `http://<本机局域网IP>:5185/login`。仅限可信开发网络；不是生产部署或公网 HTTPS 方案。Node 内部监听不因此对外开放。
-- 控制台的 `console` 部署段如下；路径按实际安装位置填写。`ADMIN_PROXY_ORIGIN` 必须等于 Java 的 `admin.origin`／`ADMIN_ORIGIN`，而不是填 `0.0.0.0`。自定义后端专用配置不含 `console` 时只启动 Java／Node。
-
-```yaml
-console:
-  executable: /opt/homebrew/opt/node@22/bin/node
-  artifact: /absolute/repo/web/admin/node_modules/vite/bin/vite.js
-  working_directory: /absolute/repo/web/admin
-  environment:
-    PATH: /opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/bin:/bin
-    ADMIN_API_TARGET: http://127.0.0.1:3381
-    ADMIN_PROXY_ORIGIN: http://127.0.0.1:5185
-```
-
-- Vite 仅代理 `/api/admin`。只有与来访 Host 同源的 HTTP Origin 才规范化为 Java 配置的源；外部 Origin 不改写，管理员密码、Cookie 和 CSRF 校验仍由 Java 执行。端口被占用时直接失败，不自动漂移到5186。
-- tmux 解决终端／Agent 退出导致的失活，不提供进程崩溃自动重启或系统重启自启动。
-- 启动／重入、局域网地址真实登录及访问边界证据见[控制台统一启动验证](.scratch/fixed-console-startup/README.md)。
-
-## 本地基础设施与上游只读探针
-
-本地 MySQL／Redis 与只读上游探针不再有 `.env` 入口。非机密模板 `local-tools.example.yaml` 复制为私密 `var/local-tools/launch.yaml`（0600）并填入必填显式凭据后，经 `tools/run-local.py` 执行；该入口只执行选定条目、只传条目自身的显式环境：
-
-```sh
-python3 tools/run-local.py --config var/local-tools/launch.yaml --run infrastructure-local --check
-python3 tools/run-local.py --config var/local-tools/launch.yaml --run infrastructure-local -- config --quiet
-python3 tools/run-local.py --config var/local-tools/launch.yaml --run upstream-probe
-```
-
-- `compose.yaml` 不再有 MySQL 密码弱默认：`MYSQL_PASSWORD`／`MYSQL_ROOT_PASSWORD` 必须显式注入（业务预览栈的 `BUSINESS_*` 同理，用 `--run infrastructure-business`）。compose 条目固定 `--env-file /dev/null` 并设置 `COMPOSE_DISABLE_ENV_FILE='1'`，目录下即使残留 `.env` 也不会被隐式加载。
-- 已初始化的 `var/docker/mysql` 与业务预览卷保持当初的初始化凭据：注入值不匹配时连接／健康检查显式失败，不自动重置或重建卷。仅首次新库在确认容器／卷归属本项目后执行 `-- up -d mysql redis`。
-- `upstream-probe` 在独立条目中持有 `IOT_GATEWAY_BASE_URL`／`IOT_TEST_AUTHORIZATION`／`IOT_TEST_TENANTCODE`（浏览器捕获的临时只读身份），只输出脱敏统计，不进入任何后端进程环境。
 
 ## MySQL Pi Session cutover
 
 - Direct cutover, without importing old conversations. A transactional, one-time migration retires old public conversations; historical turns, drafts, tasks and reports are not deleted. Subsequent restarts preserve new MySQL conversations within the six-hour inactivity retention policy.
-- Start Node through `tools/start-sidecar.py`; it strips Java/MySQL/Redis/admin credentials from the child environment. Business capability changes belong in Java, not Node.
+- Start Node with the conventional command (`node dist/server.js --config <agent-engine.yaml>`, see [常规本地启动](#常规本地启动)); its YAML carries only generic engine settings, never Java/MySQL/Redis/admin credentials. Business capability changes belong in Java, not Node.
 - Administration exposes MySQL session health only. SQLite file backup/restore/capacity operations are removed. Back up the whole authoritative MySQL schema, including business facts, Pi tables and `storage_migrations`; restore into an independent database before any live cutover.
 - Current scope, execution tickets and **real UI evidence / unresolved cases**: [Pi Session acceptance](.scratch/pi-session-mysql/acceptance.md). Tests and HTTP success are engineering diagnostics, never business acceptance.
 
@@ -76,7 +80,7 @@ python3 tools/run-local.py --config var/local-tools/launch.yaml --run upstream-p
 - `task/internal/TaskProposalNormalizer` owns one-time, interval, recurring and conditional task definitions; `TaskFacade` owns human confirmation and plan/task management. Model tool calls cannot grant confirmation authority.
 - 新建任务命名采用“区域／对象＋动作或检查目标”，日期、时段和重复规则独立展示，不把整句请求或“今天／明天／后天”等相对日期当名称。创建入口同时规范化`title`和`label`：已有相对日期前缀的一次性任务按结构化执行时间转为上海时区具体日期，周期任务去掉该前缀、不固定首日日期；不改变执行时刻，不批量改写历史任务。见[命名工程验证](.scratch/task-title-naming/evidence/TITLE-01/result.json)，无真实任务确认或设备下发，前端创建路径不据此记为已验收。
 - `TaskScanner` and `task/internal/RealTaskExecutionGateway` own durable checkpoint execution, interruption/recovery, device reservations and terminal report/notification timing. A completed checkpoint does not end an open interval.
-- Java requires a stable `TASK_CREDENTIAL_KEY` (64 hex characters) to encrypt task/plan execution credentials. Missing configuration fails confirmation closed; never rotate the key while encrypted identities exist or pass it to Node.
+- Java requires a stable `agent.task.credential-key` (64 hex characters) to encrypt task/plan execution credentials. Missing configuration fails confirmation closed; never rotate the key while encrypted identities exist or pass it to Node.
 - `TaskPhaseIds` assigns only missing durable phase identities, shared by normal confirmation and interrupted-confirmation recovery.
 - `TaskDetailProjector` owns the shared detail/list/calendar/timeline/report shape. Frontend cards retain the confirmed task/plan identity instead of polling a proposal ID as if it were a task.
 - `storage` factories expose MySQL task facts, phases, plans, projections, confirmation recovery and completed Office action history; JDBC implementations stay under `storage/internal`. Confirmation and management writes are transactional; external authorization/device calls stay outside those transactions.

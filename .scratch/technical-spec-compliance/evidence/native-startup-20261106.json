@@ -1,0 +1,112 @@
+{
+  "recordedAt": "2026-11-06T02:06:55+0800",
+  "scope": "Native Spring Boot/Node/Vite startup; no Python launcher or tools directory; engineering checks only",
+  "source": {
+    "baseCommit": "264d9aa59ed6c8708a0b82f38338630eb7fe1be9",
+    "buildScope": "Isolated deliverable snapshot; unrelated concurrent worktree experiments excluded; previously deployed energy projection preserved",
+    "javaSourceDigest": "674176621bbc0d6c2bafc0b3f850db32f53bb32edeafd7018041bf3d06aae168",
+    "engineSourceDigest": "2a3ac05243509fce63f62de109c6eed106c893bd8cfacdf83a0abd935664384b"
+  },
+  "verification": {
+    "java": {
+      "command": "mvn clean package",
+      "tests": 640,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "success": true,
+      "surefireForkShutdownWarningObserved": true
+    },
+    "engineTests": {
+      "passed": 34,
+      "failed": 0
+    },
+    "startupSafety": {
+      "passed": 8,
+      "failed": 0
+    },
+    "processRestartContract": "passed with real isolated Java/MySQL fixture",
+    "piSessionConformance": {
+      "passed": 30,
+      "failed": 0,
+      "skipped": 0
+    },
+    "adminBuild": "passed; existing large-chunk warning",
+    "nativeBootstrap": "Real isolated MySQL/Redis plus clean-environment java -jar, configtree shared token and node --config passed",
+    "composeSecrets": "Both definitions parse without dotenv; isolated official MySQL _FILE bootstrap, root/application login and native health command passed"
+  },
+  "runtime": {
+    "startedAt": "2026-11-06T01:55:33+0800",
+    "release": "var/fixed-native-20261106-014739",
+    "javaJarSha256": "0b4f0d2a97522a28338a4d395af4e596a6b7dbfe4bab3de3f732ee41b2554e4c",
+    "ports": {
+      "java": 3381,
+      "engine": 3382,
+      "console": 5185
+    },
+    "tmuxSocket": "iot-agent-backend",
+    "tmuxSession": "fixed-backend",
+    "panePids": {
+      "java": 59916,
+      "node": 59918,
+      "console": 59931
+    },
+    "commands": "Manually executed normal java -jar, node --config and npm run dev in separate tmux windows; safe OS environment only, no secret environment injection",
+    "javaHealth": 200,
+    "engineHealth": 200,
+    "piHealth": "PI_SESSION_MYSQL_OK",
+    "privateRoutesWithoutAuth": [
+      401,
+      401
+    ],
+    "savedRevision": 9,
+    "activeRevision": 9,
+    "pendingRestart": false
+  },
+  "preservation": {
+    "quiescentBackup": "private ignored var/ snapshot; owner-only; not published",
+    "factTablesCompared": 33,
+    "existingFactRowCountChanges": {},
+    "savedAndActiveSettingsUnchanged": true,
+    "configurationCiphertextsUnchanged": true,
+    "candidatePayloadsUnchanged": true,
+    "piFencingAndLeaseFieldsUnchanged": true,
+    "publicConversationRetirementStateUnchanged": true,
+    "originalMysqlAndRedisRetained": [
+      {
+        "name": "iot-agent-business-preview-mysql-1",
+        "retained_running_instance": true
+      },
+      {
+        "name": "iot-agent-business-preview-redis-1",
+        "retained_running_instance": true
+      }
+    ]
+  },
+  "realBrowser": {
+    "browser": "User Chrome relay",
+    "url": "http://127.0.0.1:5185/login",
+    "normalAdminLogin": true,
+    "configurationRevisionSeen": 9,
+    "pageAndConsoleErrors": 0,
+    "retiredEnvironmentLockUiAbsent": true,
+    "savedConfiguration": false,
+    "testedModelConnection": false,
+    "screenshotInspected": true,
+    "tabClosed": true
+  },
+  "configuration": {
+    "java": "var/config/application.yaml",
+    "engine": "var/config/agent-engine.yaml",
+    "sharedBridgeToken": "var/config/shared/agent.bridge.token",
+    "privateFileMode": "0600",
+    "dotenvRequired": false,
+    "pythonRequired": false,
+    "toolsDirectoryRemoved": true,
+    "oldLaunchManifestsArchivedPrivatelyAndRemovedFromActivePaths": true
+  },
+  "limits": [
+    "No production deployment or real WeChat/device-control/task/notification acceptance was performed",
+    "Unrelated concurrent worktree experiments are not claimed as passing or included in this deliverable"
+  ]
+}

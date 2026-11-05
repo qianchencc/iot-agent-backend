@@ -39,17 +39,15 @@ public final class EncryptedFileAdminConfigurationStore implements AdminConfigur
     private final ObjectMapper mapper;
     private final Path path;
     private final byte[] key;
-    private final Set<String> locked;
     private final SecureRandom random = new SecureRandom();
     private State state;
 
     public EncryptedFileAdminConfigurationStore(ObjectMapper mapper, Path path, byte[] key,
-            Map<String, Object> initial, Set<String> locked) {
+            Map<String, Object> initial) {
         this.mapper = Objects.requireNonNull(mapper);
         this.path = Objects.requireNonNull(path);
         this.key = key.clone();
-        if (this.key.length != 32) throw new IllegalArgumentException("CONFIG_SECRET_KEY must be 32 bytes");
-        this.locked = Set.copyOf(locked);
+        if (this.key.length != 32) throw new IllegalArgumentException("admin.config-secret-key must be 32 bytes");
         this.state = load(initial);
     }
 
@@ -64,16 +62,14 @@ public final class EncryptedFileAdminConfigurationStore implements AdminConfigur
                     "activeConfigured", Boolean.TRUE.equals(hasValue(active.get(secret)))));
         }
         return new ConfigurationView(state.latestRevision(), changed.isEmpty() ? state.latestRevision() : state.revisions.get(state.activeIndex).revision,
-                publicSettings(saved), publicSettings(active), secrets, List.copyOf(locked), !changed.isEmpty(),
+                publicSettings(saved), publicSettings(active), secrets, !changed.isEmpty(),
                 changed, false, deployment);
     }
 
     @Override
     public synchronized SaveResult save(long expectedRevision, Map<String, Object> changes, String actor) {
         if (state.latestRevision() != expectedRevision) return new SaveResult(409, "CONFIG_VERSION_CONFLICT", List.of());
-        if (changes == null || changes.keySet().stream().anyMatch(name -> locked.contains(name))) {
-            return new SaveResult(409, "CONFIG_ENV_LOCKED", List.of());
-        }
+        if (changes == null) return new SaveResult(400, "CONFIG_INVALID", List.of());
         List<String> unsupported = changes.keySet().stream().filter(RetiredCacheSettings.NAMES::contains).toList();
         if (!unsupported.isEmpty()) return new SaveResult(400, "CONFIG_UNSUPPORTED", unsupported);
         List<String> deployment = changes.keySet().stream().filter(DeploymentReportedSettings.NAMES::contains).toList();
@@ -105,7 +101,6 @@ public final class EncryptedFileAdminConfigurationStore implements AdminConfigur
         Map<String, Object> changes = new LinkedHashMap<>(target.settings);
         RetiredCacheSettings.NAMES.forEach(changes::remove);
         DeploymentReportedSettings.NAMES.forEach(changes::remove);
-        locked.forEach(changes::remove);
         return save(expectedRevision, changes, actor);
     }
 
