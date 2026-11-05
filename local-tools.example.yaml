@@ -1,0 +1,73 @@
+# Nonsecret template for local infrastructure and the read-only upstream probe.
+#
+# Copy to var/local-tools/launch.yaml (git-ignored), chmod 600, and fill every empty
+# secret. tools/run-local.py validates and execs only the selected entry with exactly
+# the entry's environment; it never loads .env and never inherits the ambient shell.
+# Validation only:            python3 tools/run-local.py --config var/local-tools/launch.yaml --run infrastructure-local --check
+# Quiet compose validation:   python3 tools/run-local.py --config var/local-tools/launch.yaml --run infrastructure-local -- config --quiet
+# Read-only probe:            python3 tools/run-local.py --config var/local-tools/launch.yaml --run upstream-probe
+#
+# Compose entries disable implicit .env discovery twice (--env-file /dev/null and
+# COMPOSE_DISABLE_ENV_FILE='1'), so even a stray .env next to the compose file is
+# never loaded. compose.yaml provides no MySQL password defaults: the values below
+# are required and must be injected explicitly or compose refuses to run.
+#
+# Existing volumes keep the credentials they were initialized with: mysql only reads
+# MYSQL_PASSWORD/MYSQL_ROOT_PASSWORD on first initialization of an empty volume, so
+# a mismatch fails authentication instead of resetting or re-creating the volume.
+# Never delete var/docker/mysql or a business volume to "fix" a mismatch. Only for a
+# first-time empty volume, after confirming this project owns the containers/volumes,
+# run:  python3 tools/run-local.py --config var/local-tools/launch.yaml --run infrastructure-local -- up -d mysql redis
+
+infrastructure-local:
+  command:
+    - /opt/homebrew/bin/docker
+    - compose
+    - --env-file
+    - /dev/null
+    - -f
+    - /Users/yourname/dev/iot-agent-backend/compose.yaml
+  working_directory: /Users/yourname/dev/iot-agent-backend
+  environment:
+    # docker resolves its Colima context from $HOME/.docker; keep it explicit.
+    HOME: '/Users/yourname'
+    PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
+    COMPOSE_DISABLE_ENV_FILE: '1'
+    # Nonsecret local identifiers/ports (compose defaults shown) plus the two
+    # required secrets; compose.yaml itself carries no password default.
+    MYSQL_DATABASE: 'iot_agent'
+    MYSQL_USERNAME: 'iot_agent'
+    MYSQL_PORT: '3307'
+    REDIS_PORT: '6380'
+    MYSQL_PASSWORD: ''        # required; explicit injection, no default
+    MYSQL_ROOT_PASSWORD: ''   # required; explicit injection, no default
+
+infrastructure-business:
+  command:
+    - /opt/homebrew/bin/docker
+    - compose
+    - --env-file
+    - /dev/null
+    - -f
+    - /Users/yourname/dev/iot-agent-backend/compose.business-preview.yaml
+  working_directory: /Users/yourname/dev/iot-agent-backend
+  environment:
+    HOME: '/Users/yourname'
+    PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
+    COMPOSE_DISABLE_ENV_FILE: '1'
+    # Fixed business-preview identifiers/ports live in compose.business-preview.yaml;
+    # only the initialization passwords are injected, and no rotation happens here.
+    BUSINESS_MYSQL_PASSWORD: ''        # required; explicit injection, no default
+    BUSINESS_MYSQL_ROOT_PASSWORD: ''   # required; explicit injection, no default
+
+upstream-probe:
+  command:
+    - /opt/homebrew/opt/node@22/bin/node
+    - /Users/yourname/dev/iot-agent-backend/tools/probe-upstream-readonly.mjs
+  working_directory: /Users/yourname/dev/iot-agent-backend
+  environment:
+    IOT_GATEWAY_BASE_URL: 'https://ncim.577119.com'
+    # Browser-derived identity for explicitly authorized local read-only probes only;
+    # the probe fails closed while these are empty. Never commit or log the values.
+    IOT_TEST_AUTHORIZATION: ''
+    IOT_TEST_TENANTCODE: ''

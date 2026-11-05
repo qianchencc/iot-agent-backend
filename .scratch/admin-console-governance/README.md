@@ -9,6 +9,7 @@
 - 同一真实账号在微信开发者工具完成办公室照明查询（7台关闭）与公司设备统计（334台），管理端同一成员下出现两来源请求／完成记录，可读公开答复。Node采用观测修订6，本地接收端收到实际span；随后关闭诊断观测、保存修订7并重启确认关闭。重启后同一公司对话仍能回答334台，业务审计保留公司4条／办公室2条记录。这不是客户Langfuse部署验收。
 - Java 聚焦10组共62项通过；Node类型检查、34项测试与构建通过，前端构建通过。全套551项运行中549项通过、1项跳过、1项动作草案用例报错：`ActionDraftProposalContractTest.rootAndLightingExclusionsMergeByDeviceIdentityInsteadOfReferenceSpelling`；未以排除该用例冒充全绿，也未改动该并行业务。
 - 截图、精确命令、审查修复及未验证边界见[收口票据](issues/05-console-acceptance.md)和[本轮结果](evidence/CONSOLE-20261104/result.json)。真实设备执行、生产任务／通知和原生浏览器200%缩放未验收；已查320px及200%等效视口，不把工程测试冒充真实执行。
+- no-`.env` 本机切换（2026-11-05）：根 `.env` 的38项配置已分类、私密归档并删除，`.env.example` 已由 `fixed-backend.example.yaml`／`local-tools.example.yaml` 取代。必要基础设施及探针配置在 `var/local-tools/launch.yaml`（0600），固定后端 YAML 与现有 MySQL 修订不被旧值覆盖。`tools/run-local.py` 仅执行选定条目及其显式环境；Compose 禁用隐式 `.env` 并移除密码弱默认。15项工具回归、两套实际 Compose 解析、隔离探针与固定启动器无文件重入通过；当前业务配置修订9及密文、Pi记录、MySQL／Redis容器和卷保持。见[清理与运行证据](../root-dotenv-retirement/evidence/result.json)。2026-11-03盘点及历史命令保留原貌，不冒充当前入口，也不声称其他工作区已切换。
 
 
 ## 用户已确定

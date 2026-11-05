@@ -28,7 +28,7 @@ tmux -L iot-agent-backend attach -t fixed-backend
 ```
 
 - 需要 tmux、Python 3 和 PyYAML；本机上述 Python 已具备依赖。默认部署会话含 `java`、`node`、`console` 三个窗口；`Ctrl-b d` 只脱离，不停止服务。控制台依赖先在 `web/admin` 执行 `npm ci` 安装。
-- 私密部署配置为 `var/fixed-backend/launch.yaml`（0600，Git 忽略），指定产物、工作目录和分进程环境。不加载 `.env`，不重建或自动升级后端源码；模型／可管理业务配置仍按现有 MySQL 修订消费。
+- 私密部署配置为 `var/fixed-backend/launch.yaml`（0600，Git 忽略），指定产物、工作目录和分进程环境；非机密模板为仓库内 `fixed-backend.example.yaml`，必填秘密（桥接 Token、MySQL 密码、`TASK_CREDENTIAL_KEY`／`CONFIG_SECRET_KEY`／管理员密码）留空，缺失即 fail closed。不加载 `.env`（旧 `.env.example` 已删除），不重建或自动升级后端源码；模型／可管理业务配置仍按现有 MySQL 修订消费。
 - Java／Node直接启动配置指定的冻结产物；控制台启动配置指定的 Vite 入口，以 `web/admin` 为工作目录。各进程仅接收自己的显式环境，控制台不接收 Java／Node 的密码、数据库、模型或桥接凭据。
 - 当前固定版本及 PID／SHA256 以[最新运行证据](.scratch/technical-spec-compliance/evidence/fixed-latest-20261105.json)为准；Java、Node 均在 `var/fixed-latest-20261105-181818/`，不运行可被 Maven 覆盖的 `target/` 产物。升级只改私有 YAML 的产物路径和 Node 工作目录，原分进程环境及控制台进程保持不变。
 - 重复启动保留所有存活窗口，只补起已配置但缺失／退出的组件；端口被其他进程占用则拒绝替换，不杀占用者。状态查看：`tmux -L iot-agent-backend list-panes -s -t fixed-backend -F '#{window_name} pid=#{pane_pid} dead=#{pane_dead}'`。
@@ -50,6 +50,19 @@ console:
 - tmux 解决终端／Agent 退出导致的失活，不提供进程崩溃自动重启或系统重启自启动。
 - 启动／重入、局域网地址真实登录及访问边界证据见[控制台统一启动验证](.scratch/fixed-console-startup/README.md)。
 
+## 本地基础设施与上游只读探针
+
+本地 MySQL／Redis 与只读上游探针不再有 `.env` 入口。非机密模板 `local-tools.example.yaml` 复制为私密 `var/local-tools/launch.yaml`（0600）并填入必填显式凭据后，经 `tools/run-local.py` 执行；该入口只执行选定条目、只传条目自身的显式环境：
+
+```sh
+python3 tools/run-local.py --config var/local-tools/launch.yaml --run infrastructure-local --check
+python3 tools/run-local.py --config var/local-tools/launch.yaml --run infrastructure-local -- config --quiet
+python3 tools/run-local.py --config var/local-tools/launch.yaml --run upstream-probe
+```
+
+- `compose.yaml` 不再有 MySQL 密码弱默认：`MYSQL_PASSWORD`／`MYSQL_ROOT_PASSWORD` 必须显式注入（业务预览栈的 `BUSINESS_*` 同理，用 `--run infrastructure-business`）。compose 条目固定 `--env-file /dev/null` 并设置 `COMPOSE_DISABLE_ENV_FILE='1'`，目录下即使残留 `.env` 也不会被隐式加载。
+- 已初始化的 `var/docker/mysql` 与业务预览卷保持当初的初始化凭据：注入值不匹配时连接／健康检查显式失败，不自动重置或重建卷。仅首次新库在确认容器／卷归属本项目后执行 `-- up -d mysql redis`。
+- `upstream-probe` 在独立条目中持有 `IOT_GATEWAY_BASE_URL`／`IOT_TEST_AUTHORIZATION`／`IOT_TEST_TENANTCODE`（浏览器捕获的临时只读身份），只输出脱敏统计，不进入任何后端进程环境。
 
 ## MySQL Pi Session cutover
 

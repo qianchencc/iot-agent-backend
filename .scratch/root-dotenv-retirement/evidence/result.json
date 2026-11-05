@@ -1,0 +1,102 @@
+{
+  "recorded_at": "2026-11-05T23:53:26+0800",
+  "scope": "Retire repository-root dotenv; explicit local YAML and child environment only. No production deployment or real business acceptance.",
+  "root_dotenv_removed": true,
+  "dotenv_example_removed": true,
+  "legacy_key_count": 38,
+  "legacy_key_destinations": {
+    "IOT_GATEWAY_BASE_URL": "Existing var/fixed-backend/launch.yaml; current value retained, legacy root value not substituted",
+    "SERVER_PORT": "Existing var/fixed-backend/launch.yaml; current value retained, legacy root value not substituted",
+    "SIDECAR_PORT": "Existing var/fixed-backend/launch.yaml; current value retained, legacy root value not substituted",
+    "JAVA_AGENT_TOOLS_URL": "Existing var/fixed-backend/launch.yaml; current value retained, legacy root value not substituted",
+    "JAVA_AGENT_SESSIONS_URL": "Existing var/fixed-backend/launch.yaml; current value retained, legacy root value not substituted",
+    "AGENT_CONTROL_MODE": "Existing var/fixed-backend/launch.yaml; current value retained, legacy root value not substituted",
+    "IOT_GATEWAY_CALL_TIMEOUT_MS": "Existing var/fixed-backend/launch.yaml; current value retained, legacy root value not substituted",
+    "IOT_GATEWAY_OFFICE_SCOPE_PATH": "Existing var/fixed-backend/launch.yaml; current value retained, legacy root value not substituted",
+    "IOT_GATEWAY_COMPANY_SCOPE_PATH": "Existing var/fixed-backend/launch.yaml; current value retained, legacy root value not substituted",
+    "IOT_IDENTITY_VERIFY": "Existing var/fixed-backend/launch.yaml; current value retained, legacy root value not substituted",
+    "IOT_IDENTITY_VERIFY_TIMEOUT_MS": "Existing var/fixed-backend/launch.yaml; current value retained, legacy root value not substituted",
+    "AGENT_BRIDGE_BASE_URL": "Existing var/fixed-backend/launch.yaml; current value retained, legacy root value not substituted",
+    "AGENT_BRIDGE_RUN_TIMEOUT_MS": "Current Java transport default/runtime definition; legacy root override archived, not reapplied",
+    "AGENT_HEARTBEAT_MS": "Existing MySQL heartbeat setting/runtime default; legacy root override archived, not reapplied",
+    "MODEL_BASE_URL": "Existing MySQL admin revision; legacy root value archived, not reapplied",
+    "MODEL_API_KEY": "Existing MySQL admin revision; legacy root value archived, not reapplied",
+    "MODEL_ID": "Existing MySQL admin revision; legacy root value archived, not reapplied",
+    "AGENT_THINKING_LEVEL": "Existing MySQL admin revision; legacy root value archived, not reapplied",
+    "MYSQL_DATABASE": "var/local-tools/launch.yaml:infrastructure-local.environment",
+    "MYSQL_USERNAME": "var/local-tools/launch.yaml:infrastructure-local.environment",
+    "MYSQL_PASSWORD": "var/local-tools/launch.yaml:infrastructure-local.environment",
+    "MYSQL_ROOT_PASSWORD": "var/local-tools/launch.yaml:infrastructure-local.environment",
+    "MYSQL_PORT": "var/local-tools/launch.yaml:infrastructure-local.environment",
+    "REDIS_PORT": "var/local-tools/launch.yaml:infrastructure-local.environment",
+    "AGENT_MYSQL_URL": "Existing var/fixed-backend/launch.yaml; current value retained, legacy root value not substituted",
+    "AGENT_MYSQL_USERNAME": "Existing var/fixed-backend/launch.yaml; current value retained, legacy root value not substituted",
+    "AGENT_MYSQL_PASSWORD": "Existing var/fixed-backend/launch.yaml; current value retained, legacy root value not substituted",
+    "AGENT_REDIS_URL": "Existing var/fixed-backend/launch.yaml; current value retained, legacy root value not substituted",
+    "AGENT_STORAGE_MYSQL_ENABLED": "Existing var/fixed-backend/launch.yaml; current value retained, legacy root value not substituted",
+    "AGENT_STORAGE_REDIS_ENABLED": "Existing var/fixed-backend/launch.yaml; current value retained, legacy root value not substituted",
+    "IOT_TEST_AUTHORIZATION": "var/local-tools/launch.yaml:upstream-probe.environment",
+    "IOT_TEST_TENANTCODE": "var/local-tools/launch.yaml:upstream-probe.environment",
+    "AGENT_BRIDGE_TOKEN": "Existing var/fixed-backend/launch.yaml; current value retained, legacy root value not substituted",
+    "CONFIG_SECRET_KEY": "Existing var/fixed-backend/launch.yaml; current value retained, legacy root value not substituted",
+    "ADMIN_PASSWORD": "Existing var/fixed-backend/launch.yaml; current value retained, legacy root value not substituted",
+    "LANGFUSE_BASE_URL": "Existing MySQL admin revision; legacy root value archived, not reapplied",
+    "LANGFUSE_PUBLIC_KEY": "Existing MySQL admin revision; legacy root value archived, not reapplied",
+    "LANGFUSE_SECRET_KEY": "Existing MySQL admin revision; legacy root value archived, not reapplied"
+  },
+  "private_configuration": {
+    "fixed_backend": "var/fixed-backend/launch.yaml",
+    "local_tools": "var/local-tools/launch.yaml",
+    "local_tools_mode": "0o600",
+    "legacy_private_archive": "var/dotenv-retirement-20261105-233547/root-environment-before-retirement.txt",
+    "archive_mode": "0o600",
+    "no_secret_values_or_hashes_published": true
+  },
+  "entry_checks": {
+    "infrastructure-local": 0,
+    "infrastructure-business": 0,
+    "upstream-probe": 0
+  },
+  "verification": {
+    "python_tools_tests": {
+      "command": "/Users/qianchen/anaconda3/bin/python -m unittest discover -s tools -p 'test_*.py' -v",
+      "passed": 15,
+      "failures": 0
+    },
+    "real_compose_profiles_rendered": [
+      "infrastructure-local",
+      "infrastructure-business"
+    ],
+    "compose_render_identical_before_after_root_removal": true,
+    "ambient_secret_override_ignored": true,
+    "missing_explicit_mysql_secret_rejected_despite_root_dotenv_and_ambient_value": true,
+    "local_probe_smoke": {
+      "exit_code": 0,
+      "local_http_requests": 6,
+      "explicit_probe_identity_used": true,
+      "ambient_and_root_dotenv_identity_ignored": true,
+      "customer_upstream_called": false
+    },
+    "fixed_launcher_reentry_exit": 0,
+    "fixed_launcher_did_not_replace_processes": true,
+    "java_health_http": 200,
+    "node_health_http": 200
+  },
+  "preserved": {
+    "fixed_launch_bytes_unchanged": true,
+    "saved_revision": 9,
+    "active_revision": 9,
+    "pending_restart": false,
+    "configuration_revision_ciphertexts_unchanged": true,
+    "pi_fact_counts_unchanged": true,
+    "mysql_redis_container_processes_and_mounts_unchanged": true,
+    "local_and_business_mysql_credentials_preserved": true,
+    "business_project_loopback_port_and_volume_preserved": true
+  },
+  "limits": [
+    "No Compose up/down/recreate, schema migration or credential rotation was executed.",
+    "No customer gateway request, real device control, task creation, notification or configuration mutation was executed.",
+    "Existing frozen workspaces and historical .scratch commands remain historical evidence; they are not new launch entry points.",
+    "No Java/Node/UI source was modified or rebuilt for this configuration cutover."
+  ]
+}

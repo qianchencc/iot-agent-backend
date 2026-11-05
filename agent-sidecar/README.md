@@ -2,7 +2,7 @@
 
 Node 22 / published Pi 0.84.4. Java owns business instructions, tool schemas, authorization, device/task/report behavior, model policy and durable Pi Session storage in MySQL. Node owns the generic Pi loop, streaming, tool transport and checkpoint/recovery mechanics. It has no runtime dependency on `../iot-agent-runtime`, no database credentials and no SQLite or local session volume.
 
-> 配置迁移状态（2026-11-03）：下方环境启动命令记录当前旧实现。新规范已确定以显式外置配置启动、不使用 `.env`；启动器与全部调用方尚未切换。修改启动前先读[统一治理规范](../docs/configuration-governance.md)和[盘点／交付入口](../.scratch/admin-console-governance/README.md)，不要仅改文档后重启现有实例。
+> 配置迁移状态（2026-11-05）：显式外置 YAML 已是仓内唯一启动路径，仓库不再提供 `.env` 模板。固定实例由 `tools/start-fixed-backend.py` 以私密 `var/fixed-backend/launch.yaml` 启动（模板 [`fixed-backend.example.yaml`](../fixed-backend.example.yaml)）。改动前先读[统一治理规范](../docs/configuration-governance.md)和[盘点／交付入口](../.scratch/admin-console-governance/README.md)；不要绕过该入口重启现有实例。
 
 ## Build and run
 
@@ -11,19 +11,25 @@ npm ci
 npm run build
 ```
 
-The deployment process provides an explicit environment to the launcher, not directly to Node:
+The deployment process provides an explicit environment to the launcher, never an implicit dotenv file. The fixed deployment starts this component as the `node` entry of the private launch YAML through `tools/start-fixed-backend.py` (single foreground component: `tools/start-fixed-backend.py --run node`, started only after Java serves its configuration):
 
-```sh
-SIDECAR_HOST=127.0.0.1 \
-SIDECAR_PORT=3382 \
-AGENT_BRIDGE_TOKEN='deployment-token' \
-JAVA_AGENT_TOOLS_URL='http://127.0.0.1:3381/internal/agent/tools' \
-JAVA_AGENT_TOOLS_TOKEN='deployment-callback-token' \
-JAVA_AGENT_SESSIONS_URL='http://127.0.0.1:3381/internal/agent/sessions' \
-python tools/start-sidecar.py
+```yaml
+node:
+  executable: /opt/homebrew/opt/node@22/bin/node
+  artifact: /Users/yourname/dev/iot-agent-backend/var/fixed-latest-YYYYMMDD-HHMMSS/agent-sidecar/dist/server.js
+  working_directory: /Users/yourname/dev/iot-agent-backend/var/fixed-latest-YYYYMMDD-HHMMSS/agent-sidecar
+  environment:
+    SIDECAR_HOST: '127.0.0.1'               # private bridge; the frontend never calls Node
+    SIDECAR_PORT: '3382'
+    AGENT_BRIDGE_TOKEN: ''                   # same random local-only token as the java entry
+    JAVA_AGENT_TOOLS_URL: 'http://127.0.0.1:3381/internal/agent/tools'
+    JAVA_AGENT_TOOLS_TOKEN: ''               # must equal the java entry's AGENT_BRIDGE_TOKEN
+    JAVA_AGENT_SESSIONS_URL: 'http://127.0.0.1:3381/internal/agent/sessions'
 ```
 
-The launcher never reads `.env` or another implicit dotenv file. It passes only the sidecar environment allowlist. An optional directory argument selects an immutable release containing `dist/`, `package.json` and installed dependencies. The application directory may be read-only; session data is not written there.
+Empty secrets fail closed until the private copy is filled; the node entry receives no database, Redis, admin, model or Langfuse bootstrap values. `tools/start-sidecar.py` remains the allowlist exec wrapper for starting a standalone release with an explicit environment.
+
+The wrapper never reads `.env` or another implicit dotenv file and passes only the sidecar environment allowlist. An optional directory argument selects an immutable release containing `dist/`, `package.json` and installed dependencies; the application directory may be read-only and session data is not written there.
 
 
 ## Configuration
