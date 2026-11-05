@@ -66,3 +66,9 @@
 新独立空库中，F06最初连续失败：统一工具定义暴露Company专属targets，模型用于Office后被服务端正确拒绝，用户却拿不到合法确认单。Java现按来源提供缓存的任务契约：Office只暴露明确actions/候选引用，Company保留完整范围targets；不放宽后台来源校验，不在Node中新增分支。
 
 Java21下原自然语言请求已在真实开发者工具得到“2026-11-04 09:00、26楼运营办公区全部4盏、单次”待确认单，保留目前已满足的设备。F07页面重开仍保留同一确认单和4盏目标，未点击创建或执行。证据：[修复后确认单](../../pi-session-mysql/evidence/F06-office-once-task-proposal/java21/03-result.png)、[重开](../../pi-session-mysql/evidence/F07-office-proposal-reopen/03-pending-proposal-reopened.png)。其余执行内核/间隔场景不因这两条UI结果自动闭票。
+
+## 2026-11-04 Company 候选集定时提案协议修复
+
+“2分钟后把这些灯关掉”出现三次编排未完成和无确认卡。已对照原 Runtime 区分候选集任务与 Company targets 的收尾方式，修正 Java 发送 `completion` 却未关闭工具阶段的矛盾；首项仍允许第二项独立任务，不以强制停止掩盖问题。真实原账号、原会话、3381 原位更新后，同一句话一次编排生成含运营部全部5路照明和执行时间的待确认卡片，未点击创建，任务数仍为0。原 Runtime、Node 和前端源码不变。
+
+证据及红绿回归、两套完整构建的实际范围见[迁移记录](../../agent-runtime-semantic-parity/README.md#候选集定时任务无确认卡修复2026-11-04)、[真实卡片](../../agent-runtime-semantic-parity/evidence/SEM-TASK-TRANSPORT/04-exact-request-result.png)和[脱敏清单](../../agent-runtime-semantic-parity/evidence/SEM-TASK-TRANSPORT/result.json)。这只补齐本次 Company 提案链路，不将本票其余区间、确认恢复或到期执行条目自动标为通过。

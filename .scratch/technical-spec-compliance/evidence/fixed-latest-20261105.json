@@ -1,0 +1,118 @@
+{
+  "recorded_at": "2026-11-05T18:48:11+0800",
+  "scope": "Fixed local development backend update; engineering evidence only, not production rollout or real WeChat business acceptance",
+  "java": {
+    "url": "http://127.0.0.1:3381",
+    "pid": 44705,
+    "artifact": "var/fixed-latest-20261105-181818/backend.jar",
+    "sha256": "ede104c3e9c0ef91713a46205072c2b8a0fbf864f4246bfeb671a6aabf3115d3",
+    "source_snapshot_sha256": "db11d83922040e27ec9a9b2007e912fadd00d182fa4956a66d505d306b4eafed",
+    "source_current": true,
+    "actual_process_entry_verified": true,
+    "health_http": 200
+  },
+  "node": {
+    "url": "http://127.0.0.1:3382",
+    "pid": 44708,
+    "artifact": "var/fixed-latest-20261105-181818/node-source/dist/server.js",
+    "compiled_javascript_sha256": "99c27cbeaad85e74f584f0a410949f67fdd8094a79234c7140c6387684bfdc86",
+    "source_snapshot_sha256": "2f1ca301f5b28d5386a6e01b6509617427181c4c090633555bdc771c5cd9121f",
+    "source_current": true,
+    "actual_process_entry_verified": true,
+    "health_http": 200,
+    "active_runs": 0
+  },
+  "verification": {
+    "maven_package": {
+      "exit_code": 0,
+      "tests": 637,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "node_typecheck": {
+      "exit_code": 0
+    },
+    "node_tests": {
+      "tests": 34,
+      "failures": 0,
+      "skipped": 0
+    },
+    "node_build": {
+      "exit_code": 0
+    },
+    "pi_session_engineering_conformance": {
+      "passed": 30,
+      "total": 30
+    },
+    "real_fixed_process_smoke": {
+      "sidecar": "agent-sidecar",
+      "backend": "mysql",
+      "status": "ok",
+      "scopes": 10,
+      "documents": 10
+    },
+    "admin_config": {
+      "revision": 8,
+      "activeRevision": 8,
+      "pendingRestart": false
+    },
+    "console_proxy_config_http": 200,
+    "unauthenticated_agent_tasks_http": 401,
+    "unauthenticated_java_sessions_http": 401,
+    "unauthenticated_node_health_http": 401
+  },
+  "migration": {
+    "backup_restore_preflight_exit_code": 0,
+    "preflight": "MIGRATION_OK existing_fact_counts_preserved=true config_ciphertext_unchanged=true candidate_payloads_unchanged=true pi_fencing_unchanged=true conversations_preserved=true tables=33 handleless_legacy_rows=59",
+    "tables": 33,
+    "missing_table_comments": 0,
+    "missing_column_comments": 0,
+    "bigint_unsigned_primary_id_tables": 33,
+    "existing_fact_row_count_deltas_before_verification_requests": {},
+    "configuration_ciphertext_preserved": true,
+    "candidate_payloads_preserved": true,
+    "pi_fencing_facts_preserved": true,
+    "handleless_legacy_rows_preserved_with_full_ids": 59,
+    "duplicate_nonnull_handles": 0,
+    "compatibility_fix": "Absent legacy short handles remain NULL; no invented historical sN; new saves retain atomic sequence allocation."
+  },
+  "preserved": {
+    "all_component_environment_values": true,
+    "configuration_revision": 8,
+    "configuration_active_revision": 8,
+    "pending_restart": false,
+    "console_pid": 93176,
+    "console_not_restarted": true,
+    "mysql_not_restarted": true,
+    "redis_not_restarted": true
+  },
+  "private_recovery": {
+    "directory": "var/fixed-latest-20261105-181818",
+    "launch_backup": "launch-before.yaml",
+    "initial_mysql_backup": "mysql-before.sql.gz",
+    "quiescent_mysql_backup": "mysql-quiescent-before.sql.gz",
+    "quiescent_backup_bytes": 3514068,
+    "credentials_and_fact_bodies_not_published": true
+  },
+  "limits": [
+    "No customer device control, task creation, notification send, or production Runtime operation.",
+    "No real WeChat business scenarios replayed during this update.",
+    "Existing Surefire fork shutdown timeout warning remains although Maven exits 0 and all 637 tests pass.",
+    "Legacy /healthz piSession owner text is not authoritative; authenticated MySQL Pi Session health was independently verified."
+  ],
+  "private_build_logs": [
+    "java-build.log",
+    "node-build.log",
+    "backup-migration.log",
+    "fixed-runtime-smoke.log"
+  ],
+  "cleanup": {
+    "temporary_session_fixture_stopped": true,
+    "owned_isolated_mysql_and_redis_removed": true,
+    "temporary_build_and_probe_removed": true,
+    "private_release_and_recovery_backups_retained": true,
+    "post_cleanup_java_health_http": 200,
+    "post_cleanup_node_health_http": 200
+  }
+}

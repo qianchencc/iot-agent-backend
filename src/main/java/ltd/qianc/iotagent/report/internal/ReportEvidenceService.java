@@ -26,12 +26,12 @@ import ltd.qianc.iotagent.iot.AuthorizedDevice;
 import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
 import ltd.qianc.iotagent.iot.GatewayAuthorizationException;
 import ltd.qianc.iotagent.iot.IotAdapter;
-import ltd.qianc.iotagent.iot.IotSource;
+import ltd.qianc.iotagent.iot.IotSourceEnum;
 import ltd.qianc.iotagent.iot.ObservationAdapter;
-import ltd.qianc.iotagent.iot.ObservationOperation;
+import ltd.qianc.iotagent.iot.ObservationOperationEnum;
 import ltd.qianc.iotagent.iot.ObservationRequest;
 import ltd.qianc.iotagent.iot.ObservationResponse;
-import ltd.qianc.iotagent.iot.ObservationStatus;
+import ltd.qianc.iotagent.iot.ObservationStatusEnum;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.report.ReportMeterScope;
 import ltd.qianc.iotagent.report.ReportUnavailableException;
@@ -74,7 +74,7 @@ public final class ReportEvidenceService {
      * absolute window no matter when capture or its bounded retry runs.
      */
     public Map<String, Object> build(RequestIdentity identity, Map<String, Object> request, Instant anchor) {
-        if (identity == null || identity.source() != IotSource.COMPANY) {
+        if (identity == null || identity.source() != IotSourceEnum.COMPANY) {
             throw new BusinessException("REPORT_SOURCE_UNSUPPORTED", "报告只支持 Company 来源");
         }
         Instant bound = anchor == null ? clock.instant() : anchor;
@@ -139,7 +139,7 @@ public final class ReportEvidenceService {
         boolean statisticsHasData = dataMeters(statistics) > 0;
         if (statisticsIncomplete) gaps.add("本期统计数据不完整");
         List<Map<String, Object>> blocks = new ArrayList<>();
-        blocks.add(block("meter_report", statistics));
+        if (statisticsHasData) blocks.add(block("meter_report", statistics));
         for (int index = 0; index < comparisons.size(); index++) {
             ComparisonRequest comparison = comparisons.get(index);
             Map<String, Object> fact = comparisonFacts.get(index);
@@ -151,6 +151,9 @@ public final class ReportEvidenceService {
             }
             if (incomplete(fact)) gaps.add(comparison.label() + "数据不完整");
             blocks.add(block("meter_report", fact));
+        }
+        if (blocks.isEmpty()) {
+            throw new ReportUnavailableException("REPORT_NO_DATA", "本期未取得有效用电事实，未生成报告附件");
         }
         if (!gaps.isEmpty()) blocks.add(textBlock("未满足或缺数的要求", String.join("；", gaps)));
 
@@ -267,8 +270,8 @@ public final class ReportEvidenceService {
             params.put("limit", "100");
             try {
                 ObservationResponse response = observations.read(new ObservationRequest(
-                        identity, ObservationOperation.SAFETY_EVENTS, params)).block(CALL_TIMEOUT);
-                if (response == null || response.status() == ObservationStatus.UNAVAILABLE) {
+                        identity, ObservationOperationEnum.SAFETY_EVENTS, params)).block(CALL_TIMEOUT);
+                if (response == null || response.status() == ObservationStatusEnum.UNAVAILABLE) {
                     gaps.add(type + "台账读取不可用");
                     complete = false;
                     continue;
@@ -338,7 +341,7 @@ public final class ReportEvidenceService {
             ExpectedSpan expected, String label) {
         ObservationResponse response;
         try {
-            response = observations.read(new ObservationRequest(identity, ObservationOperation.COMPANY_METER_REPORT, parameters))
+            response = observations.read(new ObservationRequest(identity, ObservationOperationEnum.COMPANY_METER_REPORT, parameters))
                     .block(CALL_TIMEOUT);
         } catch (GatewayAuthorizationException error) {
             throw error;
@@ -347,7 +350,7 @@ public final class ReportEvidenceService {
         } catch (RuntimeException error) {
             throw new ReportUnavailableException("REPORT_EVIDENCE_UNAVAILABLE", label + "取证暂不可用");
         }
-        if (response == null || response.status() == ObservationStatus.UNAVAILABLE) {
+        if (response == null || response.status() == ObservationStatusEnum.UNAVAILABLE) {
             throw new ReportUnavailableException("REPORT_EVIDENCE_UNAVAILABLE", label + "取证暂不可用");
         }
         Map<String, Object> payload = new LinkedHashMap<>(response.payload());
@@ -399,7 +402,7 @@ public final class ReportEvidenceService {
     private AuthorizedDeviceScope loadScope(RequestIdentity identity) {
         try {
             AuthorizedDeviceScope scope = iot.loadAuthorizedDeviceScope(identity).block(CALL_TIMEOUT);
-            if (scope == null || scope.source() != IotSource.COMPANY || !identity.equals(scope.identity())) {
+            if (scope == null || scope.source() != IotSourceEnum.COMPANY || !identity.equals(scope.identity())) {
                 throw new ReportUnavailableException("REPORT_SCOPE_UNAVAILABLE", "授权目录暂不可用，请稍后重试");
             }
             return scope;

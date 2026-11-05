@@ -10,8 +10,6 @@ import ltd.qianc.iotagent.audit.AuditEventStore;
 import ltd.qianc.iotagent.conversation.ConversationEventStore;
 import ltd.qianc.iotagent.conversation.ConversationStore;
 import ltd.qianc.iotagent.report.ReportFactStore;
-import ltd.qianc.iotagent.region.RegionSeenStore;
-import ltd.qianc.iotagent.region.internal.JdbcRegionSeenStore;
 import ltd.qianc.iotagent.storage.RedisCoordinationStore;
 import ltd.qianc.iotagent.readmodel.ReadSnapshots;
 import ltd.qianc.iotagent.task.TaskFactStore;
@@ -148,17 +146,30 @@ public class StorageConfiguration {
     @Bean
     @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
     @ConditionalOnMissingBean(TaskProjectionStore.class)
-    JdbcTaskProjectionStore jdbcTaskProjectionStore(JdbcTemplate jdbc, ObjectMapper mapper) { return new JdbcTaskProjectionStore(jdbc, mapper); }
-
-    @Bean
-    @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
-    @ConditionalOnMissingBean(RegionSeenStore.class)
-    JdbcRegionSeenStore jdbcRegionSeenStore(JdbcTemplate jdbc) { return new JdbcRegionSeenStore(jdbc); }
+    TaskProjectionStore jdbcTaskProjectionStore(JdbcTemplate jdbc, ObjectMapper mapper,
+            org.springframework.beans.factory.ObjectProvider<ltd.qianc.iotagent.task.TaskFacade> facades) {
+        return ltd.qianc.iotagent.storage.TaskFactStoresFactory.taskProjections(jdbc, mapper, new ltd.qianc.iotagent.task.TaskReadScope.Provider() {
+            @Override public ltd.qianc.iotagent.task.TaskReadScope scope(
+                    ltd.qianc.iotagent.auth.PrincipalInfo principal, String source) {
+                return facades.getObject().scope(principal, source);
+            }
+            @Override public ltd.qianc.iotagent.task.TaskReadScope loadScope(
+                    ltd.qianc.iotagent.iot.RequestIdentity identity) {
+                return facades.getObject().loadScope(identity);
+            }
+        });
+    }
 
     @Bean
     @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
     @ConditionalOnMissingBean(TaskNotificationStore.class)
     JdbcTaskNotificationStore jdbcTaskNotificationStore(JdbcTemplate jdbc, TransactionTemplate transactions, ObjectMapper mapper) { return new JdbcTaskNotificationStore(jdbc, transactions, mapper); }
+
+    @Bean
+    @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
+    JdbcImmediateActionHistory immediateActionHistory(JdbcTemplate jdbc, TransactionTemplate transactions, ObjectMapper mapper) {
+        return new JdbcImmediateActionHistory(jdbc, transactions, mapper);
+    }
 
     @Bean
     @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")

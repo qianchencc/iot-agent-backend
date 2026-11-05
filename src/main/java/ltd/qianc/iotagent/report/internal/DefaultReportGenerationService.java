@@ -11,7 +11,7 @@ import java.time.Instant;
 import java.util.Map;
 import ltd.qianc.iotagent.error.BusinessException;
 import ltd.qianc.iotagent.iot.IotAdapter;
-import ltd.qianc.iotagent.iot.IotSource;
+import ltd.qianc.iotagent.iot.IotSourceEnum;
 import ltd.qianc.iotagent.iot.ObservationAdapter;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.report.ReportFact;
@@ -45,7 +45,7 @@ public final class DefaultReportGenerationService implements ReportGenerationSer
     @Override
     public GeneratedReport generate(RequestIdentity identity, String conversationId, String turnId,
             String requestKey, Map<String, Object> content) {
-        if (identity == null || identity.source() != IotSource.COMPANY) {
+        if (identity == null || identity.source() != IotSourceEnum.COMPANY) {
             throw new BusinessException("REPORT_SOURCE_UNSUPPORTED", "报告只支持 Company 来源");
         }
         require(conversationId, "conversationId");

@@ -1,0 +1,96 @@
+{
+  "baseline": "0637f46",
+  "originalImplementation": [
+    "apps/runtime/src/agent/pi-runner.ts:907-914",
+    "apps/runtime/src/agent/pi-runner.ts:1770-1780",
+    "apps/runtime/src/app.ts:3230-3239"
+  ],
+  "before": {
+    "request": "关闭全公司的灯",
+    "reportedDurationSeconds": 254,
+    "stopReason": "length",
+    "outputTokens": 16384,
+    "inputTokens": 95178,
+    "toolCallsInResponse": 0,
+    "priorLightingModelPayloadCharacters": 71704
+  },
+  "javaTests": {
+    "tests": 370,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "nodeTests": {
+    "tests": 29,
+    "passed": 29,
+    "failed": 0
+  },
+  "nodeTypecheck": "passed",
+  "nodeProcessContract": "passed",
+  "sourceFiles": {
+    "src/main/java/ltd/qianc/iotagent/agent/internal/AgentBusinessToolDispatcher.java": "a14fb044f2f6b9d2284c30ec65c4fbbce68c170add04fddb915970f472496420",
+    "src/main/java/ltd/qianc/iotagent/agent/internal/AgentToolCatalogSupport.java": "46ba8424fb39600311424f3bcc2ca9d02c537296f98c74f4eb9797f5db198beb",
+    "src/test/java/ltd/qianc/iotagent/agent/AgentToolBridgeContractTest.java": "c63ed082bc71a31b64cc0e6f36335132d066aeaee41983a717a6d09c20973488",
+    "agent-sidecar/src/reply-text.ts": "514e3d9f91c1211457d2fad3f182b6efe8b60ac2e1a4868d33f2613c0e25277f",
+    "agent-sidecar/src/session.ts": "f07529192260351e749ba80bf777c0daab5f72c548c43b821e8c704c1a70517a",
+    "agent-sidecar/src/history.ts": "125d934a5d80d228b57981e84fce3365bb86ab36ac027ace3fd17546f15f4508",
+    "agent-sidecar/test/sidecar.test.ts": "44947d1e4ce64d7e1f2708c6974df179fd2b30733b884fedee1be4a28f077157"
+  },
+  "artifactSha256": "84f5f275b23e1bb35195842f841cc59cd44becba61ffabc700d99b50a2e7754d",
+  "ports": [
+    3381,
+    3382
+  ],
+  "modelOrLimitChanged": false,
+  "historyCleared": false,
+  "journalRewritten": false,
+  "businessAcceptance": {
+    "status": "passed-for-exact-and-repeat-request",
+    "sameAccount": true,
+    "sameConversationRetained": true,
+    "request": "关闭全公司的灯",
+    "successfulRuns": 2,
+    "repeatVisibleDurationSeconds": 21,
+    "scopeCount": 156,
+    "proposedActions": 23,
+    "alreadySatisfiedCount": 133,
+    "actualLightingModelResult": {
+      "characters": 310,
+      "scopeCount": 156,
+      "actionCount": 23,
+      "alreadySatisfiedCount": 133,
+      "keys": [
+        "status",
+        "includedScopes",
+        "scopeCount",
+        "actionCount",
+        "excludedCount",
+        "alreadySatisfiedCount",
+        "statusMeaning",
+        "actionCountMeaning",
+        "note"
+      ]
+    },
+    "confirmationClicked": false,
+    "controlExecuted": false,
+    "taskCreated": false,
+    "screenshots": [
+      "00-user-reported.png",
+      "01-exact-request-result.png",
+      "02-repeat-result.png",
+      "03-repeat-card.png"
+    ]
+  },
+  "nodeArtifactSha256": {
+    "dist/observability.js": "a9ce3c8e0d6b15e4d28a228868ef865317bff20be29c251f31974799cfb0a4a9",
+    "dist/session.js": "4a9a6cbca35c7937f28d41ca04f02b1abec684e1348503cf0bd38184060bfb36",
+    "dist/server.js": "ea7e0c50df19407e5c505435d81f329c1e15bbdc00e35cb13b0aadb5abc74463",
+    "dist/redaction.js": "5c90d43b0316d2e1626e6adcfd98eaebc292d52bdf7d7d1d7d0911dd3f25515a",
+    "dist/reply-text.js": "f9680bdc9e2c63d6b38a6f92337cdceebe7c78b2ea07e19bc18ac1406b30e58d",
+    "dist/config.js": "693179cf27944b1f34e5ab3f1d153d8807d7d3038e868afcafd2b86e523d5ff5",
+    "dist/history.js": "b6491fbf46a92afd379d6264f637309308ed9234ec433b2f54b6c3e47a8b0a1d",
+    "dist/mysql-session-repository.js": "6ef3a55ab4eb3c58c4be4b236509b32ddd804be4e50d60ac88e7e537b55b73e5",
+    "dist/app.js": "e9d8dfe7a4f7ef825e6f2123a667688d509d0f286bb30f1db609ae527d7ceed3",
+    "dist/agent.js": "d01d5175cd33ef6ff1e6807e2d16fa7a7937abb1e886917045ab4b160cbbbb9a"
+  }
+}

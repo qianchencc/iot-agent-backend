@@ -1,0 +1,64 @@
+{
+  "frontendAddress": "http://127.0.0.1:3381/api",
+  "javaPort": 3381,
+  "privateEnginePort": 3382,
+  "upstream": "https://ncim.577119.com",
+  "executionMode": "real",
+  "javaArtifactSha256": "740ebb1186d847b5b8e384d2f948270849762aea02efeb243b37796469b18cfa",
+  "nodeArtifacts": {
+    "dist/redaction.d.ts": "eb585dbdab0c7f9006bab408aef35ee59a5d61e0d71e9489497896d2bab7f5f1",
+    "dist/session.d.ts": "e317f74ed0b77df7ade3d4a4970e8fba63e5e4a29b537f5714322e8ccb526dd3",
+    "dist/app.js.map": "cae4858e6bebff17b0920e90bc098c722bb54c9e174b6038e83c73e4f422cb19",
+    "dist/app.d.ts": "aeb2dfa8b6e2865d7d79ae43665d10d622cbc1ea50a85e0b88dcc1d4bf2e017c",
+    "dist/observability.js": "a9ce3c8e0d6b15e4d28a228868ef865317bff20be29c251f31974799cfb0a4a9",
+    "dist/server.d.ts": "8e609bb71c20b858c77f0e9f90bb1319db8477b13f9f965f1a1e18524bf50881",
+    "dist/session.js": "9c1f9abaab7d9897f05902e3498eba810791003bc05a7ca8b7eec6ec08aad3d2",
+    "dist/server.js": "ea7e0c50df19407e5c505435d81f329c1e15bbdc00e35cb13b0aadb5abc74463",
+    "dist/config.d.ts": "d3af9b0262544f970b90d744a12f3034ddb9677cdcf7d68025b3cf5812ebea8d",
+    "dist/redaction.js": "5c90d43b0316d2e1626e6adcfd98eaebc292d52bdf7d7d1d7d0911dd3f25515a",
+    "dist/agent.js.map": "d9564ff562e19b985b0f307f61d1d5d7be62d7f280742ac12f689a0bcbaf1aa8",
+    "dist/agent.d.ts": "e29ac84fad09eb9cbb0db127529c75c063fe8ad023137d6ecbdd0d9730b91974",
+    "dist/history.d.ts": "13319d96342d5931a8a1dfce286a09b685fb1dc1433bb6abdf8962ad83bdbcfb",
+    "dist/reply-text.js": "461477e74ca15fa3666557a09fd8ba0718f1a85298f7dfc49d4fc54521afafa3",
+    "dist/config.js": "693179cf27944b1f34e5ab3f1d153d8807d7d3038e868afcafd2b86e523d5ff5",
+    "dist/server.js.map": "9bd15aa1d1795809344ef40083ccac218254c70ea57439d046ae8cd0a81bd2e5",
+    "dist/config.js.map": "f9b81fabe0f7fad6c941f86551c6e89d93fb2cbfbb45adecd295ea1229c66593",
+    "dist/observability.d.ts": "1c54bf6bf524f1569b8e53e11d7fc1959d3aa8ca0780eae142e05cd3d149fc24",
+    "dist/mysql-session-repository.js.map": "8ccd84de432bd223ad02b45e39da926e48e4e8330b5bfce56e4b6ab3931d4dfd",
+    "dist/session.js.map": "b9747e1a42879e27eeb9809ce2c86d8bce874d6312e4519a9bfebb45da763dcf",
+    "dist/reply-text.d.ts": "2b9c568775e888fd2bce0902f17d34297f7b71ba911a2df6e5d9da70791ad1bf",
+    "dist/history.js": "b88e65b60dd15b8aa891a55126a8ef367e1d3d84878f5a52fd7634193315e10f",
+    "dist/mysql-session-repository.js": "6ef3a55ab4eb3c58c4be4b236509b32ddd804be4e50d60ac88e7e537b55b73e5",
+    "dist/reply-text.js.map": "5ffb668d36999b9e1f22aea6d4baa89ea6903afaf8fc8131f2f2878fdca54240",
+    "dist/observability.js.map": "97472862088ec6939abf4608de701e2e07fcc5ba3257b65303205cac6a53d3e7",
+    "dist/mysql-session-repository.d.ts": "ad0cade09766b961476c589edcc80f0ad5ddedd6816e31c6df49130406c4b89d",
+    "dist/app.js": "e9d8dfe7a4f7ef825e6f2123a667688d509d0f286bb30f1db609ae527d7ceed3",
+    "dist/agent.js": "d01d5175cd33ef6ff1e6807e2d16fa7a7937abb1e886917045ab4b160cbbbb9a",
+    "dist/history.js.map": "4c90892d1d2ec4fc493db087c43b8c60c7bb3bcdddee21d3d97f4c1e907f3427",
+    "dist/redaction.js.map": "2e45dd08ab313308fbd36adddf043e5776a63b2ac7f1287ad4e66b142d7036ce"
+  },
+  "verification": {
+    "javaPackage": {
+      "tests": 367,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "nodeTests": 28,
+    "nodeTypecheck": "passed",
+    "nodeBuild": "passed",
+    "nodeProcessContract": "passed",
+    "defaultPortStartup": {
+      "javaPortWithoutServerPortOverride": 3381,
+      "nodePortWithoutSidecarPortOverride": 3382
+    },
+    "frontend": {
+      "sourceAddressUnchanged": true,
+      "actualAddress": "http://127.0.0.1:3381/api",
+      "page": "pages/agent/dashboard",
+      "read": "completed through existing frontend restoreConversation API after normal identity preparation",
+      "frontendRecompiledForBackendReplacement": false
+    }
+  },
+  "businessAcceptance": "No customer control or task execution performed; engineering verification only."
+}

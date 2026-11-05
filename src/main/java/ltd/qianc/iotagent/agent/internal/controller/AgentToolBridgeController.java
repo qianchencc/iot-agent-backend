@@ -41,12 +41,26 @@ public final class AgentToolBridgeController {
             proof.put("operation", "check");
             store.execute(proof);
         }
-        Map<String, Object> result = bridge.execute(body);
+        Map<String, Object> result = new LinkedHashMap<>(bridge.execute(body));
+        // Run-scoped closing facts travel in the envelope, never inside the model result.
+        Object closing = result.containsKey("closingContext") ? result.remove("closingContext") : null;
+        Object modelResult = result.remove("modelResult");
+        modelResult = AgentToolCatalogSupport.cardModelResult(text(body.get("toolName")), result, modelResult);
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("protocolVersion", 1);
         response.put("result", result);
-        response.put("halt", AgentToolCatalogSupport.haltsRun(
-                text(body.get("toolName")), result));
+        if (modelResult != null) response.put("modelResult", modelResult);
+        boolean halt = AgentToolCatalogSupport.haltsRun(text(body.get("toolName")), result);
+        response.put("halt", halt);
+        String completion = halt ? AgentToolCatalogSupport.completionText(text(body.get("toolName")), result,
+                body.get("arguments") instanceof Map<?, ?> arguments ? arguments : Map.of()) : null;
+        if (completion != null) response.put("completion", completion);
+        if (closing instanceof String context && !context.isBlank()) {
+            // Candidate names remain useful during selection, not as instructions to repeat a completed card.
+            response.put("closingContext", halt && modelResult instanceof Map<?, ?> model && model.containsKey("cardContent")
+                    ? "本轮待确认卡已生成，按模型结果中的状态和必要限制收尾；不再列候选或复述卡片，不代表已执行。"
+                    : context);
+        }
         return response;
     }
 

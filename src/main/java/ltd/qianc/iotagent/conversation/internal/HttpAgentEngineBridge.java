@@ -27,6 +27,7 @@ import ltd.qianc.iotagent.conversation.AgentEngineEvent;
 import ltd.qianc.iotagent.conversation.AgentRunRequest;
 import ltd.qianc.iotagent.conversation.AgentRunPolicy;
 import ltd.qianc.iotagent.conversation.AgentRunPolicyProvider;
+import ltd.qianc.iotagent.conversation.AgentRunTiming;
 import ltd.qianc.iotagent.error.BusinessException;
 
 /** HTTP/NDJSON transport for the private generic engine; Java owns event projection. */
@@ -72,7 +73,7 @@ public final class HttpAgentEngineBridge implements AgentEngineBridge {
     public CompletionStage<Void> start(AgentRunRequest request, Consumer<AgentEngineEvent> events) {
         if (baseUri == null || bridgeToken.isBlank()) return CompletableFuture.failedFuture(unavailable());
         try {
-            AgentRunPolicy policy = policies.prepare(request);
+            AgentRunPolicy policy = AgentRunTiming.measure(request.runId(), "java.prepare", () -> policies.prepare(request));
             AgentEngineEvent started = new AgentEngineEvent(request.runId(), request.conversationId(), request.turnId(),
                     "run.started", Map.of("createdAt", java.time.Instant.now().toString()));
             for (AgentEngineEvent projected : policy.projection().apply(started)) events.accept(projected);
@@ -99,8 +100,11 @@ public final class HttpAgentEngineBridge implements AgentEngineBridge {
                 }
                 result.completeExceptionally(timeout());
             }, deadline.toMillis(), TimeUnit.MILLISECONDS);
+            long sentAt = System.nanoTime();
             client.sendAsync(httpRequest, HttpResponse.BodyHandlers.ofInputStream())
                     .whenCompleteAsync((response, failure) -> {
+                        AgentRunTiming.record(request.runId(), "java.engine.headers", sentAt,
+                                failure == null ? "received" : "failed");
                         if (failure != null) {
                             watchdog.cancel(false);
                             result.completeExceptionally(unavailable());
@@ -118,6 +122,7 @@ public final class HttpAgentEngineBridge implements AgentEngineBridge {
                             return;
                         }
                         try (BufferedReader reader = new BufferedReader(new InputStreamReader(response.body(), StandardCharsets.UTF_8))) {
+                            boolean firstText = true;
                             String line;
                             while ((line = reader.readLine()) != null) {
                                 if (line.isBlank()) continue;
@@ -131,6 +136,10 @@ public final class HttpAgentEngineBridge implements AgentEngineBridge {
                                 }
                                 if ("run.started".equals(type)) continue;
                                 Map<String, Object> fields = objectMapper.convertValue(node, new TypeReference<>() {});
+                                if (firstText && "message.delta".equals(type) && !node.path("content").asText("").isBlank()) {
+                                    firstText = false;
+                                    AgentRunTiming.record(request.runId(), "java.engine.first-text", sentAt, "received");
+                                }
                                 fields.keySet().removeAll(java.util.Set.of("type", "runId", "conversationId", "turnId",
                                         "sequence", "timestamp"));
                                 AgentEngineEvent event = new AgentEngineEvent(

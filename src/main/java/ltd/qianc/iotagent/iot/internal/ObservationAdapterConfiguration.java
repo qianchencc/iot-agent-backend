@@ -10,7 +10,7 @@ import ltd.qianc.iotagent.iot.IotCallPolicy;
 import ltd.qianc.iotagent.iot.ObservationAdapter;
 import ltd.qianc.iotagent.iot.ObservationAdapterFactory;
 import ltd.qianc.iotagent.iot.ObservationGatewayRoutes;
-import ltd.qianc.iotagent.iot.ObservationOperation;
+import ltd.qianc.iotagent.iot.ObservationOperationEnum;
 import ltd.qianc.iotagent.iot.CompanyEnergyObservationComposer;
 import ltd.qianc.iotagent.iot.CompanyEnergyObservationComposerFactory;
 import ltd.qianc.iotagent.iot.CompanyEnergyPolicy;
@@ -51,38 +51,38 @@ public class ObservationAdapterConfiguration {
         if (baseUrl == null || baseUrl.isBlank()) {
             delegate = ObservationAdapterFactory.failClosed("物联只读观察上游未配置");
         } else {
-            EnumMap<ObservationOperation, String> configured = new EnumMap<>(ObservationOperation.class);
-            configured.put(ObservationOperation.ENVIRONMENT_HISTORY,
-                    route(environment, ObservationOperation.ENVIRONMENT_HISTORY,
+            EnumMap<ObservationOperationEnum, String> configured = new EnumMap<>(ObservationOperationEnum.class);
+            configured.put(ObservationOperationEnum.ENVIRONMENT_HISTORY,
+                    route(environment, ObservationOperationEnum.ENVIRONMENT_HISTORY,
                             "/micro-api/api/iot-center/env/history/page"));
-            configured.put(ObservationOperation.ENERGY_HISTORY,
-                    route(environment, ObservationOperation.ENERGY_HISTORY,
+            configured.put(ObservationOperationEnum.ENERGY_HISTORY,
+                    route(environment, ObservationOperationEnum.ENERGY_HISTORY,
                             "/micro-api/api/energy/electricData/page"));
-            configured.put(ObservationOperation.DASHBOARD,
-                    route(environment, ObservationOperation.DASHBOARD, null));
-            configured.put(ObservationOperation.SAFETY_EVENTS,
-                    route(environment, ObservationOperation.SAFETY_EVENTS,
+            configured.put(ObservationOperationEnum.DASHBOARD,
+                    route(environment, ObservationOperationEnum.DASHBOARD, null));
+            configured.put(ObservationOperationEnum.SAFETY_EVENTS,
+                    route(environment, ObservationOperationEnum.SAFETY_EVENTS,
                             "/micro-api/api/perception/fire/{ledger}/alarm/page"));
-            configured.put(ObservationOperation.SAFETY_EVENT_CAMERAS,
-                    route(environment, ObservationOperation.SAFETY_EVENT_CAMERAS, null));
-            configured.put(ObservationOperation.ENERGY_COMPARISON,
-                    route(environment, ObservationOperation.ENERGY_COMPARISON, null));
-            configured.put(ObservationOperation.ENERGY_REPORT,
-                    route(environment, ObservationOperation.ENERGY_REPORT, null));
-            configured.put(ObservationOperation.COMPANY_ENERGY_DAILY,
-                    route(environment, ObservationOperation.COMPANY_ENERGY_DAILY, null));
-            configured.put(ObservationOperation.COMPANY_ENERGY_REPORT,
-                    route(environment, ObservationOperation.COMPANY_ENERGY_REPORT, null));
-            configured.put(ObservationOperation.COMPANY_METER_REPORT,
-                    route(environment, ObservationOperation.COMPANY_METER_REPORT, null));
-            configured.put(ObservationOperation.VIDEO_STREAM,
-                    route(environment, ObservationOperation.VIDEO_STREAM, null));
-            configured.put(ObservationOperation.REPORT,
-                    route(environment, ObservationOperation.REPORT, null));
-            configured.put(ObservationOperation.REPORT_DOWNLOAD,
-                    route(environment, ObservationOperation.REPORT_DOWNLOAD, null));
-            configured.put(ObservationOperation.REGION_LIST,
-                    route(environment, ObservationOperation.REGION_LIST,
+            configured.put(ObservationOperationEnum.SAFETY_EVENT_CAMERAS,
+                    route(environment, ObservationOperationEnum.SAFETY_EVENT_CAMERAS, null));
+            configured.put(ObservationOperationEnum.ENERGY_COMPARISON,
+                    route(environment, ObservationOperationEnum.ENERGY_COMPARISON, null));
+            configured.put(ObservationOperationEnum.ENERGY_REPORT,
+                    route(environment, ObservationOperationEnum.ENERGY_REPORT, null));
+            configured.put(ObservationOperationEnum.COMPANY_ENERGY_DAILY,
+                    route(environment, ObservationOperationEnum.COMPANY_ENERGY_DAILY, null));
+            configured.put(ObservationOperationEnum.COMPANY_ENERGY_REPORT,
+                    route(environment, ObservationOperationEnum.COMPANY_ENERGY_REPORT, null));
+            configured.put(ObservationOperationEnum.COMPANY_METER_REPORT,
+                    route(environment, ObservationOperationEnum.COMPANY_METER_REPORT, null));
+            configured.put(ObservationOperationEnum.VIDEO_STREAM,
+                    route(environment, ObservationOperationEnum.VIDEO_STREAM, null));
+            configured.put(ObservationOperationEnum.REPORT,
+                    route(environment, ObservationOperationEnum.REPORT, null));
+            configured.put(ObservationOperationEnum.REPORT_DOWNLOAD,
+                    route(environment, ObservationOperationEnum.REPORT_DOWNLOAD, null));
+            configured.put(ObservationOperationEnum.REGION_LIST,
+                    route(environment, ObservationOperationEnum.REGION_LIST,
                             "/micro-api/api/office/office/member/my/office"));
             configured.values().removeIf(path -> path == null || path.isBlank());
             try {
@@ -150,7 +150,7 @@ public class ObservationAdapterConfiguration {
         }
     }
 
-    private static String route(Environment environment, ObservationOperation operation, String fallback) {
+    private static String route(Environment environment, ObservationOperationEnum operation, String fallback) {
         String property = environment.getProperty("iot.observation.routes." + operation.name().toLowerCase().replace('_', '-'));
         return property == null || property.isBlank() ? fallback : property;
     }

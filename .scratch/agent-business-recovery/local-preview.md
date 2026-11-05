@@ -1,5 +1,22 @@
 # 独立开发者工具验收环境
 
+> 固定开发后端的最新入口为 Java `3381` / Node `3382`，已改为 tmux 常驻；统一使用 `tools/start-fixed-backend.py`，见[当前启动说明](../../README.md#固定开发后端tmux-常驻)。下文3217、13215等为历史独立验收环境，不应据此启动或覆盖当前固定后端。
+
+> 2026-11-05 固定实例已按当前完整源码更新：Java `3381`／Node `3382` 使用 `var/fixed-latest-20261105-181818/` 的冻结产物，637 项 Java、34 项 Node 与 30/30 Pi Session 工程契约通过。固定业务库先备份／独立恢复预演再升级，原配置修订8、候选集及 Pi 会话保留；控制台 `5185`、MySQL、Redis 未重启。实际 PID、产物哈希、只读健康与事实核对见[最新运行证据](../technical-spec-compliance/evidence/fixed-latest-20261105.json)，不据此追加真实微信或设备执行验收。
+
+> 2026-11-05 草案排除已对齐原Runtime：补查设备短引用来源、候选集按当前对话查找、顶层／照明按真实ID合并。固定Java3381已更新并保留此前其他业务产物；516项隔离回归、4种参数实跑通过，真实小程序短引用提案首次成功并取消，未确认下发。见[设计、失败留档与界面证据](../draft-exclusion-alignment/evidence/DRAFT-EXCLUSION-REF/README.md)。
+
+> 2026-11-04 任务中心与通知中心加载已修复：授权目录后台更新、本地事实直接读取，真实开发者工具两条记录分别由 5355/5332 ms 降至 26/80 ms；最终集成保留另线程生命周期字节码，464 项隔离回归通过。见[加载诊断、部署与界面证据](evidence/CENTER-LOAD-01/README.md)。
+
+> 2026-11-04 区域异常提示已恢复原Runtime语义：真实异常结果＋当前读取权限＋查看者已读时间；目录继续后台同步，异常／已读每次读取本地事实，不再把“从未查看”当异常或缓存其布尔值。固定Java3381已更新，471项工程回归通过；真实办公室入口无误报角标，选择器原生条件均false，但弹层截图未取得，实际异常流转／真机仍未验收。见[对齐、实证与限制](evidence/REGION-ATTENTION-01/README.md)。
+
+## 本地视频 SDK 部署补充（2026-11-04）
+
+- 当前 `9419` 静态根目录为 `/Users/qianchen/works/新发展/iot-agent-video-player/public`。SDK 主脚本缺失曾导致“播放器组件未加载”，不是模型配置错误或无录像。
+- 播放器仓库故意忽略 SDK 二进制；复制页面源码不等于完成部署。启动静态页前须按该仓库 `sdk-manifest.json` 单独部署并校验五项资源：`h5player.min.js`，以及 `playctrl1/`、`playctrl1simd/` 各自的 `Decoder.js`、`DecodeWorker.js`；路径均在 `public/owner/static/h5player/` 下。
+- 本轮补齐固定版本资源，无需重启静态服务，未改播放器源码。普通浏览器使用小程序当前账号生成的原录像 URL，真实出画且画面时间推进；重新播放和返回释放通过。仅记本地 H5 已验证，小程序 WebView 复验及真机仍未验收。
+- [资源哈希及前端验证记录](evidence/VIDEO-SDK-LOCAL/result.json)。办公区截图仅保留在记录指向的 `/private/tmp/`，不入库；记录不含身份令牌、录像流 URL 或客户控制写入。
+
 ## 当前入口（2026-11-03）
 
 |用途|位置 / 地址|
@@ -59,3 +76,27 @@ PATH=/opt/homebrew/opt/node@22/bin:$PATH /Users/qianchen/anaconda3/bin/python to
 - 视频来源精确允许 `http://127.0.0.1:9419`，只覆盖视频取流GET/OPTIONS；实际GET仍需真实身份。预检200、静态页200、URL或录像卡不是播放验收。
 - 自动化须等实际控件/报告加载完成；Markdown正文不一定出现在`page.text()`。禁用值可能是字符串`"false"`，不能按truthiness误判；截图保留失败与修复后版本。
 - 不运行或重启可靠原Runtime；只读其源码作为业务逻辑对照。原业务父票不因存储迁移自动关闭，未抽取场景标未验收，不追加149条硬门禁。
+
+## 任务迁移独立验证（2026-11-04）
+
+- 主开发入口仍为 Java `3381` / Node `3382`，不修改主前端固定地址。任务验证另用 Java `3441` / Node `3442`、只读代理 `3445`、独立 MySQL 和开发者工具 `9461`；私有参数保存在 Git 忽略的 `var/task-parity-20261104-113400/launch.yaml`。
+- Java 必须运行 Maven `target/` 之外的冻结 jar。先完成构建，再复制为独立产物并记录 SHA256；运行中的 jar 不得被下一次 `package` 覆盖。
+- Node 的 `JAVA_AGENT_TOOLS_TOKEN` 必须与 Java 的 `AGENT_BRIDGE_TOKEN` 相同；工具和 Pi Session 回调共用该认证。只比较是否一致，不输出密钥。
+- 隔离小程序通过官方 uniapp-cli-vite 在插件目录编译，显式指定 `UNI_INPUT_DIR` / `UNI_OUTPUT_DIR`，并加 `build -p mp-weixin --minify false`。本轮已在微信实际转换缓存定位到 production 压缩短名被 async/regenerator 再转换提升为局部变量，遮住 `agent-session` 导入并报 `waitForAgentSession` undefined；不要因此修改身份模块、增加延迟或清登录记录。
+- 办公室与公司均沿用真实账号和既有权限。当前本地公司白名单为空，账号被 `COMPANY_AGENT_NOT_ALLOWED` 拒绝；该分支必须记未验收，不能为取得截图擅自添加授权。
+- 真实前端卡片、详情、管理、通知与只读上游隔离执行分别取证；测试、脚本构造的任务/结果和 HTTP 成功只能记录为工程证据，不能制造历史业务通过截图。
+
+## 主工作区固定入口交付（2026-11-04）
+
+- 按用户要求，本轮任务迁移与主前端 taskId/planId 修正已收口到两个 `main` 工作区；Java 固定 `3381` 在原 tmux `fixed-backend` 的 `java` 窗口更新，Node `3382` 保持现有通用引擎与进程，主小程序地址不改。
+- 运行产物为 `var/task-main-20261104-143307/backend.jar`，不运行可被 Maven 覆盖的 `target/` jar。主工作区源代码（含并发审计改动）完整构建 444 项、0失败/错误/跳过；测试夹具冲突通过排除 `@TestConfiguration` 修正，不改白名单业务。
+- 私有 `var/fixed-backend/launch.yaml` 已补齐独立 `TASK_CREDENTIAL_KEY`，只在确认没有已加密任务身份后生成；原配置副本留在该运行版本目录，密钥不入仓库、不传给 Node。原客户网关和 `real` 配置保持不变。
+- HBuilderX 主项目开发编译成功；真实开发者工具 `9451` 的办公室页已连接 `3381`、恢复会话并显示输入框。公司页当前由既有白名单拒绝，未擅自添加权限。截图与构建记录见 `evidence/OFF-TASK-01/20261104-main-runtime.json`。
+- 用户自行继续测试任务创建、执行、详情/日历、计划管理和通知。此次启动/界面连接不是上述业务的通过证据；未点击生产确认、创建生产任务或发送生产通知。
+
+## 白名单接入撤回（2026-11-04 后续更新）
+
+- 上节公司入口被拒绝是当时状态，现已按用户要求撤回未定案白名单接入；不得再让用户通过添加白名单来解决该问题。
+- 固定 Java `3381` 已更新为 `var/allowlist-withdraw-20261104-151828/backend-complete.jar`，Node `3382` 和前端地址不变。原有登录、官方身份核验、设备授权与任务安全配置保留；没有新增旁路开关或默认授权；遗留准入API与旧拒绝测试已删除。
+- 最终444项回归通过；真实小程序公司总览显示设备目录334台，公司与办公室会话读取均成功，无登录身份的Agent请求仍返回401。未添加白名单记录、执行设备控制、创建任务或发送通知。
+- 原白名单 CRUD 和历史数据保留但不参与业务准入；账号选择与内部ID绑定先做设计，见[账号选择研究](../admin-console-governance/account-admission-research.md)及[真实前端恢复证据](../admin-console-governance/evidence/allowlist-withdrawal/result.json)。

@@ -3,14 +3,14 @@ package ltd.qianc.iotagent.storage.internal;
 import java.time.Instant;
 import java.util.List;
 import ltd.qianc.iotagent.action.ActionReceiptFact;
-import ltd.qianc.iotagent.action.ActionReceiptOutcome;
+import ltd.qianc.iotagent.action.ActionReceiptOutcomeEnum;
 import ltd.qianc.iotagent.action.ActionReceiptStore;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-public final class JdbcActionReceiptStore extends JdbcFactSupport implements ActionReceiptStore {
+public final class JdbcActionReceiptStore extends AbstractJdbcFactSupport implements ActionReceiptStore {
     public JdbcActionReceiptStore(JdbcTemplate jdbc, TransactionTemplate transactions, ObjectMapper mapper) {
         super(jdbc, transactions, mapper);
     }
@@ -28,6 +28,6 @@ public final class JdbcActionReceiptStore extends JdbcFactSupport implements Act
     @Override
     public List<ActionReceiptFact> findByDraft(String draftId) {
         return jdbc.query("SELECT draft_id,draft_revision,action_id,outcome,payload_json FROM action_receipts WHERE draft_id=? ORDER BY id",
-                (rs, row) -> new ActionReceiptFact(rs.getString(1), rs.getLong(2), rs.getString(3), ActionReceiptOutcome.valueOf(rs.getString(4)), rs.getString(5)), draftId);
+                (rs, row) -> new ActionReceiptFact(rs.getString(1), rs.getLong(2), rs.getString(3), ActionReceiptOutcomeEnum.valueOf(rs.getString(4)), rs.getString(5)), draftId);
     }
 }

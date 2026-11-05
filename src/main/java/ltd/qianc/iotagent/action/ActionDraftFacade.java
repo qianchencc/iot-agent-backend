@@ -12,12 +12,14 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import ltd.qianc.iotagent.action.internal.ActionResultProjector;
 import ltd.qianc.iotagent.audit.AuditEventFact;
 import ltd.qianc.iotagent.audit.AuditEventStore;
 import ltd.qianc.iotagent.auth.PrincipalInfo;
@@ -26,6 +28,7 @@ import ltd.qianc.iotagent.conversation.ConversationEventFact;
 import ltd.qianc.iotagent.conversation.ConversationEventStore;
 import ltd.qianc.iotagent.error.BusinessException;
 import ltd.qianc.iotagent.iot.AcCommandCapabilities;
+import ltd.qianc.iotagent.iot.DeviceCommands;
 import ltd.qianc.iotagent.iot.DeviceCandidateRecord;
 import ltd.qianc.iotagent.iot.DeviceCandidateSetStore;
 import ltd.qianc.iotagent.iot.DeviceStateReadResult;
@@ -34,7 +37,7 @@ import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
 import ltd.qianc.iotagent.iot.GatewayAuthorizationException;
 import ltd.qianc.iotagent.iot.IotAdapter;
 import ltd.qianc.iotagent.iot.OfficeRegion;
-import ltd.qianc.iotagent.iot.IotSource;
+import ltd.qianc.iotagent.iot.IotSourceEnum;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.iot.UpstreamUnavailableException;
 import ltd.qianc.iotagent.readmodel.ReadSnapshots;
@@ -48,6 +51,10 @@ import reactor.core.publisher.Mono;
  */
 public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.ConversationDrafts {
     private static final Duration ORDINARY_STATE_TIMEOUT = Duration.ofSeconds(120);
+    private static final java.util.regex.Pattern DEVICE_HANDLE = java.util.regex.Pattern.compile("^d(\\d+)_\\d+$");
+    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(ActionDraftFacade.class);
+    private static final com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>> RESULT_TYPE =
+            new com.fasterxml.jackson.core.type.TypeReference<>() { };
     private final ObjectMapper mapper;
     private final ActionDraftStore store;
     private final IotAdapter iot;
@@ -58,17 +65,19 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
     private final ActionReceiptStore receiptStore;
     private final ActionReadbackStore readbackStore;
     private final ReadSnapshots snapshots;
+    private final ImmediateActionHistory history;
     private final Clock clock;
     private final Duration scopeTimeout;
     private final Duration draftTtl;
+    private final ActionResultProjector results;
 
     public ActionDraftFacade(ObjectMapper mapper, ActionDraftStore store, IotAdapter iot,
                              ActionCommandGateway gateway, ConversationEventStore conversationEvents,
                              AuditEventStore audit, ActionReceiptStore receiptStore,
                              ActionReadbackStore readbackStore, ReadSnapshots snapshots,
-                             Clock clock, Duration scopeTimeout, Duration draftTtl) {
+                             Clock clock, Duration scopeTimeout, Duration draftTtl, ImmediateActionHistory history) {
         this(mapper, store, iot, null, gateway, conversationEvents, audit, receiptStore, readbackStore,
-                snapshots, clock, scopeTimeout, draftTtl);
+                snapshots, clock, scopeTimeout, draftTtl, history);
     }
 
     public ActionDraftFacade(ObjectMapper mapper, ActionDraftStore store, IotAdapter iot,
@@ -76,7 +85,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
                              ConversationEventStore conversationEvents, AuditEventStore audit,
                              ActionReceiptStore receiptStore, ActionReadbackStore readbackStore,
                              ReadSnapshots snapshots,
-                             Clock clock, Duration scopeTimeout, Duration draftTtl) {
+                             Clock clock, Duration scopeTimeout, Duration draftTtl, ImmediateActionHistory history) {
         this.mapper = Objects.requireNonNull(mapper, "mapper");
         this.store = Objects.requireNonNull(store, "store");
         this.iot = Objects.requireNonNull(iot, "iot");
@@ -87,9 +96,11 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
         this.receiptStore = receiptStore;
         this.readbackStore = readbackStore;
         this.snapshots = Objects.requireNonNull(snapshots, "snapshots");
+        this.history = history;
         this.clock = Objects.requireNonNull(clock, "clock");
         this.scopeTimeout = requirePositive(scopeTimeout, "scopeTimeout");
         this.draftTtl = requirePositive(draftTtl, "draftTtl");
+        this.results = new ActionResultProjector(mapper);
     }
 
     /** Materialize a proposal only after the current server-derived scope is checked. */
@@ -106,7 +117,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
                                    String turnId, String payloadJson, String idempotencyKey,
                                    String focusRegionId) {
         Objects.requireNonNull(principal, "principal");
-        IotSource iotSource = parseSource(source);
+        IotSourceEnum iotSource = parseSource(source);
         if (conversationId == null || conversationId.isBlank() || turnId == null || turnId.isBlank()) {
             throw new BusinessException("INVALID_ACTION_DRAFT", "conversationId and turnId are required");
         }
@@ -122,15 +133,15 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
         for (ActionDraftFact existing : store.findByConversation(conversationId)) {
             if (tenantOf(existing).equals(principal.tenantCode())
                     && iotSource.wireValue().equals(payload(existing).path("source").asText(""))
-                    && (existing.status().equals(ActionDraftStatus.EXECUTING.name())
-                    || existing.status().equals(ActionDraftStatus.PENDING_CONFIRMATION.name()) && !expired(existing))) {
+                    && (existing.status().equals(ActionDraftStatusEnum.EXECUTING.name())
+                    || existing.status().equals(ActionDraftStatusEnum.PENDING_CONFIRMATION.name()) && !expired(existing))) {
                 throw new ActionDraftBusyException("当前会话已有待确认草案");
             }
         }
         ObjectNode payload = object(payloadJson);
         AuthorizedDeviceScope catalogScope = loadScope(principal, iotSource);
         AuthorizedDeviceScope scope = catalogScope;
-        if (iotSource == IotSource.OFFICE && focusRegionId != null && !focusRegionId.isBlank()) {
+        if (iotSource == IotSourceEnum.OFFICE && focusRegionId != null && !focusRegionId.isBlank()) {
             scope = focusScope(principal, iotSource, scope, focusRegionId);
             payload.put("focusRegionId", focusRegionId);
         }
@@ -139,6 +150,8 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
         payload.put("source", iotSource.wireValue());
         payload.put("tenantCode", principal.tenantCode());
         payload.put("ownerKey", ownerKey(principal));
+        payload.put("principalId", principal.principalId());
+        payload.put("identityRealm", principal.identityRealm());
         payload.put("conversationId", conversationId);
         payload.put("turnId", turnId);
         payload.put("expiresAt", now.plus(draftTtl).toString());
@@ -160,10 +173,12 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
             payload.put("originalQuestion", page.question());
         }
         payload.put("observedAt", page.observedAt());
-        payload.put("status", ActionDraftStatus.PENDING_CONFIRMATION.name());
+        String status = page.counts().path("satisfied").asInt() == page.actions().size()
+                ? ActionDraftStatusEnum.NO_CHANGE.name() : ActionDraftStatusEnum.PENDING_CONFIRMATION.name();
+        payload.put("status", status);
         payload.put("dispatchStarted", false);
         ActionDraftFact draft = new ActionDraftFact(UUID.randomUUID().toString(), 1,
-                ActionDraftStatus.PENDING_CONFIRMATION.name(), json(payload), scopedKey);
+                status, json(payload), scopedKey);
         ActionDraftFact created;
         try {
             created = store.create(draft);
@@ -178,7 +193,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
         return created;
     }
 
-    private AuthorizedDeviceScope focusScope(PrincipalInfo principal, IotSource source,
+    private AuthorizedDeviceScope focusScope(PrincipalInfo principal, IotSourceEnum source,
                                              AuthorizedDeviceScope scope, String focusRegionId) {
         RequestIdentity identity = new RequestIdentity(principal.authorization(), principal.tenantCode(), source, ownerKey(principal));
         List<OfficeRegion> regions;
@@ -206,7 +221,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
     }
 
     private ActionDraftFact currentChecked(ActionDraftFact draft) {
-        if (draft.status().equals(ActionDraftStatus.PENDING_CONFIRMATION.name()) && expired(draft)) {
+        if (draft.status().equals(ActionDraftStatusEnum.PENDING_CONFIRMATION.name()) && expired(draft)) {
             return expire(draft);
         }
         return draft;
@@ -214,7 +229,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
 
     /** Current, owner-bound draft projections for a verified conversation replay. */
     public Map<String, Map<String, Object>> conversationDrafts(PrincipalInfo principal, String conversationId, String source) {
-        IotSource expected = parseSource(source);
+        IotSourceEnum expected = parseSource(source);
         Map<String, Map<String, Object>> result = new LinkedHashMap<>();
         for (ActionDraftFact draft : store.findByConversation(conversationId)) {
             ObjectNode body = payload(draft);
@@ -222,7 +237,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
                     && ownerKey(principal).equals(body.path("ownerKey").asText(""))
                     && expected.wireValue().equals(body.path("source").asText(""))
                     && conversationId.equals(body.path("conversationId").asText(""))) {
-                if (draft.status().equals(ActionDraftStatus.PENDING_CONFIRMATION.name()) && expired(draft)) {
+                if (draft.status().equals(ActionDraftStatusEnum.PENDING_CONFIRMATION.name()) && expired(draft)) {
                     draft = expire(draft);
                 }
                 result.put(draft.draftId(), view(draft));
@@ -239,10 +254,10 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
             ObjectNode body = payload(draft);
             if (!principal.tenantCode().equals(tenantOf(draft)) || !ownerKey(principal).equals(body.path("ownerKey").asText())
                     || !expected.equals(body.path("source").asText()) || !conversationId.equals(body.path("conversationId").asText())) continue;
-            if (!ActionDraftStatus.PENDING_CONFIRMATION.name().equals(draft.status())
-                    && !ActionDraftStatus.EXPIRED.name().equals(draft.status())) continue;
-            body.put("status", ActionDraftStatus.CANCELLED.name());
-            ActionDraftFact cancelled = cas(draft, body, ActionDraftStatus.CANCELLED.name());
+            if (!ActionDraftStatusEnum.PENDING_CONFIRMATION.name().equals(draft.status())
+                    && !ActionDraftStatusEnum.EXPIRED.name().equals(draft.status())) continue;
+            body.put("status", ActionDraftStatusEnum.CANCELLED.name());
+            ActionDraftFact cancelled = cas(draft, body, ActionDraftStatusEnum.CANCELLED.name());
             emit(cancelled, "action.resolved");
             audit(cancelled, "ACTION_DRAFT_CANCELLED");
             retired.add(cancelled.draftId());
@@ -301,26 +316,31 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
                     throw new BusinessException("INVALID_PARAMETERS", "照明目标参数无效", 422);
                 }
             }
-            JsonNode closeOrOpen = patch.has("closeOrOpen") ? patch.get("closeOrOpen") : null;
-            if (closeOrOpen == null && patch.has("power")) {
-                String power = patch.path("power").asText("");
-                if ("on".equals(power)) closeOrOpen = mapper.getNodeFactory().numberNode(1);
-                else if ("off".equals(power)) closeOrOpen = mapper.getNodeFactory().numberNode(0);
-            }
-            if (closeOrOpen == null || !closeOrOpen.isIntegralNumber()
-                    || (closeOrOpen.asInt() != 0 && closeOrOpen.asInt() != 1)) {
+            int closeOrOpen;
+            try {
+                closeOrOpen = patch.has("closeOrOpen")
+                        ? DeviceCommands.lightingCloseOrOpen(patch.get("closeOrOpen"))
+                        : DeviceCommands.closeOrOpenFromPower(patch.path("power"));
+            } catch (IllegalArgumentException invalid) {
                 throw new BusinessException("INVALID_PARAMETERS", "照明目标无效", 422);
             }
-            ObjectNode command = mapper.createObjectNode();
-            command.set("closeOrOpen", closeOrOpen);
-            return command;
+            return mapper.createObjectNode().put("closeOrOpen", closeOrOpen);
         }
         if (!"ac".equals(kind)) {
             throw new BusinessException("INVALID_PARAMETERS", "该设备类型不支持参数调整", 422);
         }
         ObjectNode command = mapper.createObjectNode();
         JsonNode existing = action.path("command");
+        for (Iterator<String> names = patch.fieldNames(); names.hasNext(); ) {
+            if (!Set.of("power", "temperature", "mode", "fanSpeed").contains(names.next())) {
+                throw new BusinessException("INVALID_PARAMETERS", "设备参数或目标设备无效", 422);
+            }
+        }
         if ("off".equals(patch.path("power").asText(null))) {
+            // 显式 off 只能单独出现：先整体校验 patch，off 混排的非法字段不再被静默丢弃。
+            if (patch.size() != 1) {
+                throw new BusinessException("INVALID_PARAMETERS", "设备参数或目标设备无效", 422);
+            }
             command.put("power", "off");
             validateCommand("ac", command);
             return command;
@@ -414,8 +434,8 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
      */
     public ActionDraftFact revalidate(PrincipalInfo principal, String draftId, long revision) {
         ActionDraftFact draft = find(principal, draftId);
-        if (!draft.status().equals(ActionDraftStatus.EXPIRED.name())
-                && !(draft.status().equals(ActionDraftStatus.PENDING_CONFIRMATION.name()) && expired(draft))) {
+        if (!draft.status().equals(ActionDraftStatusEnum.EXPIRED.name())
+                && !(draft.status().equals(ActionDraftStatusEnum.PENDING_CONFIRMATION.name()) && expired(draft))) {
             throw new ActionDraftExpiredException();
         }
         if (draft.revision() != revision) throw new ActionDraftRevisionConflictException();
@@ -424,17 +444,17 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
             throw new ActionDraftExpiredException();
         }
         String conversationId = body.path("conversationId").asText("");
-        IotSource source = parseSource(body.path("source").asText(null));
+        IotSourceEnum source = parseSource(body.path("source").asText(null));
         for (ActionDraftFact existing : store.findByConversation(conversationId)) {
             if (existing.draftId().equals(draft.draftId())) continue;
-            if (existing.status().equals(ActionDraftStatus.EXECUTING.name())
-                    || existing.status().equals(ActionDraftStatus.PENDING_CONFIRMATION.name()) && !expired(existing)) {
+            if (existing.status().equals(ActionDraftStatusEnum.EXECUTING.name())
+                    || existing.status().equals(ActionDraftStatusEnum.PENDING_CONFIRMATION.name()) && !expired(existing)) {
                 throw new ActionDraftBusyException("请先处理当前待确认草案");
             }
         }
         AuthorizedDeviceScope scope = loadScope(principal, source);
         String focusRegionId = body.path("focusRegionId").asText("");
-        if (source == IotSource.OFFICE && !focusRegionId.isBlank()) {
+        if (source == IotSourceEnum.OFFICE && !focusRegionId.isBlank()) {
             scope = focusScope(principal, source, scope, focusRegionId);
         }
         ArrayNode previousActions = array(body, "actions");
@@ -511,6 +531,8 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
         replacement.put("source", source.wireValue());
         replacement.put("tenantCode", principal.tenantCode());
         replacement.put("ownerKey", ownerKey(principal));
+        replacement.put("principalId", principal.principalId());
+        replacement.put("identityRealm", principal.identityRealm());
         replacement.put("conversationId", conversationId);
         replacement.put("turnId", body.path("turnId").asText(""));
         replacement.set("actions", actions);
@@ -525,7 +547,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
         replacement.put("originalSummary", summary);
         replacement.putNull("question");
         replacement.put("status", actions.isEmpty()
-                ? ActionDraftStatus.NO_CHANGE.name() : ActionDraftStatus.PENDING_CONFIRMATION.name());
+                ? ActionDraftStatusEnum.NO_CHANGE.name() : ActionDraftStatusEnum.PENDING_CONFIRMATION.name());
         replacement.put("expiresAt", clock.instant().plus(draftTtl).toString());
         replacement.put("observedAt", fresh.observedAt());
         replacement.put("revalidatedFrom", draft.draftId());
@@ -533,9 +555,9 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
         replacement.remove("result");
         String key = draft.idempotencyKey() + ":revalidate:" + draft.revision();
         ObjectNode consumed = payload(draft);
-        consumed.put("status", ActionDraftStatus.EXPIRED.name());
+        consumed.put("status", ActionDraftStatusEnum.EXPIRED.name());
         consumed.put("revalidatedInto", newId);
-        replace(draft, consumed, ActionDraftStatus.EXPIRED.name());
+        replace(draft, consumed, ActionDraftStatusEnum.EXPIRED.name());
         ActionDraftFact created = store.create(new ActionDraftFact(newId, 1,
                 replacement.path("status").asText(), json(replacement), key));
         emit(created, "action.proposed");
@@ -554,7 +576,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
 
     private ActionDraftFact confirmFrom(PrincipalInfo principal, ActionDraftFact initial, Long expectedRevision) {
         if (terminal(initial)) return initial;
-        if (!initial.status().equals(ActionDraftStatus.PENDING_CONFIRMATION.name())) {
+        if (!initial.status().equals(ActionDraftStatusEnum.PENDING_CONFIRMATION.name())) {
             throw new ActionDraftBusyException("Action draft is already executing");
         }
         if (expectedRevision != null && initial.revision() != expectedRevision) throw new ActionDraftRevisionConflictException();
@@ -563,8 +585,8 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
             throw new ActionDraftExpiredException();
         }
         ObjectNode body = payload(initial);
-        ActionDraftFact executing = cas(initial, body, ActionDraftStatus.EXECUTING.name());
-        IotSource source = parseSource(body.path("source").asText(null));
+        ActionDraftFact executing = cas(initial, body, ActionDraftStatusEnum.EXECUTING.name());
+        IotSourceEnum source = parseSource(body.path("source").asText(null));
         AuthorizedDeviceScope scope;
         try {
             scope = verifyScope(principal, body);
@@ -585,6 +607,16 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
             throw new BusinessException("UNSUPPORTED_ACTION_DRAFT", "Unsupported action draft", 422);
         }
         try {
+            body.put("confirmedAt", clock.instant().toString());
+            if (history != null && source == IotSourceEnum.OFFICE) {
+                try {
+                    String name = iot.readCreatorDisplayName(new RequestIdentity(principal.authorization(),
+                            principal.tenantCode(), source, ownerKey(principal))).block(scopeTimeout);
+                    body.put("creatorName", name == null || name.isBlank() ? "成员" : name.trim());
+                } catch (RuntimeException unavailable) {
+                    body.put("creatorName", "成员");
+                }
+            }
             RequestIdentity identity = new RequestIdentity(principal.authorization(), principal.tenantCode(), source, ownerKey(principal));
             DeviceStateReadResult fresh = readFreshStates(identity, selectedActions);
             ArrayNode toDispatch = mapper.createArrayNode();
@@ -592,10 +624,11 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
             ArrayNode satisfiedReadbacks = mapper.createArrayNode();
             for (JsonNode action : selectedActions) {
                 Object state = fresh.states().get(action.path("deviceId").asText(""));
-                if (!"access".equals(action.path("kind").asText("")) && commandSatisfied(action.path("command"), state)) {
+                if (!ActionResultProjector.noPhysicalConfirmation(action.path("kind").asText(""))
+                        && commandSatisfied(action.path("command"), state)) {
                     ObjectNode receipt = mapper.createObjectNode();
                     receipt.put("actionId", action.path("id").asText());
-                    receipt.put("outcome", ActionReceiptOutcome.ALREADY_SATISFIED.name());
+                    receipt.put("outcome", ActionReceiptOutcomeEnum.ALREADY_SATISFIED.name());
                     receipt.put("reason", "already_satisfied");
                     satisfiedReceipts.add(receipt);
                     ObjectNode readback = mapper.createObjectNode();
@@ -610,17 +643,22 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
                 }
             }
             ActionDispatchResult dispatched = toDispatch.isEmpty()
-                    ? new ActionDispatchResult(ActionDraftStatus.NO_CHANGE, resultJson("fixture", "ALREADY_SATISFIED",
-                    mapper.createArrayNode(), mapper.createArrayNode()), false, ActionReceiptOutcome.ALREADY_SATISFIED)
+                    ? new ActionDispatchResult(ActionDraftStatusEnum.NO_CHANGE, resultJson("fixture", "ALREADY_SATISFIED",
+                    mapper.createArrayNode(), mapper.createArrayNode()), false, ActionReceiptOutcomeEnum.ALREADY_SATISFIED)
                     : gateway.dispatch(identity, scope, json(toDispatch), fresh.states());
             ActionDispatchResult result = mergeDispatch(dispatched, satisfiedReceipts, satisfiedReadbacks, !toDispatch.isEmpty());
             body.put("status", result.status().name());
             ObjectNode resultBody = object(result.resultJson());
-            if (!resultBody.has("outcome")) resultBody.put("outcome", result.receiptOutcome().name());
+            // New receipts persist the same normalized projection every read path serves,
+            // so a complete status/message is durable instead of being regenerated later.
+            resultBody = results.normalized(resultBody, executing.draftId(), result.status().name(),
+                    results.kindsByAction(body), results.devicesByAction(body));
             body.set("result", resultBody);
             body.put("dispatchStarted", result.dispatchStarted());
+            body.put("endedAt", clock.instant().toString());
             ActionDraftFact done = cas(executing, body, result.status().name());
             persistExecutionFacts(done, resultBody);
+            recordHistory(done, scope);
             emit(done, "action.resolved");
             audit(done, "ACTION_DRAFT_" + result.status().name());
             return done;
@@ -632,24 +670,24 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
                 rollback(executing);
                 throw new ActionDraftUnavailableException("设备指令未能下发", error);
             }
-            return interrupted(executing, body, error);
+            return interrupted(executing, body, error, scope);
         } catch (ActionDraftUnavailableException error) {
             rollback(executing);
             throw error;
         } catch (RuntimeException error) {
-            return interrupted(executing, body, error);
+            return interrupted(executing, body, error, scope);
         }
     }
 
     public ActionDraftFact cancel(PrincipalInfo principal, String draftId) {
         ActionDraftFact draft = find(principal, draftId);
         if (terminal(draft)) return draft;
-        if (!draft.status().equals(ActionDraftStatus.PENDING_CONFIRMATION.name())) {
+        if (!draft.status().equals(ActionDraftStatusEnum.PENDING_CONFIRMATION.name())) {
             throw new ActionDraftBusyException("Action draft is already executing");
         }
         ObjectNode body = payload(draft);
-        body.put("status", ActionDraftStatus.CANCELLED.name());
-        ActionDraftFact cancelled = cas(draft, body, ActionDraftStatus.CANCELLED.name());
+        body.put("status", ActionDraftStatusEnum.CANCELLED.name());
+        ActionDraftFact cancelled = cas(draft, body, ActionDraftStatusEnum.CANCELLED.name());
         emit(cancelled, "action.resolved");
         audit(cancelled, "ACTION_DRAFT_CANCELLED");
         return cancelled;
@@ -681,44 +719,32 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
         if (!body.path("revalidatedInto").asText("").isBlank()) {
             view.put("revalidatedInto", body.path("revalidatedInto").asText());
         }
-        if (body.has("result") && body.get("result").isObject()) {
-            ObjectNode result = (ObjectNode) body.get("result").deepCopy();
-            ObjectNode readback = mapper.createObjectNode();
-            ObjectNode observedStates = mapper.createObjectNode();
-            Map<String, String> devicesByAction = actionDevices(draft);
-            String observedAt = null;
-            JsonNode records = result.get("readbacks");
-            if (records != null && records.isArray()) {
-                for (JsonNode record : records) {
-                    String actionId = record.path("actionId").asText("");
-                    if (actionId.isBlank()) continue;
-                    readback.put(actionId, record.path("outcome").asText("unconfirmed"));
-                    if (record.has("observedState")) {
-                        String deviceId = devicesByAction.get(actionId);
-                        if (deviceId != null) observedStates.set(deviceId, record.get("observedState"));
-                    }
-                    if (record.has("observedAt")) observedAt = record.path("observedAt").asText(observedAt);
-                }
-            }
-            result.set("readback", readback);
-            result.set("observedStates", observedStates);
-            if (observedAt != null) result.put("observedAt", observedAt);
-            view.put("result", mapper.convertValue(result, Object.class));
-        } else {
-            view.put("result", null);
-        }
+        // One truthful projection serves draft detail, conversation restore and the
+        // confirm answer; a draft that never executed reports no execution result.
+        ObjectNode projected = results.project(draft, body);
+        view.put("result", projected == null ? null : mapper.convertValue(projected, Object.class));
         return view;
+    }
+
+    /**
+     * Flat execution result for the confirm answer. A draft without an executed
+     * result yields its truthful draft status, never a fabricated execution.
+     */
+    public Map<String, Object> executionResult(ActionDraftFact draft) {
+        ObjectNode projected = results.project(draft, payload(draft));
+        if (projected == null) return results.statusBody(draft);
+        return mapper.convertValue(projected, RESULT_TYPE);
     }
 
     /** Ordinary reads expose held device facts, not evidence from a prior dispatch. */
     public Map<String, Object> deviceStates(PrincipalInfo principal, String draftId) {
         ActionDraftFact draft = find(principal, draftId);
-        IotSource source = parseSource(payload(draft).path("source").asText(null));
+        IotSourceEnum source = parseSource(payload(draft).path("source").asText(null));
         RequestIdentity identity = new RequestIdentity(principal.authorization(), principal.tenantCode(), source, principal.ownerKey());
         List<String> ids = actionDevices(draft).values().stream().distinct().sorted().toList();
         ReadSnapshots.Identity scope = new ReadSnapshots.Identity(identity.tenantCode(), identity.authorization(),
                 identity.source().name(), identity.ownerKey());
-        return snapshots.read(scope, "DEVICE_STATES", Map.of("deviceIds", ids), ReadSnapshots.Policy.CURRENT, () -> {
+        return snapshots.read(scope, "DEVICE_STATES", Map.of("deviceIds", ids), ReadSnapshots.PolicyEnum.CURRENT, () -> {
             DeviceStateReadResult result = iot.readDeviceStates(identity, ids).block(ORDINARY_STATE_TIMEOUT);
             if (result == null) throw new UpstreamUnavailableException("设备状态");
             Map<String, Object> body = new LinkedHashMap<>();
@@ -749,13 +775,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
     }
 
     private Map<String, String> actionDevices(ActionDraftFact draft) {
-        Map<String, String> result = new LinkedHashMap<>();
-        for (JsonNode action : array(payload(draft), "actions")) {
-            String actionId = action.path("id").asText("");
-            String deviceId = action.path("deviceId").asText("");
-            if (!actionId.isBlank() && !deviceId.isBlank()) result.put(actionId, deviceId);
-        }
-        return result;
+        return results.devicesByAction(payload(draft));
     }
 
     /** Summary is derived from durable receipt/readback facts, never fabricated by the Java service. */
@@ -784,7 +804,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
         return find(principal, draftId, null);
     }
 
-    private ActionDraftFact find(PrincipalInfo principal, String draftId, IotSource source) {
+    private ActionDraftFact find(PrincipalInfo principal, String draftId, IotSourceEnum source) {
         ActionDraftFact draft = store.find(draftId).orElseThrow(() -> new BusinessException("ACTION_DRAFT_NOT_FOUND", "草案不存在", 404));
         if (!principal.tenantCode().equals(tenantOf(draft))
                 || !ownerKey(principal).equals(payload(draft).path("ownerKey").asText(""))
@@ -796,7 +816,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
 
     private ActionDraftFact pending(PrincipalInfo principal, String id, long revision) {
         ActionDraftFact draft = find(principal, id);
-        if (!draft.status().equals(ActionDraftStatus.PENDING_CONFIRMATION.name())) {
+        if (!draft.status().equals(ActionDraftStatusEnum.PENDING_CONFIRMATION.name())) {
             if (expired(draft)) { expire(draft); throw new ActionDraftExpiredException(); }
             throw new ActionDraftBusyException("Action draft is not pending");
         }
@@ -831,10 +851,10 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
 
     private void rollback(ActionDraftFact executing) {
         ObjectNode body = payload(executing);
-        body.put("status", ActionDraftStatus.PENDING_CONFIRMATION.name());
+        body.put("status", ActionDraftStatusEnum.PENDING_CONFIRMATION.name());
         try {
             store.update(executing.draftId(), executing.revision(),
-                    new ActionDraftFact(executing.draftId(), executing.revision() + 1, ActionDraftStatus.PENDING_CONFIRMATION.name(), json(body), executing.idempotencyKey()));
+                    new ActionDraftFact(executing.draftId(), executing.revision() + 1, ActionDraftStatusEnum.PENDING_CONFIRMATION.name(), json(body), executing.idempotencyKey()));
         } catch (ActionDraftUnavailableException unavailable) {
             throw unavailable;
         } catch (RuntimeException conflict) {
@@ -844,10 +864,10 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
 
     private ActionDraftFact expire(ActionDraftFact draft) {
         ObjectNode body = payload(draft);
-        body.put("status", ActionDraftStatus.EXPIRED.name());
+        body.put("status", ActionDraftStatusEnum.EXPIRED.name());
         try {
             return store.update(draft.draftId(), draft.revision(),
-                    new ActionDraftFact(draft.draftId(), draft.revision() + 1, ActionDraftStatus.EXPIRED.name(), json(body), draft.idempotencyKey()));
+                    new ActionDraftFact(draft.draftId(), draft.revision() + 1, ActionDraftStatusEnum.EXPIRED.name(), json(body), draft.idempotencyKey()));
         } catch (ActionDraftUnavailableException unavailable) {
             throw unavailable;
         } catch (RuntimeException conflict) {
@@ -858,33 +878,44 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
         }
     }
 
-    private ActionDraftFact interrupted(ActionDraftFact executing, ObjectNode body, RuntimeException error) {
-        body.put("status", ActionDraftStatus.INTERRUPTED.name());
+    private ActionDraftFact interrupted(ActionDraftFact executing, ObjectNode body, RuntimeException error, AuthorizedDeviceScope scope) {
+        body.put("status", ActionDraftStatusEnum.INTERRUPTED.name());
         body.put("dispatchStarted", true);
         ObjectNode result = mapper.createObjectNode();
-        result.put("status", ActionDraftStatus.INTERRUPTED.name());
-        result.put("outcome", ActionReceiptOutcome.UNKNOWN.name());
-        result.put("message", "执行中断，已下发指令结果未知，请先查询设备状态");
+        result.put("status", ActionDraftStatusEnum.INTERRUPTED.name());
+        result.put("outcome", ActionReceiptOutcomeEnum.UNKNOWN.name());
+        // The long reason is evidence; the projected message is canonical.
+        result.put("error", "执行中断，已下发指令结果未知，请先查询设备状态"
+                + (error.getMessage() == null || error.getMessage().isBlank() ? "" : ": " + error.getMessage()));
         ArrayNode receipts = mapper.createArrayNode();
         Set<String> selectedIds = actionIds(array(body, "selectedActionIds"));
         for (JsonNode action : array(body, "actions")) {
             if (!selectedIds.contains(action.path("id").asText())) continue;
             ObjectNode receipt = mapper.createObjectNode();
             receipt.put("actionId", action.path("id").asText());
-            receipt.put("outcome", ActionReceiptOutcome.UNKNOWN.name());
+            receipt.put("outcome", ActionReceiptOutcomeEnum.UNKNOWN.name());
             receipts.add(receipt);
         }
         result.set("receipts", receipts);
+        result = results.normalized(result, executing.draftId(), ActionDraftStatusEnum.INTERRUPTED.name(),
+                results.kindsByAction(body), results.devicesByAction(body));
         body.set("result", result);
-        ActionDraftFact done = cas(executing, body, ActionDraftStatus.INTERRUPTED.name());
+        body.put("endedAt", clock.instant().toString());
+        ActionDraftFact done = cas(executing, body, ActionDraftStatusEnum.INTERRUPTED.name());
         persistExecutionFacts(done, result);
+        recordHistory(done, scope);
         audit(done, "ACTION_DRAFT_INTERRUPTED");
         return done;
     }
 
     private DeviceStateReadResult readFreshStates(RequestIdentity identity, ArrayNode actions) {
-        List<String> ids = actions.valueStream().map(action -> action.path("deviceId").asText(""))
+        // Access control is open-once with no comparable pre-state: no state polling
+        // happens just to open a door. Fresh authorization still gates the dispatch.
+        List<String> ids = actions.valueStream()
+                .filter(action -> !ActionResultProjector.noPhysicalConfirmation(action.path("kind").asText("")))
+                .map(action -> action.path("deviceId").asText(""))
                 .filter(id -> !id.isBlank()).distinct().toList();
+        if (ids.isEmpty()) return new DeviceStateReadResult(Map.of(), clock.instant().toString());
         try {
             DeviceStateReadResult states = iot.readDeviceStates(identity, ids).block(scopeTimeout);
             if (states == null) throw new UpstreamUnavailableException("设备状态");
@@ -944,12 +975,12 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
             }
             result.set("observedStates", observedStates);
         }
-        ActionDraftStatus status = dispatched.status();
-        if (!dispatchedAny) status = ActionDraftStatus.NO_CHANGE;
-        else if (!satisfiedReceipts.isEmpty() && dispatched.status() == ActionDraftStatus.REJECTED) {
-            status = ActionDraftStatus.PARTIALLY_ACCEPTED;
+        ActionDraftStatusEnum status = dispatched.status();
+        if (!dispatchedAny) status = ActionDraftStatusEnum.NO_CHANGE;
+        else if (!satisfiedReceipts.isEmpty() && dispatched.status() == ActionDraftStatusEnum.REJECTED) {
+            status = ActionDraftStatusEnum.PARTIALLY_ACCEPTED;
         }
-        ActionReceiptOutcome outcome = dispatchedAny ? dispatched.receiptOutcome() : ActionReceiptOutcome.ALREADY_SATISFIED;
+        ActionReceiptOutcomeEnum outcome = dispatchedAny ? dispatched.receiptOutcome() : ActionReceiptOutcomeEnum.ALREADY_SATISFIED;
         return new ActionDispatchResult(status, result.toString(), dispatched.dispatchStarted(), outcome);
     }
 
@@ -962,6 +993,17 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
         return result.toString();
     }
 
+    private void recordHistory(ActionDraftFact completed, AuthorizedDeviceScope scope) {
+        if (history == null || !"office".equals(payload(completed).path("source").asText())) return;
+        try {
+            history.record(completed, scope);
+        } catch (RuntimeException failure) {
+            // Runtime records this failure without turning an already-dispatched action back into a retryable draft.
+            LOG.error("Immediate task history unavailable for draft {}", completed.draftId(), failure);
+            audit(completed, "IMMEDIATE_TASK_RECORD_FAILED");
+        }
+    }
+
     private void persistExecutionFacts(ActionDraftFact draft, ObjectNode result) {
         JsonNode receipts = result.get("receipts");
         if (receiptStore != null && receipts != null && receipts.isArray()) {
@@ -971,7 +1013,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
                 if (actionId.isBlank() || outcome.isBlank()) continue;
                 try {
                     receiptStore.append(new ActionReceiptFact(draft.draftId(), draft.revision(), actionId,
-                            ActionReceiptOutcome.valueOf(outcome.toUpperCase(java.util.Locale.ROOT)), json(receipt)));
+                            ActionReceiptOutcomeEnum.valueOf(outcome.toUpperCase(java.util.Locale.ROOT)), json(receipt)));
                 } catch (IllegalArgumentException ignored) {
                     // An adapter cannot create an invalid durable outcome fact.
                 }
@@ -992,10 +1034,10 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
     }
 
     private AuthorizedDeviceScope verifyScope(PrincipalInfo principal, ObjectNode body) {
-        IotSource source = parseSource(body.path("source").asText(null));
+        IotSourceEnum source = parseSource(body.path("source").asText(null));
         AuthorizedDeviceScope scope = loadScope(principal, source);
         String focusRegionId = body.path("focusRegionId").asText("");
-        if (source == IotSource.OFFICE && !focusRegionId.isBlank()) {
+        if (source == IotSourceEnum.OFFICE && !focusRegionId.isBlank()) {
             scope = focusScope(principal, source, scope, focusRegionId);
         }
         verifyActions(body, scope);
@@ -1012,7 +1054,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
         }
     }
 
-    private AuthorizedDeviceScope loadScope(PrincipalInfo principal, IotSource source) {
+    private AuthorizedDeviceScope loadScope(PrincipalInfo principal, IotSourceEnum source) {
         RequestIdentity identity = new RequestIdentity(principal.authorization(), principal.tenantCode(), source, ownerKey(principal));
         try {
             AuthorizedDeviceScope scope = iot.loadAuthorizedDeviceScope(identity).block(scopeTimeout);
@@ -1031,44 +1073,20 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
         }
     }
 
-    private void validateCommand(String kind, JsonNode command) {
-        if (command == null || !command.isObject() || command.size() == 0) {
-            throw new BusinessException("UNSUPPORTED_ACTION_DRAFT", "设备指令参数无效", 422);
-        }
-        switch (kind) {
-            case "lighting" -> {
-                if (command.size() != 1 || !command.path("closeOrOpen").isIntegralNumber()
-                        || (command.path("closeOrOpen").asInt() != 0 && command.path("closeOrOpen").asInt() != 1)) {
-                    throw new BusinessException("UNSUPPORTED_ACTION_DRAFT", "照明指令参数无效", 422);
-                }
-            }
-            case "access" -> {
-                if (command.size() != 1 || !command.path("controlType").isIntegralNumber()
-                        || command.path("controlType").asInt() != 2) {
-                    throw new BusinessException("UNSUPPORTED_ACTION_DRAFT", "门禁指令参数无效", 422);
-                }
-            }
-            case "ac" -> {
-                for (Iterator<String> names = command.fieldNames(); names.hasNext(); ) {
-                    String name = names.next();
-                    if (!Set.of("power", "temperature", "mode", "fanSpeed").contains(name)) {
-                        throw new BusinessException("UNSUPPORTED_ACTION_DRAFT", "空调指令参数无效", 422);
-                    }
-                }
-                boolean valid = true;
-                if (command.has("power")) valid &= command.path("power").isTextual()
-                        && AcCommandCapabilities.POWER.contains(command.path("power").textValue());
-                if (command.has("temperature")) valid &= command.path("temperature").isIntegralNumber()
-                        && command.path("temperature").asInt() >= AcCommandCapabilities.TEMPERATURE_MIN
-                        && command.path("temperature").asInt() <= AcCommandCapabilities.TEMPERATURE_MAX;
-                if (command.has("mode")) valid &= command.path("mode").isTextual()
-                        && AcCommandCapabilities.MODE_SET.contains(command.path("mode").textValue());
-                if (command.has("fanSpeed")) valid &= command.path("fanSpeed").isTextual()
-                        && AcCommandCapabilities.FAN_SPEED_SET.contains(command.path("fanSpeed").textValue());
-                if ("off".equals(command.path("power").asText(null)) && command.size() > 1) valid = false;
-                if (!valid) throw new BusinessException("UNSUPPORTED_ACTION_DRAFT", "空调指令参数无效", 422);
-            }
-            default -> throw new BusinessException("UNSUPPORTED_ACTION_DRAFT", "设备类型不可控", 422);
+    /**
+     * 校验并把指令规范成执行值；整数性、无损 int 与范围规则统一在
+     * {@link DeviceCommands}，这里只保留草案对外错误码（UNSUPPORTED_ACTION_DRAFT/422）。
+     */
+    private ObjectNode validateCommand(String kind, JsonNode command) {
+        try {
+            return DeviceCommands.canonical(kind, command);
+        } catch (IllegalArgumentException invalid) {
+            throw switch (kind) {
+                case "lighting" -> new BusinessException("UNSUPPORTED_ACTION_DRAFT", "照明指令参数无效", 422);
+                case "access" -> new BusinessException("UNSUPPORTED_ACTION_DRAFT", "门禁指令参数无效", 422);
+                case "ac" -> new BusinessException("UNSUPPORTED_ACTION_DRAFT", "空调指令参数无效", 422);
+                default -> new BusinessException("UNSUPPORTED_ACTION_DRAFT", "设备类型不可控", 422);
+            };
         }
     }
 
@@ -1086,8 +1104,17 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
      */
     private Page materialize(ObjectNode payload, AuthorizedDeviceScope scope,
                              AuthorizedDeviceScope catalogScope, PrincipalInfo principal,
-                             String conversationId, IotSource source) {
-        List<CandidateView> sets = resolveCandidateSets(payload, "candidateSetIds", scope, catalogScope, principal, conversationId, source);
+                             String conversationId, IotSourceEnum source) {
+        Map<String, String> handleIndex = new LinkedHashMap<>();
+        List<CandidateView> sets = payload.path("lighting").isObject() && payload.path("candidateSetIds").isEmpty()
+                ? new ArrayList<>() : new ArrayList<>(resolveCandidateSets(payload, "candidateSetIds",
+                        scope, catalogScope, principal, conversationId, source, handleIndex));
+        Map<String, String> exclusionRefs = resolveExcludedReferences(payload, scope, catalogScope,
+                principal, conversationId, source);
+        if (payload.path("lighting").isObject()) {
+            expandLighting(payload, sets, scope, catalogScope, principal, conversationId, source,
+                    handleIndex, exclusionRefs);
+        }
         if (sets.isEmpty()) {
             throw new BusinessException("CANDIDATE_SET_REQUIRED", "操作草案必须引用已核验的候选集", 422);
         }
@@ -1100,11 +1127,11 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
             throw new BusinessException("INVALID_ACTION_DRAFT", "actions is required");
         }
         if (universe.isEmpty()) throw new BusinessException("INVALID_ACTION_DRAFT", "候选范围没有设备");
-        List<ExplicitAction> explicit = explicitActions(rawActions, scope, universe);
-        Set<String> excluded = excludedIds(payload, universe);
+        List<ExplicitAction> explicit = explicitActions(rawActions, scope, universe, handleIndex);
+        Set<String> excluded = excludedIds(payload, universe, exclusionRefs);
         if (payload.has("excludeCandidateSetIds")) {
             for (CandidateView exclusion : resolveCandidateSets(payload, "excludeCandidateSetIds", scope,
-                    catalogScope, principal, conversationId, source)) {
+                    catalogScope, principal, conversationId, source, handleIndex)) {
                 if (exclusion.members().isEmpty()) {
                     throw new BusinessException("INVALID_ACTION_DRAFT", "排除子集为空，尚未查明真实排除范围");
                 }
@@ -1137,7 +1164,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
                 throw new BusinessException("INVALID_ACTION_DRAFT", "同一类设备存在多个目标值，请逐台指定或统一目标");
             }
         }
-        Set<String> recommended = recommendedIds(payload, universe);
+        Set<String> recommended = recommendedIds(payload, universe, handleIndex);
         List<String> ids = List.copyOf(universe.keySet());
         DeviceStateReadResult read = readStates(principal, source, ids);
         Map<String, Object> states = read.states();
@@ -1161,9 +1188,6 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
             }
             if (device.observationOnly()) throw new ActionDraftScopeChangedException();
             validateCommand(device.kind(), command);
-            if (state == null && ("lighting".equals(device.kind()) || "ac".equals(device.kind()))) {
-                throw new ActionDraftUnavailableException("无法读取设备当前状态：" + device.name());
-            }
             boolean satisfied = commandSatisfied(command, state);
             ObjectNode action = action(device, command, state, satisfied);
             actions.add(action);
@@ -1201,10 +1225,98 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
         return new Page(actions, selected, inventory, counts, summary, question, read.observedAt());
     }
 
+    /** Runtime resolveExcludedDevice: verify the source set without expanding the operation universe. */
+    private Map<String, String> resolveExcludedReferences(ObjectNode payload, AuthorizedDeviceScope scope,
+            AuthorizedDeviceScope catalogScope, PrincipalInfo principal, String conversationId, IotSourceEnum source) {
+        Set<String> sources = new LinkedHashSet<>();
+        collectExclusionSources(payload.path("excludedDeviceIds"), sources);
+        collectExclusionSources(payload.path("lighting").path("excludedDeviceIds"), sources);
+        if (sources.isEmpty()) return Map.of();
+        ObjectNode request = mapper.createObjectNode();
+        ArrayNode refs = request.putArray("excludeCandidateSetIds");
+        for (String handle : sources) refs.add(handle);
+        Map<String, String> resolved = new LinkedHashMap<>();
+        // Exclusions require exact sets even when inclusion permits browse.
+        // Keep this index separate: exclusion sources must not authorize action references.
+        resolveCandidateSets(request, "excludeCandidateSetIds", scope, catalogScope,
+                principal, conversationId, source, resolved);
+        return resolved;
+    }
+
+    private static void collectExclusionSources(JsonNode refs, Set<String> sources) {
+        if (!refs.isArray()) return;
+        for (JsonNode ref : refs) {
+            if (!ref.isTextual()) continue;
+            java.util.regex.Matcher matcher = DEVICE_HANDLE.matcher(ref.asText());
+            if (matcher.matches()) sources.add("s" + matcher.group(1));
+        }
+    }
+
+    /** Original expandLightingScope: fixed union minus exact subsets, without a model-sized action limit. */
+    private void expandLighting(ObjectNode payload, List<CandidateView> sets, AuthorizedDeviceScope scope,
+            AuthorizedDeviceScope catalogScope, PrincipalInfo principal, String conversationId, IotSourceEnum source,
+            Map<String, String> handleIndex, Map<String, String> exclusionRefs) {
+        ObjectNode lighting = (ObjectNode) payload.path("lighting").deepCopy();
+        boolean single = lighting.path("candidateSetId").isTextual() && !lighting.path("candidateSetId").asText().isBlank();
+        boolean multiple = lighting.path("candidateSetIds").isArray() && !lighting.path("candidateSetIds").isEmpty();
+        if (single == multiple) throw new BusinessException("INVALID_ACTION_DRAFT", "包含范围需提供单集合或多个集合，二选一");
+        if (single) lighting.putArray("candidateSetIds").add(lighting.path("candidateSetId").asText());
+        List<CandidateView> included = resolveCandidateSets(lighting, "candidateSetIds", scope, catalogScope,
+                principal, conversationId, source, handleIndex);
+        Map<String, AuthorizedDevice> members = new LinkedHashMap<>();
+        for (CandidateView set : included) {
+            if (!"lighting".equals(set.kind()) || set.members().isEmpty()) {
+                throw new BusinessException("INVALID_ACTION_DRAFT", "照明范围尚未完整识别");
+            }
+            for (AuthorizedDevice member : set.members()) members.putIfAbsent(member.id(), member);
+            if (sets.stream().noneMatch(existing -> existing.candidateSetId().equals(set.candidateSetId()))) sets.add(set);
+        }
+        Set<String> excluded = excludedIds(lighting, members, exclusionRefs);
+        for (CandidateView subset : resolveCandidateSets(lighting, "excludeCandidateSetIds", scope, catalogScope,
+                principal, conversationId, source, handleIndex)) {
+            if (!"lighting".equals(subset.kind()) || subset.members().isEmpty()) {
+                throw new BusinessException("INVALID_ACTION_DRAFT", "排除项尚未完整识别");
+            }
+            for (AuthorizedDevice member : subset.members()) {
+                if (!members.containsKey(member.id())) {
+                    throw new BusinessException("INVALID_ACTION_DRAFT", "排除项必须完全属于本次包含范围");
+                }
+                excluded.add(member.id());
+            }
+        }
+        if (excluded.size() == members.size()) {
+            throw new BusinessException("INVALID_ACTION_DRAFT", "排除后没有待操作设备，请核对包含范围与排除子集");
+        }
+        int closeOrOpen;
+        try {
+            closeOrOpen = DeviceCommands.lightingCloseOrOpen(lighting.get("closeOrOpen"));
+        } catch (IllegalArgumentException invalid) {
+            throw new BusinessException("INVALID_ACTION_DRAFT", "照明操作必须明确开关目标");
+        }
+        ArrayNode actions = payload.path("actions").isArray()
+                ? (ArrayNode) payload.path("actions").deepCopy() : mapper.createArrayNode();
+        for (AuthorizedDevice member : members.values()) {
+            if (!excluded.contains(member.id())) actions.addObject().put("deviceId", member.id())
+                    .put("kind", "lighting").put("closeOrOpen", closeOrOpen).put("selected", true);
+        }
+
+        Set<String> allExcluded = new LinkedHashSet<>(excluded);
+        if (payload.path("excludedDeviceIds").isArray()) {
+            // Union by device identity, not by alias spelling shared with lighting exclusions.
+            for (JsonNode id : payload.path("excludedDeviceIds")) {
+                allExcluded.add(exclusionRefs.getOrDefault(id.asText(), id.asText()));
+            }
+        }
+        payload.set("excludedDeviceIds", mapper.valueToTree(allExcluded));
+        payload.set("actions", actions);
+        payload.set("candidateSetIds", mapper.valueToTree(sets.stream().map(CandidateView::candidateSetId).toList()));
+        payload.remove("lighting");
+    }
+
     private List<CandidateView> resolveCandidateSets(ObjectNode payload, String field, AuthorizedDeviceScope scope,
                                                      AuthorizedDeviceScope catalogScope,
                                                      PrincipalInfo principal, String conversationId,
-                                                     IotSource source) {
+                                                     IotSourceEnum source, Map<String, String> handleIndex) {
         JsonNode raw = payload.get(field);
         if (raw == null || raw.isNull()) return List.of();
         if (!raw.isArray() || raw.isEmpty()) throw new BusinessException("INVALID_ACTION_DRAFT", field + " 无效");
@@ -1217,7 +1329,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
             if (candidates == null) {
                 throw new BusinessException("CANDIDATE_SET_STORE_UNAVAILABLE", "设备候选集事实存储未配置", 503);
             }
-            DeviceCandidateRecord record = candidates.find(value.asText())
+            DeviceCandidateRecord record = candidates.find(value.asText(), conversationId)
                     .orElseThrow(() -> new BusinessException("CANDIDATE_SET_NOT_FOUND", "设备候选集不存在或已过期", 404));
             if (!principal.tenantCode().equals(record.tenantCode())
                     || !ownerKey(principal).equals(record.ownerKey())
@@ -1226,12 +1338,15 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
                 throw new BusinessException("CANDIDATE_SET_NOT_FOUND", "设备候选集不存在或已过期", 404);
             }
             boolean exclusion = "excludeCandidateSetIds".equals(field);
-            if (!"exact".equals(record.resolutionMode())
-                    && (exclusion || !"browse".equals(record.resolutionMode()))) {
-                throw new BusinessException("CANDIDATE_SCOPE_UNRESOLVED", "候选范围或排除子集尚未精确查明，请重新检索", 422);
+            // This field also carries dN_k source sets: exclusions must never accept browse.
+            if (!record.permitsScopeExpansion(exclusion)) {
+                throw new BusinessException("CANDIDATE_SCOPE_UNRESOLVED",
+                        "候选范围或排除子集尚未精确查明，请补查明确设备或澄清范围，不要重复相同地点检索",
+                        candidateRecovery(record, "scope_unresolved", "get_device_details"), 422);
             }
             if (record.members().size() != record.totalMatches()) {
-                throw new BusinessException("CANDIDATE_SET_INCOMPLETE", "候选范围成员不完整，尚未生成草案", 422);
+                throw new BusinessException("CANDIDATE_SET_INCOMPLETE", "候选范围成员不完整，尚未生成草案",
+                        candidateRecovery(record, "members_incomplete", "find_device_candidates"), 422);
             }
             // Presentation may be bounded, but the persisted member list is complete:
             // server-side expansion is exactly what prevents the model from owning the
@@ -1247,26 +1362,43 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
                         .orElseThrow(ActionDraftScopeChangedException::new);
                 members.add(current);
             }
+            if (record.handle() != null && !record.handle().isBlank()) {
+                for (int position = 0; position < record.members().size(); position++) {
+                    // Runtime handles.ts resolveDeviceRef: d{N}_{k} positions over the persisted members.
+                    handleIndex.putIfAbsent(record.deviceHandle(position), record.members().get(position).id());
+                }
+            }
             sets.add(new CandidateView(record.candidateSetId(), record.query().kind(), members));
         }
         return sets;
     }
 
+    private static Map<String, Object> candidateRecovery(DeviceCandidateRecord record, String reason, String nextTool) {
+        Map<String, Object> recovery = new LinkedHashMap<>();
+        recovery.put("reason", reason);
+        if (record.handle() != null && !record.handle().isBlank()) recovery.put("candidateSet", record.handle());
+        recovery.put("resolution", record.resolutionMode());
+        recovery.put("nextTool", nextTool);
+        recovery.put("retrySameScope", false);
+        return recovery;
+    }
+
     private static AuthorizedDeviceScope candidateScope(AuthorizedDeviceScope scope, DeviceCandidateRecord record) {
         String regionId = record.query().regionId();
-        if (scope.source() != IotSource.OFFICE || regionId == null || regionId.isBlank()) return scope;
+        if (scope.source() != IotSourceEnum.OFFICE || regionId == null || regionId.isBlank()) return scope;
         return scope.retain(device -> device.officeIds().contains(regionId));
     }
 
     private List<ExplicitAction> explicitActions(JsonNode raw, AuthorizedDeviceScope scope,
-                                                  Map<String, AuthorizedDevice> universe) {
+                                                  Map<String, AuthorizedDevice> universe,
+                                                  Map<String, String> handleIndex) {
         List<ExplicitAction> result = new ArrayList<>();
         Set<String> seen = new HashSet<>();
         for (JsonNode item : raw) {
             if (!item.isObject() || !item.path("deviceId").isTextual()) {
                 throw new BusinessException("INVALID_ACTION_DRAFT", "action is invalid");
             }
-            String deviceId = item.path("deviceId").asText();
+            String deviceId = handleIndex.getOrDefault(item.path("deviceId").asText(), item.path("deviceId").asText());
             AuthorizedDevice device = scope.device(deviceId).orElseThrow(ActionDraftScopeChangedException::new);
             if (!universe.containsKey(device.id())) {
                 throw new BusinessException("INVALID_DEVICE_REFERENCE", "拟操作设备不属于引用的候选集", 403);
@@ -1275,8 +1407,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
             if (!device.kind().equals(kind)) throw new ActionDraftScopeChangedException();
             if (device.observationOnly()) throw new ActionDraftScopeChangedException();
             if (!seen.add(device.id())) throw new BusinessException("INVALID_ACTION_DRAFT", "设备目标重复");
-            ObjectNode command = normalizeCommand(item, kind);
-            validateCommand(kind, command);
+            ObjectNode command = validateCommand(kind, normalizeCommand(item, kind));
             Boolean selected = item.path("selected").isBoolean() ? item.path("selected").asBoolean() : null;
             result.add(new ExplicitAction(device, command, selected));
         }
@@ -1322,35 +1453,43 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
         return result;
     }
 
-    private Set<String> excludedIds(ObjectNode payload, Map<String, AuthorizedDevice> universe) {
+    private Set<String> excludedIds(ObjectNode payload, Map<String, AuthorizedDevice> universe,
+                                    Map<String, String> exclusionRefs) {
         JsonNode raw = payload.get("excludedDeviceIds");
         if (raw == null || raw.isNull()) return new HashSet<>();
         if (!raw.isArray()) throw new BusinessException("INVALID_ACTION_DRAFT", "excludedDeviceIds 无效");
         Set<String> excluded = new HashSet<>();
         for (JsonNode value : raw) {
-            if (!value.isTextual() || value.asText().isBlank() || !excluded.add(value.asText())
-                    || !universe.containsKey(value.asText())) {
+            if (!value.isTextual() || value.asText().isBlank()) {
+                throw new BusinessException("INVALID_ACTION_DRAFT", "排除设备不属于已核验的候选范围");
+            }
+            String id = exclusionRefs.getOrDefault(value.asText(), value.asText());
+            if (!excluded.add(id) || !universe.containsKey(id)) {
                 throw new BusinessException("INVALID_ACTION_DRAFT", "排除设备不属于已核验的候选范围");
             }
         }
         return excluded;
     }
 
-    private Set<String> recommendedIds(ObjectNode payload, Map<String, AuthorizedDevice> universe) {
+    private Set<String> recommendedIds(ObjectNode payload, Map<String, AuthorizedDevice> universe,
+                                       Map<String, String> handleIndex) {
         JsonNode raw = payload.get("recommendedDeviceIds");
         if (raw == null || raw.isNull()) return Set.of();
         if (!raw.isArray()) throw new BusinessException("INVALID_ACTION_DRAFT", "recommendedDeviceIds 无效");
         Set<String> recommended = new HashSet<>();
         for (JsonNode value : raw) {
-            if (!value.isTextual() || value.asText().isBlank() || !recommended.add(value.asText())
-                    || !universe.containsKey(value.asText())) {
+            if (!value.isTextual() || value.asText().isBlank()) {
+                throw new BusinessException("INVALID_ACTION_DRAFT", "默认选中设备不属于本次草案");
+            }
+            String id = handleIndex.getOrDefault(value.asText(), value.asText());
+            if (!recommended.add(id) || !universe.containsKey(id)) {
                 throw new BusinessException("INVALID_ACTION_DRAFT", "默认选中设备不属于本次草案");
             }
         }
         return recommended;
     }
 
-    private DeviceStateReadResult readStates(PrincipalInfo principal, IotSource source, List<String> ids) {
+    private DeviceStateReadResult readStates(PrincipalInfo principal, IotSourceEnum source, List<String> ids) {
         RequestIdentity identity = new RequestIdentity(principal.authorization(), principal.tenantCode(), source, ownerKey(principal));
         try {
             DeviceStateReadResult result = iot.readDeviceStates(identity, ids).block(scopeTimeout);
@@ -1438,7 +1577,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
     }
 
     private boolean terminal(ActionDraftFact draft) {
-        try { return ActionDraftStatus.valueOf(draft.status()).terminal(); }
+        try { return ActionDraftStatusEnum.valueOf(draft.status()).terminal(); }
         catch (IllegalArgumentException error) { return false; }
     }
 
@@ -1448,8 +1587,8 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
         return principal.ownerKey();
     }
 
-    private IotSource parseSource(String value) {
-        try { return IotSource.parse(value); }
+    private IotSourceEnum parseSource(String value) {
+        try { return IotSourceEnum.parse(value); }
         catch (RuntimeException error) { throw new BusinessException("INVALID_AGENT_SOURCE", "Agent 来源无效"); }
     }
 
@@ -1491,7 +1630,11 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
 
     private void audit(ActionDraftFact draft, String type) {
         if (audit == null) return;
-        audit.append(new AuditEventFact(UUID.randomUUID().toString(), tenantOf(draft), type, draft.payloadJson()));
+        // Audit copy carries the event time; the stored draft payload is not mutated.
+        ObjectNode body = payload(draft).deepCopy();
+        body.put("at", clock.instant().toString());
+        audit.append(new AuditEventFact(UUID.randomUUID().toString(), tenantOf(draft), type,
+                json(body)));
     }
 
     /**
@@ -1500,7 +1643,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
      * stored binding is a fixed-length SHA-256 of those exact components. The hash
      * is canonical, not a fallback: equality and isolation semantics are unchanged.
      */
-    private static String scopedIdempotencyKey(PrincipalInfo principal, IotSource source, String idempotencyKey) {
+    private static String scopedIdempotencyKey(PrincipalInfo principal, IotSourceEnum source, String idempotencyKey) {
         String material = principal.tenantCode() + "\u0000" + ownerKey(principal)
                 + "\u0000" + source.wireValue() + "\u0000" + idempotencyKey;
         try {

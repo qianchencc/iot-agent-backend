@@ -1,0 +1,73 @@
+{
+  "date": "2026-11-04",
+  "fixedPoint": "c1d36c1",
+  "originalRuntime": "cbc5cca (read-only)",
+  "scope": "Java concurrency migration; per-queue six, not global six; Node unchanged",
+  "beforeHttp": [
+    {
+      "sameHubSequential": true,
+      "receiptsInInputOrder": true,
+      "requests": 9,
+      "elapsedMs": 5268,
+      "scenario": "device-dispatch",
+      "peak": 1
+    }
+  ],
+  "afterHttp": [
+    {
+      "elapsedMs": 262,
+      "scenario": "device-dispatch",
+      "peak": 6,
+      "sameHubSequential": true,
+      "receiptsInInputOrder": true,
+      "requests": 9
+    },
+    {
+      "httpStatus": 403,
+      "scenario": "authorization-stop-and-drain",
+      "activeOnReturn": 0,
+      "requests": 6
+    },
+    {
+      "members": 8,
+      "scenario": "office-directory",
+      "peak": 6
+    },
+    {
+      "states": 8,
+      "scenario": "office-state-reread",
+      "peak": 1
+    },
+    {
+      "stateRequests": 12,
+      "peakInFlight": 6,
+      "all12StatesVerified": true,
+      "realCustomerWrites": 0,
+      "surface": "real IotAdapter WebClient HTTP to isolated loopback server"
+    },
+    {
+      "activeOnReturn": 0,
+      "customerWrites": false,
+      "scenario": "scanner-to-real-http-stop-and-drain",
+      "terminalWriteInterrupted": false,
+      "laterPhase": "PENDING",
+      "requests": 6,
+      "phase": "INTERRUPTED"
+    }
+  ],
+  "verificationBoundary": "Loopback HTTP and isolated schemas are engineering proof only; no customer device control, task creation or notification.",
+  "frontend": {
+    "status": "not-yet-exercised-on-new-artifact"
+  },
+  "environmentReads": {
+    "originalRuntime": "serial",
+    "currentWorktree": "bounded six together with energy batch",
+    "classification": "retained independent worktree improvement; not claimed as verbatim Runtime migration"
+  },
+  "reviews": {
+    "standards": "blocking platform-pool churn/Executors factories fixed using Java21 virtual workers",
+    "spec": "ordered drain fixed; stop now reaches device batches without cancelling in-flight HTTP; terminal persistence outside interruptible gateway scope"
+  },
+  "runtimeDeploymentBaseline": "var/task-proposal-transport-20261104-095357/runtime-source",
+  "deploymentPreserves": "previously shipped task proposal HTTP/completion fix and unchanged Node artifact"
+}

@@ -7,21 +7,21 @@ import java.util.Objects;
  * exception after dispatch cannot be reported as safely not-dispatched.
  */
 public record ActionDispatchResult(
-        ActionDraftStatus status,
+        ActionDraftStatusEnum status,
         String resultJson,
         boolean dispatchStarted,
-        ActionReceiptOutcome receiptOutcome) {
+        ActionReceiptOutcomeEnum receiptOutcome) {
 
-    public ActionDispatchResult(ActionDraftStatus status, String resultJson, boolean dispatchStarted) {
+    public ActionDispatchResult(ActionDraftStatusEnum status, String resultJson, boolean dispatchStarted) {
         this(status, resultJson, dispatchStarted, null);
     }
 
     public ActionDispatchResult {
         Objects.requireNonNull(status, "status");
-        if (!status.terminal() || status == ActionDraftStatus.CANCELLED || status == ActionDraftStatus.EXPIRED) {
+        if (!status.terminal() || status == ActionDraftStatusEnum.CANCELLED || status == ActionDraftStatusEnum.EXPIRED) {
             throw new IllegalArgumentException("Gateway result must be an execution terminal status");
         }
         resultJson = resultJson == null || resultJson.isBlank() ? "{}" : resultJson;
-        receiptOutcome = receiptOutcome == null ? ActionReceiptOutcome.UNKNOWN : receiptOutcome;
+        receiptOutcome = receiptOutcome == null ? ActionReceiptOutcomeEnum.UNKNOWN : receiptOutcome;
     }
 }

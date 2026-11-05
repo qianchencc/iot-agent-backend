@@ -1,53 +1,39 @@
-# web/admin — 控制台开发规范
+# web/admin — 管理控制台
 
-物联 Agent 后端管理控制台（Vue 3 + Arco Design Vue）。本地启动见 `README.md`；部署、升级、排障见 `docs/maintenance.md`。本文件是改代码时必须遵守的规范。
+技术栈已由用户确定为 Vue3 / Vite / Element Plus + Pinia + Vue Router，纯 JavaScript（不使用 TypeScript、vue-tsc、tsconfig 或 .d.ts）。不另建前端仓库，不混用 Arco/shadcn 等其他组件库。
 
-## 铁律（违反 = 后端拒绝或泄露面扩大）
+本目录以以下交付边界为准，优先于旧控制台设计和交付拆分中的扩展范围。修改配置时查根 `docs/configuration-governance.md` 及 `.scratch/admin-console-governance/` 中的真实字段清单；旧完整设计只作参考，不作为必须完成的功能清单。业务身份和数据权威归 Java。
+ 
+## 交付原则与唯一范围
 
-- **所有请求走 `src/api/admin.ts` 的 `http` 单例**，组件/视图禁止 `fetch`、禁止新建 axios 实例、禁止写 `/api/admin` 前缀以外的路径。
-- **CSRF token 只存内存**（Pinia session store），不落 `localStorage`/`sessionStorage`/cookie。token 丢失 = 调 `GET /session` 重建，绝不自行生成。
-- **secret 字段只支持替换/清空，后端永不回读**。UI 不得显示已存 secret 值；输入框留空表示"不改动"。
-- **超过 2^53 的 ID/时间戳一律按 string 处理**（`JSON.parse` 后会丢精度），类型标注 `string`，不做数值运算。
-- **业务判断在前端只做展示态**：是否可保存、是否冲突、错误文案以服务端返回为准；前端校验只做即时体验，不当作正确性保证。
+- 项目不是面向广泛生产使用的平台；以业务闭环、快速交付、简单可维护为准。每项功能必须直接服务以下三个用途，不为假设中的规模、合规或未来扩展提前建设。
+- **用户白名单**：独立维护手机号与可选姓名备注，支持查看、添加、移除；不接业务准入、认证、设备权限或任务取消。后续用途另行确定，见 ADR0008。
+- **后端参数配置**：管理大部分确实可调整的参数，完成读取、编辑、校验、保存和实际生效；部署连接和安全根保留在配置文件，秘密不回显。以现有消费者接通为目标，不另造通用配置治理平台。
+- **用户操作审计**：按用户查看公司／办公室操作，能回答谁、何时、做了什么、结果如何；提供必要的筛选和详情。不是模型调试平台，不默认建设导出、归档、防篡改证明或合规报表。
+- 页面以白名单、参数配置、操作审计三项功能及必要登录组成；不单独建设运行大屏、维护中心、成员画像或任务管理平台。复用组件库的成熟控件，减少定制和抽象。
+- 未经用户明确要求，不把保留期限、撤权后的任务治理、细粒度授权或远期架构作为本轮交付前置。必要的身份隔离、已有设备授权、秘密保护和真实失败反馈仍须保留。
 
-## 组件规范
+## 内容与目录
 
-- **控件只用 Arco Design Vue**（`<a-*>`，已全局注册）。已有样式体系（tokens/global）覆盖不到的场景才写样式，且必须用 `var(--color-*)` 系列 token——禁止硬编码 hex。
-- **主题通过 `src/styles/tokens.css` 改 Arco token**（subdued green，`--arcoblue-*` 映射 runtime admin 的 `#275e47` 绿）。要换色/调肤，改这一处；不在组件里覆盖颜色。
-- **表单用 `<a-form>` + `@submit-success`**，提交方法 `async`，`busy` 期间锁按钮（`:loading`）；每个输入 `allow-clear`。
-- **错误反馈用 `<a-alert type="error">` 就地展示**（不弹 toast 刷屏）；成功用 `Message.success`；破坏性操作（apply/restore/logout 放弃草稿）用 `Modal.confirm`/`a-popconfirm` 二次确认。
-- **文案全部中文**，直接给操作者看的句子（"管理员密码不正确"）不展示后端 `code`；`code` 只进 console/日志。
-- **会话页结构**：左侧固定侧栏 + 顶部条 + `page-content` 内容区，对齐 runtime admin 布局（232px 侧栏、`max-width: 1120px` 内容）。新页面沿用 `HomeView.vue` 的 `<a-layout>` 骨架，不另起布局。
-- **草稿语义**（对标 runtime）：未保存修改跨路由保留；离开/登出前二次确认放弃；`expectedRevision` 提交防并发覆盖。新配置页必须实现这三点，不能只 PATCH 不管冲突。
+- 审计采用A方案的成员列表＋选中用户记录；company和office在同一用户下筛选。用户层级保留tenant/身份域隔离，owner hash不是展示姓名；仅展示真实可取得的身份信息。
+- 一名部署管理的独立管理员；登录凭据不通过控制台修改。其操作归因至admin身份，不声称能识别共享密码的具体人员。
+- `api/` 是契约层，所有请求经过 `src/api/admin.js` 的 http 单例；`router/` 统一守卫与共享壳嵌套路由；`layouts/` 管共享壳；`views/<功能>/` 放页面与私有组件；`components/` 只放跨页复用；跨页草稿才进Pinia。
+- 配置分组从真实登记项和消费者产生；已废弃字段不建表单。部署根只读，业务字段标清来源、单位、范围、作用范围与生效方式，未接通不能显示可用。
 
-## 新增页面步骤（顺序执行）
+## 交互与安全
 
-1. `src/api/` 按域补 `adminApi` 方法（`adminApi.xxx()`，返回类型写明）。
-2. `src/views/` 加 `XxxView.vue`，用 `HomeView` 同款 `<a-layout>` + `<a-card>`。
-3. `src/router/index.ts` 注册路由；`beforeEach` 守卫已统一处理登录态，页面内不再判。
-4. 需要跨页状态才进 `stores/`；纯页面状态用 `ref`/`reactive`，不进 Pinia。
-5. 起后端 + `npm run dev`，**用 ego-browser 实际走一遍**：登录 → 进新页 → 触发成功态与至少一个错误态 → 刷新验证续存。
+- 使用真实 `/api/admin` 契约，保留 HttpOnly Cookie、内存CSRF、Origin及401失效处理。组件不另建axios实例、不访问业务数据库或保存密钥至浏览器存储。
+- 秘密只显示已配置／未配置，可显式替换／清空；留空不修改，必填根不允许清空，值不出现在差异、URL、错误或历史中。
+- 编辑保留到明确保存或放弃；已有修订冲突保护继续使用，冲突时保留本地输入。保存和实际生效必须真实反馈，不为此扩展复杂的多组件版本治理界面。
+- 已有配置历史与恢复按需复用，不把新建完整历史中心作为交付前置；失败给出可操作的错误，不用假成功或静默刷新掩盖。
+- 白名单不代替上游设备授权；是否能查询、控制或执行任务仍由后端现有校验决定。本轮不新增细粒度权限体系。审计展示关键业务步骤和结果，不展示Pi隐藏思维、密文或无关原始工具响应。
+- 审计查看不授予管理员直接下发或接管权限；以只读记录查询闭环，不顺带增加设备或任务操作入口。
 
-## 验证门槛（改动后必过）
+## 设计与验证
 
-- `npm run typecheck`（vue-tsc strict，无 any 逃逸）
-- `npm run build`
-- ego-browser 真实走一遍受影响路径（不拿 typecheck 当 UI 验证）
-
-## 文件布局
-
-```
-src/api/      接口封装与错误规整（admin.ts 单例 http + errorOf）
-src/stores/   Pinia；session.ts = 登录态 + CSRF（内存）
-src/router/   路由 + 登录守卫
-src/views/    一页一文件，Layout 复用
-src/components/ 跨页复用控件（尚无；页内私有组件就近放）
-src/styles/   global.css（reset/布局）+ tokens.css（Arco 主题色）
-```
-
-## 已知约束（不要绕）
-
-- 后端 `AdminBoundaryFilter` 对 `/api/admin/*` 强制：非 GET 必须 `Origin` 精确匹配 `ADMIN_ORIGIN` + `x-admin-csrf`；cookie `SameSite=Strict` + `path=/api/admin`。跨域调试别试着绕，改 `ADMIN_ORIGIN` 或代理。
-- 登录限流：同 IP 5 次/5 分钟失败后 429；测试别连续试错密码。
-- 密码改成功 = 所有会话立即失效，前端要接 401 跳登录（拦截器已处理）。
-- `ADMIN_PASSWORD` 环境变量存在时改密功能被禁（返回 `ADMIN_PASSWORD_DEPLOYMENT_MANAGED`），UI 对 409 要显示部署提示而非失败。
+- 保持仪表盘的清晰结构：冷白工作区、明确的深导航和单一蓝色操作强调；用户只确认了A的信息层级，最终色卡仍需真实界面确认。成功／警告／拒绝有文字，不仅依赖颜色。
+- 语义token集中在styles；Element主题映射同一套token，不在各页堆调色覆盖。使用标准表单、表格、抽屉、对话框；不为每个基础控件额外造包装层。
+- 界面文案中文。紧凑后台仍需清楚的字号、行高、可见focus、控件名称和足够点击范围；手机输入文字至少16px。
+- 让布局解释功能：用分组、对齐、间距和层级表达关系，避免不必要的次级标签、重复标题和说明文字；只保留操作、风险与理解所必需的文案，表单必要标签和无障碍名称不可省略。
+- 页面必须通过本机设计类skill检查：使用better-interface及其相关better-*领域skill，修正发现的问题后再交付；真实浏览器检查主流程、加载、空、错误、禁用、冲突、抽屉关闭／焦点恢复、320px与200%缩放。保存实际截图，未检查项明确标未验证，不得宣称已通过。
+- 构建与真实浏览器交互分别记录；不以其中一种代替另一种。真实设备控制、业务任务、通知和生产配置出口仍遵守根安全边界。

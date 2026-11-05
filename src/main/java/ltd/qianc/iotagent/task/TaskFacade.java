@@ -2,37 +2,42 @@ package ltd.qianc.iotagent.task;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.time.Duration;
-import java.time.LocalDate;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
-import ltd.qianc.iotagent.iot.AuthorizedDevice;
-import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
-import ltd.qianc.iotagent.iot.IotAdapter;
-import ltd.qianc.iotagent.iot.IotSource;
-import ltd.qianc.iotagent.iot.DeviceStateReadResult;
-import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.auth.PrincipalInfo;
 import ltd.qianc.iotagent.auth.ScopedKey;
+import ltd.qianc.iotagent.audit.AuditEventFact;
+import ltd.qianc.iotagent.audit.AuditEventStore;
 import ltd.qianc.iotagent.error.BusinessException;
-import ltd.qianc.iotagent.report.ReportFact;
-import ltd.qianc.iotagent.report.ReportFactStore;
+import ltd.qianc.iotagent.iot.AuthorizedDevice;
+import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
+import ltd.qianc.iotagent.iot.DeviceStateReadResult;
+import ltd.qianc.iotagent.iot.IotAdapter;
+import ltd.qianc.iotagent.iot.IotSourceEnum;
+import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.readmodel.ReadSnapshots;
+import ltd.qianc.iotagent.task.TaskDetailProjector.PlanSource;
+import ltd.qianc.iotagent.task.internal.TaskReadCatalog;
 import ltd.qianc.iotagent.task.internal.TaskProposalNormalizer;
 
 /**
  * Public task boundary. It performs proposal/plan/task CAS and idempotency while
- * execution, scheduling and durable facts stay behind injected adapters.
+ * execution, scheduling and durable facts stay behind injected adapters. Every
+ * projection is the Runtime public DTO: lowercase statuses, per-device rows,
+ * occurrence identities and authorized trimming instead of owner-only reads.
  */
-public final class TaskFacade implements ltd.qianc.iotagent.conversation.ConversationTaskCards {
+public final class TaskFacade implements ltd.qianc.iotagent.conversation.ConversationTaskCards, TaskReadScope.Provider {
     private static final String PENDING = "PENDING_CONFIRMATION";
     private static final String CONFIRMED = "CONFIRMED";
     private static final String CANCELLED = "CANCELLED";
@@ -45,39 +50,49 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
     private final TaskScheduler scheduler;
     private final TaskPhaseStore phases;
     private final IotAdapter iot;
-    private final ReportFactStore reports;
+    private final TaskReadCatalog readCatalog;
     private final ReadSnapshots snapshots;
     private final TaskExecutionIdentityStore executionIdentities;
     private final TaskProposalNormalizer normalizer;
+    private final TaskAtomicTransactions atomic;
+    private final TaskDetailProjector projector;
+    private final AuditEventStore audit;
     private final Clock clock;
 
     public TaskFacade(ObjectMapper mapper, TaskFactStore tasks, TaskProposalStore proposals,
                       TaskPlanStore plans, TaskNotificationStore notifications,
                       TaskScheduler scheduler, Clock clock) {
-        this(mapper, tasks, proposals, plans, notifications, scheduler, null, null, null, null, null, null, clock);
-    }
-    public TaskFacade(ObjectMapper mapper, TaskFactStore tasks, TaskProposalStore proposals,
-                      TaskPlanStore plans, TaskNotificationStore notifications,
-                      TaskScheduler scheduler, TaskPhaseStore phases, Clock clock) {
-        this(mapper, tasks, proposals, plans, notifications, scheduler, phases, null, null, null, null, null, clock);
+        this(mapper, tasks, proposals, plans, notifications, scheduler, null, null, null, null, null,
+                TaskAtomicTransactions.direct(), null, clock);
     }
     public TaskFacade(ObjectMapper mapper, TaskFactStore tasks, TaskProposalStore proposals,
                       TaskPlanStore plans, TaskNotificationStore notifications,
                       TaskScheduler scheduler, TaskPhaseStore phases, IotAdapter iot,
                       ReadSnapshots snapshots, Clock clock) {
-        this(mapper, tasks, proposals, plans, notifications, scheduler, phases, iot, null, null, null, snapshots, clock);
+        this(mapper, tasks, proposals, plans, notifications, scheduler, phases, iot, null, null, snapshots,
+                TaskAtomicTransactions.direct(), null, clock);
     }
     public TaskFacade(ObjectMapper mapper, TaskFactStore tasks, TaskProposalStore proposals,
                       TaskPlanStore plans, TaskNotificationStore notifications,
                       TaskScheduler scheduler, TaskPhaseStore phases, IotAdapter iot,
-                      ReportFactStore reports, ReadSnapshots snapshots, Clock clock) {
-        this(mapper, tasks, proposals, plans, notifications, scheduler, phases, iot, reports, null, null, snapshots, clock);
+                      TaskExecutionIdentityStore executionIdentities, TaskProposalNormalizer normalizer,
+                      ReadSnapshots snapshots, Clock clock) {
+        this(mapper, tasks, proposals, plans, notifications, scheduler, phases, iot,
+                executionIdentities, normalizer, snapshots, TaskAtomicTransactions.direct(), null, clock);
     }
     public TaskFacade(ObjectMapper mapper, TaskFactStore tasks, TaskProposalStore proposals,
                       TaskPlanStore plans, TaskNotificationStore notifications,
                       TaskScheduler scheduler, TaskPhaseStore phases, IotAdapter iot,
-                      ReportFactStore reports, TaskExecutionIdentityStore executionIdentities,
-                      TaskProposalNormalizer normalizer, ReadSnapshots snapshots, Clock clock) {
+                      TaskExecutionIdentityStore executionIdentities, TaskProposalNormalizer normalizer,
+                      ReadSnapshots snapshots, TaskAtomicTransactions atomic, Clock clock) {
+        this(mapper, tasks, proposals, plans, notifications, scheduler, phases, iot,
+                executionIdentities, normalizer, snapshots, atomic, null, clock);
+    }
+    public TaskFacade(ObjectMapper mapper, TaskFactStore tasks, TaskProposalStore proposals,
+                      TaskPlanStore plans, TaskNotificationStore notifications,
+                      TaskScheduler scheduler, TaskPhaseStore phases, IotAdapter iot,
+                      TaskExecutionIdentityStore executionIdentities, TaskProposalNormalizer normalizer,
+                      ReadSnapshots snapshots, TaskAtomicTransactions atomic, AuditEventStore audit, Clock clock) {
         this.mapper = Objects.requireNonNull(mapper, "mapper");
         this.tasks = Objects.requireNonNull(tasks, "tasks");
         this.proposals = Objects.requireNonNull(proposals, "proposals");
@@ -86,13 +101,37 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler");
         this.phases = phases;
         this.iot = iot;
-        this.reports = reports;
-        this.snapshots = iot == null ? snapshots : Objects.requireNonNull(snapshots, "snapshots");
+        this.readCatalog = iot == null ? null : new TaskReadCatalog(iot, Objects.requireNonNull(snapshots, "snapshots"));
+        this.snapshots = snapshots;
         this.executionIdentities = executionIdentities;
         this.clock = Objects.requireNonNull(clock, "clock");
+        this.atomic = atomic == null ? TaskAtomicTransactions.direct() : atomic;
         this.normalizer = normalizer != null ? normalizer
                 : new TaskProposalNormalizer(mapper, iot, clock, Duration.ofSeconds(30));
+        this.projector = new TaskDetailProjector(this.mapper, this::durablePhases);
+        this.audit = audit;
     }
+
+    private List<TaskDetailProjector.PhaseRow> durablePhases(String taskId) {
+        if (phases == null) return List.of();
+        List<TaskPhaseStore.PhaseResult> rows;
+        try {
+            rows = phases.allPhases(taskId);
+        } catch (BusinessException failure) {
+            throw failure;
+        } catch (RuntimeException unavailable) {
+            // A failing phase read must never look like "task has no phases";
+            // projections fail closed with the Runtime unavailable contract.
+            throw new BusinessException("TASK_PHASES_UNAVAILABLE", "任务阶段暂不可读取", 503);
+        }
+        return rows.stream()
+                .map(row -> new TaskDetailProjector.PhaseRow(row.phaseId(), row.dueAt(), row.status(),
+                        readJson(row.definitionJson()), readJson(row.resultJson()),
+                        row.startedAt(), row.endedAt(), row.failureReason()))
+                .toList();
+    }
+
+    // ------------------------------------------------------------- proposals
 
     public TaskProposalFact propose(PrincipalInfo principal, String source, String conversationId,
                                     String turnId, String payloadJson, String idempotencyKey) {
@@ -106,21 +145,128 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         JsonNode request = safePayload(payloadJson);
         if (request.isObject()) ((com.fasterxml.jackson.databind.node.ObjectNode) request).put("conversationId", conversationId);
         JsonNode payload = safePayload(normalizer.normalizeProposal(principal, normalizedSource, request.toString()));
+        rejectDuplicatePlanShape(principal, normalizedSource, payload);
         if (payload.isObject()) {
             ((com.fasterxml.jackson.databind.node.ObjectNode) payload)
                     .put("conversationId", conversationId).put("turnId", turnId)
-                    .put("createdAt", clock.instant().toString());
+                    .put("createdAt", clock.instant().toString())
+                    .put("creatorName", creatorName(principal, normalizedSource));
+            bindAuditPrincipal((com.fasterxml.jackson.databind.node.ObjectNode) payload, principal);
         }
+
         Instant expiresAt = clock.instant().plus(java.time.Duration.ofMinutes(15));
         TaskProposalFact created = new TaskProposalFact(UUID.randomUUID().toString(), 1, PENDING, payload.toString(), key,
                 "TASK", "{}", "{}", payload.toString(), "create", principal.tenantCode(), ownerKey(principal),
                 normalizedSource, expiresAt);
-        try { return proposals.save(created); }
-        catch (RuntimeException error) {
-            TaskProposalFact replay = proposals.findByIdempotencyKey(key).orElseThrow(() -> error);
-            if (!proposalOwned(replay, principal, normalizedSource)) throw conflict("IDEMPOTENCY_KEY_REUSED", "幂等键已用于其他任务来源");
-            return replay;
+        return saveAuditedProposal(principal, normalizedSource, "TASK_PROPOSED", created);
+    }
+
+    private TaskProposalFact saveAuditedProposal(PrincipalInfo principal, String source,
+            String eventType, TaskProposalFact created) {
+        return atomic.write(() -> {
+            TaskProposalFact saved;
+            try {
+                saved = proposals.save(created);
+            } catch (RuntimeException failure) {
+                saved = proposals.findByIdempotencyKey(created.idempotencyKey()).orElseThrow(() -> failure);
+                if (!proposalOwned(saved, principal, source)) {
+                    throw conflict("IDEMPOTENCY_KEY_REUSED", "幂等键已用于其他任务来源");
+                }
+            }
+            auditProposal(principal, source, eventType, saved);
+            return saved;
+        });
+    }
+
+    private static void bindAuditPrincipal(com.fasterxml.jackson.databind.node.ObjectNode payload, PrincipalInfo principal) {
+        payload.remove(List.of("principalId", "identityRealm"));
+        if (principal.verified()) {
+            payload.put("principalId", principal.principalId());
+            payload.put("identityRealm", principal.identityRealm());
         }
+    }
+
+    /**
+     * Runtime creator display name: read from the SSO account server for Office
+     * ("成员" when the metadata call fails), empty for Company; the model never
+     * authors this field.
+     */
+    private String creatorName(PrincipalInfo principal, String normalizedSource) {
+        if (iot == null || !"office".equals(normalizedSource)) return "";
+        try {
+            String name = iot.readCreatorDisplayName(new RequestIdentity(
+                    principal.authorization(), principal.tenantCode(), IotSourceEnum.OFFICE, ownerKey(principal)))
+                    .block(Duration.ofSeconds(10));
+            return name == null || name.isBlank() ? "成员" : name;
+        } catch (RuntimeException failure) {
+            return "成员";
+        }
+    }
+
+    /**
+     * Runtime pi-runner proposeTask duplicate check: an enabled plan whose repeat
+     * rule and phase shape match returns already_scheduled instead of registering
+     * a second plan; the proposal itself is never saved for that request.
+     */
+    private void rejectDuplicatePlanShape(PrincipalInfo principal, String source, JsonNode payload) {
+        if (!payload.path("repeat").isObject()) return;
+        String shape = ltd.qianc.iotagent.task.internal.PlanSignatures.shape(
+                payload.path("repeat"), payload.path("phases"));
+        for (TaskPlanFact plan : plans.list(principal.tenantCode(), ownerKey(principal), source)) {
+            if (!"ENABLED".equalsIgnoreCase(plan.status()) || !owns(plan.payloadJson(), principal)) continue;
+            JsonNode planPayload = safePayload(plan.payloadJson());
+            if (shape.equals(ltd.qianc.iotagent.task.internal.PlanSignatures.shape(
+                    planPayload.path("repeat"), planPayload.path("phases")))) {
+                String nextAt = null;
+                try {
+                    PlanSource planSource = planSource(plan);
+                    String checkpoint = projector.nextCheckpointAt(planSource);
+                    nextAt = checkpoint == null && planSource.nextAt() != null
+                            ? planSource.nextAt().toString() : checkpoint;
+                } catch (RuntimeException ignored) {
+                    // The duplicate answer must not depend on the optional pointer projection.
+                }
+                throw new TaskAlreadyScheduledException(plan.planId(),
+                        planPayload.path("label").asText(""), nextAt);
+            }
+        }
+    }
+
+    /**
+     * Runtime taskConfirmationContext (app.ts): the most recent confirmed task facts of
+     * one conversation, newest first, as read-only context. `confirmation`/`confirmedAt`
+     * only appear when the stored payload carries them; the original goal stays with
+     * the conversation turn it came from.
+     */
+    public List<Map<String, Object>> recentConfirmations(PrincipalInfo principal, String conversationId,
+            String source, int limit) {
+        checkPrincipal(principal);
+        require(conversationId, "conversationId");
+        String normalizedSource = source(source);
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (TaskProposalFact proposal : proposals.listByConversation(
+                conversationId, principal.tenantCode(), ownerKey(principal), normalizedSource)) {
+            if (!"TASK".equals(proposal.kind()) || !CONFIRMED.equals(proposal.status())) continue;
+            JsonNode payload = safePayload(proposal.payloadJson());
+            if (!conversationId.equals(payload.path("conversationId").asText(""))) continue;
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("proposalId", proposal.proposalId());
+            if (payload.path("taskId").isTextual()) row.put("taskId", payload.path("taskId").asText());
+            row.put("label", payload.path("label").asText(""));
+            row.put("status", proposal.status());
+            List<String> plannedAt = new ArrayList<>();
+            for (JsonNode phase : payload.path("phases")) {
+                if (phase.path("at").isTextual()) plannedAt.add(phase.path("at").asText());
+            }
+            row.put("plannedAt", plannedAt);
+            if (payload.path("confirmedAt").isTextual()) row.put("confirmedAt", payload.path("confirmedAt").asText());
+            if (payload.path("confirmation").isObject()) {
+                row.put("confirmation", mapper.convertValue(publicPayload(payload.path("confirmation")), Object.class));
+            }
+            result.add(row);
+            if (result.size() >= limit) break;
+        }
+        return result;
     }
 
     /** Creates a durable Runtime-compatible edit/plan-management proposal. */
@@ -174,12 +320,7 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         TaskProposalFact created = new TaskProposalFact(UUID.randomUUID().toString(), targetVersion, PENDING, request.toString(), key,
                 "CHANGE", target.toString(), before.toString(), after.toString(), operation, principal.tenantCode(),
                 ownerKey(principal), normalizedSource, clock.instant().plus(java.time.Duration.ofMinutes(15)));
-        try { return proposals.save(created); }
-        catch (RuntimeException error) {
-            TaskProposalFact replay = proposals.findByIdempotencyKey(key).orElseThrow(() -> error);
-            if (!proposalOwned(replay, principal, normalizedSource)) throw notFound("TASK_CHANGE_NOT_FOUND", "任务修改提案不存在");
-            return replay;
-        }
+        return saveAuditedProposal(principal, normalizedSource, "TASK_CHANGE_PROPOSED", created);
     }
 
     /** Creates a durable cancellation proposal without mutating a task. */
@@ -194,7 +335,10 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
             throw new BusinessException("TASK_CANCELLATION_UNSUPPORTED", "当前仅支持一次性任务取消", 409);
         }
         String taskId = targetId(target);
-        TaskFact current = ownedCurrent(principal, taskId, normalizedSource);
+        // Runtime proposeCancellation: the actor may propose cancelling any tenant
+        // task whose devices stay inside the authorized catalog, not only own tasks.
+        TaskFact current = current(principal, taskId, normalizedSource);
+        assertCancelScope(principal, normalizedSource, current);
         String key = scoped(principal, idempotencyKey);
         Optional<TaskProposalFact> prior = proposals.findByIdempotencyKey(key);
         if (prior.isPresent()) {
@@ -205,12 +349,7 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         TaskProposalFact created = new TaskProposalFact(UUID.randomUUID().toString(), current.version(), PENDING, request.toString(), key,
                 "CANCELLATION", target.toString(), current.payloadJson(), current.payloadJson(), "cancel",
                 principal.tenantCode(), ownerKey(principal), normalizedSource, clock.instant().plus(java.time.Duration.ofMinutes(15)));
-        try { return proposals.save(created); }
-        catch (RuntimeException error) {
-            TaskProposalFact replay = proposals.findByIdempotencyKey(key).orElseThrow(() -> error);
-            if (!proposalOwned(replay, principal, normalizedSource)) throw notFound("TASK_CANCELLATION_NOT_FOUND", "任务取消提案不存在");
-            return replay;
-        }
+        return saveAuditedProposal(principal, normalizedSource, "TASK_CANCELLATION_PROPOSED", created);
     }
 
     public Map<String, Object> confirmChange(PrincipalInfo principal, String proposalId, long expectedVersion) {
@@ -246,23 +385,35 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
                 String override = "skip".equals(proposal.operation()) ? null : safePayload(proposal.afterJson()).toString();
                 TaskPlanOccurrence changed;
                 try {
-                    changed = plans.overrideOccurrenceIfVersion(planId, occurrence.date(), current.version(), override, clock.instant())
-                            .orElseThrow(() -> conflict("VERSION_CONFLICT", "本次发生已变化或已开始，请刷新后重试"));
+                    changed = atomic.write(() -> {
+                        TaskPlanOccurrence written = plans.overrideOccurrenceIfVersion(planId, occurrence.date(),
+                                current.version(), override, clock.instant())
+                                .orElseThrow(() -> conflict("VERSION_CONFLICT", "本次发生已变化或已开始，请刷新后重试"));
+                        markConfirmed(principal, proposal);
+                        return written;
+                    });
                 } catch (UnsupportedOperationException unavailable) {
                     throw new BusinessException("TASK_OCCURRENCE_UNSUPPORTED", "当前存储未提供本次发生修改能力", 409);
                 }
-                markConfirmed(proposal);
                 return managementResult(proposal, null, changed.planId());
             }
             if ("delete".equals(proposal.operation())) {
                 TaskPlanFact deleted;
                 try {
-                    deleted = plans.cancelAllIfVersion(planId, current.version(), clock.instant())
-                            .orElseThrow(() -> conflict("VERSION_CONFLICT", "计划已变化，请重新提出修改"));
+                    deleted = atomic.write(() -> {
+                        // Same whole-plan cancellation mutation as cancelPlan:
+                        // the store cancels every materialized task, so the
+                        // creator notifications and identity drops settle here too.
+                        List<TaskFact> materialized = materializedPlanTasks(planId);
+                        TaskPlanFact written = plans.cancelAllIfVersion(planId, current.version(), clock.instant())
+                                .orElseThrow(() -> conflict("VERSION_CONFLICT", "计划已变化，请重新提出修改"));
+                        for (TaskFact task : materialized) settleCancelledTask(task);
+                        markConfirmed(principal, proposal);
+                        return written;
+                    });
                 } catch (UnsupportedOperationException unavailable) {
                     throw new BusinessException("TASK_PLAN_CANCELLATION_UNAVAILABLE", "当前存储未提供计划取消能力", 503);
                 }
-                markConfirmed(proposal);
                 return managementResult(proposal, null, deleted.planId());
             }
             String nextStatus = switch (proposal.operation()) {
@@ -271,10 +422,18 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
                 case "delete" -> "DELETED";
                 default -> current.status();
             };
-            TaskPlanFact updated = plans.updateIfVersion(new TaskPlanFact(planId, current.version() + 1, nextStatus,
-                    safePayload(proposal.afterJson()).toString(), current.idempotencyKey()), current.version())
-                    .orElseThrow(() -> conflict("VERSION_CONFLICT", "计划已变化，请重新提出修改"));
-            markConfirmed(proposal);
+            TaskPlanFact updated = atomic.write(() -> {
+                TaskPlanFact written = plans.updateIfVersion(new TaskPlanFact(planId, current.version() + 1, nextStatus,
+                        safePayload(proposal.afterJson()).toString(), current.idempotencyKey()), current.version())
+                        .orElseThrow(() -> conflict("VERSION_CONFLICT", "计划已变化，请重新提出修改"));
+                if ("resume".equals(proposal.operation()) && executionIdentities != null) {
+                    // Runtime plans.manage resume rebinds the plan credential to
+                    // the confirming principal with the ENABLED flip.
+                    executionIdentities.saveForPlan(planId, identity(principal));
+                }
+                markConfirmed(principal, proposal);
+                return written;
+            });
             return managementResult(proposal, null, updated.planId());
         }
         TaskFact current = ownedCurrent(principal, id, normalizedSource);
@@ -286,14 +445,17 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
             case "delete" -> CANCELLED;
             default -> current.status().equals("PAUSED") ? "PAUSED" : SCHEDULED;
         };
-        TaskFact updated = tasks.updateIfVersion(new TaskFact(id, current.version() + 1, status,
-                materializePreservingPhaseIds(proposal.afterJson(), current.payloadJson()), current.idempotencyKey()), current.version())
-                .orElseThrow(() -> conflict("VERSION_CONFLICT", "任务已变化，请重新提出修改"));
-        if ("delete".equals(proposal.operation()) || "skip".equals(proposal.operation())) cancelScheduledPhases(current);
-        else if ("edit".equals(proposal.operation())) cancelReplacedPhases(current, updated);
-        if (!"pause".equals(proposal.operation()) && !"delete".equals(proposal.operation())) scheduleIfDue(updated);
-        markConfirmed(proposal);
-        return managementResult(proposal, id, null);
+        TaskFact updated = atomic.write(() -> {
+            TaskFact replacement = tasks.updateIfVersion(new TaskFact(id, current.version() + 1, status,
+                    materializePreservingPhaseIds(proposal.afterJson(), current.payloadJson()), current.idempotencyKey()), current.version())
+                    .orElseThrow(() -> conflict("VERSION_CONFLICT", "任务已变化，请重新提出修改"));
+            if ("delete".equals(proposal.operation()) || "skip".equals(proposal.operation())) cancelScheduledPhases(replacement);
+            else if ("edit".equals(proposal.operation())) cancelReplacedPhases(current, replacement);
+            if (!"pause".equals(proposal.operation()) && !"delete".equals(proposal.operation())) scheduleIfDue(replacement);
+            markConfirmed(principal, proposal);
+            return replacement;
+        });
+        return managementResult(proposal, updated.taskId(), null);
     }
 
     public TaskProposalFact discardChange(PrincipalInfo principal, String proposalId, long expectedVersion) {
@@ -313,17 +475,31 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
                                                    String requestedSource) {
         String normalizedSource = source(requestedSource);
         TaskProposalFact proposal = managementProposal(principal, proposalId, "CANCELLATION", normalizedSource);
-        if (CONFIRMED.equals(proposal.status())) return managementResult(proposal);
+        if (CONFIRMED.equals(proposal.status())) return cancellationReceipt(proposal, targetId(readJson(proposal.targetJson())));
         resolveExpiry(proposal);
         if (!PENDING.equals(proposal.status())) throw conflict("CANCELLATION_NOT_PENDING", "取消提案已结束");
         if (proposal.version() != expectedVersion) throw conflict("VERSION_CONFLICT", "任务已变化，请重新提出取消");
         JsonNode target = readJson(proposal.targetJson());
-        TaskFact current = ownedCurrent(principal, targetId(target), normalizedSource);
+        TaskFact current = current(principal, targetId(target), normalizedSource);
+        assertCancelScope(principal, normalizedSource, current);
         assertCurrentCatalog(principal, proposal.source(), current.payloadJson());
         if (current.version() != proposal.version()) throw conflict("VERSION_CONFLICT", "任务已变化，请重新提出取消");
-        TaskFact cancelled = cancel(principal, current.taskId(), current.version(), normalizedSource);
-        markConfirmed(proposal);
-        return managementResult(proposal, cancelled.taskId(), null);
+        TaskFact cancelled = atomic.write(() -> {
+            TaskFact result = cancelValidated(current);
+            markConfirmed(principal, proposal);
+            return result;
+        });
+        return cancellationReceipt(proposal, cancelled.taskId());
+    }
+
+    /** Runtime task-cancellations confirm receipt: task result plus the proposal status. */
+    private Map<String, Object> cancellationReceipt(TaskProposalFact proposal, String taskId) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("cancellationId", proposal.proposalId());
+        result.put("taskId", taskId);
+        result.put("status", "cancelled");
+        result.put("proposalStatus", CONFIRMED);
+        return result;
     }
 
     public TaskProposalFact discardCancellation(PrincipalInfo principal, String proposalId, long expectedVersion) {
@@ -348,8 +524,10 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
 
     /**
      * Human-confirmed creation of either a one-time/interval task or a recurring
-     * plan. The proposal CAS is followed by an idempotent fact materialization, so
-     * a crash between the two is recoverable by replay without duplicating work.
+     * plan. The proposal CAS, fact materialization, execution identity and
+     * scheduling commit in one transaction; the created fact reuses the proposal
+     * id exactly like the Runtime receipt, so a lost response replays to the same
+     * identity through the idempotency key alone.
      */
     public Map<String, Object> confirmProposal(PrincipalInfo principal, String proposalId, long expectedVersion) {
         return confirmProposal(principal, proposalId, expectedVersion, "office");
@@ -360,28 +538,53 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         TaskProposalFact proposal = proposal(principal, proposalId, requestedSource);
         if (!"TASK".equals(proposal.kind())) throw notFound("TASK_PROPOSAL_NOT_FOUND", "任务提案不存在");
         if (CONFIRMED.equals(proposal.status())) {
-            return materializeConfirmed(principal, proposal);
+            return atomic.write(() -> materializeConfirmed(principal, proposal));
         }
-        resolveExpiry(proposal);
+        if ("EXPIRED".equals(proposal.status()) || PENDING.equals(proposal.status())
+                && proposal.expiresAt() != null && !clock.instant().isBefore(proposal.expiresAt())) {
+            if (proposal.version() != expectedVersion) throw conflict("VERSION_CONFLICT", "任务提案已变化，请刷新后重试");
+            JsonNode original = safePayload(proposal.payloadJson());
+            boolean future = Instant.parse(original.path("phases").get(0).path("at").asText()).isAfter(clock.instant())
+                    || original.path("repeat").isObject() && original.path("interval").isObject()
+                    && Instant.parse(original.path("interval").path("endsAt").asText()).isAfter(clock.instant());
+            if (future) {
+                Instant expiresAt = clock.instant().plus(Duration.ofMinutes(15));
+                TaskProposalFact reopened = new TaskProposalFact(proposal.proposalId(), proposal.version() + 1,
+                        PENDING, proposal.payloadJson(), proposal.idempotencyKey(), proposal.kind(), proposal.targetJson(),
+                        proposal.beforeJson(), proposal.afterJson(), proposal.operation(), proposal.tenantCode(),
+                        proposal.ownerKey(), proposal.source(), expiresAt);
+                proposals.updateIfVersion(reopened, proposal.version())
+                        .orElseThrow(() -> conflict("VERSION_CONFLICT", "任务提案已变化，请刷新后重试"));
+                throw new BusinessException("TASK_RECONFIRM_REQUIRED", "提案已更新，请重新确认",
+                        Map.of("kind", "reconfirm", "version", reopened.version(), "expiresAt", expiresAt.toString()), 409);
+            }
+            if (PENDING.equals(proposal.status())) proposals.updateIfVersion(withStatus(proposal, "EXPIRED"), proposal.version());
+            throw conflict("TASK_EXPIRED", "原定时间已过，需要新的执行时间；原任务目标已保留");
+        }
         if (!PENDING.equals(proposal.status())) throw conflict("TASK_PROPOSAL_NOT_PENDING", "任务提案已结束");
         if (proposal.version() != expectedVersion) throw conflict("VERSION_CONFLICT", "任务提案已变化，请刷新后重试");
         JsonNode payload = safePayload(proposal.payloadJson());
         validatePlanStructure(payload, payload.toString());
         validateConfirmTime(payload);
         assertCurrentCatalog(principal, proposal.source(), proposal.payloadJson(), true);
-        TaskProposalFact confirmed = proposals.updateIfVersion(withStatus(proposal, CONFIRMED), proposal.version())
-                .orElseThrow(() -> conflict("VERSION_CONFLICT", "任务提案已变化，请刷新后重试"));
-        return materializeConfirmed(principal, confirmed);
+        return atomic.write(() -> {
+            TaskProposalFact confirmed = proposals.updateIfVersion(withStatus(proposal, CONFIRMED), proposal.version())
+                    .orElseThrow(() -> conflict("VERSION_CONFLICT", "任务提案已变化，请刷新后重试"));
+            auditProposal(principal, proposal.source(), "TASK_PROPOSAL_CONFIRMED", confirmed);
+            return materializeConfirmed(principal, confirmed);
+        });
     }
 
+    /** Runtime confirm receipt: one-time task or plan with next pointers, lowercase status. */
     private Map<String, Object> materializeConfirmed(PrincipalInfo principal, TaskProposalFact confirmed) {
         JsonNode payload = safePayload(confirmed.payloadJson());
         validatePlanStructure(payload, payload.toString());
+        bindAuditPrincipal((com.fasterxml.jackson.databind.node.ObjectNode) payload, principal);
         TaskExecutionIdentityStore.TaskExecutionIdentity identity = identity(principal);
         if (payload.path("repeat").isObject()) {
             String key = "plan:" + confirmed.proposalId();
             TaskPlanFact plan = plans.findByIdempotencyKey(key).orElseGet(() -> {
-                TaskPlanFact candidate = new TaskPlanFact(UUID.randomUUID().toString(), 1, "ENABLED",
+                TaskPlanFact candidate = new TaskPlanFact(confirmed.proposalId(), 1, "ENABLED",
                         payload.toString(), key);
                 try {
                     return plans.save(candidate);
@@ -390,27 +593,37 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
                 }
             });
             if (executionIdentities != null) executionIdentities.saveForPlan(plan.planId(), identity);
-            Map<String, Object> result = new LinkedHashMap<>(planView(plan));
-            result.put("proposalId", confirmed.proposalId());
-            result.put("status", plan.status());
+            PlanSource source = planSource(plan);
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("taskId", confirmed.proposalId());
+            result.put("status", "scheduled");
+            result.put("version", plan.version());
+            result.put("planId", plan.planId());
             result.put("taskKind", "recurring");
+            result.put("nextAt", source.nextAt() == null ? null : source.nextAt().toString());
+            result.put("nextCheckpointAt", projector.nextCheckpointAt(source));
+            result.put("nextDate", source.nextDate() == null ? null : source.nextDate().toString());
             return result;
         }
         String key = "task:" + confirmed.proposalId();
-        TaskFact task = tasks.findByIdempotencyKey(key).orElseGet(() -> {
-            TaskFact candidate = new TaskFact(UUID.randomUUID().toString(), 1, SCHEDULED,
-                    materializePhaseIds(payload.toString()), key);
-            try {
-                return tasks.save(candidate);
-            } catch (RuntimeException error) {
-                return tasks.findByIdempotencyKey(key).orElseThrow(() -> error);
-            }
+        TaskFact task = atomic.write(() -> {
+            TaskFact materialized = tasks.findByIdempotencyKey(key).orElseGet(() -> {
+                TaskFact candidate = new TaskFact(confirmed.proposalId(), 1, SCHEDULED,
+                        materializePhaseIds(payload.toString()), key);
+                try {
+                    return tasks.save(candidate);
+                } catch (RuntimeException error) {
+                    return tasks.findByIdempotencyKey(key).orElseThrow(() -> error);
+                }
+            });
+            if (executionIdentities != null) executionIdentities.saveForTask(materialized.taskId(), identity);
+            scheduleIfDue(materialized);
+            return materialized;
         });
-        if (executionIdentities != null) executionIdentities.saveForTask(task.taskId(), identity);
-        scheduleIfDue(task);
-        Map<String, Object> result = new LinkedHashMap<>(view(task));
-        result.put("proposalId", confirmed.proposalId());
+        Map<String, Object> result = new LinkedHashMap<>();
         result.put("taskId", task.taskId());
+        result.put("status", "scheduled");
+        result.put("version", task.version());
         return result;
     }
 
@@ -485,12 +698,14 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
                 ownerKey(principal), source(requestedSource));
         for (TaskProposalFact proposal : retired) {
             if (!proposalOwned(proposal, principal, requestedSource)
-                    || !conversationId.equals(safePayload(proposal.payloadJson()).path("conversationId").asText())) {
+                    || !conversationId.equals(safePayload(proposal.payloadJson()).path("conversationId").asText(""))) {
                 throw new BusinessException("TASK_PROPOSAL_SCOPE_MISMATCH", "任务提案归属不匹配", 403);
             }
         }
         return retired;
     }
+
+    // -------------------------------------------------------- task read views
 
     public TaskFact current(PrincipalInfo principal, String taskId) {
         return current(principal, taskId, "office");
@@ -500,12 +715,115 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         checkPrincipal(principal);
         String normalizedSource = source(requestedSource);
         TaskFact task = tasks.find(taskId).orElseThrow(() -> notFound("TASK_NOT_FOUND", "任务不存在"));
-        JsonNode payload = safePayload(task.payloadJson());
+        JsonNode payload = readJson(task.payloadJson());
         if (!principal.tenantCode().equals(payload.path("tenantCode").asText(""))) {
             throw notFound("TASK_NOT_FOUND", "任务不存在");
         }
         assertSource(task.payloadJson(), normalizedSource);
         return task;
+    }
+
+    /**
+     * Runtime GET /tasks/:id: real task, materialized occurrence replacement behind
+     * an {@code occurrence:planId:date} id, or the virtual plan occurrence — always
+     * the full authorized lowercase detail, 404 when nothing is visible.
+     */
+    public Map<String, Object> taskView(PrincipalInfo principal, String taskId, String requestedSource) {
+        checkPrincipal(principal);
+        String normalizedSource = source(requestedSource);
+        TaskRecurrence.OccurrenceReference occurrence = TaskRecurrence.parseOccurrenceId(taskId);
+        if (occurrence != null) return occurrenceView(principal, occurrence, normalizedSource);
+        TaskFact task = tasks.find(taskId).orElseThrow(() -> notFound("TASK_NOT_FOUND", "任务不存在"));
+        return taskFactView(principal, task, normalizedSource);
+    }
+
+    private Map<String, Object> occurrenceView(PrincipalInfo principal, TaskRecurrence.OccurrenceReference occurrence,
+                                               String normalizedSource) {
+        Optional<TaskFact> materialized = tasks.findByIdempotencyKey(
+                TaskRecurrence.occurrenceId(occurrence.planId(), occurrence.date()));
+        if (materialized.isPresent()) return taskFactView(principal, materialized.get(), normalizedSource);
+        TaskPlanFact plan = plans.find(occurrence.planId()).orElseThrow(() -> notFound("TASK_NOT_FOUND", "任务不存在"));
+        JsonNode payload = readJson(plan.payloadJson());
+        if (!principal.tenantCode().equals(payload.path("tenantCode").asText(""))) {
+            throw notFound("TASK_NOT_FOUND", "任务不存在");
+        }
+        if (!"ENABLED".equalsIgnoreCase(plan.status())) throw notFound("TASK_NOT_FOUND", "任务不存在");
+        if (!normalizedSource.equals(source(payload.path("source").asText("office")))) {
+            throw notFound("TASK_NOT_FOUND", "任务不存在");
+        }
+        TaskReadScope scope = scope(principal, normalizedSource);
+        Map<String, Object> view = projector.virtualOccurrence(planSource(plan), occurrence.date(),
+                scope, ownerKey(principal), false);
+        if (view == null) throw notFound("TASK_NOT_FOUND", "任务不存在");
+        return view;
+    }
+
+    /** Authorized detail of one durable task fact; invisible rows are TASK_NOT_FOUND. */
+    public Map<String, Object> taskFactView(PrincipalInfo principal, TaskFact task, String requestedSource) {
+        JsonNode payload = readJson(task.payloadJson());
+        if (!principal.tenantCode().equals(payload.path("tenantCode").asText(""))) {
+            throw notFound("TASK_NOT_FOUND", "任务不存在");
+        }
+        if (!source(requestedSource).equals(source(payload.path("source").asText("office")))) {
+            throw notFound("TASK_NOT_FOUND", "任务不存在");
+        }
+        TaskReadScope scope = scope(principal, source(requestedSource));
+        Map<String, Object> view = projector.detail(taskSource(task), scope, ownerKey(principal),
+                planMetadata(payload));
+        if (view == null) throw notFound("TASK_NOT_FOUND", "任务不存在");
+        return view;
+    }
+
+    private TaskDetailProjector.TaskSource taskSource(TaskFact task) {
+        JsonNode payload = readJson(task.payloadJson());
+        return new TaskDetailProjector.TaskSource(task.taskId(), task.version(), task.status(), payload,
+                instantOf(payload.path("createdAt")), instantOf(payload.path("normalizedAt")));
+    }
+
+    private Instant instantOf(JsonNode value) {
+        return value.isTextual() ? parseInstant(value.asText()) : null;
+    }
+
+    private Instant parseInstant(String value) {
+        try { return Instant.parse(value); }
+        catch (RuntimeException invalid) { return null; }
+    }
+
+    private Map<String, Object> planMetadata(JsonNode taskPayload) {
+        String planId = taskPayload.path("sourcePlanId").asText("");
+        if (planId.isBlank()) return Map.of();
+        TaskPlanFact plan = plans.find(planId).orElse(null);
+        if (plan == null) return Map.of();
+        PlanSource source = planSource(plan);
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        JsonNode payload = source.payload();
+        if (payload.path("repeat").isObject()) metadata.put("repeat", publicValue(payload.path("repeat")));
+        if (source.nextAt() != null) metadata.put("nextAt", source.nextAt().toString());
+        String occurrenceDate = taskPayload.path("occurrenceDate").asText("");
+        if (!occurrenceDate.isBlank()) {
+            metadata.put("occurrence", Map.of("planId", planId, "date", occurrenceDate, "virtual", false));
+        }
+        return metadata;
+    }
+
+    private PlanSource planSource(TaskPlanFact plan) {
+        try {
+            TaskPlanStore.PlanPointer pointer = plans.pointer(plan.planId()).orElse(null);
+            Map<LocalDate, TaskDetailProjector.OccurrenceState> occurrences = new LinkedHashMap<>();
+            for (TaskPlanOccurrence occurrence : plans.occurrences(plan.planId())) {
+                occurrences.put(occurrence.occurrenceDate(),
+                        new TaskDetailProjector.OccurrenceState(occurrence.occurrenceDate(), occurrence.taskId(),
+                                occurrence.status(), occurrence.payloadJson() == null ? null : readJson(occurrence.payloadJson())));
+            }
+            JsonNode payload = readJson(plan.payloadJson());
+            return new PlanSource(plan.planId(), plan.version(), plan.status(), payload,
+                    pointer == null ? null : pointer.nextAt(), pointer == null ? null : pointer.nextDate(),
+                    instantOf(payload.path("createdAt")), pointer == null ? null : pointer.updatedAt(), occurrences);
+        } catch (BusinessException failure) {
+            throw failure;
+        } catch (RuntimeException unavailable) {
+            throw new BusinessException("TASK_PLAN_UNAVAILABLE", "周期计划状态暂不可读取", 503);
+        }
     }
 
     private TaskFact ownedCurrent(PrincipalInfo principal, String taskId, String requestedSource) {
@@ -515,62 +833,150 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
     }
 
     /**
-     * Returns the durable lighting device identities for a task. The controller
-     * rechecks those identities against the current gateway scope before reading
-     * any state; malformed legacy payloads fail closed instead of being guessed.
+     * Returns the durable lighting device identities for a task (real or virtual
+     * occurrence), already trimmed to the viewer's authorized catalog; the state
+     * snapshot loader rechecks them against the fresh gateway scope.
      */
     public List<String> lightingDeviceIds(PrincipalInfo principal, String taskId, String requestedSource) {
         checkPrincipal(principal);
-        TaskFact task = current(principal, taskId, requestedSource);
-        JsonNode payload = safePayload(task.payloadJson());
-        JsonNode phases = payload.path("phases");
-        if (!phases.isArray()) {
-            throw new BusinessException("TASK_LIGHTING_STATES_UNAVAILABLE", "任务缺少可读取的照明设备事实", 503);
+        return lightingDeviceIds(taskView(principal, taskId, requestedSource));
+    }
+
+    /**
+     * Runtime GET task lighting states: one authorized task projection supplies
+     * identities and execution facts, states come from the shared DEVICE_STATES
+     * snapshot, and cold snapshots report preparing/unavailable instead of rows.
+     */
+    public Map<String, Object> lightingStates(PrincipalInfo principal, String taskId, String requestedSource) {
+        checkPrincipal(principal);
+        if (iot == null) throw new BusinessException("TASK_LIGHTING_STATES_UNAVAILABLE", "物联设备状态适配器未接入", 503);
+        IotSourceEnum requested;
+        try { requested = IotSourceEnum.parse(source(requestedSource)); }
+        catch (RuntimeException invalid) { throw new BusinessException("INVALID_AGENT_SOURCE", "Agent 来源无效", 400); }
+        Map<String, Object> view = taskView(principal, taskId, requested.wireValue());
+        List<String> deviceIds = lightingDeviceIds(view);
+        if (deviceIds.isEmpty()) return Map.of("observedAt", clock.instant().toString(), "states", List.of());
+        assertHeldLightingScope(principal, requested, deviceIds);
+        RequestIdentity identity = new RequestIdentity(principal.authorization(), principal.tenantCode(), requested, ownerKey(principal));
+        String executed = executionWatermark(view);
+        Map<String, Object> query = executed == null
+                ? Map.of("deviceIds", deviceIds.stream().sorted().toList())
+                : Map.of("deviceIds", deviceIds.stream().sorted().toList(), "executed", executed);
+        Map<String, Object> body = snapshots.read(snapshotIdentity(identity), "DEVICE_STATES", query,
+                ReadSnapshots.PolicyEnum.CURRENT, () -> deviceStatesBody(identity, requested, deviceIds));
+        return taskStatesView(body, deviceIds);
+    }
+
+    /** Stops exposing states once the held catalog revokes a device or re-purposes its kind. */
+    private void assertHeldLightingScope(PrincipalInfo principal, IotSourceEnum requested, List<String> deviceIds) {
+        TaskReadScope held = scope(principal, requested.wireValue());
+        for (String deviceId : deviceIds) {
+            TaskReadScope.DeviceView device = held.device(deviceId).orElse(null);
+            if (device == null || !"lighting".equalsIgnoreCase(device.kind())) {
+                throw notFound("TASK_NOT_FOUND", "任务不存在");
+            }
         }
-        java.util.LinkedHashSet<String> ids = new java.util.LinkedHashSet<>();
-        for (JsonNode phase : phases) {
-            JsonNode actions = phase.path("actions");
-            if (!actions.isArray()) continue;
-            for (JsonNode action : actions) {
-                if (!"lighting".equalsIgnoreCase(action.path("kind").asText())) continue;
-                String deviceId = action.path("deviceId").asText("");
-                if (deviceId.isBlank()) {
-                    throw new BusinessException("TASK_LIGHTING_STATES_UNAVAILABLE", "任务缺少可读取的照明设备事实", 503);
+    }
+
+    /** Lighting identities of one already-authorized task view, in projection order. */
+    private static List<String> lightingDeviceIds(Map<String, Object> view) {
+        LinkedHashSet<String> ids = new LinkedHashSet<>();
+        if (view.get("phases") instanceof List<?> phases) {
+            for (Object phaseObject : phases) {
+                if (!(phaseObject instanceof Map<?, ?> phase)) continue;
+                if (!(phase.get("devices") instanceof List<?> devices)) continue;
+                for (Object deviceObject : devices) {
+                    if (deviceObject instanceof Map<?, ?> device
+                            && "lighting".equalsIgnoreCase(String.valueOf(device.get("kind")))
+                            && device.get("id") instanceof String id && !id.isBlank()) {
+                        ids.add(id);
+                    }
                 }
-                ids.add(deviceId);
             }
         }
         return List.copyOf(ids);
     }
-    public Map<String, Object> lightingStates(PrincipalInfo principal, String taskId, String requestedSource) {
-        checkPrincipal(principal);
-        if (iot == null) throw new BusinessException("TASK_LIGHTING_STATES_UNAVAILABLE", "物联设备状态适配器未接入", 503);
-        IotSource requested;
-        try { requested = IotSource.parse(source(requestedSource)); }
-        catch (RuntimeException invalid) { throw new BusinessException("INVALID_AGENT_SOURCE", "Agent 来源无效", 400); }
-        List<String> deviceIds = lightingDeviceIds(principal, taskId, requested.wireValue());
-        RequestIdentity identity = new RequestIdentity(principal.authorization(), principal.tenantCode(), requested, ownerKey(principal));
+
+    /**
+     * Execution fingerprint for the state snapshot key, present only once a
+     * durable phase started or ended; built from status/start/end facts alone
+     * (no task or phase id, no version) so equal histories share one entry.
+     */
+    private static String executionWatermark(Map<String, Object> view) {
+        if (!(view.get("phases") instanceof List<?> phases)) return null;
+        List<String> marks = new ArrayList<>();
+        for (Object phaseObject : phases) {
+            if (!(phaseObject instanceof Map<?, ?> phase)) continue;
+            Object startedAt = phase.get("startedAt");
+            Object endedAt = phase.get("endedAt");
+            if (startedAt == null && endedAt == null) continue;
+            marks.add(phase.get("status") + "|" + startedAt + "|" + endedAt);
+        }
+        return marks.isEmpty() ? null : String.join(";", marks.stream().sorted().toList());
+    }
+
+    /**
+     * Snapshot loader on the queued executor: fresh scope/state authorization
+     * and the state read happen only here, never on the request thread; a task
+     * lighting device that left the scope or lost its kind hides the task.
+     */
+    private Map<String, Object> deviceStatesBody(RequestIdentity identity, IotSourceEnum requested, List<String> deviceIds) {
+        AuthorizedDeviceScope scope;
         try {
-            AuthorizedDeviceScope scope = iot.loadAuthorizedDeviceScope(identity).block(Duration.ofSeconds(30));
-            if (scope == null || scope.source() != requested) throw new BusinessException("TASK_LIGHTING_STATES_UNAVAILABLE", "读取任务设备授权范围失败", 503);
-            for (String deviceId : deviceIds) {
-                AuthorizedDevice device = scope.device(deviceId).orElse(null);
-                if (device == null || !"lighting".equalsIgnoreCase(device.kind())) throw notFound("TASK_NOT_FOUND", "任务不存在");
-            }
-            DeviceStateReadResult result = deviceIds.isEmpty()
-                    ? new DeviceStateReadResult(Map.of(), clock.instant().toString())
-                    : iot.readDeviceStates(identity, deviceIds).block(Duration.ofSeconds(30));
-            if (result == null) throw new BusinessException("TASK_LIGHTING_STATES_UNAVAILABLE", "读取设备状态失败", 503);
-            List<Map<String, Object>> states = new ArrayList<>();
-            for (String deviceId : deviceIds) states.add(stateView(deviceId, result.states().get(deviceId)));
-            return Map.of("observedAt", result.observedAt(), "states", states);
+            scope = iot.loadAuthorizedDeviceScope(identity).block(Duration.ofSeconds(30));
+        } catch (BusinessException failure) {
+            throw failure;
+        } catch (RuntimeException failure) {
+            throw new BusinessException("TASK_LIGHTING_STATES_UNAVAILABLE", "读取任务设备授权范围失败", 503);
+        }
+        if (scope == null || scope.source() != requested) {
+            throw new BusinessException("TASK_LIGHTING_STATES_UNAVAILABLE", "读取任务设备授权范围失败", 503);
+        }
+        for (String deviceId : deviceIds) {
+            AuthorizedDevice device = scope.device(deviceId).orElse(null);
+            if (device == null || !"lighting".equalsIgnoreCase(device.kind())) throw notFound("TASK_NOT_FOUND", "任务不存在");
+        }
+        DeviceStateReadResult result;
+        try {
+            result = iot.readDeviceStates(identity, deviceIds).block(Duration.ofSeconds(30));
         } catch (BusinessException failure) {
             throw failure;
         } catch (RuntimeException failure) {
             throw new BusinessException("TASK_LIGHTING_STATES_UNAVAILABLE", "读取设备状态失败", 503);
         }
+        if (result == null) throw new BusinessException("TASK_LIGHTING_STATES_UNAVAILABLE", "读取设备状态失败", 503);
+        // Shared body shape of the DEVICE_STATES realm: a states map keyed by
+        // device id, so an entry loaded by any consumer serves all of them.
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("states", result.states());
+        body.put("observedAt", result.observedAt());
+        body.put("source", "production");
+        return body;
     }
 
+    /** Converts the held shared states map into the legacy task response rows. */
+    private static Map<String, Object> taskStatesView(Map<String, Object> body, List<String> deviceIds) {
+        if (!(body.get("states") instanceof Map<?, ?> states)
+                || !(body.get("observedAt") instanceof String observedAt)) {
+            // Preparing/unavailable snapshot contracts pass through untouched —
+            // never an empty or fabricated state list.
+            return body;
+        }
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (String deviceId : deviceIds) rows.add(stateView(deviceId, states.get(deviceId)));
+        Map<String, Object> view = new LinkedHashMap<>();
+        view.put("observedAt", observedAt);
+        view.put("states", rows);
+        if (body.get("cache") instanceof Map<?, ?> cache) view.put("cache", cache);
+        return view;
+    }
+
+    private static ReadSnapshots.Identity snapshotIdentity(RequestIdentity identity) {
+        return new ReadSnapshots.Identity(identity.tenantCode(), identity.authorization(),
+                identity.source().name(), identity.ownerKey());
+    }
+
+    // ---------------------------------------------------------- management
 
     public TaskFact update(PrincipalInfo principal, String taskId, long expectedVersion, String payloadJson) {
         TaskFact current = ownedCurrent(principal, taskId, "office");
@@ -591,64 +997,101 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
                 .put("source", currentSource);
         attachFingerprints(principal, currentSource, nextPayload);
         String normalizedPayload = materializePreservingPhaseIds(nextPayload.toString(), current.payloadJson());
-        TaskFact replacement = new TaskFact(taskId, expectedVersion + 1,
-                "PAUSED".equals(current.status()) ? "PAUSED" : SCHEDULED,
-                normalizedPayload, current.idempotencyKey());
-        TaskFact updated = tasks.updateIfVersion(replacement, expectedVersion)
-                .orElseThrow(() -> conflict("VERSION_CONFLICT", "任务状态已变化，请刷新后再试"));
-        cancelReplacedPhases(current, updated);
-        scheduleIfDue(updated);
-        return updated;
+        return atomic.write(() -> {
+            TaskFact replacement = new TaskFact(taskId, expectedVersion + 1,
+                    "PAUSED".equals(current.status()) ? "PAUSED" : SCHEDULED,
+                    normalizedPayload, current.idempotencyKey());
+            TaskFact updated = tasks.updateIfVersion(replacement, expectedVersion)
+                    .orElseThrow(() -> conflict("VERSION_CONFLICT", "任务状态已变化，请刷新后再试"));
+            cancelReplacedPhases(current, updated);
+            scheduleIfDue(updated);
+            return updated;
+        });
     }
+
     public TaskFact cancel(PrincipalInfo principal, String taskId, long expectedVersion) {
         return cancel(principal, taskId, expectedVersion, "office");
     }
 
     public TaskFact cancel(PrincipalInfo principal, String taskId, long expectedVersion, String requestedSource) {
-        TaskFact current = ownedCurrent(principal, taskId, requestedSource);
+        // Runtime cancelTask authorization: the tenant sees the task only when at
+        // least one device stays in the authorized catalog, and full cancellation
+        // requires the catalog to cover every device — never a creator-only gate.
+        TaskFact current = current(principal, taskId, requestedSource);
+        assertCancelScope(principal, source(requestedSource), current);
         if (CANCELLED.equals(current.status())) return current;
         if (terminalTask(current.status())) throw conflict("TASK_ALREADY_FINISHED", "任务已结束");
-        if (current.version() != expectedVersion) throw conflict("VERSION_CONFLICT", "任务状态已变化，请刷新后再试");
-        TaskFact cancelled = new TaskFact(taskId, expectedVersion + 1, CANCELLED,
+        if (current.version() != expectedVersion) throw conflict("VERSION_CONFLICT", "任务已变化，请刷新后再试");
+        return atomic.write(() -> cancelValidated(current));
+    }
+
+    /**
+     * The one validated cancellation mutation shared by the direct cancel and the
+     * confirmed cancellation proposal: task CAS, scheduled-phase cancellation,
+     * terminal notification and protected-identity cleanup inside the caller's
+     * transaction. Authorization and version checks stay outside so no external
+     * call ever runs inside the write transaction.
+     */
+    private TaskFact cancelValidated(TaskFact current) {
+        TaskFact cancelled = new TaskFact(current.taskId(), current.version() + 1, CANCELLED,
                 current.payloadJson(), current.idempotencyKey());
-        TaskFact result = tasks.updateIfVersion(cancelled, expectedVersion)
-                .orElseThrow(() -> conflict("VERSION_CONFLICT", "任务状态已变化，请刷新后再试"));
+        TaskFact result = tasks.updateIfVersion(cancelled, current.version())
+                .orElseThrow(() -> conflict("VERSION_CONFLICT", "任务已变化，请刷新后再试"));
         cancelScheduledPhases(result);
+        settleCancelledTask(result);
         return result;
     }
 
-    public TaskPlanFact createPlan(PrincipalInfo principal, String source, String payloadJson, String idempotencyKey) {
-        checkPrincipal(principal); require(idempotencyKey, "idempotencyKey");
-        String key = scoped(principal, idempotencyKey);
-        Optional<TaskPlanFact> prior = plans.findByIdempotencyKey(key);
-        if (prior.isPresent() && owns(prior.get().payloadJson(), principal)
-                && source(safePayload(prior.get().payloadJson()).path("source").asText("office")).equals(source(source))) {
-            if (executionIdentities != null) executionIdentities.saveForPlan(prior.get().planId(), identity(principal));
-            return prior.get();
+    /**
+     * Runtime reconcileTask after cancellation: the terminal result reaches the
+     * creator's inbox once, transactionally with the cancellation itself. A task
+     * with an in-flight phase settles later under the scanner, which keeps the
+     * cancelled fact authoritative instead of aggregating completed/partial.
+     */
+    private void settleCancelledTask(TaskFact cancelled) {
+        if (phases == null || !phases.allTerminal(cancelled.taskId())) return;
+        recordCancellationNotification(cancelled);
+        if (executionIdentities != null) executionIdentities.deleteForTask(cancelled.taskId());
+    }
+
+    /** Runtime cancelTask visibility: no visible device hides the task, partial coverage is 403. */
+    private void assertCancelScope(PrincipalInfo principal, String normalizedSource, TaskFact task) {
+        JsonNode payload = readJson(task.payloadJson());
+        Set<String> devices = deviceReferences(payload);
+        if (devices.isEmpty()) return;
+        Set<String> allowed = freshScope(principal, normalizedSource).deviceIds();
+        if (devices.stream().noneMatch(allowed::contains)) {
+            throw notFound("TASK_NOT_FOUND", "任务不存在");
         }
-        if (prior.isPresent()) throw conflict("IDEMPOTENCY_KEY_REUSED", "幂等键已用于其他计划来源");
-        JsonNode payload = safePayload(normalizer.normalizePlan(principal, source, payloadJson));
-        if (payload.isObject()) ((com.fasterxml.jackson.databind.node.ObjectNode) payload)
-                .put("source", source(source)).put("tenantCode", principal.tenantCode()).put("ownerKey", ownerKey(principal));
-        try {
-            TaskPlanFact saved = plans.save(new TaskPlanFact(UUID.randomUUID().toString(), 1, "ENABLED", payload.toString(), key));
-            if (executionIdentities != null) executionIdentities.saveForPlan(saved.planId(), identity(principal));
-            return saved;
-        }
-        catch (RuntimeException error) {
-            TaskPlanFact replay = plans.findByIdempotencyKey(key).orElseThrow(() -> error);
-            if (!owns(replay.payloadJson(), principal)
-                    || !source(safePayload(replay.payloadJson()).path("source").asText("office")).equals(source(source))) {
-                throw conflict("IDEMPOTENCY_KEY_REUSED", "幂等键已用于其他计划来源");
-            }
-            if (executionIdentities != null) executionIdentities.saveForPlan(replay.planId(), identity(principal));
-            return replay;
+        if (!allowed.containsAll(devices)) {
+            throw new BusinessException("TASK_FORBIDDEN", "当前授权不覆盖任务全部设备", 403);
         }
     }
+
+    /**
+     * Runtime reconcileTask after cancellation: the terminal result reaches the
+     * inbox once, transactionally with the cancellation itself.
+     */
+    private void recordCancellationNotification(TaskFact cancelled) {
+        JsonNode payload = readJson(cancelled.payloadJson());
+        String tenant = payload.path("tenantCode").asText("");
+        String recipient = payload.path("ownerKey").asText("");
+        String taskSource = payload.path("source").asText("office");
+        if (tenant.isBlank() || recipient.isBlank()) return;
+        // Runtime reconcileTask records inside the task transaction: a failing
+        // inbox write rolls the cancellation back instead of faking success.
+        notifications.record(new TaskNotificationFact(
+                UUID.nameUUIDFromBytes((cancelled.taskId() + "\u0000" + recipient)
+                        .getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString(),
+                cancelled.taskId(), tenant, recipient, taskSource, CANCELLED,
+                clock.instant(), null, "{\"outcome\":\"CANCELLED\"}"));
+    }
+
     public TaskPlanFact plan(PrincipalInfo principal, String planId) {
         return plan(principal, planId, "office");
     }
 
+    /** Owner-scoped plan fact used by management CAS paths; reads use {@link #planView}. */
     public TaskPlanFact plan(PrincipalInfo principal, String planId, String requestedSource) {
         String normalizedSource = source(requestedSource);
         TaskPlanFact plan = plans.find(planId).orElseThrow(() -> notFound("PLAN_NOT_FOUND", "计划不存在"));
@@ -661,67 +1104,71 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         return plan;
     }
 
-    public TaskPlanFact updatePlan(PrincipalInfo principal, String planId, long expectedVersion, String status, String payloadJson) {
-        return updatePlan(principal, planId, expectedVersion, status, payloadJson, false, "office");
-    }
-
-    public TaskPlanFact updatePlan(PrincipalInfo principal, String planId, long expectedVersion, String status,
-                                   String payloadJson, boolean confirmed) {
-        return updatePlan(principal, planId, expectedVersion, status, payloadJson, confirmed, "office");
-    }
-
-    public TaskPlanFact updatePlan(PrincipalInfo principal, String planId, long expectedVersion, String status,
-                                   String payloadJson, boolean confirmed, String requestedSource) {
+    /**
+     * Runtime POST /task-plans/:id/status: pause/resume with canPause/canResume
+     * authorization, resume confirmation, idempotent replay and state_changed
+     * recovery carrying the freshest plan view.
+     */
+    public Map<String, Object> updatePlan(PrincipalInfo principal, String planId, long expectedVersion,
+                                          String operation, boolean confirmed, String requestedSource) {
         String normalizedSource = source(requestedSource);
+        String requested = operation == null ? "" : operation.trim().toLowerCase();
+        if (expectedVersion < 1 || !Set.of("pause", "resume").contains(requested)) {
+            throw new BusinessException("INVALID_PLAN_STATUS", "请刷新计划后再选择启用状态", 400);
+        }
+        if ("resume".equals(requested) && !confirmed) {
+            throw new BusinessException("RESUME_CONFIRMATION_REQUIRED", "重新启用周期计划需要确认当前范围和控制绑定", 400);
+        }
         TaskPlanFact current = plan(principal, planId, normalizedSource);
-        if (current.version() != expectedVersion) throw conflict("VERSION_CONFLICT", "计划已变化，请刷新后重试");
-        String requested = status == null ? "" : status.trim();
-        String next = switch (requested.toLowerCase()) {
-            case "pause", "paused" -> "PAUSED";
-            case "resume", "enabled", "enable" -> "ENABLED";
-            case "delete", "deleted", "cancel", "cancelled" -> "DELETED";
-            case "" -> current.status();
-            default -> requested;
-        };
-        if (!(next.equals("ENABLED") || next.equals("PAUSED") || next.equals("DELETED"))) {
-            throw new BusinessException("INVALID_PLAN_STATUS", "计划状态无效");
+        TaskReadScope scope = freshScope(principal, normalizedSource);
+        Map<String, Object> view = planView(principal, planId, normalizedSource, scope);
+        String desired = "pause".equals(requested) ? "PAUSED" : "ENABLED";
+        if (current.version() == expectedVersion + 1 && desired.equals(current.status())
+                && Boolean.TRUE.equals(view.get("canManage"))) {
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("plan", view);
+            result.put("recovered", true);
+            return result;
         }
-        if ("ENABLED".equals(next) && !"PAUSED".equals(current.status()) && !"ENABLED".equals(current.status())) {
-            throw new BusinessException("PLAN_FORBIDDEN", "当前计划不能重新启用", 403);
+        if (current.version() != expectedVersion) {
+            throw new BusinessException("VERSION_CONFLICT", "计划已变化，已读取最新内容，请核对后再次确认",
+                    Map.of("kind", "state_changed", "plan", view), 409);
         }
-        if ("PAUSED".equals(next) && !"ENABLED".equals(current.status())) {
-            throw new BusinessException("PLAN_FORBIDDEN", "当前计划不能停用", 403);
-        }
-        if ("DELETED".equals(next)) {
-            try {
-                return plans.cancelAllIfVersion(planId, expectedVersion, clock.instant())
-                        .orElseThrow(() -> conflict("VERSION_CONFLICT", "计划已变化，请刷新后重试"));
-            } catch (UnsupportedOperationException unavailable) {
-                // Fall through to the plain CAS when the store cannot atomically stop future work.
+        if ("pause".equals(requested)) {
+            if (!Boolean.TRUE.equals(view.get("canPause"))) {
+                throw new BusinessException("PLAN_FORBIDDEN", "当前账号不能停用这个周期计划", 403);
             }
+            atomic.write(() -> plans.updateIfVersion(new TaskPlanFact(planId, expectedVersion + 1, "PAUSED",
+                    current.payloadJson(), current.idempotencyKey()), expectedVersion))
+                    .orElseThrow(() -> conflict("VERSION_CONFLICT", "计划已变化，请刷新后重试"));
+        } else {
+            if (!Boolean.TRUE.equals(view.get("canResume"))) {
+                throw new BusinessException("PLAN_FORBIDDEN", "当前账号不能重新启用这个周期计划", 403);
+            }
+            assertCurrentCatalog(principal, normalizedSource, current.payloadJson(), true);
+            if (!projector.allTargetsVisible(planSource(current), scope)) {
+                throw conflict("PLAN_SCOPE_CHANGED", "计划目标范围或设备能力已变化，请重新确认");
+            }
+            atomic.write(() -> {
+                plans.updateIfVersion(new TaskPlanFact(planId, expectedVersion + 1, "ENABLED",
+                                current.payloadJson(), current.idempotencyKey()), expectedVersion)
+                        .orElseThrow(() -> conflict("VERSION_CONFLICT", "计划已变化，请刷新后重试"));
+                // Runtime plans.manage resume: the confirming actor's fresh
+                // credential replaces the stored plan identity in the same CAS
+                // transaction, so later occurrences never reuse a stale token.
+                if (executionIdentities != null) executionIdentities.saveForPlan(planId, identity(principal));
+                return null;
+            });
         }
-        if ("ENABLED".equals(next) && !"ENABLED".equals(current.status())) {
-            if (!confirmed) throw new BusinessException("RESUME_CONFIRMATION_REQUIRED", "重新启用周期计划需要确认当前范围和控制绑定", 400);
-            assertCurrentCatalog(principal, source(safePayload(current.payloadJson()).path("source").asText("office")),
-                    current.payloadJson(), true);
-            validatePlanStructure(safePayload(current.payloadJson()), current.payloadJson());
-        }
-        JsonNode nextPayload = payloadJson == null ? safePayload(current.payloadJson()) : safePayload(payloadJson);
-        if (!nextPayload.isObject()) throw new BusinessException("INVALID_TASK_PAYLOAD", "计划内容无效", 400);
-        ((com.fasterxml.jackson.databind.node.ObjectNode) nextPayload)
-                .put("tenantCode", principal.tenantCode())
-                .put("ownerKey", ownerKey(principal))
-                .put("source", source(safePayload(current.payloadJson()).path("source").asText("office")));
-        if ("edit".equalsIgnoreCase(requested)) validatePlanStructure(nextPayload, current.payloadJson());
-        return plans.updateIfVersion(new TaskPlanFact(planId, expectedVersion + 1, next,
-                nextPayload.toString(), current.idempotencyKey()), expectedVersion)
-                .orElseThrow(() -> conflict("VERSION_CONFLICT", "计划已变化，请刷新后重试"));
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("plan", planView(principal, planId, normalizedSource, scope));
+        return result;
     }
 
     /**
-     * Runtime-compatible direct plan cancellation. Occurrence cancellation is
-     * an override/skip fact; all cancellation uses the store's transactional
-     * plan/phase CAS and never rewrites terminal history.
+     * Runtime-compatible direct plan cancellation. Occurrence cancellation is an
+     * override/skip fact; all cancellation uses the store's transactional plan
+     * CAS and never rewrites terminal history.
      */
     public Map<String, Object> cancelPlan(PrincipalInfo principal, String requestedSource, String planId,
                                           long expectedVersion, String scope, LocalDate date) {
@@ -735,25 +1182,34 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
             throw new BusinessException("INVALID_CANCELLATION", "请选择有效取消范围并刷新计划", 400);
         }
         TaskPlanFact current = plan(principal, planId, normalizedSource);
+        Map<String, Object> view = planView(principal, planId, normalizedSource,
+                freshScope(principal, normalizedSource));
         assertCurrentCatalog(principal, normalizedSource, current.payloadJson(), true);
-        if ("all".equals(scope) && "DELETED".equals(current.status()) && current.version() == expectedVersion + 1) {
-            return cancellationResult(current, scope, date);
+        if ("all".equals(scope) && "DELETED".equals(current.status()) && current.version() == expectedVersion + 1
+                && Boolean.TRUE.equals(view.get("canManage"))) {
+            return cancellationResult(current, scope);
         }
         if ("occurrence".equals(scope) && current.version() == expectedVersion + 1) {
             try {
                 TaskPlanOccurrence existing = plans.findOccurrence(planId, date).orElse(null);
                 if (existing != null && existing.skipped() && existing.planVersion() == current.version()) {
-                    return cancellationResult(current, scope, date);
+                    return cancellationResult(current, scope);
                 }
             } catch (UnsupportedOperationException unavailable) {
                 throw new BusinessException("TASK_OCCURRENCE_UNSUPPORTED", "当前存储未提供本次发生取消能力", 503);
             }
         }
-        if (current.version() != expectedVersion) throw conflict("VERSION_CONFLICT", "安排已变化，请刷新后重试");
+        if (current.version() != expectedVersion) {
+            throw new BusinessException("VERSION_CONFLICT", "安排已变化，已核实当前状态；原取消范围未执行，请核对后重新确认",
+                    Map.of("kind", "state_changed", "scope", scope, "plan", view), 409);
+        }
+        if (!Boolean.TRUE.equals(view.get("canManage"))) {
+            throw new BusinessException("TASK_FORBIDDEN", "当前无权取消整个计划", 403);
+        }
         TaskPlanFact changed;
         if ("occurrence".equals(scope)) {
             try {
-                plans.overrideOccurrenceIfVersion(planId, date, expectedVersion, null, clock.instant())
+                atomic.write(() -> plans.overrideOccurrenceIfVersion(planId, date, expectedVersion, null, clock.instant()))
                         .orElseThrow(() -> conflict("VERSION_CONFLICT", "安排已变化，请刷新后重试"));
             } catch (UnsupportedOperationException unavailable) {
                 throw new BusinessException("TASK_OCCURRENCE_UNSUPPORTED", "当前存储未提供本次发生取消能力", 503);
@@ -761,267 +1217,324 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
             changed = plans.find(planId).orElseThrow(() -> notFound("PLAN_NOT_FOUND", "计划不存在"));
         } else {
             try {
-                changed = plans.cancelAllIfVersion(planId, expectedVersion, clock.instant())
-                        .orElseThrow(() -> conflict("VERSION_CONFLICT", "安排已变化，请刷新后重试"));
+                changed = atomic.write(() -> {
+                    // Runtime store.cancelPlan: the still-scheduled/executing
+                    // materialized tasks cancel inside the plan's transaction;
+                    // creators are notified and credentials dropped for the ones
+                    // without in-flight work, in-flight ones settle under the scanner.
+                    List<TaskFact> materialized = materializedPlanTasks(planId);
+                    TaskPlanFact deleted = plans.cancelAllIfVersion(planId, expectedVersion, clock.instant())
+                            .orElseThrow(() -> conflict("VERSION_CONFLICT", "安排已变化，请刷新后重试"));
+                    for (TaskFact task : materialized) settleCancelledTask(task);
+                    return deleted;
+                });
             } catch (UnsupportedOperationException unavailable) {
                 throw new BusinessException("TASK_PLAN_CANCELLATION_UNAVAILABLE", "当前存储未提供计划取消能力", 503);
             }
         }
-        return cancellationResult(changed, scope, date);
+        return cancellationResult(changed, scope);
     }
-    private Map<String, Object> cancellationResult(TaskPlanFact plan, String scope, LocalDate date) {
+
+    private Map<String, Object> cancellationResult(TaskPlanFact plan, String scope) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("planId", plan.planId());
         result.put("version", plan.version());
-        result.put("status", plan.status());
+        result.put("status", "all".equals(scope) ? "deleted" : "skipped");
         result.put("scope", scope);
-        if (date != null) result.put("date", date.toString());
         return result;
     }
 
-    public List<Map<String, Object>> notifications(PrincipalInfo principal, String source, int limit, String before) {
-        checkPrincipal(principal);
-        String normalizedSource = source(source);
-        if (limit < 1 || limit > 100) throw new BusinessException("INVALID_LIMIT", "请选择有效分页大小");
-        Set<String> scope = iot == null ? null : readableDeviceIds(principal, normalizedSource, "TASK_NOTIFICATION_UNAVAILABLE");
-        return notifications.list(principal.tenantCode(), ownerKey(principal), normalizedSource, limit, before)
-                .stream()
-                .filter(item -> principal.tenantCode().equals(item.tenantCode())
-                        && ownerKey(principal).equals(item.recipientKey())
-                        && normalizedSource.equals(source(item.source())))
-                .map(item -> notificationView(item, scope)).toList();
-    }
-    public long unreadNotificationCount(PrincipalInfo principal, String source) {
-        checkPrincipal(principal);
-        String normalizedSource = source(source);
-        if (iot != null) readableDeviceIds(principal, normalizedSource, "TASK_NOTIFICATION_UNAVAILABLE");
-        return notifications.unreadCount(principal.tenantCode(), ownerKey(principal), normalizedSource);
+    /** Runtime store.cancelPlan scope: materialized occurrence tasks still scheduled or executing. */
+    private List<TaskFact> materializedPlanTasks(String planId) {
+        List<TaskFact> active = new ArrayList<>();
+        for (TaskPlanOccurrence occurrence : plans.occurrences(planId)) {
+            String taskId = occurrence.taskId();
+            if (taskId == null) continue;
+            TaskFact task = tasks.find(taskId).orElse(null);
+            if (task == null) continue;
+            if (SCHEDULED.equals(task.status()) || "EXECUTING".equals(task.status())) active.add(task);
+        }
+        return active;
     }
 
+    // -------------------------------------------------------------- plans
+
+    /** Tenant-visible plan list (Runtime plans.list + describe), trimmed by scope. */
+    public List<Map<String, Object>> plans(PrincipalInfo principal, String source) {
+        checkPrincipal(principal);
+        String normalizedSource = source(source);
+        List<Map<String, Object>> views = new ArrayList<>();
+        TaskReadScope scope = null;
+        for (TaskPlanFact plan : plans.listByTenant(principal.tenantCode(), normalizedSource)) {
+            if ("DELETED".equalsIgnoreCase(plan.status())) continue;
+            JsonNode payload = readJson(plan.payloadJson());
+            if (!principal.tenantCode().equals(payload.path("tenantCode").asText(""))) continue;
+            if (scope == null) scope = scope(principal, normalizedSource);
+            Map<String, Object> view = describePlan(principal, plan, normalizedSource, scope);
+            if (view != null) views.add(view);
+        }
+        return views;
+    }
+
+    /** Runtime GET /task-plans/:id: describe view plus latest materialized task. */
+    public Map<String, Object> planView(PrincipalInfo principal, String planId, String requestedSource) {
+        return planView(principal, planId, requestedSource, null);
+    }
+
+    private Map<String, Object> planView(PrincipalInfo principal, String planId, String requestedSource,
+                                         TaskReadScope scope) {
+        checkPrincipal(principal);
+        String normalizedSource = source(requestedSource);
+        TaskPlanFact plan = plans.find(planId).orElseThrow(() -> notFound("PLAN_NOT_FOUND", "计划不存在"));
+        JsonNode payload = readJson(plan.payloadJson());
+        if (!principal.tenantCode().equals(payload.path("tenantCode").asText(""))) {
+            throw notFound("PLAN_NOT_FOUND", "计划不存在");
+        }
+        if (!normalizedSource.equals(source(payload.path("source").asText("office")))) {
+            throw notFound("PLAN_NOT_FOUND", "计划不存在");
+        }
+        Map<String, Object> view = describePlan(principal, plan, normalizedSource,
+                scope == null ? scope(principal, normalizedSource) : scope);
+        if (view == null) throw notFound("PLAN_NOT_FOUND", "计划不存在或当前范围不可见");
+        return view;
+    }
+
+    private Map<String, Object> describePlan(PrincipalInfo principal, TaskPlanFact plan, String normalizedSource,
+                                            TaskReadScope scope) {
+        PlanSource source = planSource(plan);
+        Map<String, Object> latest = latestTaskView(principal, plan.planId(), normalizedSource, scope);
+        Map<String, Object> view = projector.describe(source, scope, ownerKey(principal), latest);
+        if (view != null && "PAUSED".equalsIgnoreCase(plan.status())) {
+            String resumeNextAt = resumeNextAt(source);
+            if (resumeNextAt != null) view.put("resumeNextAt", resumeNextAt);
+        }
+        return view;
+    }
+
+    private Map<String, Object> latestTaskView(PrincipalInfo principal, String planId,
+                                               String normalizedSource, TaskReadScope scope) {
+        try {
+            String latestId = plans.latestTaskId(planId).orElse(null);
+            if (latestId == null) return null;
+            TaskFact task = tasks.find(latestId).orElse(null);
+            if (task == null) return null;
+            JsonNode payload = readJson(task.payloadJson());
+            if (!principal.tenantCode().equals(payload.path("tenantCode").asText(""))) return null;
+            return projector.detail(taskSource(task), scope, ownerKey(principal), planMetadata(payload));
+        } catch (RuntimeException unavailable) {
+            return null;
+        }
+    }
+
+    /** Runtime plans.resumeNextAt: the first future occurrence pointer of a paused plan. */
+    private String resumeNextAt(PlanSource plan) {
+        Instant anchor = projector.anchor(plan.payload());
+        if (anchor == null) return null;
+        LocalDate anchorDate = TaskRecurrence.localDate(anchor);
+        TaskRecurrence.RepeatRule repeat;
+        try {
+            repeat = repeatRule(plan.payload().path("repeat"), anchorDate);
+        } catch (RuntimeException invalid) {
+            return null;
+        }
+        LocalDate date = TaskRecurrence.next(repeat, anchor, clock.instant());
+        int examined = 0;
+        while (date != null && examined++ < 4096) {
+            TaskDetailProjector.OccurrenceState state = plan.occurrences().get(date);
+            boolean taken = state != null && (state.taskId() != null
+                    || Set.of("CLAIMED", "MATERIALIZED", "SKIPPED").contains(state.status().toUpperCase()));
+            if (!taken) {
+                JsonNode effective = projector.effectiveTemplate(plan, date);
+                if (effective != null) {
+                    Instant at = projector.anchor(effective);
+                    if (at != null && at.isAfter(clock.instant())) return at.toString();
+                }
+                return TaskRecurrence.occurrenceAt(anchor, date).toString();
+            }
+            date = TaskRecurrence.next(repeat, anchor, TaskRecurrence.occurrenceAt(anchor, date), date);
+        }
+        return null;
+    }
+
+    // -------------------------------------------------------- notifications
+
+    /**
+     * Runtime GET /api/agent/notifications: stable (endedAt, id) cursor pagination,
+     * visibility equal to the task read model and the notification projection with
+     * label, reason and execution summary.
+     */
+    public Map<String, Object> notificationsView(PrincipalInfo principal, String source, int limit, String before) {
+        checkPrincipal(principal);
+        String normalizedSource = source(source);
+        if (limit < 1 || limit > 100) throw new BusinessException("INVALID_LIMIT", "请选择有效分页大小", 400);
+        TaskReadScope scope = scope(principal, normalizedSource);
+        String tenant = principal.tenantCode();
+        String recipient = ownerKey(principal);
+        String cursor = null;
+        if (before != null && !before.isBlank()) {
+            TaskNotificationFact cursorFact = notifications.find(before)
+                    .orElseThrow(() -> notFound("NOTIFICATION_NOT_FOUND", "消息不存在或已不可查看"));
+            if (!tenant.equals(cursorFact.tenantCode()) || !recipient.equals(cursorFact.recipientKey())
+                    || !normalizedSource.equals(source(cursorFact.source()))) {
+                throw notFound("NOTIFICATION_NOT_FOUND", "消息不存在或已不可查看");
+            }
+            cursor = before;
+        }
+        List<Map<String, Object>> rows = new ArrayList<>();
+        String lastVisibleId = null;
+        boolean hasMore = false;
+        scan:
+        while (true) {
+            List<TaskNotificationFact> page = notifications.list(tenant, recipient, normalizedSource, 60, cursor);
+            for (TaskNotificationFact fact : page) {
+                if (!notificationTaskVisible(fact.taskId(), scope)) continue;
+                if (rows.size() == limit) {
+                    hasMore = true;
+                    break scan;
+                }
+                rows.add(notificationView(fact, principal, scope));
+                lastVisibleId = fact.notificationId();
+            }
+            if (page.size() < 60) break;
+            cursor = page.get(page.size() - 1).notificationId();
+        }
+        long unread = notifications.unread(tenant, recipient, normalizedSource).stream()
+                .filter(fact -> notificationTaskVisible(fact.taskId(), scope)).count();
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("notifications", rows);
+        result.put("unreadCount", unread);
+        result.put("nextCursor", hasMore ? lastVisibleId : null);
+        return result;
+    }
+
+    /** Runtime notification visibility: a visible phase device or the creator's recurring task. */
+    private boolean notificationTaskVisible(String taskId, TaskReadScope scope) {
+        TaskFact task = tasks.find(taskId).orElse(null);
+        if (task == null) return false;
+        JsonNode payload = readJson(task.payloadJson());
+        if (!payload.path("sourcePlanId").asText("").isBlank()) return true;
+        Set<String> references = deviceReferences(payload);
+        return references.stream().anyMatch(scope.deviceIds()::contains);
+    }
+
+    private Map<String, Object> notificationView(TaskNotificationFact fact, PrincipalInfo principal, TaskReadScope scope) {
+        Map<String, Object> view = new LinkedHashMap<>();
+        view.put("id", fact.notificationId());
+        view.put("taskId", fact.taskId());
+        view.put("source", fact.source());
+        view.put("outcome", TaskDetailProjector.lowerStatus(fact.outcome()));
+        view.put("endedAt", fact.endedAt().toString());
+        view.put("readAt", fact.readAt() == null ? null : fact.readAt().toString());
+        JsonNode payload = readJson(fact.payloadJson());
+        if (payload.path("reason").isTextual() && !payload.path("reason").asText().isBlank()) {
+            view.put("reason", payload.path("reason").asText());
+        }
+        TaskFact task = tasks.find(fact.taskId()).orElse(null);
+        if (task != null) {
+            JsonNode taskPayload = readJson(task.payloadJson());
+            view.put("label", firstText(taskPayload, "label", "title", "objective"));
+            try {
+                Map<String, Object> detail = projector.detail(taskSource(task), scope, fact.recipientKey(),
+                        planMetadata(taskPayload));
+                if (detail != null && detail.get("report") instanceof Map<?, ?> report
+                        && report.get("summary") != null) {
+                    view.put("summary", report.get("summary"));
+                }
+            } catch (RuntimeException unavailable) {
+                // The inbox row stays honest without the optional report projection.
+            }
+        }
+        return view;
+    }
+
+    private static String firstText(JsonNode payload, String... fields) {
+        for (String field : fields) {
+            JsonNode value = payload.path(field);
+            if (value.isTextual() && !value.asText().isBlank()) return value.asText();
+        }
+        return "";
+    }
 
     public Map<String, Object> seenNotification(PrincipalInfo principal, String source, String id) {
         checkPrincipal(principal);
         String normalizedSource = source(source);
-        if (iot != null) readableDeviceIds(principal, normalizedSource, "TASK_NOTIFICATION_UNAVAILABLE");
-        TaskNotificationFact fact = markSeen(principal, normalizedSource, id);
+        TaskReadScope scope = scope(principal, normalizedSource);
+        TaskNotificationFact fact = notifications.find(id)
+                .orElseThrow(() -> notFound("NOTIFICATION_NOT_FOUND", "消息不存在或已不可查看"));
         if (!principal.tenantCode().equals(fact.tenantCode()) || !ownerKey(principal).equals(fact.recipientKey())
-                || !normalizedSource.equals(source(fact.source()))) {
+                || !normalizedSource.equals(source(fact.source()))
+                || !notificationTaskVisible(fact.taskId(), scope)) {
             throw notFound("NOTIFICATION_NOT_FOUND", "消息不存在或已不可查看");
         }
-        return Map.of("id", fact.notificationId(), "readAt", fact.readAt() == null ? clock.instant().toString() : fact.readAt().toString());
-    }
-
-    /** Opening a notification in the inbox marks it seen and returns its durable payload. */
-    public Map<String, Object> openNotification(PrincipalInfo principal, String source, String id) {
-        checkPrincipal(principal);
-        String normalizedSource = source(source);
-        Set<String> scope = iot == null ? null
-                : readableDeviceIds(principal, normalizedSource, "TASK_NOTIFICATION_UNAVAILABLE");
-        TaskNotificationFact fact = markSeen(principal, normalizedSource, id);
-        if (!principal.tenantCode().equals(fact.tenantCode()) || !ownerKey(principal).equals(fact.recipientKey())
-                || !normalizedSource.equals(source(fact.source()))) {
-            throw notFound("NOTIFICATION_NOT_FOUND", "消息不存在或已不可查看");
-        }
-        return notificationView(fact, scope);
-    }
-
-    private TaskNotificationFact markSeen(PrincipalInfo principal, String source, String id) {
-        try {
-            return notifications.markSeen(principal.tenantCode(), ownerKey(principal), source, id, clock.instant());
-        } catch (java.util.NoSuchElementException missing) {
-            throw notFound("NOTIFICATION_NOT_FOUND", "消息不存在或已不可查看");
-        }
+        TaskNotificationFact seen = notifications.markSeen(principal.tenantCode(), ownerKey(principal),
+                normalizedSource, id, clock.instant());
+        return Map.of("id", seen.notificationId(),
+                "readAt", seen.readAt() == null ? clock.instant().toString() : seen.readAt().toString());
     }
 
     public Map<String, Object> seenAllNotifications(PrincipalInfo principal, String source) {
         checkPrincipal(principal);
         String normalizedSource = source(source);
-        if (iot != null) readableDeviceIds(principal, normalizedSource, "TASK_NOTIFICATION_UNAVAILABLE");
+        TaskReadScope scope = scope(principal, normalizedSource);
         Instant at = clock.instant();
-        return Map.of("readAt", at.toString(), "marked", notifications.markAllSeen(principal.tenantCode(), ownerKey(principal), normalizedSource, at));
+        List<String> visibleUnread = notifications.unread(principal.tenantCode(), ownerKey(principal), normalizedSource)
+                .stream()
+                .filter(fact -> notificationTaskVisible(fact.taskId(), scope))
+                .map(TaskNotificationFact::notificationId)
+                .toList();
+        int marked = notifications.markAllSeen(principal.tenantCode(), ownerKey(principal), normalizedSource,
+                visibleUnread, at);
+        return Map.of("readAt", at.toString(), "marked", marked);
     }
 
-    public Map<String, Object> view(TaskFact task) {
-        Map<String, Object> view = new LinkedHashMap<>();
-        view.put("taskId", task.taskId()); view.put("version", task.version()); view.put("status", task.status());
-        JsonNode payload = safePayload(task.payloadJson());
-        if (payload.isObject()) {
-            payload.fields().forEachRemaining(entry -> {
-                if (!"tenantCode".equals(entry.getKey()) && !"ownerKey".equals(entry.getKey())) {
-                    JsonNode exposed = "report".equals(entry.getKey()) ? publicPayload(entry.getValue()) : entry.getValue();
-                    view.putIfAbsent(entry.getKey(), mapper.convertValue(exposed, Object.class));
-                }
-            });
-        }
-        view.put("payload", mapper.convertValue(publicPayload(payload), Object.class));
-        JsonNode report = payload.path("report");
-        if (!report.isObject() && reports != null) {
-            Optional<ReportFact> fact = Optional.empty();
-            String reportId = payload.path("reportId").asText("");
-            if (!reportId.isBlank()) fact = reports.find(reportId);
-            if (fact.isEmpty()) fact = reports.findLatestByTaskId(task.taskId());
-            if (fact.isPresent()) {
-                JsonNode stored = safePayload(fact.get().payloadJson());
-                report = stored.path("report").isObject() ? stored.path("report") : stored;
-            }
-        }
-        if (report.isObject()) {
-            view.putIfAbsent("report", mapper.convertValue(publicPayload(report), Object.class));
-            view.putIfAbsent("reportId", report.path("id").asText(null));
-        } else {
-            view.putIfAbsent("report", null);
-        }
-        view.putIfAbsent("hasReport", report.isObject());
-        view.putIfAbsent("reportAt", report.isObject() ? report.path("generatedAt").asText(null) : null);
-        applyPhaseResults(task, view);
-        return view;
-    }
+    // ------------------------------------------------ conversation cards
 
-    private void applyPhaseResults(TaskFact task, Map<String, Object> view) {
-        if (phases == null) return;
-        List<TaskPhaseStore.PhaseResult> results;
-        try { results = phases.terminalPhases(task.taskId()); }
-        catch (RuntimeException unavailable) { return; }
-        if (results.isEmpty()) return;
-        List<Map<String, Object>> phaseViews = new ArrayList<>();
-        List<Map<String, Object>> resultViews = new ArrayList<>();
-        boolean exceptional = false;
-        for (TaskPhaseStore.PhaseResult result : results) {
-            JsonNode definition = readJson(result.definitionJson());
-            JsonNode executed = readJson(result.resultJson());
-            Map<String, Object> phase = new LinkedHashMap<>();
-            if (definition.isObject()) definition.fields().forEachRemaining(entry ->
-                    phase.put(entry.getKey(), mapper.convertValue(publicPayload(entry.getValue()), Object.class)));
-            phase.put("phaseId", result.phaseId());
-            phase.put("id", result.phaseId());
-            phase.put("at", result.dueAt().toString());
-            phase.put("status", result.status());
-            phase.put("startedAt", result.startedAt() == null ? null : result.startedAt().toString());
-            phase.put("endedAt", result.endedAt() == null ? null : result.endedAt().toString());
-            if (executed.isObject()) {
-                for (String key : List.of("outcome", "dispatchStarted", "devices", "observations",
-                        "energyEstimate", "observedAt", "reason", "mode", "target", "adjustedDevices")) {
-                    JsonNode value = executed.get(key);
-                    if (value == null) continue;
-                    if ("devices".equals(key) && value.isObject()) {
-                        List<Object> devices = new ArrayList<>();
-                        value.fields().forEachRemaining(entry ->
-                                devices.add(mapper.convertValue(publicPayload(entry.getValue()), Object.class)));
-                        phase.put("devices", devices);
-                    } else {
-                        phase.put(key, mapper.convertValue(publicPayload(value), Object.class));
-                    }
-                }
-                if (executed.path("reason").isTextual()) phase.put("failureReason", executed.path("reason").asText());
-            }
-            phase.put("result", mapper.convertValue(publicPayload(executed), Object.class));
-            phaseViews.add(phase);
-            Map<String, Object> resultView = new LinkedHashMap<>();
-            resultView.put("phaseId", result.phaseId());
-            resultView.put("at", result.dueAt().toString());
-            resultView.put("status", result.status());
-            resultView.put("outcome", executed.path("outcome").asText(result.status()));
-            if (executed.path("devices").isObject()) {
-                resultView.put("devices", mapper.convertValue(publicPayload(executed.path("devices")), Object.class));
-            }
-            resultViews.add(resultView);
-            exceptional |= Set.of("PARTIAL", "FAILED", "UNCONFIRMED", "INTERRUPTED", "MISSED").contains(result.status());
-        }
-        view.put("phases", phaseViews);
-        view.put("results", resultViews);
-        view.put("phaseCount", phaseViews.size());
-        view.put("hasException", exceptional);
-    }
-    private void attachFingerprints(PrincipalInfo principal, String source, JsonNode payload) {
-        if (iot == null || deviceReferences(payload).isEmpty()) return;
-        IotSource requested;
-        try { requested = IotSource.parse(source); }
-        catch (RuntimeException invalid) { throw new BusinessException("INVALID_AGENT_SOURCE", "Agent 来源无效", 400); }
-        AuthorizedDeviceScope scope;
-        try {
-            scope = iot.loadAuthorizedDeviceScope(new RequestIdentity(
-                    principal.authorization(), principal.tenantCode(), requested, ownerKey(principal)))
-                    .block(Duration.ofSeconds(30));
-        } catch (RuntimeException failure) {
-            throw new BusinessException("TASK_DEVICE_AUTHORIZATION_UNAVAILABLE", "当前设备授权范围暂不可用", 503);
-        }
-        if (scope == null || scope.source() != requested) {
-            throw new BusinessException("TASK_DEVICE_AUTHORIZATION_UNAVAILABLE", "当前设备授权范围暂不可用", 503);
-        }
-        if (payload.isObject()) ((com.fasterxml.jackson.databind.node.ObjectNode) payload)
-                .put("catalogFingerprint", scope.catalogFingerprint())
-                .put("bindingFingerprint", scope.bindingFingerprint());
-    }
-
-    private Set<String> readableDeviceIds(PrincipalInfo principal, String requestedSource, String errorCode) {
-        IotSource requested;
-        try { requested = IotSource.parse(source(requestedSource)); }
-        catch (RuntimeException invalid) { throw new BusinessException("INVALID_AGENT_SOURCE", "Agent 来源无效", 400); }
-        RequestIdentity identity = new RequestIdentity(
-                principal.authorization(), principal.tenantCode(), requested, ownerKey(principal));
-        Map<String, Object> held = snapshots.read(new ReadSnapshots.Identity(identity.tenantCode(),
-                        identity.authorization(), requested.name(), identity.ownerKey()),
-                "TASK_READ_SCOPE", Map.of(), ReadSnapshots.Policy.HISTORICAL, () -> {
-                    AuthorizedDeviceScope scope = iot.loadAuthorizedDeviceScope(identity).block(Duration.ofSeconds(30));
-                    if (scope == null || scope.source() != requested || !identity.equals(scope.identity())) {
-                        throw new BusinessException(errorCode, "任务读取范围暂不可用", 503);
-                    }
-                    return Map.of("deviceIds", scope.devices().stream().map(AuthorizedDevice::id).toList());
-                });
-        if ("preparing".equals(held.get("status"))) {
-            throw new BusinessException("TASK_READ_PREPARING", "任务读取数据准备中，请稍后重试", 503);
-        }
-        if (!(held.get("deviceIds") instanceof List<?> ids)) {
-            throw new BusinessException(errorCode, "任务读取范围暂不可用", 503);
-        }
-        Set<String> allowed = new java.util.HashSet<>();
-        for (Object id : ids) {
-            if (!(id instanceof String value)) throw new BusinessException(errorCode, "任务读取范围暂不可用", 503);
-            allowed.add(value);
-        }
-        return allowed;
-    }
-
-    public Map<String, Object> view(PrincipalInfo principal, TaskFact task, String requestedSource) {
-        checkPrincipal(principal);
-        Map<String, Object> view = view(task);
-        if (iot == null || !(view.get("report") instanceof Map<?, ?> reportMap)) return view;
-        Set<String> scope = readableDeviceIds(principal, requestedSource, "TASK_REPORT_UNAVAILABLE");
-        exposeReport(view, filterReport(reportMap, scope));
-        return view;
-    }
-    public List<Map<String, Object>> plans(PrincipalInfo principal, String source) {
-        return plans.list(principal.tenantCode(), ownerKey(principal), source(source)).stream()
-                .filter(item -> !"DELETED".equalsIgnoreCase(item.status()))
-                .filter(item -> owns(item.payloadJson(), principal)).map(this::planView).toList();
-    }
+    /**
+     * Conversation card overlay (Runtime taskStore.proposal of a scheduled row):
+     * a confirmed creation reports created=true with the real task/plan identity
+     * and pointers — never the bare proposal CONFIRMED status.
+     */
     @Override
     public Map<String, Object> conversationProposalState(PrincipalInfo principal, String proposalId, String requestedSource) {
         TaskProposalFact proposal = proposal(principal, proposalId, requestedSource);
+        String normalizedSource = source(requestedSource);
         Map<String, Object> state = new LinkedHashMap<>();
         state.put("status", proposalView(proposal).get("status"));
         state.put("version", proposal.version());
+        state.put("plannedAt", safePayload(proposal.payloadJson()).path("phases").findValuesAsText("at"));
         if (proposal.expiresAt() != null) state.put("expiresAt", proposal.expiresAt().toString());
         if ("TASK".equals(proposal.kind()) && CONFIRMED.equals(proposal.status())) {
-            if (safePayload(proposal.payloadJson()).path("repeat").isObject()) {
+            JsonNode payload = safePayload(proposal.payloadJson());
+            if (payload.path("repeat").isObject()) {
                 TaskPlanFact plan = plans.findByIdempotencyKey("plan:" + proposalId)
                         .orElseThrow(() -> conflict("TASK_CREATION_UNCONFIRMED", "任务登记结果尚未核实"));
                 if (!owns(plan.payloadJson(), principal)) throw notFound("TASK_PLAN_NOT_FOUND", "任务计划不存在");
-                assertSource(plan.payloadJson(), source(requestedSource));
+                assertSource(plan.payloadJson(), normalizedSource);
+                PlanSource source = planSource(plan);
+                state.put("taskId", proposalId);
+                state.put("created", true);
                 state.put("planId", plan.planId());
-                state.put("planStatus", plan.status());
+                state.put("planStatus", TaskDetailProjector.lowerStatus(plan.status()));
                 state.put("status", "SCHEDULED");
                 state.put("version", plan.version());
+                if ("ENABLED".equalsIgnoreCase(plan.status())) {
+                    if (source.nextAt() != null) state.put("nextAt", source.nextAt().toString());
+                    if (source.nextDate() != null) {
+                        state.put("nextDate", source.nextDate().toString());
+                        state.put("nextOccurrenceId", TaskRecurrence.occurrenceId(plan.planId(), source.nextDate()));
+                    }
+                    state.put("nextCheckpointAt", projector.nextCheckpointAt(source));
+                }
             } else {
                 TaskFact task = tasks.findByIdempotencyKey("task:" + proposalId)
                         .orElseThrow(() -> conflict("TASK_CREATION_UNCONFIRMED", "任务登记结果尚未核实"));
                 if (!owns(task.payloadJson(), principal)) throw notFound("TASK_NOT_FOUND", "任务不存在");
-                assertSource(task.payloadJson(), source(requestedSource));
+                assertSource(task.payloadJson(), normalizedSource);
                 state.put("taskId", task.taskId());
+                state.put("created", true);
                 state.put("status", task.status());
                 state.put("version", task.version());
             }
-            state.put("created", true);
         }
         return state;
     }
@@ -1062,52 +1575,6 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         }
         return view;
     }
-    public Map<String, Object> planView(TaskPlanFact plan) {
-        Map<String, Object> view = new LinkedHashMap<>();
-        view.put("planId", plan.planId()); view.put("version", plan.version()); view.put("status", plan.status());
-        JsonNode payload = safePayload(plan.payloadJson());
-        view.put("payload", mapper.convertValue(publicPayload(payload), Object.class));
-        view.put("taskKind", "recurring");
-        view.put("repeat", mapper.convertValue(publicPayload(payload.path("repeat")), Object.class));
-        if (payload.path("interval").isObject()) {
-            view.put("interval", mapper.convertValue(publicPayload(payload.path("interval")), Object.class));
-        }
-        view.put("canPause", "ENABLED".equalsIgnoreCase(plan.status()));
-        view.put("canResume", "PAUSED".equalsIgnoreCase(plan.status()));
-        view.put("canCancel", !"DELETED".equalsIgnoreCase(plan.status()));
-        if ("ENABLED".equalsIgnoreCase(plan.status()) && payload.path("repeat").isObject()) {
-            Instant anchor = anchor(payload);
-            TaskRecurrence.RepeatRule repeat = repeatRule(payload.path("repeat"), TaskRecurrence.localDate(anchor));
-            Instant now = clock.instant();
-            java.time.LocalDate today = TaskRecurrence.localDate(now);
-            Instant checkpoint = activeWindowCheckpoint(payload, now);
-            java.time.LocalDate next = TaskRecurrence.next(repeat, anchor, now);
-            if (next != null) {
-                view.put("nextOccurrenceId", TaskRecurrence.occurrenceId(plan.planId(), next));
-                view.put("nextCheckpointAt", TaskRecurrence.occurrenceAt(anchor, next).toString());
-            }
-            if (checkpoint != null) {
-                view.put("nextOccurrenceId", TaskRecurrence.occurrenceId(plan.planId(), today));
-                view.put("nextCheckpointAt", checkpoint.toString());
-            }
-        }
-        try {
-            Optional<String> latest = plans.latestTaskId(plan.planId());
-            if (latest.isPresent()) {
-                TaskFact task = tasks.find(latest.get()).orElse(null);
-                if (task != null) {
-                    Map<String, Object> latestView = view(task);
-                    view.put("latestTaskId", task.taskId());
-                    view.put("latestStatus", task.status());
-                    view.put("latestResult", latestView);
-                    view.put("latestResultAt", latestView.get("reportAt"));
-                }
-            }
-        } catch (RuntimeException ignored) {
-            // The plan itself remains readable when an optional latency projection is unavailable.
-        }
-        return view;
-    }
 
     private Instant activeWindowCheckpoint(JsonNode payload, Instant now) {
         JsonNode interval = payload.path("interval");
@@ -1128,18 +1595,13 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         }
     }
 
+    // ------------------------------------------------------------ scheduling
+
     private String materializePhaseIds(String payloadJson) {
         JsonNode parsed = safePayload(payloadJson);
         if (!parsed.isObject() || !parsed.path("phases").isArray()) return parsed.toString();
         com.fasterxml.jackson.databind.node.ObjectNode root = (com.fasterxml.jackson.databind.node.ObjectNode) parsed;
-        for (JsonNode item : root.withArray("phases")) {
-            if (item.isObject()) {
-                com.fasterxml.jackson.databind.node.ObjectNode phase = (com.fasterxml.jackson.databind.node.ObjectNode) item;
-                if (!phase.path("phaseId").isTextual() || phase.path("phaseId").asText().isBlank()) {
-                    phase.put("phaseId", UUID.randomUUID().toString());
-                }
-            }
-        }
+        TaskPhaseIds.assignMissing(root);
         return root.toString();
     }
 
@@ -1149,8 +1611,10 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         JsonNode phases = payload.path("phases");
         if (!phases.isArray()) return;
         for (JsonNode phase : phases) {
-            String phaseStatus = phase.path("status").asText("PENDING").toUpperCase();
-            if (Set.of("COMPLETED", "PARTIAL", "FAILED", "UNCONFIRMED", "INTERRUPTED", "EXECUTING", "CANCELLED").contains(phaseStatus)) continue;
+            String phaseStatus = phase.path("status").asText("").trim().toUpperCase();
+            // Only untouched or explicitly PENDING checkpoints are scheduled; recovery
+            // outcomes like MISSED/UNKNOWN/EXECUTING are never re-armed.
+            if (!phaseStatus.isEmpty() && !"PENDING".equals(phaseStatus)) continue;
             if (phase.path("phaseId").isTextual() && phase.path("at").isTextual()) {
                 try { scheduler.schedule(task.taskId(), phase.path("phaseId").asText(), Instant.parse(phase.path("at").asText())); }
                 catch (RuntimeException error) {
@@ -1159,20 +1623,22 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
             }
         }
     }
+
     private static boolean terminalTask(String status) {
-        return status != null && Set.of("COMPLETED", "PARTIAL", "FAILED", "UNCONFIRMED", "INTERRUPTED", "CANCELLED").contains(status.toUpperCase());
+        return status != null && Set.of("COMPLETED", "PARTIAL", "FAILED", "UNCONFIRMED", "INTERRUPTED", "MISSED", "CANCELLED")
+                .contains(status.toUpperCase());
     }
+
     private void cancelScheduledPhases(TaskFact task) {
         JsonNode payloadPhases = safePayload(task.payloadJson()).path("phases");
         if (payloadPhases.isArray()) {
             for (JsonNode phase : payloadPhases) {
-                String phaseStatus = phase.path("status").asText("PENDING").toUpperCase();
-                if (Set.of("COMPLETED", "PARTIAL", "FAILED", "UNCONFIRMED", "INTERRUPTED", "EXECUTING").contains(phaseStatus)) continue;
+                String phaseStatus = phase.path("status").asText("").trim().toUpperCase();
+                if (!phaseStatus.isEmpty() && !"PENDING".equals(phaseStatus)) continue;
                 if (this.phases != null && phase.path("phaseId").isTextual()) {
                     try {
                         var durable = this.phases.find(phase.path("phaseId").asText());
-                        if (durable.isPresent() && Set.of("COMPLETED", "PARTIAL", "FAILED", "UNCONFIRMED", "INTERRUPTED", "EXECUTING", "CANCELLED")
-                                .contains(durable.get().status().toUpperCase())) continue;
+                        if (durable.isPresent() && !"PENDING".equalsIgnoreCase(durable.get().status())) continue;
                     } catch (RuntimeException ignored) { continue; }
                 }
                 if (phase.path("phaseId").isTextual()) {
@@ -1196,8 +1662,7 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
             if (this.phases != null) {
                 try {
                     var durable = this.phases.find(id);
-                    if (durable.isPresent() && Set.of("COMPLETED", "PARTIAL", "FAILED", "UNCONFIRMED",
-                            "INTERRUPTED", "EXECUTING", "CANCELLED").contains(durable.get().status().toUpperCase())) continue;
+                    if (durable.isPresent() && !"PENDING".equalsIgnoreCase(durable.get().status())) continue;
                 } catch (RuntimeException unavailable) {
                     continue;
                 }
@@ -1205,6 +1670,8 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
             try { scheduler.cancel(before.taskId(), id); } catch (RuntimeException ignored) { }
         }
     }
+
+    // ------------------------------------------------ proposal management
 
     private TaskProposalFact managementProposal(PrincipalInfo principal, String id, String kind) {
         return managementProposal(principal, id, kind, "office");
@@ -1235,21 +1702,72 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         return proposals.updateIfVersion(withStatus(proposal, CANCELLED), proposal.version())
                 .orElseThrow(() -> conflict("VERSION_CONFLICT", "任务提案已变化，请刷新后重试"));
     }
+
     private void resolveExpiry(TaskProposalFact proposal) {
         if (proposal.expiresAt() != null && !clock.instant().isBefore(proposal.expiresAt())) {
             proposals.updateIfVersion(withStatus(proposal, "EXPIRED"), proposal.version());
-            throw conflict(proposal.kind().equals("CHANGE") ? "CHANGE_EXPIRED" : "CANCELLATION_EXPIRED", "任务提案已过期，请重新提出");
+            throw conflict(proposal.kind().equals("TASK") ? "TASK_EXPIRED"
+                    : proposal.kind().equals("CHANGE") ? "CHANGE_EXPIRED" : "CANCELLATION_EXPIRED", "任务提案已过期，请重新提出");
         }
     }
+
     private void markConfirmed(TaskProposalFact proposal) {
         proposals.updateIfVersion(withStatus(proposal, CONFIRMED), proposal.version())
                 .orElseThrow(() -> conflict("VERSION_CONFLICT", "任务提案已变化，请刷新后重试"));
     }
+
+    /** Confirms and appends the audit fact in the same write transaction, so an audited
+     * decision and its business fact commit together or not at all. */
+    private void markConfirmed(PrincipalInfo principal, TaskProposalFact proposal) {
+        markConfirmed(proposal);
+        auditProposal(principal, proposal.source(), confirmedEventType(proposal.kind()), withStatus(proposal, CONFIRMED));
+    }
+
+    private static String confirmedEventType(String kind) {
+        return switch (kind == null ? "" : kind) {
+            case "CHANGE" -> "TASK_CHANGE_CONFIRMED";
+            case "CANCELLATION" -> "TASK_CANCELLATION_CONFIRMED";
+            default -> "TASK_PROPOSAL_CONFIRMED";
+        };
+    }
+
+    /** Attributed audit fact for a member decision on a task proposal; audit failure fails the request. */
+    private void auditProposal(PrincipalInfo principal, String source, String eventType, TaskProposalFact proposal) {
+        if (audit == null) return;
+        Map<String, Object> body = new LinkedHashMap<>();
+        JsonNode payload = safePayload(proposal.payloadJson());
+        body.put("source", source);
+        if (principal.principalId() != null) body.put("principalId", principal.principalId());
+        if (principal.identityRealm() != null) body.put("identityRealm", principal.identityRealm());
+        String conversationId = payload.path("conversationId").asText(null);
+        if (conversationId != null) body.put("conversationId", conversationId);
+        String turnId = payload.path("turnId").asText(null);
+        if (turnId != null) body.put("turnId", turnId);
+        body.put("proposalId", proposal.proposalId());
+        body.put("kind", proposal.kind());
+        String taskId = payload.path("taskId").asText(null);
+        if (taskId != null) body.put("taskId", taskId);
+        String label = payload.path("label").asText("");
+        if (!label.isBlank()) body.put("label", label);
+        body.put("status", proposal.status());
+        body.put("revision", proposal.version());
+        body.put("at", clock.instant().toString());
+        try {
+            audit.append(new AuditEventFact(UUID.randomUUID().toString(), principal.tenantCode(), eventType,
+                    mapper.writeValueAsString(body)));
+        } catch (BusinessException failure) {
+            throw failure;
+        } catch (Exception failure) {
+            throw new BusinessException("AUDIT_UNAVAILABLE", "审计记录未能保存，请稍后重试", 503);
+        }
+    }
+
     private TaskProposalFact withStatus(TaskProposalFact proposal, String status) {
         return new TaskProposalFact(proposal.proposalId(), proposal.version() + 1, status, proposal.payloadJson(),
                 proposal.idempotencyKey(), proposal.kind(), proposal.targetJson(), proposal.beforeJson(), proposal.afterJson(),
                 proposal.operation(), proposal.tenantCode(), proposal.ownerKey(), proposal.source(), proposal.expiresAt());
     }
+
     private boolean proposalOwned(TaskProposalFact proposal, PrincipalInfo principal, String expectedSource) {
         checkPrincipal(principal);
         JsonNode payload = readJson(proposal.payloadJson());
@@ -1259,6 +1777,7 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         return principal.tenantCode().equals(tenant) && ownerKey(principal).equals(owner)
                 && source(expectedSource).equals(source(storedSource));
     }
+
     private JsonNode target(JsonNode request) {
         JsonNode value = request.path("target");
         if (!value.isObject()) throw new BusinessException("INVALID_CHANGE", "目标引用无效", 400);
@@ -1269,6 +1788,7 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         targetId(value);
         return value;
     }
+
     private String targetId(JsonNode target) {
         String type = target.path("type").asText("");
         String field = "task".equals(type) ? "taskId" : "planId";
@@ -1276,20 +1796,24 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         require(id, "target");
         return id;
     }
+
     private JsonNode taskPayloadForProposal(PrincipalInfo principal, String source, String id) {
         TaskFact task = current(principal, id, source);
         assertSource(task.payloadJson(), source);
         return safePayload(task.payloadJson());
     }
+
     private JsonNode planForProposal(PrincipalInfo principal, String source, String id) {
         TaskPlanFact plan = plan(principal, id, source);
         assertSource(plan.payloadJson(), source);
         return safePayload(plan.payloadJson());
     }
+
     private TaskRecurrence.OccurrenceReference occurrenceTarget(JsonNode target) {
         if (!"task".equals(target.path("type").asText())) return null;
         return TaskRecurrence.parseOccurrenceId(target.path("taskId").asText(""));
     }
+
     private JsonNode occurrenceForProposal(PrincipalInfo principal, String source,
                                            TaskRecurrence.OccurrenceReference occurrence) {
         TaskPlanFact plan = plan(principal, occurrence.planId(), source);
@@ -1317,12 +1841,15 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         }
         return effective;
     }
+
     private Instant anchor(JsonNode payload) {
         String value = payload.path("interval").path("startsAt").asText("");
         if (value.isBlank()) value = payload.path("phases").path(0).path("at").asText("");
         try { return Instant.parse(value); } catch (RuntimeException error) { throw new BusinessException("INVALID_CHANGE", "周期时间无效", 400); }
     }
+
     private Instant effectiveAt(JsonNode payload) { return anchor(payload); }
+
     private TaskRecurrence.RepeatRule repeatRule(JsonNode value, java.time.LocalDate anchorDate) {
         String frequency = value.path("frequency").asText("");
         Set<Integer> weekdays = Set.of();
@@ -1337,6 +1864,7 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         if (until != null && until.isBefore(anchorDate)) throw new BusinessException("INVALID_CHANGE", "截止日无效", 400);
         return new TaskRecurrence.RepeatRule(frequency, weekdays, day, until);
     }
+
     private JsonNode shiftedOccurrence(JsonNode original, java.time.LocalDate date, java.time.LocalDate anchorDate) {
         JsonNode copy = original.deepCopy();
         if (!copy.isObject()) throw new BusinessException("INVALID_CHANGE", "周期任务内容无效", 400);
@@ -1357,14 +1885,17 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         root.put("occurrenceDate", date.toString());
         return root;
     }
+
     private String shiftOccurrenceAt(String value, long days) {
         try { return Instant.parse(value).plus(java.time.Duration.ofDays(days)).toString(); }
         catch (RuntimeException error) { throw new BusinessException("INVALID_CHANGE", "周期时间无效", 400); }
     }
+
     private void assertSource(String payload, String expected) {
-        String actual = source(safePayload(payload).path("source").asText("office"));
+        String actual = source(readJson(payload).path("source").asText("office"));
         if (!actual.equals(source(expected))) throw notFound("TASK_NOT_FOUND", "任务不存在");
     }
+
     private JsonNode changedPayload(JsonNode before, JsonNode request, String operation) {
         JsonNode after = before.deepCopy();
         if ("edit".equals(operation) && request.path("template").isObject() && after.isObject()) {
@@ -1382,15 +1913,21 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
             result.put("tenantCode", before.path("tenantCode").asText());
             result.put("ownerKey", before.path("ownerKey").asText());
             result.put("source", before.path("source").asText("office"));
+            for (String field : List.of("principalId", "identityRealm")) {
+                result.remove(field);
+                if (before.hasNonNull(field)) result.set(field, before.get(field));
+            }
         }
         return TaskPayloadSafety.withoutCredentials(mapper, after);
     }
+
     private void validateDeviceReferences(JsonNode before, JsonNode after) {
         Set<String> existing = deviceReferences(before), proposed = deviceReferences(after);
         if (!existing.isEmpty() && !existing.containsAll(proposed)) {
             throw new BusinessException("TASK_DEVICE_AUTHORIZATION_UNAVAILABLE", "修改包含当前目录未核验的设备，拒绝保存", 403);
         }
     }
+
     private void assertCurrentCatalog(PrincipalInfo principal, String source, String payloadJson) {
         assertCurrentCatalog(principal, source, payloadJson, false);
     }
@@ -1404,17 +1941,16 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
             if (required) throw new BusinessException("TASK_DEVICE_AUTHORIZATION_UNAVAILABLE", "当前设备授权范围暂不可用", 503);
             return;
         }
-        IotSource requested;
+        IotSourceEnum requested;
         try {
-            requested = IotSource.parse(source);
+            requested = IotSourceEnum.parse(source);
         } catch (RuntimeException invalid) {
             throw new BusinessException("INVALID_AGENT_SOURCE", "Agent 来源无效", 400);
         }
         AuthorizedDeviceScope scope;
         try {
-            scope = iot.loadAuthorizedDeviceScope(new RequestIdentity(
-                    principal.authorization(), principal.tenantCode(), requested, principal.ownerKey()))
-                    .block(Duration.ofSeconds(30));
+            scope = readCatalog.fresh(new RequestIdentity(
+                    principal.authorization(), principal.tenantCode(), requested, principal.ownerKey()));
         } catch (BusinessException failure) {
             throw failure;
         } catch (RuntimeException failure) {
@@ -1442,6 +1978,7 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
             }
         }
     }
+
     private boolean bindingMatches(JsonNode action, AuthorizedDevice device) {
         String expected = text(action, "bindingFingerprint", "binding_fingerprint", "deviceBindingFingerprint");
         if (expected != null && !expected.equals(device.bindingFingerprint())) return false;
@@ -1450,11 +1987,13 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
                 && matchesOptional(action, "hubDeviceId", device.hubDeviceId())
                 && matchesOptional(action, "smartAreaCode", device.smartAreaCode());
     }
+
     private boolean matchesOptional(JsonNode value, String field, String actual) {
         if (!value.has(field)) return true;
         String expected = value.path(field).isNull() ? null : value.path(field).asText(null);
         return Objects.equals(expected, actual);
     }
+
     private String text(JsonNode value, String... names) {
         for (String name : names) {
             JsonNode item = value.get(name);
@@ -1462,6 +2001,7 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         }
         return null;
     }
+
     private JsonNode actionForDevice(JsonNode payload, String deviceId) {
         if (!payload.path("phases").isArray()) return null;
         for (JsonNode phase : payload.path("phases")) {
@@ -1472,6 +2012,7 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         }
         return null;
     }
+
     private Set<String> deviceReferences(JsonNode payload) {
         java.util.LinkedHashSet<String> ids = new java.util.LinkedHashSet<>();
         if (!payload.path("phases").isArray()) return ids;
@@ -1485,6 +2026,7 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         }
         return ids;
     }
+
     private void validatePlanStructure(JsonNode payload, String beforeJson) {
         if (!payload.isObject() || !payload.path("phases").isArray() || payload.path("phases").isEmpty()) {
             throw new BusinessException("INVALID_CHANGE", "任务阶段无效", 400);
@@ -1545,6 +2087,7 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
             if (replacement == null || !replacement.equals(phase)) throw conflict("HISTORY_IMMUTABLE", "已执行阶段不可修改");
         }
     }
+
     private void validateFutureChange(JsonNode before, JsonNode after, String operation) {
         if (!after.path("phases").isArray()) return;
         Instant now = clock.instant();
@@ -1597,6 +2140,7 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
             }
         }
     }
+
     private String materializePreservingPhaseIds(String afterJson, String beforeJson) {
         JsonNode after = safePayload(afterJson), before = safePayload(beforeJson);
         if (!after.isObject() || !before.path("phases").isArray() || !after.path("phases").isArray()) return after.toString();
@@ -1622,9 +2166,11 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         if (copy instanceof com.fasterxml.jackson.databind.node.ObjectNode object) object.remove("phaseId");
         return copy;
     }
+
     private Map<String, Object> managementResult(TaskProposalFact proposal) {
         return managementResult(proposal, targetId(readJson(proposal.targetJson())), null);
     }
+
     private Map<String, Object> managementResult(TaskProposalFact proposal, String taskId, String planId) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put(proposal.kind().equals("CHANGE") ? "changeId" : "cancellationId", proposal.proposalId());
@@ -1632,11 +2178,71 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         result.put("status", proposal.status().equals(PENDING) ? CONFIRMED : proposal.status());
         return result;
     }
+
+    // ------------------------------------------------------------ scope
+
+    /** Authorized read scope from the backend projection, never a request-time upstream crawl. */
+    @Override
+    public TaskReadScope scope(PrincipalInfo principal, String source) {
+        checkPrincipal(principal);
+        if (iot == null) return TaskReadScope.empty();
+        return readCatalog.read(scopeIdentity(principal, source));
+    }
+
+    @Override
+    public TaskReadScope loadScope(RequestIdentity identity) {
+        checkPrincipal(new PrincipalInfo(identity.authorization(), identity.tenantCode()));
+        if (iot == null) return TaskReadScope.empty();
+        return readCatalog.load(identity);
+    }
+
+    private TaskReadScope freshScope(PrincipalInfo principal, String source) {
+        checkPrincipal(principal);
+        if (iot == null) return TaskReadScope.empty();
+        return TaskReadScope.of(readCatalog.fresh(scopeIdentity(principal, source)));
+    }
+
+    private RequestIdentity scopeIdentity(PrincipalInfo principal, String source) {
+        IotSourceEnum requested;
+        try { requested = IotSourceEnum.parse(source(source)); }
+        catch (RuntimeException invalid) { throw new BusinessException("INVALID_AGENT_SOURCE", "Agent 来源无效", 400); }
+        return new RequestIdentity(
+                principal.authorization(), principal.tenantCode(), requested, ownerKey(principal));
+    }
+
+    private void attachFingerprints(PrincipalInfo principal, String source, JsonNode payload) {
+        if (iot == null || deviceReferences(payload).isEmpty()) return;
+        IotSourceEnum requested;
+        try { requested = IotSourceEnum.parse(source); }
+        catch (RuntimeException invalid) { throw new BusinessException("INVALID_AGENT_SOURCE", "Agent 来源无效", 400); }
+        AuthorizedDeviceScope scope;
+        try {
+            scope = readCatalog.fresh(new RequestIdentity(
+                    principal.authorization(), principal.tenantCode(), requested, ownerKey(principal)));
+        } catch (RuntimeException failure) {
+            throw new BusinessException("TASK_DEVICE_AUTHORIZATION_UNAVAILABLE", "当前设备授权范围暂不可用", 503);
+        }
+        if (scope == null || scope.source() != requested) {
+            throw new BusinessException("TASK_DEVICE_AUTHORIZATION_UNAVAILABLE", "当前设备授权范围暂不可用", 503);
+        }
+        if (payload.isObject()) ((com.fasterxml.jackson.databind.node.ObjectNode) payload)
+                .put("catalogFingerprint", scope.catalogFingerprint())
+                .put("bindingFingerprint", scope.bindingFingerprint());
+    }
+
+    // ------------------------------------------------------------ plumbing
+
     private JsonNode safePayload(String value) {
         if (value == null || value.isBlank()) throw new BusinessException("INVALID_TASK_PAYLOAD", "任务内容无效");
         return TaskPayloadSafety.withoutCredentials(mapper, readJson(value));
     }
-    private JsonNode readJson(String value) { try { return mapper.readTree(value); } catch (Exception error) { throw new BusinessException("INVALID_TASK_PAYLOAD", "任务内容无效"); } }
+
+    private JsonNode readJson(String value) {
+        if (value == null || value.isBlank()) return mapper.createObjectNode();
+        try { return mapper.readTree(value); }
+        catch (Exception error) { throw new BusinessException("INVALID_TASK_PAYLOAD", "任务内容无效"); }
+    }
+
     private JsonNode publicPayload(JsonNode value) {
         if (value == null || value.isNull()) return mapper.nullNode();
         JsonNode safe = TaskPayloadSafety.withoutCredentials(mapper, value);
@@ -1646,65 +2252,12 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         result.remove("ownerKey");
         return result;
     }
-    private Map<String, Object> filterReport(Map<?, ?> raw, Set<String> scope) {
-        Map<String, Object> report = new LinkedHashMap<>();
-        raw.forEach((key, value) -> { if (key instanceof String name) report.put(name, value); });
-        Object phases = report.get("phases");
-        if (phases instanceof List<?> phaseList) {
-            List<Object> filteredPhases = new ArrayList<>();
-            for (Object phase : phaseList) {
-                if (!(phase instanceof Map<?, ?> phaseMap)) { filteredPhases.add(phase); continue; }
-                Map<String, Object> safePhase = new LinkedHashMap<>();
-                phaseMap.forEach((key, value) -> { if (key instanceof String name) safePhase.put(name, value); });
-                Object devices = safePhase.get("devices");
-                if (devices instanceof List<?> deviceList) {
-                    safePhase.put("devices", deviceList.stream().filter(item -> item instanceof Map<?, ?> device
-                            && scope.contains(String.valueOf(device.get("id")))).toList());
-                }
-                filteredPhases.add(safePhase);
-            }
-            report.put("phases", filteredPhases);
-        }
-        Object meterIds = report.get("meterIds");
-        if (meterIds instanceof List<?> ids) {
-            report.put("meterIds", ids.stream().filter(id -> scope.contains(String.valueOf(id))).toList());
-        }
-        return report;
+
+    private Object publicValue(JsonNode value) {
+        if (value == null || value.isNull()) return null;
+        return mapper.convertValue(publicPayload(value), Object.class);
     }
 
-    @SuppressWarnings("unchecked")
-    private void exposeReport(Map<String, Object> view, Map<String, Object> report) {
-        view.put("report", report);
-        // Both objects were created by this facade's ObjectMapper; keep the public copies identical.
-        if (view.get("payload") instanceof Map<?, ?> payload && payload.containsKey("report")) {
-            ((Map<String, Object>) payload).put("report", report);
-        }
-    }
-    private boolean owns(String payload, PrincipalInfo principal) {
-        JsonNode value = readJson(payload);
-        return principal.tenantCode().equals(value.path("tenantCode").asText())
-                && ownerKey(principal).equals(value.path("ownerKey").asText());
-    }
-    private Map<String, Object> notificationView(TaskNotificationFact fact) {
-        return notificationView(fact, null);
-    }
-    private Map<String, Object> notificationView(TaskNotificationFact fact, Set<String> scope) {
-        Map<String, Object> view = new LinkedHashMap<>();
-        view.put("id", fact.notificationId());
-        view.put("taskId", fact.taskId());
-        view.put("source", fact.source());
-        view.put("outcome", fact.outcome());
-        view.put("endedAt", fact.endedAt().toString());
-        view.put("readAt", fact.readAt() == null ? null : fact.readAt().toString());
-        JsonNode payload = safePayload(fact.payloadJson());
-        view.put("payload", mapper.convertValue(publicPayload(payload), Object.class));
-        JsonNode report = payload.path("report");
-        if (report.isObject()) {
-            Map<String, Object> value = mapper.convertValue(publicPayload(report), Map.class);
-            exposeReport(view, scope == null ? value : filterReport(value, scope));
-        }
-        return view;
-    }
     private static Map<String, Object> stateView(String id, Object raw) {
         Map<String, Object> view = new LinkedHashMap<>();
         view.put("id", id);
@@ -1717,6 +2270,13 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         view.putIfAbsent("reportedAt", null);
         return view;
     }
+
+    private boolean owns(String payload, PrincipalInfo principal) {
+        JsonNode value = readJson(payload);
+        return principal.tenantCode().equals(value.path("tenantCode").asText())
+                && ownerKey(principal).equals(value.path("ownerKey").asText());
+    }
+
     private static void checkPrincipal(PrincipalInfo principal) {
         if (principal == null || principal.authorization() == null || principal.authorization().isBlank()
                 || principal.tenantCode() == null || principal.tenantCode().isBlank()) {
@@ -1743,9 +2303,11 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
     private static BusinessException conflict(String code, String message) {
         return new BusinessException(code, message, 409);
     }
+
     private static String scoped(PrincipalInfo principal, String key) {
         return ScopedKey.of(principal.tenantCode(), ownerKey(principal), key);
     }
+
     public static String ownerKey(PrincipalInfo principal) {
         return principal.ownerKey();
     }

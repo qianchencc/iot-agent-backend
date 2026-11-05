@@ -1,0 +1,78 @@
+{
+  "baseline": "c1d36c1",
+  "request": "2分钟后把这些灯关掉",
+  "originalRuntime": [
+    "apps/runtime/src/agent/pi-runner.ts:923",
+    "apps/runtime/src/agent/pi-runner.ts:1055-1070",
+    "apps/runtime/src/agent/pi-runner.ts:1738-1741",
+    "apps/runtime/src/agent/pi-runner.ts:1754-1756"
+  ],
+  "before": {
+    "toolFailures": [
+      "候选集任务需要提供已发现的 candidateSetIds",
+      "Java tool completion must close the tool phase",
+      "相同提案或报告已经准备，请保留原对象，不重复生成或执行"
+    ],
+    "savedPendingProposals": 1,
+    "actions": 5,
+    "publicTaskProposedEvent": false,
+    "assistantClaimedPrepared": true
+  },
+  "regression": {
+    "command": "mvn -q -Dtest=AgentTaskProposalHttpContractTest test",
+    "before": "failed: first candidate task must remain usable by the engine",
+    "after": "passed: first continues; second stops; independent proposals; all five lights retained"
+  },
+  "checkpointBuild": {
+    "tests": 386,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 5
+  },
+  "runtimeOnlyBuild": {
+    "tests": 371,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 5
+  },
+  "skippedScope": "MySQL-dependent StorageIntegrationTest, TaskPlanStoreIntegrationTest (3), ReportJdbcIntegrationTest: no live database tests claimed",
+  "deployment": {
+    "javaPort": 3381,
+    "nodePort": 3382,
+    "tmuxSocket": "iot-agent-backend",
+    "session": "fixed-backend",
+    "source": "var/task-proposal-transport-20261104-095357/runtime-source",
+    "baselineArtifact": "/Users/qianchen/works/新发展/iot-agent-backend/var/lighting-history-20261103-211408/source/target/iot-agent-backend-0.1.0.jar",
+    "artifactSha256": "98ab54dbbebf6d4bb066004d366f06436891f172664255d2decd8576869c6cf1",
+    "nodeUnchanged": true,
+    "nodePid": 24718,
+    "privateConfigChangedOnlyJavaArtifact": true,
+    "unrelatedAdmissionChangesNotRolledOut": true
+  },
+  "sourceFiles": {
+    "src/main/java/ltd/qianc/iotagent/agent/internal/AgentToolCatalogSupport.java": "f8fcb10ead9f28185686ece7aad34c61fd02de85602d31dacc201bb0f631fdae",
+    "src/main/java/ltd/qianc/iotagent/agent/internal/controller/AgentToolBridgeController.java": "f06a30418244975bd1d631eb01e8f43f6806a5d4f763ca3da721b5fc8655eba2",
+    "src/test/java/ltd/qianc/iotagent/agent/AgentTaskProposalHttpContractTest.java": "752cb32c728c50a0ed738d37558405f0d7131fbd35245ea09cffd7b1b1c713b5"
+  },
+  "businessAcceptance": {
+    "status": "passed-for-candidate-task-proposal-only",
+    "sameAccount": true,
+    "sameConversation": true,
+    "automationPort": 9451,
+    "toolCalls": 1,
+    "failedToolCalls": 0,
+    "taskProposed": true,
+    "finalEvent": "run.awaiting_confirmation",
+    "proposalStatus": "PENDING_CONFIRMATION",
+    "actionCount": 5,
+    "visibleTime": "2026-11-04 10:05",
+    "visibleDurationSeconds": 35,
+    "confirmationClicked": false,
+    "confirmedTaskCountBefore": 0,
+    "confirmedTaskCountAfter": 0,
+    "controlExecuted": false,
+    "notificationSent": false,
+    "oldHistoryRewritten": false,
+    "screenshot": "04-exact-request-result.png"
+  }
+}

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { buildSessionContext, type AgentMessage, type Session } from '@earendil-works/pi-agent-core';
 import type { SidecarConfig } from './config.js';
 import { MysqlSessionFileSystem, MysqlSessionRepository, type SessionBinding } from './mysql-session-repository.js';
+import { toDurableMessage } from './reply-text.js';
 
 export class PiSessionRun {
   private assistantEntryId = '';
@@ -14,7 +15,7 @@ export class PiSessionRun {
 
   writerBinding(): { writerId: string; epoch: number } { return this.writer; }
 
-  async recoverAndStart(content: string): Promise<AgentMessage[]> {
+  async recoverAndStart(content: string, resume = false): Promise<AgentMessage[]> {
     const entries = await this.session.findEntriesOnBranch({ order: 'oldestFirst' });
     const pending = new Map<string, { assistantId: string; name: string }>();
     const checkpoints = new Map<string, AgentMessage>();
@@ -49,7 +50,7 @@ export class PiSessionRun {
     const history = buildSessionContext(await this.session.findEntriesOnBranch({ order: 'oldestFirst' })).messages;
     await this.session.appendRecord({ id: this.binding.runId, type: 'operation_started', lane: 'main',
       sourceLeafId: await this.session.getLeafId(), intent: { kind: 'run',
-        originalPrompt: [{ role: 'user', content, timestamp: Date.now() }], initialMessages: [] } });
+        originalPrompt: resume ? [] : [{ role: 'user', content, timestamp: Date.now() }], initialMessages: [] } });
     return history;
   }
 
@@ -58,7 +59,7 @@ export class PiSessionRun {
     if (message.role === 'toolResult' && this.acknowledgedTools.has(message.toolCallId)) return;
     const entryId = id ?? randomUUID();
     // Pi's loop materializes optional fields as undefined; its durable API requires JSON values.
-    const durableMessage = JSON.parse(JSON.stringify(message)) as AgentMessage;
+    const durableMessage = toDurableMessage(message);
     await this.session.appendEntry({ id: entryId, type: 'message', message: durableMessage }, 'main');
     if (message.role === 'assistant') {
       this.assistantEntryId = entryId;

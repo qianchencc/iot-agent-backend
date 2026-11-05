@@ -74,11 +74,13 @@ public class ActionDraftConfiguration {
             ObjectProvider<AuditEventStore> audit,
             ObjectProvider<ActionReceiptStore> receipts,
             ObjectProvider<ActionReadbackStore> readbacks,
+            ObjectProvider<ltd.qianc.iotagent.action.ImmediateActionHistory> history,
             ReadSnapshots snapshots,
             @Value("${iot.gateway.call-timeout-ms:10000}") long scopeTimeoutMs,
             @Value("${agent.action-draft-ttl-ms:600000}") long draftTtlMs) {
         return new ActionDraftFacade(mapper, store, iot, candidates, gateway, events.getIfAvailable(),
                 audit.getIfAvailable(), receipts.getIfAvailable(), readbacks.getIfAvailable(), snapshots,
-                Clock.systemUTC(), Duration.ofMillis(Math.max(1, scopeTimeoutMs)), Duration.ofMillis(Math.max(1, draftTtlMs)));
+                Clock.systemUTC(), Duration.ofMillis(Math.max(1, scopeTimeoutMs)), Duration.ofMillis(Math.max(1, draftTtlMs)),
+                history.getIfAvailable());
     }
 }

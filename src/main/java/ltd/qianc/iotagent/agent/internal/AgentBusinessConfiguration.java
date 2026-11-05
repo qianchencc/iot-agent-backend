@@ -33,7 +33,7 @@ public class AgentBusinessConfiguration {
             ObjectProvider<TaskFacade> tasks,
             ObjectProvider<ReportService> reports,
             ObjectProvider<AdminConfigurationStore> adminConfigurations,
-            @Value("${agent.run.max-turns:8}") int maxTurns) {
+            @Value("${agent.run.max-turns:6}") int maxTurns) {
         return AgentBusinessEngineFactory.policyProvider(() -> conversations.getObject(),
                 iotAdapters.getIfAvailable(), observations.getIfAvailable(), tasks.getIfAvailable(),
                 reports.getIfAvailable(), adminConfigurations::getIfAvailable,
@@ -47,9 +47,11 @@ public class AgentBusinessConfiguration {
             ObjectProvider<TaskProjectionStore> projections,
             ActionDraftFacade actions, TaskFacade tasks, ObjectMapper mapper,
             ObjectProvider<ReportGenerationPort> reports,
+            ObjectProvider<ReportService> savedReports,
             ObjectProvider<ltd.qianc.iotagent.agent.AgentCheckpointBridge> checkpoints) {
         AgentToolBridge interactive = AgentBusinessEngineFactory.toolBridge(conversations, iot, observations.getIfAvailable(),
-                projections.getIfAvailable(), actions, tasks, mapper, reports.getIfAvailable());
+                projections.getIfAvailable(), actions, tasks, mapper, reports.getIfAvailable(), savedReports.getIfAvailable(),
+                Clock.system(ZoneId.of("Asia/Shanghai")));
         return request -> {
             var checkpoint = checkpoints.getIfAvailable();
             var result = checkpoint == null ? java.util.Optional.<java.util.Map<String, Object>>empty() : checkpoint.executeTool(request);

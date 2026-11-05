@@ -4,9 +4,16 @@
 
 当前业务恢复入口：[规格与十六组闭环](.scratch/agent-business-recovery/README.md)；涉及 Java/Node 职责、智能体工具/指引、Runtime 对照或验收时先读。业务定义归 Java、Node 只提供通用 Agent Engine，见 [ADR 0004](docs/adr/0004-java-business-definition-generic-agent-engine.md)。
 
-本 worktree 与缓存主线隔离；普通读取/同步的未提交缓存实现不在此分支。不得直接启用复制出的 `.env`、`var/` 或 Compose 数据目录；联调先配置独立端口、MySQL schema、Redis命名空间、Pi Session和Admin状态，不重启/切换原工作区服务。
+联调先配置独立端口、MySQL schema、Redis命名空间、Pi Session和Admin状态，不启用工具复制的旧 `var/` 或 Compose 卷，不重启/切换其他工作区服务。当前入口与冻结实例以 `.scratch/agent-business-recovery/local-preview.md` 为准。
 
-前端控制台在 `web/admin/`（Vite + Vue3 + Arco，按客户选型清单）；开发与组件规范 `web/admin/AGENTS.md`，部署与维护 `web/admin/docs/maintenance.md`。
+配置、启动、持久化或控制台变更前先读 [配置与数据治理规范](docs/configuration-governance.md) 和 [控制台实施与验证入口](.scratch/admin-console-governance/README.md)。部署入口使用显式外置 YAML，不加载 `.env`；MySQL 管可管理业务修订。历史盘点不作为当前运行证据。
+
+前端控制台在 `web/admin/`，使用 Vue3 / JavaScript / Vite / Element Plus，沿用 A「成员分栏」。白名单仅维护手机号与可选备注，独立于业务准入及任务。开发规范见 `web/admin/AGENTS.md`；运行和未验边界见治理入口。
+
+## 实现取舍
+
+- 以基础业务可靠闭环为目标：状态含义明确、职责单一、实现简洁；不为未要求的边缘或高压场景增加状态、队列和框架。优先复用现有事务、调度和存储入口。
+- 任务生命周期、阶段、结果与通知的变更先读[基础闭环设计](.scratch/agent-business-recovery/task-lifecycle.md)。任务事实归后端，执行结果与报告／通知生成分开；时间语义以用户确认的安排为准。
 
 ## 技术栈
 

@@ -21,6 +21,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
         "agent.storage.redis.enabled=false",
         "iot.identity.verify=false",
         "agent.heartbeat-ms=0",
+        "agent.task.scanner.poll-ms=3600000",
         "AGENT_MYSQL_URL=${AGENT_TASK_FIXTURE_MYSQL_URL}",
         "AGENT_MYSQL_USERNAME=${AGENT_TASK_FIXTURE_MYSQL_USERNAME}",
         "AGENT_MYSQL_PASSWORD=${AGENT_TASK_FIXTURE_MYSQL_PASSWORD}"
@@ -39,6 +40,155 @@ class TaskPlanStoreIntegrationTest {
     private ObjectMapper mapper;
     @Autowired
     private ltd.qianc.iotagent.task.TaskProposalStore proposals;
+    @Autowired
+    private ltd.qianc.iotagent.task.TaskPhaseStore phases;
+    @Autowired
+    private ltd.qianc.iotagent.task.TaskNotificationRetryStore notificationRetries;
+    @Autowired
+    private ltd.qianc.iotagent.task.TaskNotificationStore notifications;
+    @Autowired
+    private ltd.qianc.iotagent.task.TaskFactStore tasks;
+    @Autowired
+    private ltd.qianc.iotagent.task.TaskAtomicTransactions atomic;
+
+    @Test
+    void intervalSelectionCrossesFuturePagesAndComparesOffsetInstants() throws Exception {
+        String prefix = "interval-pages-" + UUID.randomUUID() + "-";
+        java.sql.Timestamp updated = java.sql.Timestamp.from(Instant.parse("2020-01-01T00:00:00Z"));
+        try {
+            for (int index = 0; index < 62; index++) {
+                boolean started = index == 60;
+                boolean matured = index == 61;
+                String payload = mapper.writeValueAsString(java.util.Map.of("source", "office",
+                        "interval", java.util.Map.of(
+                                "startsAt", (started || matured ? NOW.minusSeconds(60) : NOW.plusSeconds(3600))
+                                        .atOffset(java.time.ZoneOffset.ofHours(8)).toString(),
+                                "endsAt", (matured ? NOW.minusSeconds(10) : NOW.plusSeconds(7200)).toString())));
+                String id = prefix + index;
+                jdbc.update("INSERT INTO task_facts(task_id,version,status,payload_json,idempotency_key,create_time,update_time)"
+                                + " VALUES (?,1,?,?,?,?,?)",
+                        id, matured ? "EXECUTING" : "SCHEDULED", payload, id, updated, updated);
+                if (matured) {
+                    jdbc.update("INSERT INTO task_phases(phase_id,task_id,source,version,status,due_at,payload_json,create_time,update_time) "
+                                    + "VALUES (?,?,'office',1,'COMPLETED',?,'{}',NOW(),NOW())",
+                            id + "-done", id, java.sql.Timestamp.from(NOW.minusSeconds(20)));
+                }
+            }
+            assertThat(phases.startedIntervals(NOW, 25)).contains(prefix + "60").doesNotContain(prefix + "0");
+            assertThat(phases.readyToFinalize(NOW, 25)).contains(prefix + "61").doesNotContain(prefix + "60");
+        } finally {
+            jdbc.update("DELETE FROM task_phases WHERE task_id LIKE ?", prefix + "%");
+            jdbc.update("DELETE FROM task_facts WHERE task_id LIKE ?", prefix + "%");
+        }
+    }
+
+    @Test
+    void finishedOrdinaryTaskIsReconciledWithoutTreatingEmptyOrWaitingTasksAsFinished() {
+        String prefix = "task-close-" + UUID.randomUUID() + "-";
+        try {
+            insertTaskWithPhase(prefix + "done", prefix + "done-phase", "COMPLETED", java.sql.Timestamp.from(NOW));
+            insertTaskWithPhase(prefix + "waiting", prefix + "waiting-phase", "PENDING", java.sql.Timestamp.from(NOW.plusSeconds(60)));
+            jdbc.update("INSERT INTO task_facts(task_id,version,status,payload_json,idempotency_key,create_time,update_time) "
+                            + "VALUES (?,1,'SCHEDULED','{}',?,NOW(),NOW())", prefix + "empty", prefix + "empty");
+            assertThat(phases.readyToFinalize(NOW, 25))
+                    .contains(prefix + "done").doesNotContain(prefix + "waiting", prefix + "empty");
+        } finally {
+            jdbc.update("DELETE FROM task_phases WHERE task_id LIKE ?", prefix + "%");
+            jdbc.update("DELETE FROM task_facts WHERE task_id LIKE ?", prefix + "%");
+        }
+    }
+
+    @Test
+    void terminalTaskWithoutRetryRowIsFoundButImmediateAndAlreadyNotifiedTasksAreExcluded() {
+        String prefix = "notice-" + UUID.randomUUID() + "-";
+        try {
+            for (String kind : java.util.List.of("missing", "immediate", "notified")) {
+                String id = prefix + kind;
+                insertTaskWithPhase(id, id + "-phase", "COMPLETED", java.sql.Timestamp.from(NOW));
+                jdbc.update("UPDATE task_facts SET status='COMPLETED' WHERE task_id=?", id);
+            }
+            jdbc.update("UPDATE task_facts SET payload_json=JSON_SET(payload_json,'$.sourceType','immediate_draft') WHERE task_id=?", prefix + "immediate");
+            notifications.record(new ltd.qianc.iotagent.task.TaskNotificationFact(prefix + "notice", prefix + "notified",
+                    "LOCAL", "fixture", "office", "COMPLETED", NOW, null, "{}"));
+            assertThat(notificationRetries.pending(25)).extracting(ltd.qianc.iotagent.task.TaskFact::taskId)
+                    .contains(prefix + "missing").doesNotContain(prefix + "immediate", prefix + "notified");
+        } finally {
+            jdbc.update("DELETE FROM task_notifications WHERE task_id LIKE ?", prefix + "%");
+            jdbc.update("DELETE FROM task_notification_attempts WHERE task_id LIKE ?", prefix + "%");
+            jdbc.update("DELETE FROM task_phases WHERE task_id LIKE ?", prefix + "%");
+            jdbc.update("DELETE FROM task_facts WHERE task_id LIKE ?", prefix + "%");
+        }
+    }
+
+    @Test
+    void notificationFailureRollsBackParentThenNextScanClosesWithoutRedispatch() {
+        String id = "atomic-close-" + UUID.randomUUID();
+        java.util.concurrent.atomic.AtomicBoolean fail = new java.util.concurrent.atomic.AtomicBoolean(true);
+        try {
+            insertTaskWithPhase(id, id + "-phase", "COMPLETED", java.sql.Timestamp.from(NOW));
+            jdbc.update("UPDATE task_facts SET status='EXECUTING' WHERE task_id=?", id);
+            var unreliableInbox = new ltd.qianc.iotagent.task.TaskNotificationStore() {
+                @Override public ltd.qianc.iotagent.task.TaskNotificationFact record(ltd.qianc.iotagent.task.TaskNotificationFact notification) {
+                    if (id.equals(notification.taskId()) && fail.getAndSet(false)) throw new IllegalStateException("inbox temporarily unavailable");
+                    return notifications.record(notification);
+                }
+                @Override public java.util.Optional<ltd.qianc.iotagent.task.TaskNotificationFact> find(String notificationId) {
+                    return notifications.find(notificationId);
+                }
+                @Override public java.util.List<ltd.qianc.iotagent.task.TaskNotificationFact> list(String tenant, String recipient, String source, int limit, String before) {
+                    return notifications.list(tenant, recipient, source, limit, before);
+                }
+            };
+            var scanner = new ltd.qianc.iotagent.task.TaskScanner(phases, tasks,
+                    request -> { throw new AssertionError("finished phase must never be dispatched again"); },
+                    unreliableInbox, (checkpoint, identity) -> java.util.Optional.empty(),
+                    null, null, notificationRetries, null, null, atomic, null,
+                    java.time.Clock.fixed(NOW, java.time.ZoneOffset.UTC));
+            scanner.scanOnce();
+            assertThat(tasks.find(id).orElseThrow().status()).isEqualTo("EXECUTING");
+            assertThat(notifications.list("LOCAL", "fixture", "office", 100, null))
+                    .noneMatch(notification -> id.equals(notification.taskId()));
+            scanner.scanOnce();
+            assertThat(tasks.find(id).orElseThrow().status()).isEqualTo("COMPLETED");
+            assertThat(notifications.list("LOCAL", "fixture", "office", 100, null))
+                    .filteredOn(notification -> id.equals(notification.taskId())).hasSize(1);
+            assertThat(phases.find(id + "-phase").orElseThrow().status()).isEqualTo("COMPLETED");
+        } finally {
+            jdbc.update("DELETE FROM task_notifications WHERE task_id=?", id);
+            jdbc.update("DELETE FROM task_notification_attempts WHERE task_id=?", id);
+            jdbc.update("DELETE FROM task_phases WHERE task_id=?", id);
+            jdbc.update("DELETE FROM task_facts WHERE task_id=?", id);
+        }
+    }
+
+    @Test
+    void dueQueueAdmitsSixTasksButNeverOvertakesAnExecutingPredecessor() {
+        String suffix = UUID.randomUUID().toString();
+        var taskIds = java.util.stream.IntStream.range(0, 7)
+                .mapToObj(index -> "concurrency-" + index + "-" + suffix).toList();
+        Instant cutoff = Instant.now().plusSeconds(3600);
+        java.sql.Timestamp firstAt = java.sql.Timestamp.from(cutoff.minusSeconds(60));
+        try {
+            for (String id : taskIds) insertTaskWithPhase(id, id + "-first", "PENDING", firstAt);
+            String firstTask = taskIds.get(0);
+            jdbc.update("INSERT INTO task_phases(phase_id,task_id,source,version,status,due_at,payload_json,create_time,update_time) "
+                            + "VALUES (?,?,?,1,'PENDING',?,'{}',NOW(),NOW())",
+                    firstTask + "-next", firstTask, "office", java.sql.Timestamp.from(cutoff.minusSeconds(50)));
+            var ready = phases.due(cutoff, 6);
+            assertThat(ready).extracting(ltd.qianc.iotagent.task.TaskPhaseStore.TaskPhase::phaseId)
+                    .containsExactlyElementsOf(taskIds.subList(0, 6).stream().map(id -> id + "-first").toList());
+            var first = ready.get(0);
+            assertThat(phases.claim(first.phaseId(), first.version(), cutoff)).isTrue();
+            assertThat(phases.due(cutoff, 6))
+                    .extracting(ltd.qianc.iotagent.task.TaskPhaseStore.TaskPhase::phaseId)
+                    .containsExactlyElementsOf(taskIds.subList(1, 7).stream().map(id -> id + "-first").toList());
+        } finally {
+            for (String id : taskIds) {
+                jdbc.update("DELETE FROM task_phases WHERE task_id=?", id);
+                jdbc.update("DELETE FROM task_facts WHERE task_id=?", id);
+            }
+        }
+    }
 
     @Test
     void newExpressionRetiresPendingCardsOnlyWithinConversationOwnerAndSource() throws Exception {
@@ -78,7 +228,7 @@ class TaskPlanStoreIntegrationTest {
     }
 
     @Test
-    void cancellationCancelsOnlyPendingMaterializedWorkAndPreservesHistory() {
+    void cancellationCancelsEveryMaterializedActiveTaskAndPreservesPhaseHistory() {
         String suffix = UUID.randomUUID().toString();
         String planId = "ticket19-cancel-" + suffix;
         String payload = planPayload("2030-11-01T10:00:00Z");
@@ -87,6 +237,12 @@ class TaskPlanStoreIntegrationTest {
         insertTaskWithPhase("executing-" + suffix, "phase-executing-" + suffix, "EXECUTING", "2030-11-01 10:01:00");
         insertTaskWithPhase("unknown-" + suffix, "phase-unknown-" + suffix, "UNKNOWN", "2030-11-01 10:02:00");
         insertTaskWithPhase("terminal-" + suffix, "phase-terminal-" + suffix, "COMPLETED", "2030-11-01 10:03:00");
+        // A partially completed occurrence still cancels as a whole: its executed
+        // checkpoint stays durable history while the pending remainder stops.
+        insertTaskWithPhase("partial-" + suffix, "phase-partial-done-" + suffix, "COMPLETED", "2030-11-02 10:00:00");
+        jdbc.update("INSERT INTO task_phases(phase_id,task_id,source,version,status,due_at,payload_json,create_time,update_time) VALUES (?,?,?,1,?,?,?,NOW(),NOW())",
+                "phase-partial-rest-" + suffix, "partial-" + suffix, "office", "PENDING", "2030-11-02 10:05:00",
+                "{\"tenantCode\":\"LOCAL\",\"ownerKey\":\"fixture\",\"source\":\"office\",\"phases\":[]}");
         jdbc.update("INSERT INTO task_plan_occurrences(plan_id,occurrence_date,task_id,status,version,create_time,update_time) VALUES (?,?,?,'MATERIALIZED',1,NOW(),NOW())",
                 planId, LocalDate.of(2030, 11, 1), "pending-" + suffix);
         jdbc.update("INSERT INTO task_plan_occurrences(plan_id,occurrence_date,task_id,status,version,create_time,update_time) VALUES (?,?,?,'MATERIALIZED',1,NOW(),NOW())",
@@ -95,6 +251,8 @@ class TaskPlanStoreIntegrationTest {
                 planId, LocalDate.of(2030, 11, 3), "unknown-" + suffix);
         jdbc.update("INSERT INTO task_plan_occurrences(plan_id,occurrence_date,task_id,status,version,create_time,update_time) VALUES (?,?,?,'MATERIALIZED',1,NOW(),NOW())",
                 planId, LocalDate.of(2030, 11, 4), "terminal-" + suffix);
+        jdbc.update("INSERT INTO task_plan_occurrences(plan_id,occurrence_date,task_id,status,version,create_time,update_time) VALUES (?,?,?,'MATERIALIZED',1,NOW(),NOW())",
+                planId, LocalDate.of(2030, 11, 5), "partial-" + suffix);
 
         TaskPlanFact cancelled = plans.cancelAllIfVersion(planId, 1, NOW).orElseThrow();
 
@@ -104,8 +262,16 @@ class TaskPlanStoreIntegrationTest {
         assertThat(phaseStatus("phase-executing-" + suffix)).isEqualTo("EXECUTING");
         assertThat(phaseStatus("phase-unknown-" + suffix)).isEqualTo("UNKNOWN");
         assertThat(phaseStatus("phase-terminal-" + suffix)).isEqualTo("COMPLETED");
+        assertThat(phaseStatus("phase-partial-done-" + suffix)).isEqualTo("COMPLETED");
+        assertThat(phaseStatus("phase-partial-rest-" + suffix)).isEqualTo("CANCELLED");
+        // Runtime store.cancelPlan: every still-scheduled/executing materialized
+        // task fact turns CANCELLED — including the in-flight and partially
+        // completed occurrences — while executed phase history stays untouched.
         assertThat(taskStatus("pending-" + suffix)).isEqualTo("CANCELLED");
-        assertThat(taskStatus("executing-" + suffix)).isEqualTo("SCHEDULED");
+        assertThat(taskStatus("executing-" + suffix)).isEqualTo("CANCELLED");
+        assertThat(taskStatus("unknown-" + suffix)).isEqualTo("CANCELLED");
+        assertThat(taskStatus("terminal-" + suffix)).isEqualTo("CANCELLED");
+        assertThat(taskStatus("partial-" + suffix)).isEqualTo("CANCELLED");
         assertThat(plans.cancelAllIfVersion(planId, 1, NOW)).isEmpty();
     }
 
@@ -129,7 +295,7 @@ class TaskPlanStoreIntegrationTest {
         assertThat(plans.overrideOccurrenceIfVersion(planId, LocalDate.of(2030, 11, 4), 2, override, NOW)).isEmpty();
     }
 
-    private void insertTaskWithPhase(String taskId, String phaseId, String phaseStatus, String dueAt) {
+    private void insertTaskWithPhase(String taskId, String phaseId, String phaseStatus, Object dueAt) {
         String payload = "{\"tenantCode\":\"LOCAL\",\"ownerKey\":\"fixture\",\"source\":\"office\",\"phases\":[{\"phaseId\":\""
                 + phaseId + "\",\"at\":\"2030-11-01T10:00:00Z\",\"actions\":[]}]" + "}";
         jdbc.update("INSERT INTO task_facts(task_id,version,status,payload_json,idempotency_key,create_time,update_time) VALUES (?,?,?, ?,?,NOW(),NOW())",

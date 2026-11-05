@@ -1,0 +1,86 @@
+{
+  "sameBusinessWindowWithNewISORepresentation": {
+    "query": {
+      "source": "company",
+      "kind": "statistics",
+      "scopeLevel": "all",
+      "from": "2026-11-03T00:00:00Z",
+      "to": "2026-11-05T00:00:00Z",
+      "grain": "month"
+    },
+    "samples": [
+      {
+        "elapsedMs": 1,
+        "responseMs": 1,
+        "httpStatus": 200,
+        "status": "preparing"
+      },
+      {
+        "elapsedMs": 1010,
+        "responseMs": 8,
+        "httpStatus": 200,
+        "status": "fresh"
+      }
+    ],
+    "total": {
+      "value": 262.96,
+      "unit": "度",
+      "yuan": null,
+      "tariff": null
+    },
+    "coverage": {
+      "dataMeters": 43,
+      "partial": [],
+      "noData": [],
+      "truncated": false,
+      "meters": 43,
+      "latestSampleAt": "2026-11-05T08:00+08:00"
+    }
+  },
+  "additionalNewOverlappingWindow": {
+    "query": {
+      "source": "company",
+      "kind": "statistics",
+      "scopeLevel": "all",
+      "from": "2026-11-02T08:00:00.000+08:00",
+      "to": "2026-11-04T08:00:00.000+08:00",
+      "grain": "month"
+    },
+    "samples": [
+      {
+        "elapsedMs": 3,
+        "responseMs": 3,
+        "httpStatus": 200,
+        "status": "preparing"
+      },
+      {
+        "elapsedMs": 1005,
+        "responseMs": 2,
+        "httpStatus": 200,
+        "status": "fresh"
+      }
+    ],
+    "warmMs": 1,
+    "total": {
+      "value": 268.48,
+      "unit": "度",
+      "yuan": null,
+      "tariff": null
+    },
+    "coverage": {
+      "dataMeters": 43,
+      "partial": [],
+      "noData": [],
+      "truncated": false,
+      "meters": 43,
+      "latestSampleAt": "2026-11-04T08:00+08:00"
+    }
+  },
+  "daily": {
+    "ms": 4,
+    "days": 30,
+    "completeDays": 30,
+    "meters": 43
+  },
+  "httpIsEngineeringEvidenceNotMiniappAcceptance": true
+}

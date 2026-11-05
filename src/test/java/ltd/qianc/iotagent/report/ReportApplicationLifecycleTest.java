@@ -17,7 +17,7 @@ import ltd.qianc.iotagent.conversation.ReportGenerationPort;
 import ltd.qianc.iotagent.iot.AuthorizedDevice;
 import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
 import ltd.qianc.iotagent.iot.IotAdapter;
-import ltd.qianc.iotagent.iot.IotSource;
+import ltd.qianc.iotagent.iot.IotSourceEnum;
 import ltd.qianc.iotagent.iot.ObservationAdapter;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import org.junit.jupiter.api.Test;
@@ -42,16 +42,16 @@ class ReportApplicationLifecycleTest {
             context.refresh();
             var principal = new PrincipalInfo("Bearer fixture", "TENANT", "owner-1", "fixture");
             var identity = new RequestIdentity(principal.authorization(), principal.tenantCode(),
-                    IotSource.COMPANY, principal.ownerKey());
+                    IotSourceEnum.COMPANY, principal.ownerKey());
             var generated = context.getBean(ReportGenerationPort.class).generate(identity,
                     "conversation-1", "turn-1", "request-1", ReportEvidenceFixture.energy("meter-1", false));
             ReportService reports = context.getBean(ReportService.class);
             assertThatThrownBy(() -> reports.conversationFacts("another-conversation",
                     List.of(generated.reportId()), identity)).isInstanceOf(ReportNotFoundException.class);
             for (RequestIdentity foreign : List.of(
-                    new RequestIdentity(identity.authorization(), "OTHER", IotSource.COMPANY, identity.ownerKey()),
-                    new RequestIdentity(identity.authorization(), identity.tenantCode(), IotSource.COMPANY, "other-owner"),
-                    new RequestIdentity(identity.authorization(), identity.tenantCode(), IotSource.OFFICE, identity.ownerKey()))) {
+                    new RequestIdentity(identity.authorization(), "OTHER", IotSourceEnum.COMPANY, identity.ownerKey()),
+                    new RequestIdentity(identity.authorization(), identity.tenantCode(), IotSourceEnum.COMPANY, "other-owner"),
+                    new RequestIdentity(identity.authorization(), identity.tenantCode(), IotSourceEnum.OFFICE, identity.ownerKey()))) {
                 assertThatThrownBy(() -> reports.conversationFacts("conversation-1",
                         List.of(generated.reportId()), foreign)).isInstanceOf(ReportNotFoundException.class);
             }
@@ -97,7 +97,7 @@ class ReportApplicationLifecycleTest {
                 @Override public Mono<AuthorizedDeviceScope> loadAuthorizedDeviceScope(RequestIdentity identity) {
                     return Mono.just(new AuthorizedDeviceScope() {
                         @Override public RequestIdentity identity() { return identity; }
-                        @Override public IotSource source() { return IotSource.COMPANY; }
+                        @Override public IotSourceEnum source() { return IotSourceEnum.COMPANY; }
                         @Override public List<AuthorizedDevice> devices() {
                             return List.of(new AuthorizedDevice("meter-1", "energy", "Meter", "Building", false));
                         }

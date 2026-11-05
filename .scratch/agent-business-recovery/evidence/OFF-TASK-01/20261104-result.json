@@ -1,0 +1,44 @@
+{
+  "date": "2026-11-04",
+  "environment": {
+    "java": 3441,
+    "node": 3442,
+    "upstream": "loopback read-only proxy 3445",
+    "developerTools": 9461,
+    "sameAccount": true,
+    "companyPermissionChanged": false
+  },
+  "observed": {
+    "officeProposal": "7-light pending-confirmation card visible",
+    "confirmation": "not accepted: missing TASK_CREDENTIAL_KEY; local transaction rolled back",
+    "company": "not accepted: existing account denied by local allowlist"
+  },
+  "engineering": {
+    "isolatedJavaFullSuite": {
+      "tests": 444,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "intervalMySqlSmoke": {
+      "futureWindows": 60,
+      "startedWindowFound": true,
+      "matureWindowFound": true,
+      "executingTaskDueClaimAndGuard": true,
+      "terminalStatePersisted": true,
+      "customerDeviceWrites": 0,
+      "productionTaskWrites": 0
+    }
+  },
+  "acceptance": "Proposal surface only; creation/detail/calendar/notifications/execution remain for user testing on latest main fixed backend",
+  "screenshots": [
+    "20261104-03-scope-failure.png",
+    "20261104-04-seven-light-proposal.png",
+    "20261104-05-confirmation-not-accepted.png"
+  ],
+  "fixes": [
+    "Explicit authorized candidate handles are not implicitly restricted to focused office",
+    "Java-only stable task encryption key documented; isolated key configured only after confirming zero encrypted identities"
+  ],
+  "productionActionsPerformed": false
+}

@@ -8,7 +8,7 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 
-public final class JdbcTaskFactStore extends JdbcFactSupport implements TaskFactStore {
+public final class JdbcTaskFactStore extends AbstractJdbcFactSupport implements TaskFactStore {
     public JdbcTaskFactStore(JdbcTemplate jdbc, TransactionTemplate transactions, ObjectMapper mapper) { super(jdbc, transactions, mapper); }
     @Override public TaskFact save(TaskFact task) {
         try {

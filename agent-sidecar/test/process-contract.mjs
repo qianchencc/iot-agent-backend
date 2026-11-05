@@ -33,18 +33,16 @@ await new Promise((resolve, reject) => {
 const modelAddress = modelServer.address();
 if (!modelAddress || typeof modelAddress === "string") throw new Error("fake model address unavailable");
 const modelUrl = `http://127.0.0.1:${modelAddress.port}/v1`;
+const javaOrigin = new URL(sessionsBase).origin;
 
 const env = {
   PATH: process.env.PATH,
   SIDECAR_HOST: "127.0.0.1",
   SIDECAR_PORT: String(port),
   AGENT_BRIDGE_TOKEN: token,
-  JAVA_AGENT_TOOLS_URL: "http://127.0.0.1:9/internal/agent/tools",
+  JAVA_AGENT_TOOLS_URL: `${javaOrigin}/internal/agent/tools`,
   JAVA_AGENT_TOOLS_TOKEN: process.env.JAVA_SESSION_TEST_TOKEN || "test-java",
   JAVA_AGENT_SESSIONS_URL: sessionsUrl,
-  MODEL_BASE_URL: modelUrl,
-  MODEL_ID: "process-test-model",
-  MODEL_API_KEY: "process-test-key",
   SIDECAR_HEARTBEAT_MS: "1000",
 };
 
@@ -83,6 +81,7 @@ let childProcess = launch();
 try {
   const health = await waitForHealth();
   assert.equal(health.service, "agent-sidecar");
+  assert.equal(typeof health.observability?.enabled, "boolean", "startup must adopt one observability snapshot");
   const handoff = await post("/internal/admin/apply", { handoff: "restart" }, { "x-admin-supervisor-token": "process-supervisor" });
   assert.equal(handoff.status, 404);
   await stop(childProcess);

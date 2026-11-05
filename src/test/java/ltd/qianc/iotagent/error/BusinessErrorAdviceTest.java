@@ -10,10 +10,11 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.test.web.servlet.MockMvc;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@SpringBootTest
+@SpringBootTest(properties = "iot.identity.verify=false")
 @AutoConfigureMockMvc
 @Import(BusinessErrorAdviceTest.TestErrorController.class)
 class BusinessErrorAdviceTest {
@@ -46,6 +47,28 @@ class BusinessErrorAdviceTest {
                 .andExpect(jsonPath("$.message").value("Route GET:/test/errors/missing not found"))
                 .andExpect(jsonPath("$.error").value("Not Found"))
                 .andExpect(jsonPath("$.statusCode").value(404));
+    }
+
+    @Test
+    void malformedJsonObjectIsAClientErrorWithoutLeakingParserDetails() throws Exception {
+        mockMvc.perform(post("/api/agent/conversations")
+                        .header("Authorization", "Bearer request-validation")
+                        .header("Tenantcode", "TEST")
+                        .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                        .content("[]"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_REQUEST"))
+                .andExpect(jsonPath("$.recovery").doesNotExist());
+    }
+
+    @Test
+    void missingRequiredCalendarParameterIsAClientError() throws Exception {
+        mockMvc.perform(get("/api/agent/regions/region/calendar")
+                        .header("Authorization", "Bearer request-validation")
+                        .header("Tenantcode", "TEST")
+                        .param("from", "2026-11-05"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_REQUEST"));
     }
 
     @RestController

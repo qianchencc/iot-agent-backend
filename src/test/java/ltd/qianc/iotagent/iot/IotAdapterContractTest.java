@@ -40,7 +40,7 @@ class IotAdapterContractTest {
                 IotCallPolicy.passThrough());
 
         AuthorizedDeviceScope scope = adapter.loadAuthorizedDeviceScope(
-                        new RequestIdentity("Bearer office-token", "TENANT-1", IotSource.OFFICE))
+                        new RequestIdentity("Bearer office-token", "TENANT-1", IotSourceEnum.OFFICE))
                 .block(Duration.ofSeconds(1));
 
         assertThat(request.get().url().getPath()).isEqualTo("/office-scope");
@@ -48,7 +48,7 @@ class IotAdapterContractTest {
         assertThat(request.get().headers().getFirst("Tenantcode")).isEqualTo("TENANT-1");
         assertThat(request.get().headers().getFirst("source")).isNull();
         assertThat(scope).isNotNull();
-        assertThat(scope.source()).isEqualTo(IotSource.OFFICE);
+        assertThat(scope.source()).isEqualTo(IotSourceEnum.OFFICE);
         assertThat(scope.devices()).extracting(AuthorizedDevice::id).containsExactly("ac-1");
     }
 
@@ -64,7 +64,7 @@ class IotAdapterContractTest {
                 new IotGatewayRoutes("/office-scope", "/company-scope"),
                 Duration.ofSeconds(1),
                 IotCallPolicy.passThrough());
-        RequestIdentity identity = new RequestIdentity("Bearer office-token", "TENANT-1", IotSource.OFFICE);
+        RequestIdentity identity = new RequestIdentity("Bearer office-token", "TENANT-1", IotSourceEnum.OFFICE);
 
         adapter.loadAuthorizedDeviceScope(identity).block(Duration.ofSeconds(1));
         adapter.loadAuthorizedDeviceScope(identity).block(Duration.ofSeconds(1));
@@ -82,7 +82,7 @@ class IotAdapterContractTest {
                 IotCallPolicy.passThrough());
 
         StepVerifier.create(adapter.loadAuthorizedDeviceScope(
-                        new RequestIdentity("Bearer token", "TENANT-1", IotSource.COMPANY)))
+                        new RequestIdentity("Bearer token", "TENANT-1", IotSourceEnum.COMPANY)))
                 .expectErrorSatisfies(error -> {
                     assertThat(error).isInstanceOf(GatewayAuthorizationException.class);
                     assertThat(((GatewayAuthorizationException) error).upstreamStatus()).isEqualTo(403);
@@ -95,7 +95,7 @@ class IotAdapterContractTest {
         IotAdapter adapter = IotAdapterFactory.failClosed("物联上游未配置");
 
         StepVerifier.create(adapter.loadAuthorizedDeviceScope(
-                        new RequestIdentity("Bearer token", "TENANT-1", IotSource.COMPANY)))
+                        new RequestIdentity("Bearer token", "TENANT-1", IotSourceEnum.COMPANY)))
                 .expectErrorSatisfies(error -> {
                     assertThat(error).isInstanceOf(UpstreamUnavailableException.class);
                     assertThat(((UpstreamUnavailableException) error).httpStatus()).isEqualTo(503);
@@ -114,7 +114,7 @@ class IotAdapterContractTest {
                 IotCallPolicy.passThrough());
 
         StepVerifier.create(adapter.loadAuthorizedDeviceScope(
-                        new RequestIdentity("Bearer token", "TENANT-1", IotSource.OFFICE)))
+                        new RequestIdentity("Bearer token", "TENANT-1", IotSourceEnum.OFFICE)))
                 .expectError(UpstreamUnavailableException.class)
                 .verify(Duration.ofSeconds(1));
         assertThat(cancelled).isTrue();
@@ -130,7 +130,7 @@ class IotAdapterContractTest {
                 IotCallPolicy.passThrough());
 
         StepVerifier.create(adapter.loadAuthorizedDeviceScope(
-                        new RequestIdentity("Bearer token", "TENANT-1", IotSource.OFFICE)))
+                        new RequestIdentity("Bearer token", "TENANT-1", IotSourceEnum.OFFICE)))
                 .expectErrorSatisfies(error -> {
                     assertThat(error).isInstanceOf(GatewayAuthorizationException.class);
                     assertThat(((GatewayAuthorizationException) error).upstreamStatus()).isEqualTo(401);
@@ -160,7 +160,7 @@ class IotAdapterContractTest {
                 IotCallPolicy.passThrough());
 
         AuthorizedDeviceScope scope = adapter.loadAuthorizedDeviceScope(
-                        new RequestIdentity("Bearer office-token", "TENANT-1", IotSource.OFFICE))
+                        new RequestIdentity("Bearer office-token", "TENANT-1", IotSourceEnum.OFFICE))
                 .block(Duration.ofSeconds(1));
 
         AuthorizedDevice device = scope.device("ac-shared").orElseThrow();
@@ -193,7 +193,7 @@ class IotAdapterContractTest {
                 Duration.ofSeconds(1), IotCallPolicy.passThrough());
 
         AuthorizedDeviceScope scope = adapter.loadAuthorizedDeviceScope(
-                        new RequestIdentity("Bearer office-token", "TENANT-1", IotSource.OFFICE))
+                        new RequestIdentity("Bearer office-token", "TENANT-1", IotSourceEnum.OFFICE))
                 .block(Duration.ofSeconds(1));
 
         assertThat(scope.devices()).extracting(AuthorizedDevice::id).containsExactly("scoped-light");
@@ -212,8 +212,9 @@ class IotAdapterContractTest {
                 saved.put(record.candidateSetId(), record);
                 return record;
             }
-            @Override public java.util.Optional<DeviceCandidateRecord> find(String id) {
-                return java.util.Optional.ofNullable(saved.get(id));
+            @Override public java.util.Optional<DeviceCandidateRecord> find(String id, String conversationId) {
+                return java.util.Optional.ofNullable(saved.get(id))
+                        .filter(record -> conversationId.equals(record.conversationId()));
             }
         };
         ExchangeFunction fixture = candidate -> {
@@ -234,7 +235,7 @@ class IotAdapterContractTest {
                 IotGatewayRoutes.officeDirectory("/office-scope", null, "/membership", List.of(
                         new OfficeDeviceSource("my-office.lighting", "lighting", "/lighting", Map.of(), true))),
                 Duration.ofSeconds(1), IotCallPolicy.passThrough(), store);
-        RequestIdentity identity = new RequestIdentity("Bearer office-token", "TENANT-1", IotSource.OFFICE, "owner-1");
+        RequestIdentity identity = new RequestIdentity("Bearer office-token", "TENANT-1", IotSourceEnum.OFFICE, "owner-1");
 
         DeviceCandidateSet set = adapter.findDeviceCandidates(identity,
                         new DeviceCandidateQuery("lighting", List.of(), "A区", List.of(), List.of(), null, "office-a"),
@@ -270,6 +271,82 @@ class IotAdapterContractTest {
     }
 
     @Test
+    void regionBoundCandidateQueryBrowsesTheVerifiedRegionWithoutRequiringScopeText() {
+        IotAdapter adapter = officeRegionDirectoryAdapter(new AtomicInteger());
+        RequestIdentity identity = new RequestIdentity("Bearer office-token", "TENANT-1", IotSourceEnum.OFFICE, "owner-1");
+
+        DeviceCandidateSet set = adapter.findDeviceCandidates(identity,
+                        new DeviceCandidateQuery("lighting", List.of(), null, List.of(), List.of(), null, "office-a"))
+                .block(Duration.ofSeconds(1));
+
+        assertThat(set).isNotNull();
+        assertThat(set.devices()).extracting(AuthorizedDevice::id).containsExactly("light-a1", "light-a2");
+        assertThat(set.complete()).isTrue();
+        assertThat(set.totalMatches()).isEqualTo(2);
+        assertThat(set.allDevices()).extracting(AuthorizedDevice::id).containsExactly("light-a1", "light-a2");
+        assertThat(set.resolution().mode()).isEqualTo("browse");
+    }
+
+    @Test
+    void otherRegionTextInsideAFocusBoundQueryNeverReturnsForeignDevices() {
+        IotAdapter adapter = officeRegionDirectoryAdapter(new AtomicInteger());
+        RequestIdentity identity = new RequestIdentity("Bearer office-token", "TENANT-1", IotSourceEnum.OFFICE, "owner-1");
+
+        DeviceCandidateSet set = adapter.findDeviceCandidates(identity,
+                        new DeviceCandidateQuery("lighting", List.of(), "杨国英办公室", List.of(), List.of(), null, "office-a"))
+                .block(Duration.ofSeconds(1));
+
+        assertThat(set).isNotNull();
+        assertThat(set.devices()).isEmpty();
+        assertThat(set.totalMatches()).isZero();
+        assertThat(set.resolution().mode()).isEqualTo("unresolved");
+    }
+
+    @Test
+    void regionOutsideAuthorizedMembershipRejectsInsteadOfBrowsing() {
+        IotAdapter adapter = officeRegionDirectoryAdapter(new AtomicInteger());
+        RequestIdentity identity = new RequestIdentity("Bearer office-token", "TENANT-1", IotSourceEnum.OFFICE, "owner-1");
+
+        StepVerifier.create(adapter.findDeviceCandidates(identity,
+                        new DeviceCandidateQuery("lighting", List.of(), null, List.of(), List.of(), null, "office-x")))
+                .expectErrorSatisfies(error -> {
+                    assertThat(error).isInstanceOf(BusinessException.class);
+                    assertThat(((BusinessException) error).code()).isEqualTo("FOCUS_REGION_UNAVAILABLE");
+                })
+                .verify(Duration.ofSeconds(1));
+    }
+
+    @Test
+    void unboundEmptyCandidateQueryStillRejectsAsBare() {
+        IotAdapter adapter = officeRegionDirectoryAdapter(new AtomicInteger());
+        RequestIdentity identity = new RequestIdentity("Bearer office-token", "TENANT-1", IotSourceEnum.OFFICE, "owner-1");
+
+        StepVerifier.create(adapter.findDeviceCandidates(identity,
+                        new DeviceCandidateQuery("lighting", List.of(), null, List.of(), List.of(), null, null)))
+                .expectError(UpstreamUnavailableException.class)
+                .verify(Duration.ofSeconds(1));
+    }
+
+    @Test
+    void revokedRegionMembershipRejectsEvenWhenTheDeviceDirectoryIsWarm() {
+        AtomicInteger membershipState = new AtomicInteger();
+        IotAdapter adapter = officeRegionDirectoryAdapter(membershipState);
+        RequestIdentity identity = new RequestIdentity("Bearer office-token", "TENANT-1", IotSourceEnum.OFFICE, "owner-1");
+        DeviceCandidateQuery query = new DeviceCandidateQuery("lighting", List.of(), null,
+                List.of(), List.of(), null, "office-a");
+        assertThat(adapter.findDeviceCandidates(identity, query).block(Duration.ofSeconds(1)).devices())
+                .extracting(AuthorizedDevice::id).containsExactly("light-a1", "light-a2");
+
+        membershipState.set(-1);
+        StepVerifier.create(adapter.findDeviceCandidates(identity, query))
+                .expectErrorSatisfies(failure -> {
+                    assertThat(failure).isInstanceOf(BusinessException.class);
+                    assertThat(((BusinessException) failure).code()).isEqualTo("FOCUS_REGION_UNAVAILABLE");
+                })
+                .verify(Duration.ofSeconds(1));
+    }
+
+    @Test
     void genericCompanyScopeMeansAuthorizedWholeScopeAndNoLocation() {
         ExchangeFunction fixture = ignored -> Mono.just(json("""
                 {"code":200,"content":[
@@ -281,7 +358,7 @@ class IotAdapterContractTest {
                 WebClient.builder().exchangeFunction(fixture).build(),
                 new IotGatewayRoutes("/office-scope", "/company-scope"),
                 Duration.ofSeconds(1), IotCallPolicy.passThrough());
-        RequestIdentity identity = new RequestIdentity("Bearer fixture", "TENANT", IotSource.COMPANY);
+        RequestIdentity identity = new RequestIdentity("Bearer fixture", "TENANT", IotSourceEnum.COMPANY);
         DeviceCandidateSet company = adapter.findDeviceCandidates(identity,
                 new DeviceCandidateQuery("lighting", List.of(), "公司", List.of(), List.of(), null, null)).block();
         assertThat(company.devices()).extracting(AuthorizedDevice::id)
@@ -318,8 +395,9 @@ class IotAdapterContractTest {
                 saved.put(record.candidateSetId(), record);
                 return record;
             }
-            @Override public java.util.Optional<DeviceCandidateRecord> find(String id) {
-                return java.util.Optional.ofNullable(saved.get(id));
+            @Override public java.util.Optional<DeviceCandidateRecord> find(String id, String conversationId) {
+                return java.util.Optional.ofNullable(saved.get(id))
+                        .filter(record -> conversationId.equals(record.conversationId()));
             }
         };
         IotAdapter adapter = IotAdapterFactory.webClient(
@@ -334,16 +412,13 @@ class IotAdapterContractTest {
                         "/micro-api/api/office/app/device/ac/devicePage",
                         "/micro-api/api/iot-center/device/page"),
                 Duration.ofSeconds(1), IotCallPolicy.passThrough(), store);
-        RequestIdentity identity = new RequestIdentity("Bearer company-token", "TENANT-1", IotSource.COMPANY,
+        RequestIdentity identity = new RequestIdentity("Bearer company-token", "TENANT-1", IotSourceEnum.COMPANY,
                 "owner-1");
         AuthorizedDeviceScope catalog = adapter.loadAuthorizedDeviceScope(identity)
                 .block(Duration.ofSeconds(1));
         AuthorizedDevice meter1 = catalog.device("meter-1").orElseThrow();
         AuthorizedDevice meter2 = catalog.device("meter-2").orElseThrow();
-        DeviceCandidateRecord set = new DeviceCandidateRecord("set-meter", "conversation-meter",
-                "TENANT-1", "owner-1", IotSource.COMPANY, "snapshot",
-                new DeviceCandidateQuery("energy", List.of(), null, List.of(), List.of(), null, null),
-                List.of(meter1, meter2), true, 2, "2026-10-30T09:00:00Z", "exact");
+        DeviceCandidateRecord set = new DeviceCandidateRecord("set-meter", "conversation-meter", "TENANT-1", "owner-1", IotSourceEnum.COMPANY, "snapshot", new DeviceCandidateQuery("energy", List.of(), null, List.of(), List.of(), null, null), List.of(meter1, meter2), true, 2, "2026-10-30T09:00:00Z", "exact", null);
         store.save(set);
         synchronized (requests) { requests.clear(); }
 
@@ -389,13 +464,13 @@ class IotAdapterContractTest {
                         "/micro-api/api/office/app/device/ac/devicePage",
                         "/micro-api/api/iot-center/device/page"),
                 Duration.ofSeconds(1), IotCallPolicy.passThrough());
-        RequestIdentity identity = new RequestIdentity("Bearer company-token", "TENANT-1", IotSource.COMPANY,
+        RequestIdentity identity = new RequestIdentity("Bearer company-token", "TENANT-1", IotSourceEnum.COMPANY,
                 "owner-1");
 
         AuthorizedDeviceScope scope = adapter.loadAuthorizedEnergyScope(identity).block(Duration.ofSeconds(1));
 
         assertThat(scope.identity()).isEqualTo(identity);
-        assertThat(scope.source()).isEqualTo(IotSource.COMPANY);
+        assertThat(scope.source()).isEqualTo(IotSourceEnum.COMPANY);
         assertThat(scope.devices()).extracting(AuthorizedDevice::kind).containsOnly("energy");
         assertThat(scope.devices()).extracting(AuthorizedDevice::id).containsExactly("meter-1", "meter-2");
         assertThat(scope.device("meter-missing")).isEmpty();
@@ -403,7 +478,7 @@ class IotAdapterContractTest {
             assertThat(requests).containsExactly("/micro-api/api/energy/equipment/page");
         }
         assertThatThrownBy(() -> adapter.loadAuthorizedEnergyScope(
-                        new RequestIdentity("Bearer office-token", "TENANT-1", IotSource.OFFICE, "owner-1"))
+                        new RequestIdentity("Bearer office-token", "TENANT-1", IotSourceEnum.OFFICE, "owner-1"))
                 .block(Duration.ofSeconds(1)))
                 .isInstanceOf(BusinessException.class)
                 .satisfies(error -> assertThat(((BusinessException) error).code()).isEqualTo("IOT_SOURCE_UNAVAILABLE"));
@@ -461,7 +536,7 @@ class IotAdapterContractTest {
                 IotCallPolicy.passThrough());
 
         AuthorizedDeviceScope scope = adapter.loadAuthorizedDeviceScope(
-                        new RequestIdentity("Bearer company-token", "TENANT-1", IotSource.COMPANY))
+                        new RequestIdentity("Bearer company-token", "TENANT-1", IotSourceEnum.COMPANY))
                 .block(Duration.ofSeconds(2));
 
         assertThat(scope).isNotNull();
@@ -481,22 +556,22 @@ class IotAdapterContractTest {
         assertThat(requests.get()).anyMatch(value -> value.contains("/perception/device/page") && value.contains("type=FIRE"));
         validBinding.set(false);
         AuthorizedDeviceScope missingBinding = adapter.loadAuthorizedDeviceScope(
-                        new RequestIdentity("Bearer company-token", "TENANT-1", IotSource.COMPANY))
+                        new RequestIdentity("Bearer company-token", "TENANT-1", IotSourceEnum.COMPANY))
                 .block(Duration.ofSeconds(2));
         assertThat(missingBinding.device("hub-ac").orElseThrow().observationOnly()).isTrue();
         assertThat(missingBinding.device("hub-ac").orElseThrow().controlRef()).isNull();
         DeviceCandidateSet lighting = adapter.findDeviceCandidates(
-                        new RequestIdentity("Bearer company-token", "TENANT-1", IotSource.COMPANY),
+                        new RequestIdentity("Bearer company-token", "TENANT-1", IotSourceEnum.COMPANY),
                         new DeviceCandidateQuery("lighting", List.of(), "一层", List.of(), List.of(), null, null))
                 .block(Duration.ofSeconds(2));
         assertThat(lighting.devices()).extracting(AuthorizedDevice::id).containsExactly("light-1");
         DeviceCandidateSet companyEnergy = adapter.findDeviceCandidates(
-                        new RequestIdentity("Bearer company-token", "TENANT-1", IotSource.COMPANY),
+                        new RequestIdentity("Bearer company-token", "TENANT-1", IotSourceEnum.COMPANY),
                         new DeviceCandidateQuery("energy", List.of(), "公司", List.of(), List.of(), null, null))
                 .block(Duration.ofSeconds(2));
         assertThat(companyEnergy.devices()).extracting(AuthorizedDevice::id).containsExactly("energy-1");
         StepVerifier.create(adapter.findDeviceCandidates(
-                        new RequestIdentity("Bearer company-token", "TENANT-1", IotSource.COMPANY),
+                        new RequestIdentity("Bearer company-token", "TENANT-1", IotSourceEnum.COMPANY),
                         new DeviceCandidateQuery("energy", List.of(), null, List.of(), List.of(), null, null)))
                 .expectError(UpstreamUnavailableException.class).verify();
     }
@@ -529,7 +604,7 @@ class IotAdapterContractTest {
                 IotCallPolicy.passThrough());
 
         StepVerifier.create(adapter.loadAuthorizedDeviceScope(
-                        new RequestIdentity("Bearer company-token", "TENANT-1", IotSource.COMPANY)))
+                        new RequestIdentity("Bearer company-token", "TENANT-1", IotSourceEnum.COMPANY)))
                 .expectError(UpstreamUnavailableException.class)
                 .verify(Duration.ofSeconds(2));
     }
@@ -563,7 +638,7 @@ class IotAdapterContractTest {
         AuthorizedDevice meter = new AuthorizedDevice("meter-1", "energy", "总电表", "配电房", true);
 
         DeviceStateReadResult result = adapter.readObservationStates(
-                new RequestIdentity("Bearer company-token", "TENANT-1", IotSource.COMPANY),
+                new RequestIdentity("Bearer company-token", "TENANT-1", IotSourceEnum.COMPANY),
                 java.util.List.of(env, meter)).block(Duration.ofSeconds(2));
 
         assertThat(result.states().get("env-1").toString()).contains("25").contains("device");
@@ -595,7 +670,7 @@ class IotAdapterContractTest {
                 null, "env-1", "hub-env-1", null, java.util.List.of(), java.util.List.of(), java.util.Map.of("code", "YQ-ENV-1"));
 
         DeviceStateReadResult result = adapter.readObservationStates(
-                new RequestIdentity("Bearer company-token", "TENANT-1", IotSource.COMPANY),
+                new RequestIdentity("Bearer company-token", "TENANT-1", IotSourceEnum.COMPANY),
                 java.util.List.of(env)).block(Duration.ofSeconds(2));
 
         assertThat(result.states().get("env-1").toString()).contains("25.6").contains("shadow");
@@ -628,7 +703,7 @@ class IotAdapterContractTest {
                         "/micro-api/api/office/app/device/ac/devicePage", "/micro-api/api/iot-center/device/page"),
                 Duration.ofSeconds(1), IotCallPolicy.passThrough());
         DeviceStateReadResult result = adapter.readDeviceStates(
-                new RequestIdentity("Bearer company-user", "TENANT-1", IotSource.COMPANY),
+                new RequestIdentity("Bearer company-user", "TENANT-1", IotSourceEnum.COMPANY),
                 List.of("light-a", "light-b")).block(Duration.ofSeconds(2));
         assertThat(result.states()).containsOnlyKeys("light-a", "light-b");
         assertThat(result.states().get("light-a")).isInstanceOf(Boolean.class)
@@ -674,7 +749,7 @@ class IotAdapterContractTest {
                         "/micro-api/api/office/app/device", "/micro-api/api/office/app/device/ac/myAreaList",
                         "/micro-api/api/office/app/device/ac/devicePage", "/micro-api/api/iot-center/device/page"),
                 Duration.ofSeconds(1), IotCallPolicy.passThrough());
-        RequestIdentity identity = new RequestIdentity("Bearer fixture", "TENANT", IotSource.COMPANY);
+        RequestIdentity identity = new RequestIdentity("Bearer fixture", "TENANT", IotSourceEnum.COMPANY);
         for (int status : List.of(200, 503)) {
             detailStatus.set(status);
             DeviceStateReadResult result = adapter.readDeviceStates(identity, List.of("light-a", "hub-ac"))
@@ -710,7 +785,7 @@ class IotAdapterContractTest {
                 Duration.ofSeconds(1), IotCallPolicy.passThrough());
 
         DeviceStateReadResult result = adapter.readDeviceStates(
-                new RequestIdentity("Bearer company-user", "TENANT-1", IotSource.COMPANY), List.of("light-1"))
+                new RequestIdentity("Bearer company-user", "TENANT-1", IotSourceEnum.COMPANY), List.of("light-1"))
                 .block(Duration.ofSeconds(2));
 
         assertThat(result.states()).containsEntry("light-1", true);
@@ -739,7 +814,7 @@ class IotAdapterContractTest {
                 Duration.ofSeconds(1), IotCallPolicy.passThrough());
 
         DeviceStateReadResult result = adapter.readDeviceStates(
-                new RequestIdentity("Bearer company-user", "TENANT-1", IotSource.COMPANY), List.of("camera-1"))
+                new RequestIdentity("Bearer company-user", "TENANT-1", IotSourceEnum.COMPANY), List.of("camera-1"))
                 .block(Duration.ofSeconds(2));
 
         assertThat(result.states()).containsEntry("camera-1", true);
@@ -747,6 +822,34 @@ class IotAdapterContractTest {
                 "type", "video",
                 "devices", List.<Map<String, Object>>of(Map.of(
                         "deviceId", "camera-1", "name", "摄像头", "location", "摄像头", "online", true))));
+    }
+
+    private static IotAdapter officeRegionDirectoryAdapter(AtomicInteger membershipState) {
+        ExchangeFunction fixture = candidate -> {
+            var url = candidate.url();
+            if (url.getPath().equals("/membership")) {
+                if (membershipState.get() < 0) {
+                    return Mono.just(json("{\"code\":200,\"content\":["
+                            + "{\"elementId\":\"office-b\",\"elementName\":\"杨国英办公室\"}]}"));
+                }
+                return Mono.just(json("{\"code\":200,\"content\":["
+                        + "{\"elementId\":\"office-a\",\"elementName\":\"26楼运营办公区\"},"
+                        + "{\"elementId\":\"office-b\",\"elementName\":\"杨国英办公室\"}]}"));
+            }
+            if (url.getPath().equals("/lighting")) {
+                String devices = url.getQuery().contains("elementId=office-a")
+                        ? "{\"id\":\"light-a1\",\"name\":\"照明开关-前台\",\"installAddress\":\"26楼运营办公区 前台\"},"
+                                + "{\"id\":\"light-a2\",\"name\":\"照明开关-后区\",\"installAddress\":\"26楼运营办公区 后区\"}"
+                        : "{\"id\":\"light-b1\",\"name\":\"照明开关\",\"installAddress\":\"杨国英办公室\"}";
+                return Mono.just(json("{\"code\":200,\"content\":[" + devices + "]}"));
+            }
+            return Mono.just(json("{\"code\":204,\"content\":null}"));
+        };
+        return IotAdapterFactory.webClient(
+                WebClient.builder().exchangeFunction(fixture).build(),
+                IotGatewayRoutes.officeDirectory("/office-scope", null, "/membership", List.of(
+                        new OfficeDeviceSource("my-office.lighting", "lighting", "/lighting", Map.of(), true))),
+                Duration.ofSeconds(1), IotCallPolicy.passThrough());
     }
     private static ClientResponse json(String body) {
         return ClientResponse.create(HttpStatus.OK)

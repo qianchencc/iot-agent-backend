@@ -65,7 +65,7 @@ public class SecurityConfiguration {
     @Bean
     BridgeAuthenticationFilter bridgeAuthenticationFilter(
             ObjectMapper objectMapper,
-            @Value("${agent.bridge-token:}") String expectedToken) {
+            @Value("${agent.bridge.token:}") String expectedToken) {
         return new BridgeAuthenticationFilter(objectMapper, expectedToken);
     }
 

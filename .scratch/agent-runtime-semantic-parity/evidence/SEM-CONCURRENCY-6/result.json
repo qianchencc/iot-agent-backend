@@ -1,0 +1,130 @@
+{
+  "date": "2026-11-04",
+  "sourceFixedPoint": "cff6708",
+  "runtimeBaseline": "var/task-proposal-transport-20261104-095357/runtime-source",
+  "originalRuntimeBehavior": {
+    "deviceDispatch": "execute-devices.ts:134-166 hub groups, original 3 independent workers; migrated bound 6",
+    "companyStates": "adapter.ts:318-329 mixed coarse-area and AC queue, original 3; migrated 6",
+    "scanner": "tasks/scanner.ts:325-345 single flight, due phases 4; migrated 6 with durable predecessor constraint",
+    "retainedSequential": [
+      "same physical hub commands",
+      "AC fields within one action",
+      "dependent pagination within a source",
+      "Pi model tools",
+      "Office coarse state directory rereads"
+    ],
+    "additionalBoundedImprovement": "Independent environment devices plus the energy batch share six observation lanes; original environment reads were serial"
+  },
+  "verification": {
+    "fullPackageCommand": "mvn -q package",
+    "fullPackage": {
+      "tests": 393,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "database": "isolated local MySQL schema iot_agent_concurrency_20261104_103323",
+    "redis": "existing local Redis, random fixture keys; no namespace flush",
+    "realHttpSmokes": {
+      "ReadConcurrencySmoke": {
+        "surface": "real IotAdapter WebClient HTTP to isolated loopback server",
+        "realCustomerWrites": 0,
+        "all12StatesVerified": true,
+        "peakInFlight": 6,
+        "stateRequests": 12
+      },
+      "ConcurrencySmoke": {
+        "dispatchRequests": 8,
+        "independentHubGroups": 7,
+        "realCustomerWrites": 0,
+        "stableReceiptOrder": true,
+        "peakInFlight": 6,
+        "sameHubOverlap": 0,
+        "durationMs": 920,
+        "surface": "real WebClient HTTP to isolated loopback server"
+      }
+    },
+    "originalThreeLaneRegression": "companyStateReadsShareOneBoundedQueueOfExactlySixConcurrentAcReads failed before migration and passed after",
+    "partialAuthorizationRegression": "failed before safety correction: GatewayAuthorizationException would allow draft rollback despite accepted siblings; passed after preserving dispatchStarted",
+    "additionalSafety": [
+      "stop new claims and drain in-flight writes",
+      "accepted siblings plus authorization failure cannot roll back a draft",
+      "interrupted scanner does not start another wave",
+      "terminal writes outside handled interruption scope",
+      "same-task due predecessor blocks later phases"
+    ],
+    "fixtureCorrections": [
+      "gated durable-invalidation callback before asserting rejection publication; no auth production change",
+      "future JDBC due fixtures prevent a live test scheduler from stealing the rows"
+    ],
+    "obsoleteForwardingTestRemoved": "TaskScannerReportProducerTest"
+  },
+  "deployment": {
+    "javaPort": 3381,
+    "nodePort": 3382,
+    "tmuxSocket": "iot-agent-backend",
+    "session": "fixed-backend",
+    "runtimeSource": "var/task-proposal-transport-20261104-095357/concurrency-runtime-source",
+    "artifactSha256": "01026ad4702f724fb226989cbff8e05708a1aed840cb2338aa7b368520dd7b72",
+    "nodeUnchanged": true,
+    "deploymentEnvironmentUnchanged": true,
+    "unrelatedAdminChangesExcluded": true
+  },
+  "sourceFiles": {
+    "src/main/java/ltd/qianc/iotagent/iot/internal/WebClientIotAdapter.java": "b06927965438254e2bb3c94f72ebbe5dc5c117a5ac49e4966600e4c0f295ff9b",
+    "src/main/java/ltd/qianc/iotagent/iot/internal/SafetyLedgerComposer.java": "a058dd34ab185b38934c38ce805b07610a497d1aa7bbcde934e437ca7c42cc4d",
+    "src/test/java/ltd/qianc/iotagent/iot/IotAdapterConcurrencyContractTest.java": "5cfff4058d74ba84c3d25e1aed7e8d813d4ccd1f95f26ba5aeeb8c534fccd32c",
+    "src/test/java/ltd/qianc/iotagent/iot/SafetyLedgerObservationContractTest.java": "2987c36c754b3ceb69e0835692c7dcd5ddc841a9f929b4425271bffaa0a43b76",
+    "src/main/java/ltd/qianc/iotagent/agent/internal/AgentBusinessToolDispatcher.java": "62698da379358d1a9e5ed80704045c054790a85187acb4062db5faecb5084d8f",
+    "src/test/java/ltd/qianc/iotagent/agent/AgentToolBridgeContractTest.java": "cbb12ae55bf28b18aa644341bc20a3429bfee331c7723e60afe88a2856402271",
+    "src/main/java/ltd/qianc/iotagent/action/internal/WebClientActionCommandGateway.java": "d0964c4f7f813d5f48e8944cf8c4148f23c79a571556020fb23f52bc060ee03a",
+    "src/main/java/ltd/qianc/iotagent/task/TaskScanner.java": "39d956d1637e0410d8e90bd2c90040d8851aef3e689dd49f88af01195b77ec8f",
+    "src/main/java/ltd/qianc/iotagent/task/internal/RealTaskExecutionGateway.java": "11f41e52680078bfc4ae29754060f037d98505b77a124eac7670bf904d8ae8dc",
+    "src/main/java/ltd/qianc/iotagent/storage/internal/JdbcTaskPhaseStore.java": "96d1839f75e3a95b81cce680c1228a5680a5b60e693415073b9b334f8f150795",
+    "src/test/java/ltd/qianc/iotagent/action/ActionDispatchConcurrencyContractTest.java": "53025cc00b2ac20faccc5e56416422f2eda2bd407a7db017ab83eb14fb249bdc",
+    "src/test/java/ltd/qianc/iotagent/task/TaskScannerConcurrencyContractTest.java": "caf16f3b1de957503360a8128f3d666ec8d3275eb09c265d635a017f5d2ba856",
+    "src/test/java/ltd/qianc/iotagent/task/RealTaskExecutionGatewayBehaviorTest.java": "1c33ebea4f28f6289bd4e22bb8b55c141a0077ef7a9d93f902fa209db4840ca2",
+    "src/test/java/ltd/qianc/iotagent/storage/TaskPlanStoreIntegrationTest.java": "8341da4c882830774deb7a4a12da27e036816e0de9190d80c42eaa3221cfead7",
+    "src/test/java/ltd/qianc/iotagent/auth/AccountPrincipalVerifierTest.java": "9c4232974a8224e2c4671c9371fa37ad400611f0ce68fe85b051f6ed1fd05edf"
+  },
+  "frontend": {
+    "sameAccount": true,
+    "sameConversation": true,
+    "request": "2分钟后把这些灯关掉",
+    "toolCalls": 1,
+    "toolFailures": 0,
+    "finalEvent": "run.awaiting_confirmation",
+    "actionCount": 5,
+    "proposalStatus": "PENDING_CONFIRMATION",
+    "visibleAt": "2026-11-04 10:49",
+    "visibleDurationSeconds": 38,
+    "confirmedTasksBefore": 0,
+    "confirmedTasksAfter": 0,
+    "executingPhasesAfter": 0,
+    "confirmationClicked": false,
+    "customerDeviceWrites": 0,
+    "notificationsSent": 0,
+    "dashboard": {
+      "devices": 334,
+      "lighting": 156,
+      "ac": 49,
+      "energyMeters": 43,
+      "environmentSensors": 1,
+      "safety": 3,
+      "access": 47,
+      "video": 35
+    },
+    "screenshots": [
+      "01-final-task-proposal.png",
+      "02-final-dashboard.png"
+    ],
+    "acceptanceScope": "real five-light task proposal and read-only dashboard; physical dispatch and scheduled execution NOT accepted"
+  },
+  "nextOptimizationCandidates": [
+    "coalesce equivalent catalog/authorization reads without weakening fresh pre-dispatch checks",
+    "bound independent Office coarse-state rereads",
+    "global per-tenant upstream budget across nested task/device queues",
+    "cross-request physical-hub serialization requires an explicit conflict policy"
+  ],
+  "notGlobalConcurrencyLimit": true
+}

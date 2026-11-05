@@ -6,6 +6,7 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -14,15 +15,16 @@ import ltd.qianc.iotagent.error.BusinessException;
 import ltd.qianc.iotagent.auth.PrincipalInfo;
 import ltd.qianc.iotagent.auth.PrincipalContext;
 import ltd.qianc.iotagent.iot.IotAdapter;
-import ltd.qianc.iotagent.iot.IotSource;
+import ltd.qianc.iotagent.iot.IotSourceEnum;
 import ltd.qianc.iotagent.iot.ObservationAdapter;
-import ltd.qianc.iotagent.iot.ObservationOperation;
+import ltd.qianc.iotagent.iot.ObservationOperationEnum;
 import ltd.qianc.iotagent.iot.ObservationRequest;
 import ltd.qianc.iotagent.iot.ObservationResponse;
-import ltd.qianc.iotagent.iot.ObservationStatus;
+import ltd.qianc.iotagent.iot.ObservationStatusEnum;
 import ltd.qianc.iotagent.iot.ObservationUnavailableException;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.readmodel.ReadSnapshots;
+import ltd.qianc.iotagent.region.RegionAttentionReader;
 import ltd.qianc.iotagent.iot.VideoPlaybackWindow;
 import ltd.qianc.iotagent.iot.VideoStream;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -44,18 +46,20 @@ import org.springframework.web.bind.annotation.RestController;
 public final class ObservationController {
     private static final Duration ADAPTER_TIMEOUT = Duration.ofSeconds(30);
     private static final Duration SNAPSHOT_REBUILD_TIMEOUT = Duration.ofSeconds(150);
+    /** Snapshot realm of the daily energy strip; unchanged so held bodies stay readable. */
+    private static final String DAILY_REALM = "COMPANY_ENERGY_DAILY:v3";
     private final ObservationAdapter adapter;
     private final IotAdapter iotAdapter;
     private final ReadSnapshots snapshots;
-    private final CompanyEnergyHistoryPreparation energyHistoryPreparation;
+    private final RegionAttentionReader regionAttention;
 
     @Autowired
-    public ObservationController(ObservationAdapter adapter, IotAdapter iotAdapter, ReadSnapshots snapshots) {
+    public ObservationController(ObservationAdapter adapter, IotAdapter iotAdapter, ReadSnapshots snapshots,
+                                 RegionAttentionReader regionAttention) {
         this.adapter = adapter;
         this.iotAdapter = iotAdapter;
         this.snapshots = snapshots;
-        this.energyHistoryPreparation = new CompanyEnergyHistoryPreparation(
-                adapter, snapshots, java.time.Clock.systemUTC(), SNAPSHOT_REBUILD_TIMEOUT);
+        this.regionAttention = regionAttention;
     }
 
     @GetMapping("/dashboard")
@@ -66,7 +70,7 @@ public final class ObservationController {
         if (section != null && !List.of("summary", "energy", "environment", "alerts", "automation").contains(section)) {
             return error(400, "INVALID_DASHBOARD_SECTION", "概览分区无效");
         }
-        return read(request, ObservationOperation.DASHBOARD, Map.of());
+        return read(request, ObservationOperationEnum.DASHBOARD, Map.of());
     }
 
     @GetMapping("/environment-history")
@@ -75,7 +79,7 @@ public final class ObservationController {
         if (source != null) return source;
         ResponseEntity<?> duplicate = rejectDuplicates(request, "INVALID_HISTORY_WINDOW", "查询参数不可重复", "from", "to", "page");
         if (duplicate != null) return duplicate;
-        return read(request, ObservationOperation.ENVIRONMENT_HISTORY, Map.of());
+        return read(request, ObservationOperationEnum.ENVIRONMENT_HISTORY, Map.of());
     }
 
     @GetMapping("/safety-events")
@@ -90,7 +94,27 @@ public final class ObservationController {
                 || !validSafetyWindow(request.getParameter("from"), request.getParameter("to"))) {
             return error(400, "INVALID_SAFETY_QUERY", "台账类别、分页数量或查询时间范围无效");
         }
-        return read(request, ObservationOperation.SAFETY_EVENTS, Map.of());
+        return read(request, ObservationOperationEnum.SAFETY_EVENTS, Map.of());
+    }
+
+    @GetMapping("/safety-events/latest")
+    public ResponseEntity<?> latestSafetyEvent(HttpServletRequest request) {
+        ResponseEntity<?> source = requireCompanySource(request, "SAFETY_SOURCE_UNAVAILABLE", "最新告警仅支持公司来源");
+        if (source != null) return source;
+        ResponseEntity<?> duplicate = rejectDuplicates(request, "INVALID_SAFETY_QUERY", "查询参数不可重复", "type", "deviceId", "to");
+        if (duplicate != null) return duplicate;
+        String type = request.getParameter("type");
+        String to = request.getParameter("to");
+        String deviceId = request.getParameter("deviceId");
+        if (type == null || !List.of("gas", "smoke", "water").contains(type)
+                || to == null || !zonedDateTime(to)
+                || deviceId != null && (deviceId.isBlank() || deviceId.length() > 300)) {
+            return error(400, "INVALID_SAFETY_QUERY", "须指定告警类型、查询时刻及有效设备标识");
+        }
+        Map<String, String> extras = new LinkedHashMap<>();
+        extras.put("selection", "latest");
+        if (deviceId != null) extras.put("deviceId", deviceId);
+        return read(request, ObservationOperationEnum.SAFETY_EVENTS, extras);
     }
 
     @GetMapping("/safety-events/{id}")
@@ -103,7 +127,7 @@ public final class ObservationController {
                 || !List.of("gas", "smoke", "flooding").contains(request.getParameter("ledger"))) {
             return error(400, "INVALID_REFERENCE", "安全台账记录身份无效");
         }
-        return read(request, ObservationOperation.SAFETY_EVENT, Map.of("id", id));
+        return read(request, ObservationOperationEnum.SAFETY_EVENT, Map.of("id", id));
     }
 
     @GetMapping("/safety-events/{id}/cameras")
@@ -116,7 +140,7 @@ public final class ObservationController {
                 || !List.of("gas", "smoke", "flooding").contains(request.getParameter("ledger"))) {
             return error(400, "INVALID_REFERENCE", "安全台账记录身份无效");
         }
-        return read(request, ObservationOperation.SAFETY_EVENT_CAMERAS, Map.of("id", id));
+        return read(request, ObservationOperationEnum.SAFETY_EVENT_CAMERAS, Map.of("id", id));
     }
 
     @GetMapping("/regions")
@@ -127,58 +151,79 @@ public final class ObservationController {
         if (duplicate != null) return duplicate;
         String section = request.getParameter("section");
         if (section != null && !section.equals("directory")) return error(400, "INVALID_REGION_SECTION", "区域分区无效");
-        return read(request, ObservationOperation.REGION_LIST, Map.of());
+        ResponseEntity<?> directory = read(request, ObservationOperationEnum.REGION_LIST, Map.of("section", "directory"));
+        if (section != null || !(directory.getBody() instanceof Map<?, ?> held)
+                || !(held.get("regions") instanceof List<?> regions) || regions.isEmpty()) return directory;
+        Set<String> unread;
+        try {
+            unread = regionAttention.unreadRegions(PrincipalContext.getPrincipalInfo());
+        } catch (BusinessException failure) {
+            throw failure;
+        } catch (RuntimeException failure) {
+            throw new ObservationUnavailableException("区域异常结果读取失败");
+        }
+        List<Map<String, Object>> rows = new ArrayList<>(regions.size());
+        for (Object value : regions) {
+            if (!(value instanceof Map<?, ?> region) || !(region.get("id") instanceof String id)) {
+                throw new ObservationUnavailableException("区域目录响应无效");
+            }
+            rows.add(Map.of("id", id, "name", region.get("name"), "attention", unread.contains(id)));
+        }
+        Map<String, Object> body = new LinkedHashMap<>();
+        held.forEach((key, value) -> body.put((String) key, value));
+        body.put("regions", rows);
+        return ResponseEntity.ok().header(HttpHeaders.CACHE_CONTROL, "no-store, private").body(body);
     }
 
     @PostMapping("/regions/{regionId}/seen")
     public ResponseEntity<?> regionSeen(HttpServletRequest request, @PathVariable String regionId) {
         ResponseEntity<?> source = requireOfficeOrDefault(request);
         if (source != null) return source;
-        return read(request, ObservationOperation.REGION_SEEN, Map.of("regionId", regionId));
+        return read(request, ObservationOperationEnum.REGION_SEEN, Map.of("regionId", regionId));
     }
 
     @GetMapping("/regions/{regionId}/devices")
     public ResponseEntity<?> regionDevices(HttpServletRequest request, @PathVariable String regionId) {
         ResponseEntity<?> source = requireOfficeOrDefault(request);
         if (source != null) return source;
-        return read(request, ObservationOperation.REGION_DEVICES, Map.of("regionId", regionId));
+        return read(request, ObservationOperationEnum.REGION_DEVICES, Map.of("regionId", regionId));
     }
 
     @GetMapping("/regions/{regionId}/device-states")
     public ResponseEntity<?> regionStates(HttpServletRequest request, @PathVariable String regionId) {
         ResponseEntity<?> source = requireOfficeOrDefault(request);
         if (source != null) return source;
-        return read(request, ObservationOperation.REGION_STATES, Map.of("regionId", regionId));
+        return read(request, ObservationOperationEnum.REGION_STATES, Map.of("regionId", regionId));
     }
 
     @GetMapping("/energy-history")
     public ResponseEntity<?> energyHistory(HttpServletRequest request) {
-        return companyEnergyRead(request, ObservationOperation.ENERGY_HISTORY);
+        return companyEnergyRead(request, ObservationOperationEnum.ENERGY_HISTORY);
     }
 
     @GetMapping("/energy-comparison")
     public ResponseEntity<?> energyComparison(HttpServletRequest request) {
-        return companyEnergyRead(request, ObservationOperation.ENERGY_COMPARISON);
+        return companyEnergyRead(request, ObservationOperationEnum.ENERGY_COMPARISON);
     }
 
     @GetMapping("/energy-report")
     public ResponseEntity<?> energyReport(HttpServletRequest request) {
-        return companyEnergyRead(request, ObservationOperation.ENERGY_REPORT);
+        return companyEnergyRead(request, ObservationOperationEnum.ENERGY_REPORT);
     }
 
     @GetMapping("/company-energy-daily")
     public ResponseEntity<?> companyEnergyDaily(HttpServletRequest request) {
-        return companyEnergyRead(request, ObservationOperation.COMPANY_ENERGY_DAILY);
+        return companyEnergyRead(request, ObservationOperationEnum.COMPANY_ENERGY_DAILY);
     }
 
     @GetMapping("/company-energy-report")
     public ResponseEntity<?> companyEnergyReport(HttpServletRequest request) {
-        return companyEnergyRead(request, ObservationOperation.COMPANY_ENERGY_REPORT);
+        return companyEnergyRead(request, ObservationOperationEnum.COMPANY_ENERGY_REPORT);
     }
 
     @GetMapping("/company-meter-report")
     public ResponseEntity<?> companyMeterReport(HttpServletRequest request) {
-        return companyEnergyRead(request, ObservationOperation.COMPANY_METER_REPORT);
+        return companyEnergyRead(request, ObservationOperationEnum.COMPANY_METER_REPORT);
     }
 
     @GetMapping("/devices/{id}/video-stream")
@@ -207,7 +252,7 @@ public final class ObservationController {
         }
         VideoPlaybackWindow playback = mode.equals("playback")
                 ? normalizedPlaybackWindow(request.getParameter("beginTime"), request.getParameter("endTime")) : null;
-        IotSource parsedSource = IotSource.parse(source);
+        IotSourceEnum parsedSource = IotSourceEnum.parse(source);
         RequestIdentity identity = identity(request, parsedSource);
         try {
             VideoStream stream = playback != null
@@ -239,10 +284,10 @@ public final class ObservationController {
     }
 
 
-    private ResponseEntity<?> companyEnergyRead(HttpServletRequest request, ObservationOperation operation) {
+    private ResponseEntity<?> companyEnergyRead(HttpServletRequest request, ObservationOperationEnum operation) {
         ResponseEntity<?> source = requireCompanySource(request, "ENERGY_SOURCE_UNAVAILABLE", "计量观察仅支持公司来源");
         if (source != null) return source;
-        String duplicateCode = operation == ObservationOperation.ENERGY_HISTORY || operation == ObservationOperation.ENERGY_COMPARISON
+        String duplicateCode = operation == ObservationOperationEnum.ENERGY_HISTORY || operation == ObservationOperationEnum.ENERGY_COMPARISON
                 ? "INVALID_HISTORY_WINDOW" : "INVALID_ENERGY_WINDOW";
         ResponseEntity<?> duplicate = rejectDuplicates(request, duplicateCode, "查询参数不可重复",
                 request.getParameterMap().keySet().toArray(String[]::new));
@@ -250,36 +295,35 @@ public final class ObservationController {
         return read(request, operation, Map.of());
     }
 
-    private ResponseEntity<?> read(HttpServletRequest request, ObservationOperation operation, Map<String, String> extras) {
+    private ResponseEntity<?> read(HttpServletRequest request, ObservationOperationEnum operation, Map<String, String> extras) {
         RequestIdentity identity = identity(request, sourceFor(request));
         Map<String, String> query = parameters(request, operation, extras);
         ObservationRequest captured = new ObservationRequest(identity, operation, query);
-        if (operation != ObservationOperation.REGION_SEEN && operation != ObservationOperation.VIDEO_STREAM
-                && operation != ObservationOperation.REPORT && operation != ObservationOperation.REPORT_DOWNLOAD) {
+        if (operation != ObservationOperationEnum.REGION_SEEN && operation != ObservationOperationEnum.VIDEO_STREAM
+                && operation != ObservationOperationEnum.REPORT && operation != ObservationOperationEnum.REPORT_DOWNLOAD) {
             ReadSnapshots.Identity scope = new ReadSnapshots.Identity(identity.tenantCode(), identity.authorization(),
                     identity.source().name(), identity.ownerKey());
-            boolean directory = operation == ObservationOperation.REGION_LIST
+            boolean directory = operation == ObservationOperationEnum.REGION_LIST
                     && "directory".equals(query.get("section"));
-            String realm = operation == ObservationOperation.REGION_LIST
-                    ? directory ? "REGION_DIRECTORY" : "REGION_ATTENTION"
-                    : operation == ObservationOperation.COMPANY_ENERGY_DAILY
-                            ? CompanyEnergyHistoryPreparation.DAILY_REALM : operation.name();
-            ReadSnapshots.Policy policy = directory ? ReadSnapshots.Policy.HISTORICAL
-                    : ReadSnapshots.Policy.forQuery(query, java.time.Clock.systemUTC());
+            String realm = operation == ObservationOperationEnum.REGION_LIST
+                    ? "REGION_DIRECTORY"
+                    : operation == ObservationOperationEnum.COMPANY_ENERGY_DAILY
+                            ? DAILY_REALM : operation.name();
+            ReadSnapshots.PolicyEnum policy = directory ? ReadSnapshots.PolicyEnum.HISTORICAL
+                    : ReadSnapshots.PolicyEnum.forQuery(query, java.time.Clock.systemUTC());
             Map<String, Object> body = snapshots.read(scope, realm, query,
                     policy, () -> snapshotBody(captured));
-            if (operation == ObservationOperation.COMPANY_ENERGY_DAILY) energyHistoryPreparation.observe(identity);
             return ResponseEntity.ok(body);
         }
         ObservationResponse result = readAdapter(captured);
-        if (result.status() == ObservationStatus.UNAVAILABLE) throw new ObservationUnavailableException("只读观察读取失败");
+        if (result.status() == ObservationStatusEnum.UNAVAILABLE) throw new ObservationUnavailableException("只读观察读取失败");
         Map<String, Object> body = new LinkedHashMap<>(result.payload());
-        if (result.status() != ObservationStatus.AVAILABLE && !body.containsKey("status")) {
+        if (result.status() != ObservationStatusEnum.AVAILABLE && !body.containsKey("status")) {
             body.put("status", result.status().name().toLowerCase(java.util.Locale.ROOT));
         }
         if (!result.failures().isEmpty()) body.put("failures", result.failures());
         if (!result.coverageComplete()) body.put("coverageComplete", false);
-        if (operation == ObservationOperation.VIDEO_STREAM) {
+        if (operation == ObservationOperationEnum.VIDEO_STREAM) {
             return ResponseEntity.ok().header(HttpHeaders.CACHE_CONTROL, "no-store, private").body(body);
         }
         return ResponseEntity.ok(body);
@@ -288,19 +332,19 @@ public final class ObservationController {
     private Map<String, Object> snapshotBody(ObservationRequest request) {
         ObservationResponse result = readAdapter(request, SNAPSHOT_REBUILD_TIMEOUT);
         Object errors = result.payload().get("errors");
-        boolean page = (request.operation() == ObservationOperation.ENVIRONMENT_HISTORY
-                || request.operation() == ObservationOperation.ENERGY_HISTORY)
-                && result.status() == ObservationStatus.PARTIAL && result.payload().get("nextPage") instanceof Number
+        boolean page = (request.operation() == ObservationOperationEnum.ENVIRONMENT_HISTORY
+                || request.operation() == ObservationOperationEnum.ENERGY_HISTORY)
+                && result.status() == ObservationStatusEnum.PARTIAL && result.payload().get("nextPage") instanceof Number
                 && !result.failures().isEmpty()
                 && result.failures().stream().allMatch(failure -> failure.code().equals("HISTORY_PARTIAL"));
-        boolean complete = (result.status() == ObservationStatus.AVAILABLE || result.status() == ObservationStatus.EMPTY)
+        boolean complete = (result.status() == ObservationStatusEnum.AVAILABLE || result.status() == ObservationStatusEnum.EMPTY)
                 && result.coverageComplete() && result.failures().isEmpty();
         if ((!complete && !page) || errors instanceof java.util.Collection<?> values && !values.isEmpty()
                 || errors != null && !(errors instanceof java.util.Collection<?>)) {
             throw new BusinessException("OBSERVATION_INCOMPLETE", "只读观察同步未取得完整结果，请稍后重试", 503);
         }
         Map<String, Object> body = new LinkedHashMap<>(result.payload());
-        if (result.status() != ObservationStatus.AVAILABLE && !body.containsKey("status")) {
+        if (result.status() != ObservationStatusEnum.AVAILABLE && !body.containsKey("status")) {
             body.put("status", result.status().name().toLowerCase(java.util.Locale.ROOT));
         }
         if (!result.failures().isEmpty()) body.put("failures", result.failures());
@@ -324,14 +368,14 @@ public final class ObservationController {
         }
     }
 
-    private RequestIdentity identity(HttpServletRequest request, IotSource source) {
+    private RequestIdentity identity(HttpServletRequest request, IotSourceEnum source) {
         PrincipalInfo principal = PrincipalContext.getPrincipalInfo();
         return new RequestIdentity(principal.authorization(), principal.tenantCode(), source, principal.ownerKey());
     }
 
-    private IotSource sourceFor(HttpServletRequest request) {
+    private IotSourceEnum sourceFor(HttpServletRequest request) {
         String source = request.getParameter("source");
-        return IotSource.parse(source == null ? "office" : source);
+        return IotSourceEnum.parse(source == null ? "office" : source);
     }
 
     private ResponseEntity<?> requireCompanySource(HttpServletRequest request, String code, String message) {
@@ -413,7 +457,7 @@ public final class ObservationController {
     }
 
     private static Map<String, String> parameters(
-            HttpServletRequest request, ObservationOperation operation, Map<String, String> extras) {
+            HttpServletRequest request, ObservationOperationEnum operation, Map<String, String> extras) {
         Set<String> allowed = switch (operation) {
             case DASHBOARD -> Set.of("section");
             case ENVIRONMENT_HISTORY -> Set.of("from", "to", "page");

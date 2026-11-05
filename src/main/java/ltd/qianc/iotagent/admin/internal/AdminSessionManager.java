@@ -1,6 +1,5 @@
 package ltd.qianc.iotagent.admin.internal;
 
-import ltd.qianc.iotagent.admin.AdminPasswordFile;
 import ltd.qianc.iotagent.admin.AdminPasswordPolicy;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -17,15 +16,18 @@ public final class AdminSessionManager {
     private final Map<String, Session> sessions = new ConcurrentHashMap<>();
     private final Map<String, Attempt> attempts = new ConcurrentHashMap<>();
     private final SecureRandom random = new SecureRandom();
-    private volatile String passwordHash;
-    private volatile boolean changingPassword;
-    private final int passwordMinimum;
+    private final String passwordHash;
 
     public AdminSessionManager(String password, int passwordMinimum) {
-        this.passwordMinimum = passwordMinimum;
+        String configuredHash = null;
         if (password != null && !password.isBlank()) {
-            this.passwordHash = AdminPasswordPolicy.hash(password);
+            try {
+                configuredHash = AdminPasswordPolicy.hash(AdminPasswordPolicy.validate(password, passwordMinimum));
+            } catch (IllegalArgumentException invalidDeploymentPassword) {
+                // An invalid deployment credential leaves administration closed.
+            }
         }
+        this.passwordHash = configuredHash;
     }
 
     public synchronized LoginResult login(String ip, String password) {
@@ -58,44 +60,12 @@ public final class AdminSessionManager {
         if (token != null) sessions.remove(hash(token));
     }
 
-    public boolean matchesCurrent(String password) {
-        return passwordHash != null && password != null && AdminPasswordPolicy.matches(password, passwordHash);
-    }
-
-    public synchronized PasswordResult changePassword(String current, String next, String confirmation, String ip) {
-        return changePassword(current, next, confirmation, ip, null);
-    }
-
-    public synchronized PasswordResult changePassword(String current, String next, String confirmation, String ip,
-            java.nio.file.Path passwordFile) {
-        if (changingPassword) return PasswordResult.busy();
-        if (passwordHash == null || current == null || !AdminPasswordPolicy.matches(current, passwordHash)) return PasswordResult.currentInvalid();
-        try {
-            AdminPasswordPolicy.validate(next, passwordMinimum);
-            if (!next.equals(confirmation)) return PasswordResult.confirmationInvalid();
-            changingPassword = true;
-            if (passwordFile != null) AdminPasswordFile.write(passwordFile, next);
-            passwordHash = AdminPasswordPolicy.hash(next);
-            sessions.clear();
-            attempts.clear();
-            return PasswordResult.success();
-        } catch (java.io.IOException e) {
-            return PasswordResult.saveFailed();
-        } catch (IllegalArgumentException e) {
-            return PasswordResult.invalid(e.getMessage());
-        } finally {
-            changingPassword = false;
-        }
-    }
 
     public void clear() {
         sessions.clear();
         attempts.clear();
     }
 
-    public int minimum() {
-        return passwordMinimum;
-    }
 
     private Session session(String token) {
         if (token == null || !token.matches("[a-fA-F0-9]{64}")) return null;
@@ -142,12 +112,4 @@ public final class AdminSessionManager {
         static LoginResult unavailable() { return new LoginResult(503, "ADMIN_UNAVAILABLE", null, null, 0); }
     }
 
-    public record PasswordResult(int status, String code, String message) {
-        static PasswordResult success() { return new PasswordResult(200, null, null); }
-        static PasswordResult busy() { return new PasswordResult(409, "ADMIN_PASSWORD_BUSY", "密码正在修改，请稍后重试"); }
-        static PasswordResult currentInvalid() { return new PasswordResult(400, "ADMIN_PASSWORD_INVALID", "当前密码不正确"); }
-        static PasswordResult confirmationInvalid() { return new PasswordResult(400, "ADMIN_PASSWORD_MISMATCH", "两次新密码不一致"); }
-        static PasswordResult invalid(String message) { return new PasswordResult(400, "ADMIN_PASSWORD_INVALID", message); }
-        static PasswordResult saveFailed() { return new PasswordResult(503, "ADMIN_PASSWORD_SAVE_FAILED", "密码未能保存，请稍后重试"); }
-    }
 }

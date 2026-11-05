@@ -29,6 +29,18 @@ public class BusinessErrorAdvice {
                 .body(new ErrorResponse(e.code(), e.getMessage(), e.recovery()));
     }
 
+    /** Request decoding and binding failures are client errors, never internal failures. */
+    @ExceptionHandler({
+            org.springframework.http.converter.HttpMessageNotReadableException.class,
+            org.springframework.web.bind.MissingServletRequestParameterException.class,
+            org.springframework.web.method.annotation.MethodArgumentTypeMismatchException.class,
+            org.springframework.web.bind.MethodArgumentNotValidException.class
+    })
+    public ResponseEntity<ErrorResponse> onInvalidRequest(Exception ignored) {
+        return ResponseEntity.badRequest()
+                .body(new ErrorResponse("INVALID_REQUEST", "请求参数格式无效", null));
+    }
+
     @ExceptionHandler({NoHandlerFoundException.class, NoResourceFoundException.class})
     public ResponseEntity<Map<String, Object>> onUnknownRoute(HttpServletRequest request) {
         Map<String, Object> body = new LinkedHashMap<>();

@@ -1,0 +1,32 @@
+{
+  "actualReleaseSuite": {
+    "tests": 520,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "durationSeconds": 67.9
+  },
+  "currentCommittedHeadFocused": {
+    "exitCode": 0,
+    "suites": [
+      "ArchitectureTest",
+      "CompanyEnergyObservationComposerContractTest",
+      "CompanyEnergyHistoryPreparationContractTest"
+    ]
+  },
+  "frontend": {
+    "behavioralTests": 298,
+    "failures": 0,
+    "boundarySourceFiles": 169,
+    "devCompile": "HBuilderX5.24 mp-weixin compile succeeded; existing uniCloud/sourcemap/Harmony warnings remain"
+  },
+  "redProofs": {
+    "original": "Warmed raw months cannot serve report with upstream unavailable:1error before reuse",
+    "preCorrection": "2semantic failures:report to-bound timestamp and losing healthy best-effort meter",
+    "resolvedArchitecture": "Internal-controller test replaced with public HTTP contract; no architecture exception"
+  },
+  "cleanup": {
+    "ownedMySqlSchemaDropped": true,
+    "redisKeysRemaining": 0
+  }
+}

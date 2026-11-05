@@ -220,14 +220,14 @@ class AccountPrincipalVerifierTest {
                         credential -> snapshots.admit(identity(credential)))) {
             awaitPrincipal(verifier, CREDENTIAL);
             ReadSnapshots.Identity company = identity(CREDENTIAL);
-            snapshots.read(company, "realm", Map.of(), ReadSnapshots.Policy.CURRENT, () -> Map.of("value", "old"));
+            snapshots.read(company, "realm", Map.of(), ReadSnapshots.PolicyEnum.CURRENT, () -> Map.of("value", "old"));
             drainSnapshotWork(snapshotJobs, storageJobs);
-            assertThat(snapshots.read(company, "realm", Map.of(), ReadSnapshots.Policy.CURRENT,
+            assertThat(snapshots.read(company, "realm", Map.of(), ReadSnapshots.PolicyEnum.CURRENT,
                     () -> Map.of("value", "old"))).containsEntry("value", "old");
 
             snapshots.revoke(company, new BusinessException("DENIED", "无权读取", 403));
             assertThrows(BusinessException.class, () -> snapshots.read(company, "realm", Map.of(),
-                    ReadSnapshots.Policy.CURRENT, () -> Map.of("value", "old")));
+                    ReadSnapshots.PolicyEnum.CURRENT, () -> Map.of("value", "old")));
 
             // The account entry is still verified; only its periodic refresh can clear the data-plane denial.
             clock.advance(Duration.ofSeconds(60));
@@ -235,29 +235,33 @@ class AccountPrincipalVerifierTest {
             Map<String, Object> cold = awaitDenialCleared(snapshots, company);
             assertThat(cold).containsEntry("status", "preparing").doesNotContainKey("value");
             drainSnapshotWork(snapshotJobs, storageJobs);
-            assertThat(snapshots.read(company, "realm", Map.of(), ReadSnapshots.Policy.CURRENT,
+            assertThat(snapshots.read(company, "realm", Map.of(), ReadSnapshots.PolicyEnum.CURRENT,
                     () -> Map.of("value", "new"))).containsEntry("value", "new");
         }
     }
 
     @Test
-    void rejectionIsNotPublishedUntilItsDurableInvalidationSucceeds() {
+    void rejectionIsNotPublishedUntilItsDurableInvalidationSucceeds() throws Exception {
         AtomicInteger calls = new AtomicInteger();
         AtomicInteger invalidations = new AtomicInteger();
+        CountDownLatch invalidationFailed = new CountDownLatch(1);
         MutableClock clock = new MutableClock();
         WebClient client = client(request -> calls.incrementAndGet() >= 2
                 ? Mono.just(ClientResponse.create(HttpStatus.UNAUTHORIZED).build())
                 : Mono.just(success("account")));
         try (AccountPrincipalVerifier verifier = AccountPrincipalVerifier.gateway(client, "https://realm-a.test",
                 POLICY, clock, credential -> {
-                    if (invalidations.incrementAndGet() == 1) throw new IllegalStateException("barrier down");
+                    if (invalidations.incrementAndGet() == 1) {
+                        invalidationFailed.countDown();
+                        throw new IllegalStateException("barrier down");
+                    }
                 }, credential -> { })) {
             awaitPrincipal(verifier, CREDENTIAL);
             clock.advance(Duration.ofSeconds(60));
             verifier.verify(CREDENTIAL);
+            assertThat(invalidationFailed.await(3, TimeUnit.SECONDS)).isTrue();
             BusinessException notPublished = awaitFailure(verifier, CREDENTIAL, "ACCOUNT_IDENTITY_UNAVAILABLE");
             assertThat(notPublished.httpStatus()).isEqualTo(503);
-            assertThat(invalidations.get()).isEqualTo(1);
             clock.advance(Duration.ofSeconds(60));
             BusinessException denied = awaitFailure(verifier, CREDENTIAL, "UNAUTHORIZED");
             assertThat(denied.httpStatus()).isEqualTo(401);
@@ -288,9 +292,9 @@ class AccountPrincipalVerifierTest {
             ReadSnapshots.Identity company = new ReadSnapshots.Identity(CREDENTIAL.tenantCode(), CREDENTIAL.authorization(), "company", "old-owner");
             ReadSnapshots.Identity office = new ReadSnapshots.Identity(CREDENTIAL.tenantCode(), CREDENTIAL.authorization(), "office", "different-owner");
             for (ReadSnapshots.Identity identity : List.of(company, office)) {
-                snapshots.read(identity, "realm", Map.of(), ReadSnapshots.Policy.CURRENT, () -> Map.of("value", "old"));
+                snapshots.read(identity, "realm", Map.of(), ReadSnapshots.PolicyEnum.CURRENT, () -> Map.of("value", "old"));
                 snapshotJobs.remove().run();
-                assertThat(snapshots.read(identity, "realm", Map.of(), ReadSnapshots.Policy.CURRENT, () -> Map.of("value", "old")))
+                assertThat(snapshots.read(identity, "realm", Map.of(), ReadSnapshots.PolicyEnum.CURRENT, () -> Map.of("value", "old")))
                         .containsEntry("value", "old");
             }
             clock.advance(Duration.ofSeconds(60));
@@ -312,11 +316,11 @@ class AccountPrincipalVerifierTest {
             assertThat(readmitted.principalId()).isEqualTo("account");
             assertThat(calls.get()).isEqualTo(3);
             for (ReadSnapshots.Identity identity : List.of(company, office)) {
-                Map<String, Object> cold = snapshots.read(identity, "realm", Map.of(), ReadSnapshots.Policy.CURRENT,
+                Map<String, Object> cold = snapshots.read(identity, "realm", Map.of(), ReadSnapshots.PolicyEnum.CURRENT,
                         () -> Map.of("value", "new"));
                 assertThat(cold).containsEntry("status", "preparing").doesNotContainKey("value");
                 snapshotJobs.remove().run();
-                assertThat(snapshots.read(identity, "realm", Map.of(), ReadSnapshots.Policy.CURRENT, () -> Map.of("value", "new")))
+                assertThat(snapshots.read(identity, "realm", Map.of(), ReadSnapshots.PolicyEnum.CURRENT, () -> Map.of("value", "new")))
                         .containsEntry("value", "new");
             }
         }
@@ -362,7 +366,7 @@ class AccountPrincipalVerifierTest {
                 assertThat(genuineVerification.await(1, TimeUnit.SECONDS)).isTrue();
                 assertThat(failure(restarted, CREDENTIAL).code()).isEqualTo("ACCOUNT_IDENTITY_PREPARING");
                 assertThrows(BusinessException.class, () -> snapshots.read(identity(CREDENTIAL),
-                        "realm", Map.of(), ReadSnapshots.Policy.CURRENT, () -> Map.of("value", "forbidden")));
+                        "realm", Map.of(), ReadSnapshots.PolicyEnum.CURRENT, () -> Map.of("value", "forbidden")));
             }
         }
     }
@@ -429,7 +433,7 @@ class AccountPrincipalVerifierTest {
         BusinessException last = null;
         while (System.nanoTime() < deadline) {
             try {
-                return snapshots.read(identity, "realm", Map.of(), ReadSnapshots.Policy.CURRENT,
+                return snapshots.read(identity, "realm", Map.of(), ReadSnapshots.PolicyEnum.CURRENT,
                         () -> Map.of("value", "new"));
             } catch (BusinessException denied) {
                 last = denied;

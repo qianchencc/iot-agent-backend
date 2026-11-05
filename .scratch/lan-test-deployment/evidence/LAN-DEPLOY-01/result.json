@@ -1,0 +1,110 @@
+{
+  "status": "prepared; activation blocked pending platform/security decision",
+  "target": {
+    "host": "192.168.101.182",
+    "user": "linglv",
+    "root": "/opt/linglv/iot-agent",
+    "sshHostFingerprint": "SHA256:ys6WeIi5z/Zo/7hsm1swRj84ZKSg1YIbmslTQwxcF8Q",
+    "hostKeyMatchedKnownHosts": true,
+    "os": "CentOS7",
+    "kernel": "3.10.0-1160.el7.x86_64",
+    "docker": "17.12.0-ce"
+  },
+  "release": {
+    "id": "20261105-2939e46",
+    "codeCommit": "2939e46b7769c4fc476c7d9c647f64a09812e299",
+    "candidateDirectory": "/opt/linglv/iot-agent/releases/20261105-2939e46",
+    "bundleSha256": "88239f2948442a14b09646c900012373808b8352e4be1e8a25c54acf67106879",
+    "images": {
+      "java": {
+        "repository": "library/eclipse-temurin",
+        "sourceTag": "21-jre-jammy",
+        "manifestDigest": "sha256:d4cbe963bb4f3a769d56473b32db2bfb46b0d4b29797c152815da692d9f9aab5",
+        "localTag": "iot-agent-lan/java:d4cbe963bb4f",
+        "imageId": "sha256:698d5bbc4b63e7c8ec9c4dc22e6c63b8cd048a6f6144f8c317fbc733267376c0",
+        "archiveSha256": "088d4fe0ff05df6e845852035b6c39b02e270166eb26835d166008ecc0aee682",
+        "archiveBytes": 108122579
+      },
+      "node": {
+        "repository": "library/node",
+        "sourceTag": "22.23.2-bookworm-slim",
+        "manifestDigest": "sha256:43aeff40f4afc22e83f7589a2f37e111cff5ca84529571f1c8415bcc5fcc21b2",
+        "localTag": "iot-agent-lan/node:43aeff40f4af",
+        "imageId": "sha256:c72861c6705868ed7f08e1cf22ef4f7ba07a82c19a54ba65d931c442d3575889",
+        "archiveSha256": "09ff5020e6af6f3bd56cb3974e4dc10a15136c31c475c202349b0c3a554b0802",
+        "archiveBytes": 87721945
+      },
+      "mysql": {
+        "repository": "library/mysql",
+        "sourceTag": "8.4",
+        "manifestDigest": "sha256:72c368d898861f3b3a07af0e6d690400f44f048799ed46822783d9224cc2c86d",
+        "localTag": "iot-agent-lan/mysql:72c368d89886",
+        "imageId": "sha256:0f1a0ccadda3a1734d1db557e203ec58621d56fa248525016e85fe4f631311ec",
+        "archiveSha256": "d31e5c00e4dd72241b9e146428541121fc2414619776cab5fe730854248a813e",
+        "archiveBytes": 263030569
+      },
+      "redis": {
+        "repository": "library/redis",
+        "sourceTag": "7.4-alpine",
+        "manifestDigest": "sha256:1cf73a2f04808e55a8bd2f5706c2aa0ebb0f71938f93deb7af79f48311cd5cb9",
+        "localTag": "iot-agent-lan/redis:1cf73a2f0480",
+        "imageId": "sha256:98c6ca8f397f86e469be752c3e7ed5eb8b17f2479840cb69a2e413037038e9f4",
+        "archiveSha256": "04ed55a50cc6a4626ec2a830db2b60f6c59e1a535c01228379c74a06c27fe39b",
+        "archiveBytes": 17066907
+      },
+      "proxy": {
+        "repository": "library/nginx",
+        "sourceTag": "stable-alpine",
+        "manifestDigest": "sha256:84ed8c0dd296c188bfc24ed506f46589e9285fb0b11cf3a04d91d524d3067e11",
+        "localTag": "iot-agent-lan/proxy:84ed8c0dd296",
+        "imageId": "sha256:88f52f3d58a505b7e1ad96ca6969478517bcccb58418e75a54223271a64da7df",
+        "archiveSha256": "188076e672ef7bb343b5bae2d8469971efb52dc77ab7251f66d60f03b643a016",
+        "archiveBytes": 27537866
+      }
+    },
+    "internalContextFilesExcluded": true,
+    "businessClassesAndOtherResourcesByteIdenticalAfterPackaging": true
+  },
+  "engineering": {
+    "java": {
+      "tests": 596,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "node": {
+      "runtimeMajor": 22,
+      "typecheck": "pass",
+      "testsPassed": 34,
+      "sessionConformancePassed": 30
+    },
+    "adminBuild": "pass"
+  },
+  "compatibility": {
+    "redisDefaultPolicy": "7.4.12 version command passed",
+    "nginxDefaultPolicy": "version command passed",
+    "nodeDefaultPolicy": {
+      "version": "22.23.2",
+      "workerExitCode": 139,
+      "error": "uv_thread_create assertion"
+    },
+    "javaDefaultPolicy": "version startup exceeded40s",
+    "temporaryNoNetworkNoVolumeUnfilteredProbes": {
+      "node": "22.23.2 worker threads passed",
+      "java": "21.0.13 passed"
+    },
+    "productionSeccompNotRelaxed": true
+  },
+  "safety": {
+    "existingCustomerContainersStillPresent": [
+      "gateway",
+      "nacos",
+      "redis",
+      "mysql8"
+    ],
+    "noApplicationContainersActivated": true,
+    "noBusinessDatabaseOrCredentialsCopied": true,
+    "noExistingDockerOrHostPackagesUpdated": true,
+    "noFrontendAcceptanceClaimed": true
+  }
+}

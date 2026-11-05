@@ -51,12 +51,12 @@ class ReadSnapshotsTest {
         AtomicInteger calls = new AtomicInteger();
         Supplier<Map<String, Object>> loader = () -> Map.of("readings", calls.incrementAndGet());
         Map<String, Object> loaded = snapshots.load(COMPANY, "history", Map.of("month", "2026-10"),
-                ReadSnapshots.Policy.HISTORICAL, loader);
+                ReadSnapshots.PolicyEnum.HISTORICAL, loader);
         assertEquals(1, loaded.get("readings"));
         assertEquals(1, calls.get());
         assertEquals(0, upstream.size());
         Map<String, Object> held = snapshots.load(COMPANY, "history", Map.of("month", "2026-10"),
-                ReadSnapshots.Policy.HISTORICAL, loader);
+                ReadSnapshots.PolicyEnum.HISTORICAL, loader);
         assertEquals(1, held.get("readings"));
         assertEquals(1, calls.get());
         assertEquals(0, upstream.size());
@@ -68,7 +68,7 @@ class ReadSnapshotsTest {
         CountDownLatch entered = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
         Thread loader = new Thread(() -> snapshots.load(COMPANY, "history", Map.of("month", "2026-10"),
-                ReadSnapshots.Policy.CURRENT, () -> {
+                ReadSnapshots.PolicyEnum.CURRENT, () -> {
                     calls.incrementAndGet();
                     entered.countDown();
                     try {
@@ -155,16 +155,16 @@ class ReadSnapshotsTest {
                 identity("tenant", "Bearer secret-b", "COMPANY", "owner"),
                 identity("tenant", COMPANY.authorization(), "OFFICE", "owner"),
                 identity("tenant", COMPANY.authorization(), "COMPANY", "other-owner"))) {
-            assertEquals("preparing", snapshots.read(identity, "query", Map.of(), ReadSnapshots.Policy.CURRENT, () -> Map.of("value", "other")).get("status"));
+            assertEquals("preparing", snapshots.read(identity, "query", Map.of(), ReadSnapshots.PolicyEnum.CURRENT, () -> Map.of("value", "other")).get("status"));
         }
-        assertEquals("preparing", snapshots.read(COMPANY, "other-realm", Map.of(), ReadSnapshots.Policy.CURRENT, () -> Map.of("value", 1)).get("status"));
-        assertEquals("preparing", snapshots.read(COMPANY, "query", Map.of("page", 1), ReadSnapshots.Policy.CURRENT, () -> Map.of("value", 1)).get("status"));
-        assertEquals("preparing", snapshots.read(COMPANY, "query", Map.of("page", "1"), ReadSnapshots.Policy.CURRENT, () -> Map.of("value", 1)).get("status"));
+        assertEquals("preparing", snapshots.read(COMPANY, "other-realm", Map.of(), ReadSnapshots.PolicyEnum.CURRENT, () -> Map.of("value", 1)).get("status"));
+        assertEquals("preparing", snapshots.read(COMPANY, "query", Map.of("page", 1), ReadSnapshots.PolicyEnum.CURRENT, () -> Map.of("value", 1)).get("status"));
+        assertEquals("preparing", snapshots.read(COMPANY, "query", Map.of("page", "1"), ReadSnapshots.PolicyEnum.CURRENT, () -> Map.of("value", 1)).get("status"));
         Map<String, Object> left = new LinkedHashMap<>(); left.put("a", 1); left.put("b", 2);
         Map<String, Object> right = new LinkedHashMap<>(); right.put("b", 2); right.put("a", 1);
-        snapshots.read(COMPANY, "sorted", left, ReadSnapshots.Policy.CURRENT, () -> Map.of("value", "sorted"));
+        snapshots.read(COMPANY, "sorted", left, ReadSnapshots.PolicyEnum.CURRENT, () -> Map.of("value", "sorted"));
         int queued = upstream.size();
-        snapshots.read(COMPANY, "sorted", right, ReadSnapshots.Policy.CURRENT, () -> Map.of("value", "sorted"));
+        snapshots.read(COMPANY, "sorted", right, ReadSnapshots.PolicyEnum.CURRENT, () -> Map.of("value", "sorted"));
         assertEquals(queued, upstream.size());
     }
 
@@ -210,14 +210,14 @@ class ReadSnapshotsTest {
         MemoryPersistence persistence = new MemoryPersistence(clock);
         ReadSnapshots snapshots = snapshots(persistence);
         read(snapshots, () -> Map.of("value", 1)); storage.runNext(); upstream.runNext(); storage.runNext();
-        snapshots.read(COMPANY, "second", Map.of(), ReadSnapshots.Policy.CURRENT, () -> Map.of("value", 2));
+        snapshots.read(COMPANY, "second", Map.of(), ReadSnapshots.PolicyEnum.CURRENT, () -> Map.of("value", 2));
         storage.runNext(); upstream.runNext(); storage.runNext();
         clock.advance(Duration.ofSeconds(61));
         read(snapshots, () -> { throw new BusinessException("REVOKED", "登录失效", 401); });
         upstream.runNext();
         BusinessException denial = assertThrows(BusinessException.class, () -> read(snapshots, () -> Map.of("value", 3)));
         assertEquals(401, denial.httpStatus());
-        assertThrows(BusinessException.class, () -> snapshots.read(COMPANY, "second", Map.of(), ReadSnapshots.Policy.CURRENT, () -> Map.of("value", 3)));
+        assertThrows(BusinessException.class, () -> snapshots.read(COMPANY, "second", Map.of(), ReadSnapshots.PolicyEnum.CURRENT, () -> Map.of("value", 3)));
         storage.runAll();
         assertEquals(0, persistence.values.size());
         assertTrue(barrier.values.values().stream().anyMatch(state -> state.denialStatus() == 401));
@@ -248,11 +248,11 @@ class ReadSnapshotsTest {
         ReadSnapshots.Settings settings = new ReadSnapshots.Settings(1, Duration.ofMinutes(30), Duration.ofDays(7), Duration.ofSeconds(60));
         ReadSnapshots snapshots = ReadSnapshots.create(clock, upstream, storage, null, null, new ObjectMapper(), settings);
         read(snapshots, () -> Map.of("value", 1)); upstream.runNext();
-        Map<String, Object> full = snapshots.read(COMPANY, "other", Map.of(), ReadSnapshots.Policy.CURRENT, () -> Map.of("value", 2));
+        Map<String, Object> full = snapshots.read(COMPANY, "other", Map.of(), ReadSnapshots.PolicyEnum.CURRENT, () -> Map.of("value", 2));
         assertEquals("unavailable", full.get("status"));
         assertFalse(full.containsKey("value"));
         clock.advance(Duration.ofMinutes(31)); snapshots.refreshActive();
-        assertEquals("preparing", snapshots.read(COMPANY, "other", Map.of(), ReadSnapshots.Policy.CURRENT, () -> Map.of("value", 2)).get("status"));
+        assertEquals("preparing", snapshots.read(COMPANY, "other", Map.of(), ReadSnapshots.PolicyEnum.CURRENT, () -> Map.of("value", 2)).get("status"));
         snapshots.close(); upstream.runNext();
         assertEquals("unavailable", read(snapshots, () -> Map.of("value", 3)).get("status"));
 
@@ -267,17 +267,17 @@ class ReadSnapshotsTest {
     }
 
     @Test void historicalWindowsRefreshAtShanghaiNightAndMixedTodayWindowsStayCurrent() {
-        assertEquals(ReadSnapshots.Policy.HISTORICAL, ReadSnapshots.Policy.forQuery(Map.of("from", "2026-10-01", "to", "2026-10-31"), clock));
-        assertEquals(ReadSnapshots.Policy.CURRENT, ReadSnapshots.Policy.forQuery(Map.of("from", "2026-10-01", "to", "2026-11-02"), clock));
-        assertEquals(ReadSnapshots.Policy.CURRENT, ReadSnapshots.Policy.forQuery(Map.of("to", "2026-10-31", "baselineTo", "2026-11-02"), clock));
-        assertEquals(ReadSnapshots.Policy.HISTORICAL, ReadSnapshots.Policy.forQuery(Map.of("endMonth", "2026-10"), clock));
-        assertEquals(ReadSnapshots.Policy.CURRENT, ReadSnapshots.Policy.forQuery(Map.of(), clock));
+        assertEquals(ReadSnapshots.PolicyEnum.HISTORICAL, ReadSnapshots.PolicyEnum.forQuery(Map.of("from", "2026-10-01", "to", "2026-10-31"), clock));
+        assertEquals(ReadSnapshots.PolicyEnum.CURRENT, ReadSnapshots.PolicyEnum.forQuery(Map.of("from", "2026-10-01", "to", "2026-11-02"), clock));
+        assertEquals(ReadSnapshots.PolicyEnum.CURRENT, ReadSnapshots.PolicyEnum.forQuery(Map.of("to", "2026-10-31", "baselineTo", "2026-11-02"), clock));
+        assertEquals(ReadSnapshots.PolicyEnum.HISTORICAL, ReadSnapshots.PolicyEnum.forQuery(Map.of("endMonth", "2026-10"), clock));
+        assertEquals(ReadSnapshots.PolicyEnum.CURRENT, ReadSnapshots.PolicyEnum.forQuery(Map.of(), clock));
         ReadSnapshots snapshots = ReadSnapshots.create(clock, upstream, storage, null, null, new ObjectMapper(),
                 new ReadSnapshots.Settings(32, Duration.ofDays(2), Duration.ofDays(7), Duration.ofSeconds(60)));
-        snapshots.read(COMPANY, "history", Map.of(), ReadSnapshots.Policy.HISTORICAL, () -> Map.of("value", 1)); upstream.runNext();
+        snapshots.read(COMPANY, "history", Map.of(), ReadSnapshots.PolicyEnum.HISTORICAL, () -> Map.of("value", 1)); upstream.runNext();
         clock.advance(Duration.ofHours(7)); snapshots.refreshActive(); assertEquals(0, upstream.size());
         clock.advance(Duration.ofHours(1)); snapshots.refreshActive(); assertEquals(1, upstream.size());
-        assertEquals(Instant.parse("2026-11-02T16:00:00Z"), ReadSnapshots.Policy.HISTORICAL.nextRefresh(Instant.parse("2026-11-02T08:00:00Z")));
+        assertEquals(Instant.parse("2026-11-02T16:00:00Z"), ReadSnapshots.PolicyEnum.HISTORICAL.nextRefresh(Instant.parse("2026-11-02T08:00:00Z")));
     }
 
     @Test void rejectedJobsPublishUnavailableAndDoNotBusyRetryOnEveryFrontendRead() {
@@ -316,22 +316,22 @@ class ReadSnapshotsTest {
         prepare(first, "unloaded", 2);
         first.close();
         ReadSnapshots second = snapshots(persistence);
-        second.read(COMPANY, "known", Map.of(), ReadSnapshots.Policy.CURRENT, () -> Map.of("value", 9));
+        second.read(COMPANY, "known", Map.of(), ReadSnapshots.PolicyEnum.CURRENT, () -> Map.of("value", 9));
         storage.runNext();
         second.invalidate(COMPANY);
         storage.runAll();
-        assertEquals(1, second.read(COMPANY, "known", Map.of(), ReadSnapshots.Policy.CURRENT, () -> Map.of("value", 9)).get("value"));
+        assertEquals(1, second.read(COMPANY, "known", Map.of(), ReadSnapshots.PolicyEnum.CURRENT, () -> Map.of("value", 9)).get("value"));
         // Its invalidated refresh is queued, but the process exits before running it.
         second.close(); upstream.runAll();
         ReadSnapshots third = snapshots(persistence);
         Supplier<Map<String, Object>> fresh = () -> Map.of("value", 99);
-        third.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.Policy.CURRENT, fresh);
+        third.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.PolicyEnum.CURRENT, fresh);
         storage.runNext();
-        Map<String, Object> cold = third.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.Policy.CURRENT, fresh);
+        Map<String, Object> cold = third.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.PolicyEnum.CURRENT, fresh);
         assertEquals("preparing", cold.get("status"));
         assertFalse(cold.containsKey("value"));
         upstream.runNext();
-        assertEquals(99, third.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.Policy.CURRENT, fresh).get("value"));
+        assertEquals(99, third.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.PolicyEnum.CURRENT, fresh).get("value"));
     }
 
     @Test void durableRevocationDeniesAnUnloadedQueryInANewProcess() {
@@ -342,10 +342,10 @@ class ReadSnapshotsTest {
         second.revoke(COMPANY, new BusinessException("DENIED", "无权读取", 403));
         storage.runAll(); second.close();
         ReadSnapshots third = snapshots(persistence);
-        third.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.Policy.CURRENT, () -> Map.of("value", 8));
+        third.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.PolicyEnum.CURRENT, () -> Map.of("value", 8));
         storage.runNext();
         BusinessException denied = assertThrows(BusinessException.class, () ->
-                third.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.Policy.CURRENT, () -> Map.of("value", 8)));
+                third.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.PolicyEnum.CURRENT, () -> Map.of("value", 8)));
         assertEquals(403, denied.httpStatus());
         assertEquals(0, upstream.size());
     }
@@ -356,11 +356,11 @@ class ReadSnapshotsTest {
         prepare(first, "unloaded", 7);
         first.discard(COMPANY); storage.runAll(); first.close();
         ReadSnapshots second = snapshots(persistence);
-        second.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.Policy.CURRENT, () -> Map.of("value", 8));
+        second.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.PolicyEnum.CURRENT, () -> Map.of("value", 8));
         storage.runNext();
         assertEquals(1, upstream.size());
         upstream.runNext();
-        assertEquals(8, second.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.Policy.CURRENT, () -> Map.of("value", 8)).get("value"));
+        assertEquals(8, second.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.PolicyEnum.CURRENT, () -> Map.of("value", 8)).get("value"));
     }
 
     @Test void failedTombstoneCheckNeverRestoresAnOtherwiseUsableBody() {
@@ -433,15 +433,15 @@ class ReadSnapshotsTest {
         ReadSnapshots snapshots = ReadSnapshots.create(clock, upstream, storage, null, null, new ObjectMapper(),
                 new ReadSnapshots.Settings(32, Duration.ofDays(2), Duration.ofDays(7), Duration.ofSeconds(60)));
         Map<String, Object> query = Map.of("to", "2026-11-02", "weeks", 4, "endDate", "2026-11-02");
-        snapshots.read(COMPANY, "comparison", query, ReadSnapshots.Policy.forQuery(query, clock), () -> Map.of("value", 1));
+        snapshots.read(COMPANY, "comparison", query, ReadSnapshots.PolicyEnum.forQuery(query, clock), () -> Map.of("value", 1));
         upstream.runNext();
         clock.advance(Duration.ofHours(8));
-        assertEquals(ReadSnapshots.Policy.HISTORICAL, ReadSnapshots.Policy.forQuery(query, clock));
-        snapshots.read(COMPANY, "comparison", query, ReadSnapshots.Policy.forQuery(query, clock), () -> Map.of("value", 2));
+        assertEquals(ReadSnapshots.PolicyEnum.HISTORICAL, ReadSnapshots.PolicyEnum.forQuery(query, clock));
+        snapshots.read(COMPANY, "comparison", query, ReadSnapshots.PolicyEnum.forQuery(query, clock), () -> Map.of("value", 2));
         upstream.runNext();
         clock.advance(Duration.ofMinutes(2)); snapshots.refreshActive();
         assertEquals(0, upstream.size());
-        assertEquals(ReadSnapshots.Policy.CURRENT, ReadSnapshots.Policy.forQuery(Map.of("weeks", 4), clock));
+        assertEquals(ReadSnapshots.PolicyEnum.CURRENT, ReadSnapshots.PolicyEnum.forQuery(Map.of("weeks", 4), clock));
     }
 
     @Test void restorationSaturationExpiresOnlyAfterTheInvalidatedBodiesRetentionWindow() {
@@ -453,7 +453,7 @@ class ReadSnapshotsTest {
         storage.runAll();
         clock.advance(Duration.ofSeconds(61)); snapshots.refreshActive();
         assertEquals("preparing", snapshots.read(identity("tenant", "Bearer third", "COMPANY", "owner"),
-                "query", Map.of(), ReadSnapshots.Policy.CURRENT, () -> Map.of("value", 1)).get("status"));
+                "query", Map.of(), ReadSnapshots.PolicyEnum.CURRENT, () -> Map.of("value", 1)).get("status"));
         assertEquals(0, upstream.size());
         storage.runNext();
         assertEquals(1, upstream.size());
@@ -485,9 +485,9 @@ class ReadSnapshotsTest {
         assertEquals(2, attempts.get());
         second.close();
         ReadSnapshots third = snapshots(persistence);
-        third.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.Policy.CURRENT, () -> Map.of("value", 2));
+        third.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.PolicyEnum.CURRENT, () -> Map.of("value", 2));
         storage.runNext();
-        assertEquals("preparing", third.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.Policy.CURRENT, () -> Map.of("value", 2)).get("status"));
+        assertEquals("preparing", third.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.PolicyEnum.CURRENT, () -> Map.of("value", 2)).get("status"));
         assertEquals(1, upstream.size());
     }
 
@@ -501,7 +501,7 @@ class ReadSnapshotsTest {
         GatedBarrier gate = new GatedBarrier(barrier);
         ReadSnapshots second = ReadSnapshots.create(clock, upstream, storage, ignoreDeletes(persistence), gate,
                 new ObjectMapper(), ReadSnapshots.Settings.defaults());
-        second.read(COMPANY, "query", Map.of(), ReadSnapshots.Policy.CURRENT, () -> Map.of("value", 1));
+        second.read(COMPANY, "query", Map.of(), ReadSnapshots.PolicyEnum.CURRENT, () -> Map.of("value", 1));
         storage.runNext();
         assertEquals(1, read(second, () -> Map.of("value", 1)).get("value"));
 
@@ -630,13 +630,13 @@ class ReadSnapshotsTest {
         ReadSnapshots second = snapshots(persistence);
         second.admit(COMPANY);
         assertTrue(barrier.values.values().stream().allMatch(state -> state.denialStatus() == 0));
-        Map<String, Object> cold = second.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.Policy.CURRENT,
+        Map<String, Object> cold = second.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.PolicyEnum.CURRENT,
                 () -> Map.of("value", 8));
         assertEquals("preparing", cold.get("status"));
         assertFalse(cold.containsKey("value"));
         assertEquals(1, upstream.size());
         upstream.runNext();
-        assertEquals(8, second.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.Policy.CURRENT,
+        assertEquals(8, second.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.PolicyEnum.CURRENT,
                 () -> Map.of("value", 8)).get("value"));
     }
 
@@ -653,23 +653,23 @@ class ReadSnapshotsTest {
         };
         ReadSnapshots second = ReadSnapshots.create(clock, upstream, storage, redisDown, barrier,
                 new ObjectMapper(), ReadSnapshots.Settings.defaults());
-        second.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.Policy.CURRENT, () -> Map.of("value", 9));
+        second.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.PolicyEnum.CURRENT, () -> Map.of("value", 9));
         storage.runNext();
-        assertEquals(1, second.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.Policy.CURRENT,
+        assertEquals(1, second.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.PolicyEnum.CURRENT,
                 () -> Map.of("value", 9)).get("value"));
         second.invalidate(COMPANY);
         storage.runAll();
         second.close();
 
         ReadSnapshots third = snapshots(persistence);
-        Map<String, Object> cold = third.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.Policy.CURRENT,
+        Map<String, Object> cold = third.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.PolicyEnum.CURRENT,
                 () -> Map.of("value", 2));
         assertEquals("preparing", cold.get("status"));
         assertFalse(cold.containsKey("value"));
         storage.runNext();
         assertEquals(1, upstream.size());
         upstream.runNext();
-        assertEquals(2, third.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.Policy.CURRENT,
+        assertEquals(2, third.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.PolicyEnum.CURRENT,
                 () -> Map.of("value", 2)).get("value"));
     }
 
@@ -681,17 +681,17 @@ class ReadSnapshotsTest {
         storage.runAll();
 
         clock.advance(Duration.ofDays(6));
-        first.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.Policy.CURRENT, () -> Map.of("value", 2));
+        first.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.PolicyEnum.CURRENT, () -> Map.of("value", 2));
         upstream.runNext();
         storage.runNext();
         clock.advance(Duration.ofDays(1).plusHours(1));
         first.close();
 
         ReadSnapshots restarted = snapshots(persistence);
-        assertEquals("preparing", restarted.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.Policy.CURRENT,
+        assertEquals("preparing", restarted.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.PolicyEnum.CURRENT,
                 () -> Map.of("value", 99)).get("status"));
         storage.runNext();
-        assertEquals(2, restarted.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.Policy.CURRENT,
+        assertEquals(2, restarted.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.PolicyEnum.CURRENT,
                 () -> Map.of("value", 99)).get("value"));
     }
 
@@ -703,13 +703,13 @@ class ReadSnapshotsTest {
 
         ReadSnapshots memoryOnly = ReadSnapshots.create(clock, upstream, storage, persistence, null,
                 new ObjectMapper(), ReadSnapshots.Settings.defaults());
-        Map<String, Object> cold = memoryOnly.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.Policy.CURRENT,
+        Map<String, Object> cold = memoryOnly.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.PolicyEnum.CURRENT,
                 () -> Map.of("value", 3));
         assertEquals("preparing", cold.get("status"));
         assertEquals(1, upstream.size());
         assertEquals(0, storage.size());
         upstream.runNext();
-        assertEquals(3, memoryOnly.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.Policy.CURRENT,
+        assertEquals(3, memoryOnly.read(COMPANY, "unloaded", Map.of(), ReadSnapshots.PolicyEnum.CURRENT,
                 () -> Map.of("value", 3)).get("value"));
     }
 
@@ -733,7 +733,7 @@ class ReadSnapshotsTest {
     }
 
     private void prepare(ReadSnapshots snapshots, String realm, int value) {
-        snapshots.read(COMPANY, realm, Map.of(), ReadSnapshots.Policy.CURRENT, () -> Map.of("value", value));
+        snapshots.read(COMPANY, realm, Map.of(), ReadSnapshots.PolicyEnum.CURRENT, () -> Map.of("value", value));
         storage.runNext(); upstream.runNext(); storage.runNext();
     }
 
@@ -745,7 +745,7 @@ class ReadSnapshotsTest {
         return new ReadSnapshots.Identity(tenant, token, source, owner);
     }
     private static Map<String, Object> read(ReadSnapshots snapshots, Supplier<Map<String, Object>> loader) {
-        return snapshots.read(COMPANY, "query", Map.of(), ReadSnapshots.Policy.CURRENT, loader);
+        return snapshots.read(COMPANY, "query", Map.of(), ReadSnapshots.PolicyEnum.CURRENT, loader);
     }
     @SuppressWarnings("unchecked") private static Map<String, Object> cache(Map<String, Object> body) { return (Map<String, Object>) body.get("cache"); }
     private static final class GatedBarrier implements ReadSnapshots.Barrier {

@@ -15,14 +15,11 @@ import ltd.qianc.iotagent.auth.PrincipalInfo;
 import ltd.qianc.iotagent.error.BusinessException;
 import ltd.qianc.iotagent.iot.AuthorizedDevice;
 import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
-import ltd.qianc.iotagent.iot.DeviceCapabilityInspection;
-import ltd.qianc.iotagent.iot.DeviceCapabilityRequest;
-import ltd.qianc.iotagent.iot.DeviceStateReadResult;
 import ltd.qianc.iotagent.iot.DeviceCandidateBinding;
 import ltd.qianc.iotagent.iot.DeviceCandidateQuery;
 import ltd.qianc.iotagent.iot.DeviceCandidateRecord;
 import ltd.qianc.iotagent.iot.IotAdapter;
-import ltd.qianc.iotagent.iot.IotSource;
+import ltd.qianc.iotagent.iot.IotSourceEnum;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 
 /** Converts declarative goals into fixed authorized members, using the existing discovery seam. */
@@ -41,7 +38,7 @@ final class TaskTargetResolver {
         this.iot = iot;
         this.timeout = timeout;
         this.identity = new RequestIdentity(principal.authorization(), principal.tenantCode(),
-                IotSource.parse(source), principal.ownerKey());
+                IotSourceEnum.parse(source), principal.ownerKey());
         this.conversation = request.path("conversationId").asText("");
         this.focusRegionId = request.path("focusRegionId").asText("");
     }
@@ -55,19 +52,173 @@ final class TaskTargetResolver {
         }
         if (!request.path("phases").isArray()) return;
         var resolver = new TaskTargetResolver(mapper, iot, timeout, principal, source, request);
+        long targetPhases = java.util.stream.StreamSupport.stream(request.path("phases").spliterator(), false)
+                .filter(phase -> !phase.path("targets").isEmpty()).count();
+        if (targetPhases > 0 && (targetPhases != request.path("phases").size()
+                || request.has("candidateSetIds") || request.has("interval"))) {
+            throw invalid("分阶段目标不能混用候选集任务、只读检查点或区间");
+        }
+        // Runtime proposeTaskTool: model device handles resolve against the referenced
+        // candidate sets before any member validation; non-handles pass through.
+        resolver.resolvePhaseDeviceHandles(request);
         for (JsonNode value : request.path("phases")) {
             if (!(value instanceof ObjectNode phase)) continue;
+            // scopeFacts/preflight are server-authored phase facts; a model-supplied
+            // copy would forge the card's scope and pre-scan counts.
             phase.remove("scopeFacts");
-            if (phase.has("targets")) resolver.targets(phase);
+            phase.remove("preflight");
+            if (phase.has("targets")) {
+                if (phase.path("targets").isArray() && phase.path("targets").isEmpty()) phase.remove("targets");
+                else resolver.targets(phase);
+            }
+            if (phase.has("lighting")) resolver.lighting(phase, request);
             resolver.readAll(phase, request);
         }
         resolver.validateCandidateReferences(request);
     }
 
+    /** d{N}_{k} → real device id over the union of referenced candidate sets (sN or UUID refs). */
+    private void resolvePhaseDeviceHandles(ObjectNode request) {
+        if (!request.path("candidateSetIds").isArray() || request.path("candidateSetIds").isEmpty()) return;
+        Map<String, String> handleIndex = new LinkedHashMap<>();
+        ArrayNode setIds = (ArrayNode) request.get("candidateSetIds");
+        for (int index = 0; index < setIds.size(); index++) {
+            if (!setIds.get(index).isTextual() || setIds.get(index).asText().isBlank()) continue;
+            // Runtime proposeTaskTool maps every set ref through resolveDeviceCandidateSet first,
+            // so sN handles become real ids before phase member validation.
+            DeviceCandidateRecord record = candidate(setIds.get(index).asText());
+            setIds.set(index, mapper.getNodeFactory().textNode(record.candidateSetId()));
+            indexHandles(record, handleIndex);
+        }
+        if (handleIndex.isEmpty()) return;
+        for (JsonNode value : request.path("phases")) {
+            if (!(value instanceof ObjectNode phase)) continue;
+            for (JsonNode action : phase.withArray("actions")) {
+                if (action instanceof ObjectNode node && node.path("deviceId").isTextual()) {
+                    node.put("deviceId", handleIndex.getOrDefault(node.path("deviceId").asText(),
+                            node.path("deviceId").asText()));
+                }
+            }
+            ObjectNode read = (ObjectNode) phase.get("read");
+            if (read != null && read.path("deviceIds").isArray()) {
+                ArrayNode ids = (ArrayNode) read.get("deviceIds");
+                for (int index = 0; index < ids.size(); index++) {
+                    if (ids.get(index).isTextual()) ids.set(index, mapper.getNodeFactory().textNode(
+                            handleIndex.getOrDefault(ids.get(index).asText(), ids.get(index).asText())));
+                }
+            }
+            ObjectNode lighting = (ObjectNode) phase.get("lighting");
+            if (lighting == null) continue;
+            if (lighting.path("candidateSetId").isTextual() && !lighting.path("candidateSetId").asText().isBlank()) {
+                lighting.put("candidateSetId", candidate(lighting.path("candidateSetId").asText()).candidateSetId());
+            }
+            if (lighting.path("excludeCandidateSetIds").isArray()) {
+                ArrayNode exclusions = (ArrayNode) lighting.get("excludeCandidateSetIds");
+                for (int index = 0; index < exclusions.size(); index++) {
+                    if (exclusions.get(index).isTextual() && !exclusions.get(index).asText().isBlank()) {
+                        exclusions.set(index, mapper.getNodeFactory().textNode(
+                                candidate(exclusions.get(index).asText()).candidateSetId()));
+                    }
+                }
+            }
+            if (lighting.path("excludedDeviceIds").isArray()) {
+                ArrayNode ids = (ArrayNode) lighting.get("excludedDeviceIds");
+                for (int index = 0; index < ids.size(); index++) {
+                    if (ids.get(index).isTextual()) ids.set(index, mapper.getNodeFactory().textNode(
+                            handleIndex.getOrDefault(ids.get(index).asText(), ids.get(index).asText())));
+                }
+            }
+        }
+    }
+
+    private void indexHandles(DeviceCandidateRecord record, Map<String, String> handleIndex) {
+        if (record.handle() == null || record.handle().isBlank()) return;
+        for (int position = 0; position < record.members().size(); position++) {
+            handleIndex.putIfAbsent(record.deviceHandle(position), record.members().get(position).id());
+        }
+    }
+
+    /** Runtime pi-runner.ts expandLightingScope: complete candidate range minus explicit subsets. */
+    private void lighting(ObjectNode phase, ObjectNode request) {
+        if (!phase.path("actions").isEmpty() || phase.has("read")) {
+            throw invalid("照明范围检查点不能混用逐设备操作或只读目标");
+        }
+        JsonNode lighting = phase.path("lighting");
+        String includedId = lighting.path("candidateSetId").asText();
+        if (!texts(request.path("candidateSetIds")).contains(includedId)) {
+            throw invalid("照明范围必须来自任务引用的候选集");
+        }
+        DeviceCandidateRecord included = candidate(includedId);
+        if (included.members().isEmpty() || included.members().size() != included.totalMatches()) {
+            throw scopeFailure("TASK_SCOPE_MEMBERS_INCOMPLETE", "照明候选成员未完整持有，请重新核实完整范围",
+                    included, "members_incomplete", "find_device_candidates");
+        }
+        if (!"lighting".equals(included.query().kind())) {
+            throw scopeFailure("TASK_SCOPE_KIND_MISMATCH", "照明检查点引用了其他类型候选，请查询照明设备",
+                    included, "kind_mismatch", "find_device_candidates");
+        }
+        if (!included.permitsScopeExpansion(false)) {
+            throw scopeFailure("TASK_SCOPE_UNRESOLVED",
+                    "照明候选仅为模糊或未确定范围，不能直接编排整个集合；请补查明确设备或澄清范围，不要重复相同地点检索",
+                    included, "scope_unresolved", "get_device_details");
+        }
+        Map<String, AuthorizedDevice> members = new LinkedHashMap<>();
+        for (AuthorizedDevice device : included.members()) {
+            verifyMember(device);
+            members.put(device.id(), device);
+        }
+        Set<String> excluded = new LinkedHashSet<>();
+        Set<String> excludedLabels = new LinkedHashSet<>();
+        if (!lighting.path("excludedDeviceIds").isEmpty()) excluded.addAll(texts(lighting.path("excludedDeviceIds")));
+        if (!lighting.path("excludeCandidateSetIds").isEmpty()) {
+            for (String id : texts(lighting.path("excludeCandidateSetIds"))) {
+                DeviceCandidateRecord subset = candidate(id);
+                if (subset.members().isEmpty() || subset.members().size() != subset.totalMatches()
+                        || !"lighting".equals(subset.query().kind()) || !subset.permitsScopeExpansion(true)) {
+                    throw scopeFailure("TASK_EXCLUSION_UNRESOLVED", "照明排除范围必须是完整且精确查明的子集",
+                            subset, "exclusion_unresolved", "get_device_details");
+                }
+                excludedLabels.add(scopeLabel(subset, "已核验排除范围"));
+                for (AuthorizedDevice device : subset.members()) {
+                    verifyMember(device);
+                    excluded.add(device.id());
+                }
+            }
+        }
+        if (!members.keySet().containsAll(excluded)) throw invalid("排除范围不完全属于照明包含范围");
+        if (!lighting.path("excludedDeviceIds").isEmpty()) {
+            for (String id : texts(lighting.path("excludedDeviceIds"))) {
+                String name = members.get(id).name();
+                excludedLabels.add(name == null || name.isBlank() ? id : name);
+            }
+        }
+        int command;
+        try {
+            command = ltd.qianc.iotagent.iot.DeviceCommands.lightingCloseOrOpen(lighting.path("closeOrOpen"));
+        } catch (IllegalArgumentException invalidCommand) {
+            throw invalid("照明开关指令无效");
+        }
+        ArrayNode actions = mapper.createArrayNode();
+        for (AuthorizedDevice device : members.values()) {
+            if (excluded.contains(device.id())) continue;
+            ObjectNode action = actions.addObject().put("deviceId", device.id()).put("kind", "lighting");
+            action.putObject("command").put("closeOrOpen", command);
+        }
+        if (actions.isEmpty()) throw invalid("排除后没有可安排的目标设备");
+        phase.set("actions", actions);
+        ObjectNode facts = phase.putObject("scopeFacts");
+        facts.putArray("includedScopes").add(scopeLabel(included, "已核验照明范围"));
+        facts.set("excludedScopes", mapper.valueToTree(excludedLabels));
+        facts.put("targetCount", actions.size()).put("excludedCount", excluded.size());
+        phase.remove("lighting");
+    }
+
     private void targets(ObjectNode phase) {
-        if (identity.source() != IotSource.COMPANY) throw invalid("公司范围目标不能用于办公室来源");
+        if (identity.source() != IotSourceEnum.COMPANY) throw invalid("公司范围目标不能用于办公室来源");
         if (!phase.path("targets").isArray() || phase.path("targets").isEmpty()) throw invalid("任务缺少目标范围");
-        if (!phase.path("actions").isEmpty() || phase.has("read")) throw invalid("范围目标不能混用逐设备动作或只读检查");
+        if (!phase.path("actions").isEmpty() || phase.has("read") || phase.has("lighting")) {
+            throw invalid("范围目标不能混用逐设备动作、只读检查或照明候选范围");
+        }
         Map<String, ObjectNode> actions = new LinkedHashMap<>();
         List<String> includedLabels = new ArrayList<>(), excludedLabels = new ArrayList<>();
         Set<String> excludedIds = new LinkedHashSet<>();
@@ -80,6 +231,11 @@ final class TaskTargetResolver {
             if ((all ? 1 : 0) + (locations ? 1 : 0) + (selection ? 1 : 0) != 1) {
                 throw invalid("每个目标需且只能声明全部授权、明确地点或精确选择");
             }
+            Set<String> fields = selection ? Set.of("kind", "command", "selection")
+                    : Set.of("kind", "command", "allAuthorized", "scopeTexts", "excludeTexts");
+            target.fieldNames().forEachRemaining(field -> {
+                if (!fields.contains(field)) throw invalid("目标包含不支持的字段：" + field);
+            });
             if (!target.path("command").isObject() || target.path("command").isEmpty()) throw invalid("任务缺少目标动作");
             Map<String, AuthorizedDevice> members = new LinkedHashMap<>();
             if (all) {
@@ -94,11 +250,13 @@ final class TaskTargetResolver {
                 JsonNode chosen = target.path("selection");
                 DeviceCandidateRecord record = candidate(chosen.path("candidateSetId").asText());
                 for (String id : texts(chosen.path("deviceIds"))) {
-                    AuthorizedDevice device = record.members().stream().filter(d -> id.equals(d.id())).findFirst()
+                    // Runtime company-control-task.ts: selection refs resolve inside their own set only.
+                    String resolved = record.resolveDeviceRef(id.trim());
+                    AuthorizedDevice device = record.members().stream().filter(d -> resolved.equals(d.id())).findFirst()
                             .orElseThrow(() -> invalid("所选设备不属于声明的候选集"));
                     if (!kind.equals(device.kind())) throw invalid("目标类型与候选设备不一致");
                     verifyMember(device);
-                    members.put(id, device);
+                    members.put(resolved, device);
                 }
                 includedLabels.add("精确选择");
             }
@@ -113,32 +271,6 @@ final class TaskTargetResolver {
                         targetExcluded.add(device.id());
                     }
                     excludedLabels.add(location);
-                }
-            }
-            if (target.has("excludeCandidateSetIds") && !target.path("excludeCandidateSetIds").isEmpty()) {
-                // An exclusion may reference an already-discovered exact candidate
-                // set (Runtime excludeCandidateSetIds): the server re-verifies its
-                // binding, completeness and resolution, requires every member to
-                // belong to this target's included members, and unions the result
-                // with location exclusions — a reference never widens the scope.
-                if (selection) throw invalid("精确选择不能混用地点排除");
-                for (String id : texts(target.path("excludeCandidateSetIds"))) {
-                    DeviceCandidateRecord record = candidate(id);
-                    if (!"exact".equals(record.resolutionMode()) || record.members().isEmpty()
-                            || record.members().size() != record.totalMatches()) {
-                        throw invalid("排除候选集必须是已核验的完整精确范围：" + id);
-                    }
-                    String label = record.query().scopeText();
-                    if ((label == null || label.isBlank()) && !record.query().scopeTerms().isEmpty()) {
-                        label = String.join("、", record.query().scopeTerms());
-                    }
-                    for (AuthorizedDevice device : record.members()) {
-                        if (!kind.equals(device.kind())) throw invalid("排除范围类型与目标不一致");
-                        if (!members.containsKey(device.id())) throw invalid("排除范围不完全属于包含目标");
-                        excludedIds.add(device.id());
-                        targetExcluded.add(device.id());
-                    }
-                    excludedLabels.add(label == null || label.isBlank() ? "已核验排除范围" : label);
                 }
             }
             for (AuthorizedDevice device : members.values()) {
@@ -159,165 +291,14 @@ final class TaskTargetResolver {
         excludedIds.removeAll(actions.keySet());
         scopeFacts.put("targetCount", fixed.size()).put("excludedCount", excludedIds.size());
         phase.set("scopeFacts", scopeFacts);
-        preflight(phase, fixed);
         // Confirmation and recurring materialization must retain fixed members, never re-expand live scope.
         phase.remove("targets");
     }
 
-    /**
-     * Runtime control-task preflight (company-control-task.ts): every expanded
-     * member is capability- and binding-checked before the proposal exists — a
-     * truly incapable or read-only target rejects the proposal. Current states
-     * are only RECORDED (satisfied / unreadable / needs dispatch); already
-     * satisfied or unreadable members stay in the future task, never dropped,
-     * because the state at execution time is what counts.
-     */
-    private void preflight(ObjectNode phase, ArrayNode actions) {
-        if (iot == null) throw invalid("当前设备授权范围暂不可用");
-        for (JsonNode action : actions) {
-            String id = action.path("deviceId").asText();
-            AuthorizedDevice device = scope().device(id)
-                    .orElseThrow(() -> invalid("目标已不在当前授权范围：" + id));
-            if (device.observationOnly()) throw invalid("控制目标包含只读设备：" + id);
-            if (device.controlRef() == null || device.controlRef().isBlank()) {
-                throw invalid("控制目标缺少真实控制绑定：" + id);
-            }
-        }
-        // Match Runtime's fixed candidate reads: revalidate only the participating
-        // families, not the entire seven-family catalog again for every phase.
-        requireConversation();
-        Map<String, List<String>> idsByKind = new LinkedHashMap<>();
-        for (JsonNode action : actions) {
-            idsByKind.computeIfAbsent(action.path("kind").asText(), ignored -> new ArrayList<>())
-                    .add(action.path("deviceId").asText());
-        }
-        List<DeviceCapabilityRequest.DeviceCapabilitySelection> selections = new ArrayList<>();
-        for (var group : idsByKind.entrySet()) {
-            var found = iot.findDeviceCandidates(identity,
-                    new DeviceCandidateQuery(group.getKey(), group.getValue(), null, List.of(), List.of(), null, null),
-                    new DeviceCandidateBinding(conversation)).block(timeout);
-            if (found == null) throw invalid("控制目标候选范围暂不可核验");
-            DeviceCandidateRecord record = candidate(found.candidateSetId());
-            if (record.members().size() != group.getValue().size()
-                    || !record.members().stream().map(AuthorizedDevice::id).collect(
-                            java.util.stream.Collectors.toSet()).equals(new LinkedHashSet<>(group.getValue()))) {
-                throw invalid("控制目标候选成员发生变化，请重新准备");
-            }
-            selections.add(new DeviceCapabilityRequest.DeviceCapabilitySelection(
-                    record.candidateSetId(), group.getValue()));
-        }
-        DeviceCapabilityRequest fixed = new DeviceCapabilityRequest(selections);
-        DeviceCapabilityInspection inspection;
-        try {
-            inspection = iot.inspectDeviceCapabilities(identity, fixed, conversation).block(timeout);
-        } catch (RuntimeException failure) {
-            throw invalid("控制目标能力暂不可核验，请稍后重试");
-        }
-        if (inspection == null) throw invalid("控制目标能力暂不可核验，请稍后重试");
-        Map<String, DeviceCapabilityInspection.DeviceCapability> capabilities = new LinkedHashMap<>();
-        for (DeviceCapabilityInspection.DeviceCapability capability : inspection.devices()) {
-            capabilities.put(capability.deviceId(), capability);
-        }
-        for (JsonNode action : actions) {
-            String id = action.path("deviceId").asText();
-            String kind = action.path("kind").asText();
-            DeviceCapabilityInspection.DeviceCapability capability = capabilities.get(id);
-            if (capability == null || !kind.equalsIgnoreCase(capability.kind())) {
-                throw invalid("控制目标包含未核验的控制能力：" + id);
-            }
-            if ("lighting".equals(kind)) {
-                int closeOrOpen = action.path("command").path("closeOrOpen").asInt(-1);
-                boolean supported = capability.supportedCommands().stream().anyMatch(command ->
-                        command.get("closeOrOpen") instanceof Number number && number.intValue() == closeOrOpen);
-                if (!supported) throw invalid("控制目标不支持下达该照明指令：" + id);
-            } else if ("ac".equals(kind)) {
-                if (capability.parameters() == null) throw invalid("控制目标不支持下达空调指令：" + id);
-            } else {
-                throw invalid("设备类型不可控：" + id);
-            }
-        }
-        // A future action is authorized by its verified binding/capability, not today's
-        // availability. Retain unknown members; authentication and scope errors still fail closed.
-        DeviceStateReadResult states = iot.readDeviceStates(identity, fixed, conversation)
-                .timeout(timeout)
-                .onErrorResume(failure -> failure instanceof ltd.qianc.iotagent.iot.UpstreamUnavailableException
-                                || failure instanceof java.util.concurrent.TimeoutException,
-                        failure -> reactor.core.publisher.Mono.empty())
-                .block();
-        int satisfied = 0, unreadable = 0;
-        for (JsonNode action : actions) {
-            Object state = states == null ? null : states.states().get(action.path("deviceId").asText());
-            if (!readable(action, state)) unreadable++;
-            else if (satisfied(action, state)) satisfied++;
-        }
-        ObjectNode preflight = phase.putObject("preflight");
-        preflight.setAll((ObjectNode) phase.get("scopeFacts"));
-        preflight.put("observedAt", states == null || states.observedAt() == null ? "" : states.observedAt());
-        preflight.put("targetCount", actions.size());
-        preflight.put("alreadySatisfiedCount", satisfied);
-        preflight.put("unreadableCount", unreadable);
-        preflight.put("needsDispatchCount", actions.size() - satisfied - unreadable);
-    }
-
-    private static boolean readable(JsonNode action, Object state) {
-        JsonNode command = action.path("command");
-        if ("lighting".equals(action.path("kind").asText())) {
-            return state instanceof Boolean || state instanceof Number
-                    || state instanceof Map<?, ?> map && map.containsKey("closeOrOpen");
-        }
-        if (!(state instanceof Map<?, ?> map)) return false;
-        for (String field : iterable(command.fieldNames())) {
-            Object value = map.get(field);
-            switch (field) {
-                case "power" -> {
-                    if (!"on".equals(value) && !"off".equals(value)) return false;
-                }
-                case "temperature" -> {
-                    if (!(value instanceof Number number) || !Double.isFinite(number.doubleValue())) return false;
-                }
-                case "mode", "fanSpeed" -> {
-                    if (!(value instanceof String text) || text.isBlank()) return false;
-                }
-                default -> {
-                    return false;
-                }
-            }
-        }
-        return true;
-    }
-
-    private static boolean satisfied(JsonNode action, Object state) {
-        JsonNode command = action.path("command");
-        if ("lighting".equals(action.path("kind").asText())) {
-            boolean wantOn = command.path("closeOrOpen").asInt(0) == 1;
-            if (state instanceof Boolean bool) return bool == wantOn;
-            if (state instanceof Number number) return number.intValue() == (wantOn ? 1 : 0);
-            if (state instanceof Map<?, ?> map && map.get("closeOrOpen") instanceof Number number) {
-                return number.intValue() == (wantOn ? 1 : 0);
-            }
-            return false;
-        }
-        if (!(state instanceof Map<?, ?> map)) return false;
-        for (String field : iterable(command.fieldNames())) {
-            Object value = map.get(field);
-            JsonNode expected = command.get(field);
-            boolean matches = expected != null && expected.isNumber() && value instanceof Number number
-                    ? Double.compare(number.doubleValue(), expected.asDouble()) == 0
-                    : value != null && value.toString().equals(expected.asText(""));
-            if (!matches) return false;
-        }
-        return true;
-    }
-
-    private static Iterable<String> iterable(java.util.Iterator<String> values) {
-        List<String> result = new ArrayList<>();
-        values.forEachRemaining(result::add);
-        return result;
-    }
 
     private void readAll(ObjectNode phase, ObjectNode request) {
         if (!(phase.get("read") instanceof ObjectNode read)) return;
-        if (read.path("agent").isObject() && identity.source() != IotSource.COMPANY) {
+        if (read.path("agent").isObject() && identity.source() != IotSourceEnum.COMPANY) {
             throw invalid("用电检查点仅用于公司来源");
         }
         boolean explicitAll = read.path("all").isBoolean() && read.path("all").asBoolean();
@@ -337,8 +318,12 @@ final class TaskTargetResolver {
                 : read.has("alertWindow") || read.has("alertDays") ? "safety"
                 : read.path("agent").isObject() || request.path("reportRequest").path("kind").asText("").equals("energy") ? "energy" : "";
         if (kind.isBlank()) throw invalid("全范围只读缺少明确的观察类型");
+        if (identity.source() == IotSourceEnum.OFFICE && focusRegionId.isBlank()) {
+            throw invalid("办公室全范围任务需要服务器绑定的关注区域");
+        }
         ArrayNode devices = mapper.createArrayNode();
         for (AuthorizedDevice device : scope().devices()) {
+            if (identity.source() == IotSourceEnum.OFFICE && !device.officeIds().contains(focusRegionId)) continue;
             if (kind.equals(device.kind())) devices.addObject().put("id", device.id()).put("kind", kind);
         }
         if (devices.isEmpty()) throw invalid("当前授权范围没有可观察设备");
@@ -485,10 +470,6 @@ final class TaskTargetResolver {
         if (scope == null) {
             scope = iot.loadAuthorizedDeviceScope(identity).block(timeout);
             if (scope == null || scope.source() != identity.source() || !identity.equals(scope.identity())) throw invalid("当前设备授权范围暂不可用");
-            if (identity.source() == IotSource.OFFICE) {
-                if (focusRegionId.isBlank()) throw invalid("办公室全范围任务需要服务器绑定的关注区域");
-                scope = scope.retain(device -> device.officeIds().contains(focusRegionId));
-            }
         }
         return scope;
     }
@@ -496,6 +477,11 @@ final class TaskTargetResolver {
     private void requireConversation() {
         scope();
         if (conversation.isBlank()) throw invalid("任务缺少服务器绑定的会话");
+    }
+
+    private static String scopeLabel(DeviceCandidateRecord record, String fallback) {
+        String label = record.query().scopeText();
+        return label == null || label.isBlank() ? fallback : label.trim();
     }
 
     private static List<String> texts(JsonNode value) {
@@ -506,6 +492,17 @@ final class TaskTargetResolver {
             if (!result.contains(item.asText().trim())) result.add(item.asText().trim());
         }
         return result;
+    }
+
+    private static BusinessException scopeFailure(String code, String message, DeviceCandidateRecord record,
+                                                   String reason, String nextTool) {
+        Map<String, Object> recovery = new LinkedHashMap<>();
+        recovery.put("reason", reason);
+        if (record.handle() != null && !record.handle().isBlank()) recovery.put("candidateSet", record.handle());
+        recovery.put("resolution", record.resolutionMode());
+        recovery.put("nextTool", nextTool);
+        recovery.put("retrySameScope", false);
+        return new BusinessException(code, message, recovery, 422);
     }
 
     private static BusinessException invalid(String message) {

@@ -46,15 +46,24 @@ public final class AgentBusinessEngineFactory {
 
     public static AgentToolBridge toolBridge(ConversationFacade conversations, IotAdapter iot,
             ObservationAdapter observations, TaskProjectionStore projections, ActionDraftFacade actions,
-            TaskFacade tasks, ObjectMapper mapper, ReportGenerationPort reports) {
+            TaskFacade tasks, ObjectMapper mapper, ReportGenerationPort reports, ReportService savedReports) {
         return new AgentBusinessToolDispatcher(conversations, iot, observations, projections, actions, tasks,
-                mapper, reports);
+                mapper, reports, savedReports);
+    }
+
+    /** Production construction: the dispatcher owns time-sensitive alert window validation. */
+    public static AgentToolBridge toolBridge(ConversationFacade conversations, IotAdapter iot,
+            ObservationAdapter observations, TaskProjectionStore projections, ActionDraftFacade actions,
+            TaskFacade tasks, ObjectMapper mapper, ReportGenerationPort reports, ReportService savedReports,
+            Clock clock) {
+        return new AgentBusinessToolDispatcher(conversations, iot, observations, projections, actions, tasks,
+                mapper, reports, savedReports, clock);
     }
 
     /** Convenience for local contract fixtures that only exercise a subset of tools. */
     public static AgentToolBridge toolBridge(ConversationFacade conversations, IotAdapter iot,
             ActionDraftFacade actions, TaskFacade tasks, ObjectMapper mapper, ReportGenerationPort reports) {
-        return toolBridge(conversations, iot, null, null, actions, tasks, mapper, reports);
+        return toolBridge(conversations, iot, null, null, actions, tasks, mapper, reports, null);
     }
 
     public static AgentCheckpointBridge checkpointBridge(ObjectMapper mapper, ObservationAdapter observations,

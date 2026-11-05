@@ -7,8 +7,8 @@ services:
     environment:
       MYSQL_DATABASE: iot_agent_business
       MYSQL_USER: iot_agent_business
-      MYSQL_PASSWORD: ${BUSINESS_MYSQL_PASSWORD:?Set BUSINESS_MYSQL_PASSWORD in the ignored local .env}
-      MYSQL_ROOT_PASSWORD: ${BUSINESS_MYSQL_ROOT_PASSWORD:?Set BUSINESS_MYSQL_ROOT_PASSWORD in the ignored local .env}
+      MYSQL_PASSWORD: ${BUSINESS_MYSQL_PASSWORD:?Inject BUSINESS_MYSQL_PASSWORD explicitly}
+      MYSQL_ROOT_PASSWORD: ${BUSINESS_MYSQL_ROOT_PASSWORD:?Inject BUSINESS_MYSQL_ROOT_PASSWORD explicitly}
       TZ: Asia/Shanghai
     ports:
       - "127.0.0.1:3338:3306"

@@ -61,8 +61,17 @@ public final class AdminBoundaryFilter extends OncePerRequestFilter {
 
     static String token(HttpServletRequest request) {
         Cookie[] cookies = request.getCookies();
-        if (cookies == null) return null;
-        for (Cookie cookie : cookies) if (AdminSessionManager.COOKIE.equals(cookie.getName())) return cookie.getValue();
+        if (cookies != null) {
+            for (Cookie cookie : cookies) {
+                if (AdminSessionManager.COOKIE.equals(cookie.getName())) return cookie.getValue();
+            }
+        }
+        String header = request.getHeader("Cookie");
+        if (header == null) return null;
+        for (String part : header.split(";")) {
+            String[] pair = part.trim().split("=", 2);
+            if (pair.length == 2 && AdminSessionManager.COOKIE.equals(pair[0])) return pair[1];
+        }
         return null;
     }
 

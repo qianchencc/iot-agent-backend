@@ -25,6 +25,38 @@ class ConversationFacadeContractTest {
     private static final PrincipalInfo PRINCIPAL = new PrincipalInfo("Bearer test-token", "TENANT-1");
 
     @Test
+    void confirmationRecoveryKeepsOriginalTurnAndCannotDuplicateDecisionRun() {
+        MemoryConversationStore store = new MemoryConversationStore();
+        MemoryEventStore events = new MemoryEventStore();
+        AtomicInteger runs = new AtomicInteger();
+        AtomicReference<ConversationFacade> owner = new AtomicReference<>();
+        AgentEngineBridge bridge = new AgentEngineBridge() {
+            public CompletionStage<Void> start(AgentRunRequest request, Consumer<AgentEngineEvent> sink) {
+                runs.incrementAndGet();
+                boolean continuation = owner.get().isContinuation(request.toolContextId(),
+                        request.conversationId(), request.turnId(), request.runId());
+                assertThat(continuation).isEqualTo(runs.get() == 2);
+                sink.accept(new AgentEngineEvent(request.runId(), request.conversationId(), request.turnId(),
+                        "run.completed", Map.of()));
+                return CompletableFuture.completedFuture(null);
+            }
+            public CompletionStage<Void> cancel(String id) { return CompletableFuture.completedFuture(null); }
+        };
+        ConversationFacade facade = new ConversationFacade(new ObjectMapper(), store, events, bridge,
+                Runnable::run, mock(ConversationDrafts.class), (p, id, source) -> Map.of("status", "EXPIRED"));
+        owner.set(facade);
+        String id = (String) facade.create(PRINCIPAL, "company").get("id");
+        facade.message(PRINCIPAL, id, "三分钟后关闭公司的灯", "original", "company");
+        assertThat(facade.continueTaskConfirmation(PRINCIPAL, id, "turn-1", "task-1", "company",
+                "TASK_TIME_PASSED", "原定时间已过，需要新的执行时间")).isTrue();
+        assertThat(facade.continueTaskConfirmation(PRINCIPAL, id, "turn-1", "task-1", "company",
+                "TASK_TIME_PASSED", "原定时间已过，需要新的执行时间")).isFalse();
+        assertThat(store.turns(id)).extracting(ConversationTurn::content).containsExactly("三分钟后关闭公司的灯");
+        assertThat(runs.get()).isEqualTo(2);
+        assertThat(events.read(id)).extracting(ConversationEventFact::sequence).containsExactly(1L, 2L, 3L);
+    }
+
+    @Test
     void bridgeEventsArePersistedWithLocalMonotonicSequenceAndVerifiedSource() {
         MemoryConversationStore conversations = new MemoryConversationStore();
         MemoryEventStore events = new MemoryEventStore();

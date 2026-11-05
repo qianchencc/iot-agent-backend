@@ -80,23 +80,104 @@ class AdminConfigurationContractTest {
     }
 
     @Test
-    void anExistingRunSnapshotStaysStableWhileNewRunsUseCommittedPolicy() throws Exception {
-        Path file = Files.createTempDirectory("admin-run-policy").resolve("config.bin");
+    void liveFieldsApplyToNewSnapshotsWhileRestartFieldsWaitForProcessRestart() throws Exception {
+        Path file = Files.createTempDirectory("admin-live-policy").resolve("config.bin");
         AdminConfigurationStore store = AdminConfigurationFactory.encryptedFile(
                 new ObjectMapper(), file, new byte[32], validSettings("retained-secret"), Set.of());
         Map<String, Object> running = store.active();
 
-        assertThat(store.save(1, Map.of("maxToolCalls", 1000, "officeInstructions", "回答需说明数据范围"), "operator").status())
+        assertThat(store.save(1, Map.of("maxToolCalls", 1000, "heartbeatMs", 0), "operator").status())
                 .isEqualTo(200);
-        assertThat(store.active()).containsEntry("maxToolCalls", 1000).containsEntry("officeInstructions", "回答需说明数据范围");
-        assertThat(running).containsEntry("maxToolCalls", 10).containsEntry("officeInstructions", "");
+        assertThat(store.active()).containsEntry("maxToolCalls", 1000).containsEntry("heartbeatMs", 0);
+        assertThat(running).containsEntry("maxToolCalls", 10).containsEntry("heartbeatMs", 15000);
         assertThat(store.pendingRestart()).isFalse();
 
-        assertThat(store.save(2, Map.of("heartbeatMs", 0), "operator").status()).isEqualTo(200);
-        assertThat(store.active()).containsEntry("heartbeatMs", 15000).containsEntry("maxToolCalls", 1000);
+        assertThat(store.save(2, Map.of("langfuseEnabled", true, "langfuseBaseUrl", "https://langfuse.example.test",
+                "langfusePublicKey", "pk-lf-test", "langfuseSecretKey", "sk-lf-test"), "operator").status())
+                .isEqualTo(200);
+        assertThat(store.active()).containsEntry("langfuseEnabled", false);
         assertThat(store.pendingRestart()).isTrue();
-        assertThat(store.changes()).extracting(AdminConfigurationStore.ChangeRecord::changedFields)
-                .contains(java.util.List.of("heartbeatMs"));
+        AdminConfigurationStore.ConfigurationView view = store.view(new AdminConfigurationStore.DeploymentInfo(
+                "127.0.0.1", 3200, "test", "test", "UTC"));
+        assertThat(view.changedFields()).contains("langfuseEnabled", "langfuseBaseUrl");
+        assertThat(view.secrets().get("langfuseSecretKey")).containsEntry("configured", true)
+                .containsEntry("activeConfigured", false);
+        assertThat(view.saved()).doesNotContainKey("langfuseSecretKey").doesNotContainKey("modelApiKey");
+        store.close();
+    }
+
+    @Test
+    void deploymentReportedKnobsRejectSavesAndNeverAppearAsStoreValues() throws Exception {
+        Path file = Files.createTempDirectory("admin-deployment").resolve("config.bin");
+        AdminConfigurationStore store = AdminConfigurationFactory.encryptedFile(
+                new ObjectMapper(), file, new byte[32], validSettings("secret"), Set.of());
+        var deployment = new AdminConfigurationStore.DeploymentInfo("127.0.0.1", 3200, "test", "test", "UTC");
+
+        for (String field : new String[] {"draftTtlMs", "readbackWaitMs", "controlTimeoutMs"}) {
+            var rejected = store.save(1, Map.of(field, 30000), "operator");
+            assertThat(rejected.status()).isEqualTo(400);
+            assertThat(rejected.code()).isEqualTo("CONFIG_READONLY_DEPLOYMENT");
+            assertThat(rejected.issues()).containsExactly(field);
+        }
+        assertThat(store.save(1, Map.of("modelId", "changed-model"), "operator").status()).isEqualTo(200);
+        assertThat(store.view(deployment).saved())
+                .doesNotContainKeys("draftTtlMs", "readbackWaitMs", "controlTimeoutMs");
+        assertThat(store.view(deployment).active())
+                .doesNotContainKeys("draftTtlMs", "readbackWaitMs", "controlTimeoutMs");
+        assertThat(store.pendingRestart()).isFalse();
+        assertThat(store.restore(2, 1, "operator").status()).isEqualTo(200);
+        assertThat(store.view(deployment).saved())
+                .doesNotContainKeys("draftTtlMs", "readbackWaitMs", "controlTimeoutMs");
+        store.close();
+    }
+
+    @Test
+    void firstBootWithBlankModelConnectionSeedsACompletableRevision() throws Exception {
+        Path file = Files.createTempDirectory("admin-blank-seed").resolve("config.bin");
+        Map<String, Object> initial = validSettings("");
+        initial.put("modelBaseUrl", "");
+        initial.put("modelId", "");
+
+        AdminConfigurationStore store = AdminConfigurationFactory.encryptedFile(
+                new ObjectMapper(), file, new byte[32], initial, Set.of());
+        AdminConfigurationStore.ConfigurationView view = store.view(
+                new AdminConfigurationStore.DeploymentInfo("127.0.0.1", 3200, "test", "test", "UTC"));
+        assertThat(view.revision()).isEqualTo(1);
+        assertThat(view.secrets().get("modelApiKey")).containsEntry("configured", false);
+
+        assertThat(store.save(1, Map.of("modelBaseUrl", "https://model.example.test/v1", "modelId", "m",
+                "modelApiKey", "completed-key"), "operator").status()).isEqualTo(200);
+        assertThat(store.active()).containsEntry("modelId", "m");
+        store.close();
+
+        Map<String, Object> invalidSeed = validSettings("secret");
+        invalidSeed.put("contextWindow", 5);
+        assertThatThrownBy(() -> AdminConfigurationFactory.encryptedFile(
+                new ObjectMapper(), Files.createTempDirectory("admin-invalid-seed").resolve("config.bin"),
+                new byte[32], invalidSeed, Set.of()))
+                .isInstanceOf(ltd.qianc.iotagent.error.BusinessException.class);
+    }
+
+    @Test
+    void viewServesTheSingleFieldCatalogWithHonestEffectModes() throws Exception {
+        Path file = Files.createTempDirectory("admin-catalog").resolve("config.bin");
+        AdminConfigurationStore store = AdminConfigurationFactory.encryptedFile(
+                new ObjectMapper(), file, new byte[32], validSettings("secret"), Set.of());
+        var view = store.view(new AdminConfigurationStore.DeploymentInfo("127.0.0.1", 3200, "test", "test", "UTC"));
+
+        assertThat(view.fields()).extracting(AdminSettingField::name)
+                .doesNotContain("catalogTtlMs", "authoritativeStateTtlMs", "actionIdTtlMs", "energyReadTtlMs")
+                .contains("heartbeatMs", "scanIntervalMs", "langfuseEnabled");
+        assertThat(view.fields().stream()
+                .filter(field -> AdminSettingField.READONLY.equals(field.effect()))
+                .map(AdminSettingField::name).toList())
+                .containsExactlyInAnyOrder("draftTtlMs", "readbackWaitMs", "controlTimeoutMs");
+        assertThat(view.fields()).filteredOn(AdminSettingField::secret)
+                .extracting(AdminSettingField::name)
+                .containsExactlyInAnyOrder("modelApiKey", "langfusePublicKey", "langfuseSecretKey");
+        assertThat(view.fields()).filteredOn(field -> AdminSettingField.LIVE.equals(field.effect()))
+                .allSatisfy(field -> assertThat(field.consumer()).isNotBlank());
+        store.close();
     }
 
     @Test

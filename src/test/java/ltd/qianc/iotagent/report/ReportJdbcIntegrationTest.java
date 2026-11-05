@@ -12,7 +12,7 @@ import ltd.qianc.iotagent.conversation.ReportGenerationPort;
 import ltd.qianc.iotagent.iot.AuthorizedDevice;
 import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
 import ltd.qianc.iotagent.iot.IotAdapter;
-import ltd.qianc.iotagent.iot.IotSource;
+import ltd.qianc.iotagent.iot.IotSourceEnum;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
@@ -29,7 +29,7 @@ import reactor.core.publisher.Mono;
 @EnabledIfEnvironmentVariable(named = "AGENT_MYSQL_URL", matches = ".+")
 class ReportJdbcIntegrationTest {
     private final RequestIdentity identity = new RequestIdentity("Bearer report-jdbc", "REPORT_JDBC_TEST",
-            IotSource.COMPANY, "owner-report-jdbc");
+            IotSourceEnum.COMPANY, "owner-report-jdbc");
 
     @Autowired
     private ReportFactStore facts;
@@ -64,7 +64,7 @@ class ReportJdbcIntegrationTest {
                 public RequestIdentity identity() { return request; }
 
                 @Override
-                public IotSource source() { return IotSource.COMPANY; }
+                public IotSourceEnum source() { return IotSourceEnum.COMPANY; }
 
                 @Override
                 public List<AuthorizedDevice> devices() {

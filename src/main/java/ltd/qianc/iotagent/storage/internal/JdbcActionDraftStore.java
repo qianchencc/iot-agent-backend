@@ -10,7 +10,7 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 
-public final class JdbcActionDraftStore extends JdbcFactSupport implements ActionDraftStore {
+public final class JdbcActionDraftStore extends AbstractJdbcFactSupport implements ActionDraftStore {
     public JdbcActionDraftStore(JdbcTemplate jdbc, TransactionTemplate transactions, ObjectMapper mapper) { super(jdbc, transactions, mapper); }
     @Override public ActionDraftFact create(ActionDraftFact draft) {
         try {

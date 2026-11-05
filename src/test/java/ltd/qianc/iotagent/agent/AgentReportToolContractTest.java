@@ -59,13 +59,13 @@ class AgentReportToolContractTest {
         verify(reports).generate(any(), eq("conversation-1"), eq("turn-1"), eq("turn-1:call-1"), any());
     }
 
+    /** Original create_energy_report contract: title + declarative spec; scope resolves server-side. */
     private static Map<String, Object> reportIntent() {
         Map<String, Object> period = Map.of("kind", "absolute",
                 "from", "2026-11-01T00:00:00+08:00", "to", "2026-11-02T00:00:00+08:00");
-        Map<String, Object> scope = new LinkedHashMap<>();
-        scope.put("level", "floor");
-        scope.put("floor", "26楼");
-        return Map.of("kind", "energy", "title", "用电日报", "period", period,
-                "comparisons", List.of("previousPeriod"), "scope", scope);
+        Map<String, Object> spec = new LinkedHashMap<>();
+        spec.put("period", period);
+        spec.put("comparisons", List.of("previousPeriod"));
+        return Map.of("title", "用电日报", "spec", spec);
     }
 }

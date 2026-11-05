@@ -6,8 +6,10 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -16,6 +18,7 @@ import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicReference;
 import ltd.qianc.iotagent.error.BusinessException;
 import ltd.qianc.iotagent.iot.AuthorizedDevice;
 import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
@@ -32,7 +35,7 @@ import ltd.qianc.iotagent.iot.GatewayAuthorizationException;
 import ltd.qianc.iotagent.iot.IotAdapter;
 import ltd.qianc.iotagent.iot.IotCallPolicy;
 import ltd.qianc.iotagent.iot.IotGatewayRoutes;
-import ltd.qianc.iotagent.iot.IotSource;
+import ltd.qianc.iotagent.iot.IotSourceEnum;
 import ltd.qianc.iotagent.iot.OfficeDeviceSource;
 import ltd.qianc.iotagent.iot.OfficeRegion;
 import ltd.qianc.iotagent.iot.RequestIdentity;
@@ -55,6 +58,26 @@ public final class WebClientIotAdapter implements IotAdapter {
 
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final long READ_SCOPE_REUSE_MILLIS = 5_000L;
+    /**
+     * Runtime worker queue bound: coarse lighting-area reads and AC detail reads
+     * share one queue per call (originally three lanes, user-approved raise to 6).
+     * After a failure no new job is claimed; already-claimed reads drain before the
+     * first failure is rethrown. This is a per-call bound, not a process-wide limit.
+     */
+    private static final int READ_QUEUE_CONCURRENCY = 6;
+    /**
+     * Runtime directory fan-out bound: Office source reads, Company smart/AC leaf
+     * pages and area-tree siblings were unbounded Promise.all fan-outs in the Node
+     * runtime; the migration caps them at 6 per call. Fail-fast like Promise.all.
+     */
+    private static final int DIRECTORY_FANOUT_CONCURRENCY = 6;
+    /**
+     * Office kinds whose scoped office pages carry current state: lighting's
+     * switchStatus boolean, AC's coarse switch/temperature fields and video's
+     * netStatus. Access has no state semantics (runtime keeps it unknown), so its
+     * pages and the account-wide association joins are never state sources.
+     */
+    private static final Set<String> STATE_SOURCE_KINDS = Set.of("lighting", "video", "ac");
     /**
      * The tool bridge blocks state reads for 30s. Keep a business-owned deadline
      * below it so a slow read becomes an explicit 503 instead of an unclassified
@@ -87,9 +110,9 @@ public final class WebClientIotAdapter implements IotAdapter {
     public Mono<AuthorizedDeviceScope> loadAuthorizedDeviceScope(RequestIdentity identity) {
         Objects.requireNonNull(identity, "identity");
         Mono<AuthorizedDeviceScope> request;
-        if (identity.source() == IotSource.OFFICE && routes.hasOfficeDirectoryRoutes()) {
+        if (identity.source() == IotSourceEnum.OFFICE && routes.hasOfficeDirectoryRoutes()) {
             request = loadOfficeScope(identity);
-        } else if (identity.source() == IotSource.COMPANY && routes.hasCompanyCatalogRoutes()) {
+        } else if (identity.source() == IotSourceEnum.COMPANY && routes.hasCompanyCatalogRoutes()) {
             request = loadCompanyScope(identity);
         } else if (routes.path(identity.source()) != null) {
             request = loadPaginatedScope(identity);
@@ -105,7 +128,7 @@ public final class WebClientIotAdapter implements IotAdapter {
         String key = identity.tenantCode() + "\u0000" + identity.ownerKey() + "\u0000" + identity.source();
         // Company keeps control bindings fresh, so only concurrent callers share one load;
         // a completed result is never reused. Office additionally reuses it for 5 seconds.
-        if (identity.source() != IotSource.OFFICE) {
+        if (identity.source() != IotSourceEnum.OFFICE) {
             Mono<AuthorizedDeviceScope> fresh = request
                     .doFinally(signal -> scopeJobs.remove(key))
                     .cache();
@@ -138,7 +161,7 @@ public final class WebClientIotAdapter implements IotAdapter {
             RequestIdentity identity, DeviceCandidateQuery query, DeviceCandidateBinding binding) {
         Objects.requireNonNull(identity, "identity");
         Objects.requireNonNull(query, "query");
-        if (identity.source() != IotSource.OFFICE && identity.source() != IotSource.COMPANY) {
+        if (identity.source() != IotSourceEnum.OFFICE && identity.source() != IotSourceEnum.COMPANY) {
             return Mono.error(new BusinessException("IOT_SOURCE_UNAVAILABLE", "设备候选仅支持 Office 或 Company 来源", 404));
         }
         if (binding != null && candidateStore == null) {
@@ -150,12 +173,20 @@ public final class WebClientIotAdapter implements IotAdapter {
                     String setId = UUID.randomUUID().toString();
                     DeviceCandidateSet set = new DeviceCandidateSet(setId, query, result.visible(),
                             result.complete(), result.totalMatches(), result.groups(),
-                            result.nameHintMatches(), result.unmatchedNameHints(), result.resolution());
+                            result.nameHintMatches(), result.unmatchedNameHints(), result.resolution(), result.members());
                     if (binding != null) {
-                        candidateStore.save(new DeviceCandidateRecord(setId, binding.conversationId(),
-                                identity.tenantCode(), identity.ownerKey(), identity.source(),
-                                scope.catalogFingerprint(), query, result.members(), result.complete(),
-                                result.totalMatches(), Instant.now().toString(), result.resolution().mode()));
+                        DeviceCandidateRecord saved = candidateStore.save(new DeviceCandidateRecord(setId, binding.conversationId(), identity.tenantCode(), identity.ownerKey(), identity.source(), scope.catalogFingerprint(), query, result.members(), result.complete(), result.totalMatches(), Instant.now().toString(), result.resolution().mode(), null));
+                        // Runtime persistCandidateSet: the persisted record owns the sN handle; the
+                        // model-facing set carries device handles parallel to its visible devices.
+                        if (saved.handle() != null && !saved.handle().isBlank()) {
+                            List<String> deviceHandles = new ArrayList<>();
+                            for (int index = 0; index < result.visible().size(); index++) {
+                                deviceHandles.add(saved.deviceHandle(index));
+                            }
+                            set = new DeviceCandidateSet(setId, query, result.visible(), result.complete(),
+                                    result.totalMatches(), result.groups(), result.nameHintMatches(),
+                                    result.unmatchedNameHints(), result.resolution(), saved.handle(), deviceHandles, result.members());
+                        }
                     }
                     return set;
                 }));
@@ -163,7 +194,7 @@ public final class WebClientIotAdapter implements IotAdapter {
 
     private Mono<AuthorizedDeviceScope> scopedForRegion(RequestIdentity identity, String regionId) {
         Mono<AuthorizedDeviceScope> scope = loadAuthorizedDeviceScope(identity);
-        if (identity.source() != IotSource.OFFICE || regionId == null || regionId.isBlank()) return scope;
+        if (identity.source() != IotSourceEnum.OFFICE || regionId == null || regionId.isBlank()) return scope;
         return scope.flatMap(current -> loadOfficeRegions(identity).flatMap(regions -> {
             if (regions.stream().noneMatch(region -> region.id().equals(regionId))) {
                 return Mono.error(new BusinessException("FOCUS_REGION_UNAVAILABLE", "当前关注区域不在用户授权范围内", 403));
@@ -175,7 +206,7 @@ public final class WebClientIotAdapter implements IotAdapter {
     @Override
     public Mono<List<OfficeRegion>> loadOfficeRegions(RequestIdentity identity) {
         Objects.requireNonNull(identity, "identity");
-        if (identity.source() != IotSource.OFFICE || routes.officeMembershipPath() == null) {
+        if (identity.source() != IotSourceEnum.OFFICE || routes.officeMembershipPath() == null) {
             return Mono.error(new BusinessException("OFFICE_REGION_UNAVAILABLE", "Office 区域目录未配置", 404));
         }
         return execute("load Office membership regions", readOfficeMembers(identity)
@@ -205,7 +236,7 @@ public final class WebClientIotAdapter implements IotAdapter {
             return Mono.error(new BusinessException("CANDIDATE_SET_STORE_UNAVAILABLE", "设备候选集事实存储未配置", 503));
         }
         validateCapabilitySelections(request);
-        if (identity.source() == IotSource.COMPANY) {
+        if (identity.source() == IotSourceEnum.COMPANY) {
             return stateReadDeadline(execute("read authorized state for candidate sets",
                     resolveCompanyCandidateDevices(identity, request, conversationId)
                             .flatMap(devices -> readAuthorizedCompanyStates(identity, devices))));
@@ -237,28 +268,30 @@ public final class WebClientIotAdapter implements IotAdapter {
         if (ids.isEmpty() || ids.stream().anyMatch(id -> id == null || id.isBlank()) || ids.size() != ids.stream().distinct().count()) {
             return Mono.error(new BusinessException("INVALID_DEVICE_REFERENCE", "设备引用无效"));
         }
-        if (identity.source() == IotSource.COMPANY) return readCompanyDeviceStates(identity, ids);
-        if (identity.source() != IotSource.OFFICE) return Mono.error(new BusinessException("IOT_SOURCE_UNAVAILABLE", "设备状态仅支持 Office 来源", 404));
+        if (identity.source() == IotSourceEnum.COMPANY) return readCompanyDeviceStates(identity, ids);
+        if (identity.source() != IotSourceEnum.OFFICE) return Mono.error(new BusinessException("IOT_SOURCE_UNAVAILABLE", "设备状态仅支持 Office 来源", 404));
         return execute("read authorized Office device states", loadAuthorizedDeviceScope(identity)
-                .flatMap(scope -> readOfficeRecords(identity).map(records -> {
-                    Map<String, JsonNode> recordsById = new LinkedHashMap<>();
-                    for (JsonNode record : records) {
-                        String id = text(record, "id");
-                        if (id != null) recordsById.putIfAbsent(id, record);
-                    }
-                    Map<String, Object> states = new LinkedHashMap<>();
+                .flatMap(scope -> {
+                    // Runtime readStateObservations resolves every requested id against
+                    // the catalog snapshot before any state read; an out-of-scope device
+                    // must not cost additional state network calls.
+                    Map<String, AuthorizedDevice> requested = new LinkedHashMap<>();
                     for (String id : ids) {
-                        AuthorizedDevice authorized = scope.device(id).orElseThrow(() -> new BusinessException("DEVICE_OUTSIDE_SCOPE", "设备不在当前授权范围内", 403));
-                        states.put(id, stateOf(authorized, recordsById.get(id)));
+                        requested.put(id, scope.device(id).orElseThrow(() ->
+                                new BusinessException("DEVICE_OUTSIDE_SCOPE", "设备不在当前授权范围内", 403)));
                     }
-                    return new DeviceStateReadResult(states, Instant.now().toString());
-                })));
+                    return readOfficeStateRecords(identity, requested.values()).map(recordsById -> {
+                        Map<String, Object> states = new LinkedHashMap<>();
+                        requested.forEach((id, device) -> states.put(id, stateOf(device, recordsById.get(id))));
+                        return new DeviceStateReadResult(states, Instant.now().toString());
+                    });
+                }));
     }
     @Override
     public Mono<DeviceStateReadResult> readObservationStates(
             RequestIdentity identity, List<AuthorizedDevice> devices) {
         Objects.requireNonNull(identity, "identity");
-        if (identity.source() != IotSource.COMPANY) {
+        if (identity.source() != IotSourceEnum.COMPANY) {
             return Mono.error(new BusinessException("IOT_SOURCE_UNAVAILABLE", "观察状态仅支持 Company 来源", 404));
         }
         List<AuthorizedDevice> requested = (devices == null ? List.<AuthorizedDevice>of() : devices).stream()
@@ -272,22 +305,26 @@ public final class WebClientIotAdapter implements IotAdapter {
                 : energyStates(identity, energyDevices)
                         .onErrorResume(error -> error instanceof GatewayAuthorizationException
                                 ? Mono.error(error) : Mono.just(Map.of()));
-        return Flux.fromIterable(requested.stream()
-                        .filter(device -> "environment".equalsIgnoreCase(device.kind())).toList())
-                .concatMap(device -> environmentState(identity, device)
-                        .map(state -> entry(device.id(), state))
-                        .defaultIfEmpty(entry(device.id(), NULL_STATE)))
-                .collectList()
-                .zipWith(energy)
-                .map(tuple -> {
-                    Map<String, Object> states = new LinkedHashMap<>();
-                    for (Map.Entry<String, Object> pair : tuple.getT1()) {
-                        states.put(pair.getKey(), pair.getValue() == NULL_STATE ? null : pair.getValue());
-                    }
-                    states.putAll(tuple.getT2());
-                    for (AuthorizedDevice device : requested) states.putIfAbsent(device.id(), null);
-                    return new DeviceStateReadResult(states, Instant.now().toString());
-                });
+        // The Node runtime looped environment devices serially and only then read the
+        // energy batch (adapter.ts readCompanyObservationStates). Those reads have no
+        // ordering dependency, so this round's bound puts them on one shared six-lane
+        // queue together with the energy batch instead of keeping the serial phase.
+        // Result order stays device order with the energy entries last; an
+        // authorization failure keeps the stop-claiming drain shape.
+        List<Mono<Map<String, Object>>> reads = new ArrayList<>();
+        for (AuthorizedDevice device : requested) {
+            if (!"environment".equalsIgnoreCase(device.kind())) continue;
+            reads.add(environmentState(identity, device).map(state -> {
+                Map<String, Object> entryState = new LinkedHashMap<>();
+                entryState.put(device.id(), state);
+                return entryState;
+            }));
+        }
+        reads.add(energy);
+        return drainQueue(reads).map(states -> {
+            for (AuthorizedDevice device : requested) states.putIfAbsent(device.id(), null);
+            return new DeviceStateReadResult(states, Instant.now().toString());
+        });
     }
 
     private Mono<DeviceStateReadResult> readCompanyDeviceStates(RequestIdentity identity, List<String> ids) {
@@ -322,7 +359,8 @@ public final class WebClientIotAdapter implements IotAdapter {
                 ? Mono.just(Map.of())
                 : readObservationStates(identity, observed).map(DeviceStateReadResult::states);
         // Runtime groups coarse lighting/video reads by kind + area, not by device.
-        // One batch must use one area observation; share the bounded three-read queue with AC.
+        // One batch must use one area observation; the coarse area reads and AC
+        // detail reads share one bounded worker queue.
         record SmartArea(String kind, String code) { }
         Map<SmartArea, List<AuthorizedDevice>> areas = new LinkedHashMap<>();
         List<Mono<Map<String, Object>>> reads = new ArrayList<>();
@@ -356,15 +394,40 @@ public final class WebClientIotAdapter implements IotAdapter {
                 return result;
             }));
         });
-        Mono<Map<String, Object>> smartStates = Flux.fromIterable(reads)
-                .flatMap(read -> read, 3)
-                .collect(LinkedHashMap::new, Map::putAll);
-        return Mono.zip(observationStates, smartStates).map(tuple -> {
-            Map<String, Object> states = new LinkedHashMap<>(tuple.getT1());
-            states.putAll(tuple.getT2());
+        // Runtime worker queue (adapter.ts readCompanyDeviceStates): observation
+        // states are awaited first, then coarse area reads and AC reads share one
+        // bounded drain queue.
+        Mono<Map<String, Object>> smartStates = drainQueue(reads);
+        return observationStates.flatMap(observedStates -> smartStates.map(queueStates -> {
+            Map<String, Object> states = new LinkedHashMap<>(observedStates);
+            states.putAll(queueStates);
             for (AuthorizedDevice device : requested) states.putIfAbsent(device.id(), null);
             String observedAt = Instant.now().toString();
             return new DeviceStateReadResult(states, observedAt, companyObservationBlocks(requested, states));
+        }));
+    }
+
+    /**
+     * One bounded read queue: record the first failure, stop claiming new work,
+     * drain claimed reads, then rethrow. Callers retain their phase ordering, and
+     * merged chunks keep the first record per key in queue order (flatMapSequential
+     * preserves emission order), matching the old serial sweep's putIfAbsent
+     * precedence; Company callers emit disjoint keys either way.
+     */
+    private static Mono<Map<String, Object>> drainQueue(List<Mono<Map<String, Object>>> reads) {
+        return Mono.defer(() -> {
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            return Flux.fromIterable(reads)
+                    .flatMapSequential(read -> failure.get() == null
+                            ? read.onErrorResume(error -> {
+                                failure.compareAndSet(null, error);
+                                return Mono.empty();
+                            })
+                            : Mono.empty(), READ_QUEUE_CONCURRENCY)
+                    .collect(() -> new LinkedHashMap<String, Object>(), (merged, chunk) -> chunk.forEach(merged::putIfAbsent))
+                    .flatMap(collected -> failure.get() == null
+                            ? Mono.just(collected)
+                            : Mono.error(failure.get()));
         });
     }
 
@@ -473,12 +536,6 @@ public final class WebClientIotAdapter implements IotAdapter {
         if (data.path("MODE").has("val")) state.put("mode", Map.of(2, "fan", 3, "cool", 4, "heat", 5, "dry", 7, "auto").get(data.path("MODE").path("val").asInt()));
         if (data.path("F").has("val")) state.put("fanSpeed", Map.of(15, "low", 75, "high", 101, "auto").get(data.path("F").path("val").asInt()));
         return state.isEmpty() ? null : state;
-    }
-
-    private static final Object NULL_STATE = new Object();
-
-    private static Map.Entry<String, Object> entry(String key, Object value) {
-        return new java.util.AbstractMap.SimpleImmutableEntry<>(key, value);
     }
 
     private Mono<Object> environmentState(RequestIdentity identity, AuthorizedDevice device) {
@@ -625,7 +682,6 @@ public final class WebClientIotAdapter implements IotAdapter {
         }
     }
 
-
     @Override
     public Mono<DeviceCapabilityInspection> inspectDeviceCapabilities(RequestIdentity identity, DeviceCapabilityRequest request) {
         return inspectDeviceCapabilities(identity, request, null);
@@ -636,14 +692,14 @@ public final class WebClientIotAdapter implements IotAdapter {
             RequestIdentity identity, DeviceCapabilityRequest request, String conversationId) {
         Objects.requireNonNull(identity, "identity");
         Objects.requireNonNull(request, "request");
-        if (identity.source() != IotSource.OFFICE && identity.source() != IotSource.COMPANY) {
+        if (identity.source() != IotSourceEnum.OFFICE && identity.source() != IotSourceEnum.COMPANY) {
             return Mono.error(new BusinessException("IOT_SOURCE_UNAVAILABLE", "设备能力仅支持 Office 或 Company 来源", 404));
         }
         if (request.candidateSets().isEmpty()) return Mono.error(new BusinessException("INVALID_DEVICE_REFERENCE", "设备候选集不能为空"));
         if (conversationId != null && !conversationId.isBlank() && candidateStore == null) {
             return Mono.error(new BusinessException("CANDIDATE_SET_STORE_UNAVAILABLE", "设备候选集事实存储未配置", 503));
         }
-        if (conversationId != null && !conversationId.isBlank() && identity.source() == IotSource.COMPANY) {
+        if (conversationId != null && !conversationId.isBlank() && identity.source() == IotSourceEnum.COMPANY) {
             return execute("inspect authorized Company device capabilities",
                     resolveCompanyCandidateDevices(identity, request, conversationId).map(devices ->
                             new DeviceCapabilityInspection(request.candidateSets().stream()
@@ -696,13 +752,13 @@ public final class WebClientIotAdapter implements IotAdapter {
      */
     private static AuthorizedDeviceScope candidateScope(AuthorizedDeviceScope scope, DeviceCandidateRecord set) {
         String regionId = set.query().regionId();
-        if (scope.source() != IotSource.OFFICE || regionId == null || regionId.isBlank()) return scope;
+        if (scope.source() != IotSourceEnum.OFFICE || regionId == null || regionId.isBlank()) return scope;
         return scope.retain(device -> device.officeIds().contains(regionId));
     }
 
     private DeviceCandidateRecord requiredCandidateSet(RequestIdentity identity, String candidateSetId,
                                                        String conversationId) {
-        DeviceCandidateRecord set = candidateStore.find(candidateSetId)
+        DeviceCandidateRecord set = candidateStore.find(candidateSetId, conversationId)
                 .orElseThrow(() -> new BusinessException("CANDIDATE_SET_NOT_FOUND", "设备候选集不存在", 404));
         if (!identity.tenantCode().equals(set.tenantCode())
                 || !identity.ownerKey().equals(set.ownerKey())
@@ -747,7 +803,7 @@ public final class WebClientIotAdapter implements IotAdapter {
     @Override
     public Mono<AuthorizedDeviceScope> loadAuthorizedSafetyScope(RequestIdentity identity) {
         Objects.requireNonNull(identity, "identity");
-        return identity.source() == IotSource.COMPANY
+        return identity.source() == IotSourceEnum.COMPANY
                 ? execute("load authorized Company safety scope", loadCompanySafetyScope(identity))
                 : loadAuthorizedDeviceScope(identity);
     }
@@ -755,14 +811,14 @@ public final class WebClientIotAdapter implements IotAdapter {
     @Override
     public Mono<AuthorizedDeviceScope> loadAuthorizedVideoScope(RequestIdentity identity) {
         Objects.requireNonNull(identity, "identity");
-        return identity.source() == IotSource.COMPANY
+        return identity.source() == IotSourceEnum.COMPANY
                 ? execute("load authorized Company video scope", loadCompanyVideoScope(identity))
                 : loadAuthorizedDeviceScope(identity);
     }
     @Override
     public Mono<AuthorizedDeviceScope> loadAuthorizedEnergyScope(RequestIdentity identity) {
         Objects.requireNonNull(identity, "identity");
-        if (identity.source() != IotSource.COMPANY) {
+        if (identity.source() != IotSourceEnum.COMPANY) {
             return Mono.error(new BusinessException("IOT_SOURCE_UNAVAILABLE", "公司电表授权范围仅支持公司来源", 404));
         }
         return execute("load authorized Company energy scope",
@@ -774,7 +830,7 @@ public final class WebClientIotAdapter implements IotAdapter {
             RequestIdentity identity, String deviceId, VideoPlaybackWindow window) {
         Objects.requireNonNull(identity, "identity");
         Objects.requireNonNull(window, "window");
-        Mono<AuthorizedDeviceScope> scope = identity.source() == IotSource.COMPANY
+        Mono<AuthorizedDeviceScope> scope = identity.source() == IotSourceEnum.COMPANY
                 ? loadCompanyVideoScope(identity) : loadAuthorizedDeviceScope(identity);
         return execute("prepare " + identity.source().wireValue() + " video playback", scope.flatMap(current -> {
             AuthorizedDevice device = current.device(deviceId).orElse(null);
@@ -790,7 +846,7 @@ public final class WebClientIotAdapter implements IotAdapter {
     public Mono<VideoStream> openVideoStream(RequestIdentity identity, String deviceId) {
         Objects.requireNonNull(identity, "identity");
         if (deviceId == null || deviceId.isBlank()) return Mono.empty();
-        Mono<VideoStream> request = identity.source() == IotSource.COMPANY
+        Mono<VideoStream> request = identity.source() == IotSourceEnum.COMPANY
                 ? loadCompanyVideoScope(identity).flatMap(scope -> companyLive(scope, identity, deviceId))
                 : loadAuthorizedDeviceScope(identity).flatMap(scope -> officeLive(scope, identity, deviceId));
         return execute("open " + identity.source().wireValue() + " video stream", request);
@@ -802,7 +858,7 @@ public final class WebClientIotAdapter implements IotAdapter {
         Objects.requireNonNull(identity, "identity");
         Objects.requireNonNull(window, "window");
         if (deviceId == null || deviceId.isBlank()) return Mono.empty();
-        Mono<VideoStream> request = (identity.source() == IotSource.COMPANY
+        Mono<VideoStream> request = (identity.source() == IotSourceEnum.COMPANY
                 ? loadCompanyVideoScope(identity) : loadAuthorizedDeviceScope(identity))
                 .flatMap(scope -> playback(scope, identity, deviceId, window));
         return execute("open " + identity.source().wireValue() + " video playback", request);
@@ -824,7 +880,12 @@ public final class WebClientIotAdapter implements IotAdapter {
                     jobs.add(readSource(source, source.params(), identity, null, null));
                 }
             }
-            return Flux.concat(jobs).collectList().map(groups -> mergeScope(identity, groups));
+            // Runtime loads offices × sources with Promise.all (unbounded fan-out,
+            // stable group order); the migration bounds it at six per call while
+            // keeping the merge order identical to the serial concat shape.
+            return Flux.fromIterable(jobs)
+                    .flatMapSequential(job -> job, DIRECTORY_FANOUT_CONCURRENCY)
+                    .collectList().map(groups -> mergeScope(identity, groups));
         });
     }
 
@@ -839,26 +900,8 @@ public final class WebClientIotAdapter implements IotAdapter {
     }
 
     private Mono<AuthorizedDeviceScope> loadCompanyScope(RequestIdentity identity) {
-        Mono<List<AuthorizedDevice>> environment = page(routes.companyEnvironmentPath(),
-                        Map.of("modelCode", "YQ-ENV-SENSOR"), identity)
-                .map(rows -> rows.stream().map(this::parseEnvironmentObservation).toList());
-        Mono<List<AuthorizedDevice>> energy = page(routes.companyEnergyPath(), Map.of(), identity)
-                .map(rows -> rows.stream().map(this::parseEnergyObservation).toList());
-        Mono<List<AuthorizedDevice>> safety = collectCompanySafety(identity);
-        return Mono.zip(environment, energy, safety, collectCompanySmart(identity, "lighting"),
-                collectCompanySmart(identity, "access"), collectCompanySmart(identity, "monitor"),
-                collectCompanyAc(identity)).map(tuple -> {
-            Map<String, AuthorizedDevice> unique = new LinkedHashMap<>();
-            List<List<AuthorizedDevice>> groups = List.of(tuple.getT1(), tuple.getT2(), tuple.getT3(),
-                    tuple.getT4(), tuple.getT5(), tuple.getT6(), tuple.getT7());
-            for (List<AuthorizedDevice> group : groups) {
-                for (AuthorizedDevice device : group) {
-                    String key = device.kind() + ":" + device.id();
-                    unique.putIfAbsent(key, device);
-                }
-            }
-            return (AuthorizedDeviceScope) new AuthorizedDeviceScopeSnapshot(identity, List.copyOf(unique.values()));
-        });
+        return loadCompanyScopeForKinds(identity,
+                Set.of("environment", "energy", "safety", "lighting", "access", "video", "ac"));
     }
 
     /**
@@ -884,7 +927,7 @@ public final class WebClientIotAdapter implements IotAdapter {
         if (kinds.contains("ac")) jobs.add(collectCompanyAc(identity));
         if (jobs.isEmpty()) return Mono.error(new BusinessException(
                 "INVALID_DEVICE_REFERENCE", "设备候选集不包含可读取的设备类型", 403));
-        return Flux.merge(jobs).collectList().map(groups -> {
+        return Flux.fromIterable(jobs).flatMapSequential(job -> job, DIRECTORY_FANOUT_CONCURRENCY).collectList().map(groups -> {
             Map<String, AuthorizedDevice> unique = new LinkedHashMap<>();
             for (List<AuthorizedDevice> group : groups) {
                 for (AuthorizedDevice device : group) unique.putIfAbsent(device.kind() + ":" + device.id(), device);
@@ -907,16 +950,22 @@ public final class WebClientIotAdapter implements IotAdapter {
         return page(routes.companySafetyPath(), Map.of("type", "FIRE"), identity)
                 .flatMapMany(rows -> Flux.fromIterable(rows)
                         .filter(WebClientIotAdapter::isFireSafetyRecord)
-                        .concatMap(row -> parseSafetyObservation(row, identity)))
+                        // Runtime enriches safety rows with detail reads in batches
+                        // of three; the migration keeps the stable row order with a
+                        // bounded queue of six instead of a fully serial concat.
+                        .flatMapSequential(row -> parseSafetyObservation(row, identity), READ_QUEUE_CONCURRENCY))
                 .collectList();
     }
 
     private Mono<List<AuthorizedDevice>> collectCompanySmart(RequestIdentity identity, String family) {
         return areaLeaves(routes.companySmartBasePath() + "/" + family + "/myAreaList", identity)
                 .flatMapMany(Flux::fromIterable)
+                // Runtime fetches every leaf's devicePage with one Promise.all;
+                // the migration bounds that fan-out at six, stable leaf order.
                 .flatMapSequential(leaf -> page(routes.companySmartBasePath() + "/" + family + "/devicePage",
                                 Map.of("areaFullCode", leaf.code()), identity)
-                        .map(rows -> rows.stream().map(row -> parseSmart(row, family, leaf)).toList()), 3)
+                        .map(rows -> rows.stream().map(row -> parseSmart(row, family, leaf)).toList()),
+                        DIRECTORY_FANOUT_CONCURRENCY)
                 .collectList().map(groups -> {
                     Map<String, AuthorizedDevice> unique = new LinkedHashMap<>();
                     for (List<AuthorizedDevice> group : groups) {
@@ -926,15 +975,16 @@ public final class WebClientIotAdapter implements IotAdapter {
                 });
     }
 
-
     private Mono<List<AreaLeaf>> areaLeaves(String path, RequestIdentity identity) {
         return areaChildren(path, null, List.of(), identity).collectList();
     }
 
     private Flux<AreaLeaf> areaChildren(String path, String parent, List<String> names, RequestIdentity identity) {
         Map<String, String> params = parent == null ? Map.of() : Map.of("parentId", parent);
+        // Runtime walks the area tree level by level with one Promise.all over the
+        // siblings; the migration keeps sibling fan-out concurrent but bounded at six.
         return getJson(path, params, identity).flatMapMany(body -> Flux.fromIterable(areaRows(body))
-                .flatMap(node -> {
+                .flatMapSequential(node -> {
                     String id = text(node, "id", "elementId");
                     if (id == null) return Flux.error(new UpstreamUnavailableException("智慧设备区域格式无效"));
                     String name = text(node, "name", "elementName");
@@ -943,7 +993,7 @@ public final class WebClientIotAdapter implements IotAdapter {
                     return areaChildren(path, id, next, identity).switchIfEmpty(code == null
                             ? Flux.error(new UpstreamUnavailableException("智慧设备区域缺少区域编码"))
                             : Flux.just(new AreaLeaf(code, next)));
-                }));
+                }, DIRECTORY_FANOUT_CONCURRENCY));
     }
 
     private static List<JsonNode> areaRows(JsonNode body) {
@@ -964,7 +1014,8 @@ public final class WebClientIotAdapter implements IotAdapter {
         Mono<List<AuthorizedDevice>> scoped = areaLeaves(routes.companyAcAreaPath(), identity)
                 .flatMapMany(Flux::fromIterable)
                 .flatMapSequential(leaf -> page(routes.companyAcDevicePath(), Map.of("areaFullCode", leaf.code()), identity)
-                        .map(rows -> rows.stream().map(row -> parseAc(row, leaf)).toList()), 3)
+                        .map(rows -> rows.stream().map(row -> parseAc(row, leaf)).toList()),
+                        DIRECTORY_FANOUT_CONCURRENCY)
                 .collectList().map(this::mergeAcDevices);
         return scoped.zipWith(pageAcBinding(routes.companyAcBindingPath(), identity))
                 .map(tuple -> {
@@ -1140,12 +1191,20 @@ public final class WebClientIotAdapter implements IotAdapter {
                 text(row, "hubDeviceId", "id"), null, List.of(), List.of(), metadata);
     }
 
+    private static final java.util.regex.Pattern ENERGY_TARIFF =
+            java.util.regex.Pattern.compile("(\\d+(?:\\.\\d+)?)\\s*元");
+
     private AuthorizedDevice parseEnergyObservation(JsonNode row) {
         String id = text(row, "id"), name = text(row, "equipmentName");
         if (id == null || name == null) throw new UpstreamUnavailableException("读取能耗设备响应");
         Map<String, Object> metadata = new LinkedHashMap<>();
         putMetadata(metadata, "feeSchemeName", text(row, "feeSchemeName"));
         putMetadata(metadata, "energyType", text(row, "energyType"));
+        String scheme = text(row, "feeSchemeName");
+        if (scheme != null) {
+            var price = ENERGY_TARIFF.matcher(scheme);
+            if (price.find()) metadata.put("tariff", Double.parseDouble(price.group(1)));
+        }
         return new AuthorizedDevice(id, "energy", name, text(row, "areaName"), true, null, id,
                 text(row, "hubDeviceId", "id"), null, List.of(), List.of(), metadata);
     }
@@ -1232,20 +1291,51 @@ public final class WebClientIotAdapter implements IotAdapter {
         });
     }
 
-    private Mono<List<JsonNode>> readOfficeRecords(RequestIdentity identity) {
-        return readOfficeMembers(identity).flatMapMany(offices -> Flux.fromIterable(routes.officeDeviceSources())
-                .concatMap(source -> {
-                    if (source.requiresOfficeContext()) {
-                        return Flux.fromIterable(offices).concatMap(office -> {
-                            Map<String, String> params = new LinkedHashMap<>(source.params());
-                            params.put("elementId", text(office, "elementId", "id"));
-                            return page(source.path(), params, identity);
-                        });
+    /**
+     * State records for exactly the requested devices, replacing the read-everything
+     * directory sweep. Runtime readStateObservations derives coarse state from the
+     * scoped office pages only; the offices come from the devices' own officeIds, so
+     * the member directory is not reread and unrelated kinds, offices and association
+     * sources are not fetched. Independent (source, office) pages share the bounded
+     * read queue and keep first-record-wins precedence in configured source order.
+     * Devices with no matching source page stay honestly unknown (null), never false.
+     */
+    private Mono<Map<String, JsonNode>> readOfficeStateRecords(
+            RequestIdentity identity, Collection<AuthorizedDevice> requested) {
+        // Per-kind office sets: a kind's pages are fetched only for the offices where
+        // that kind was actually requested, never the union crossed with every kind.
+        Map<String, Set<String>> officesByKind = new LinkedHashMap<>();
+        for (AuthorizedDevice device : requested) {
+            String kind = device.kind().toLowerCase(Locale.ROOT);
+            if (!STATE_SOURCE_KINDS.contains(kind)) continue;
+            Set<String> offices = officesByKind.computeIfAbsent(kind, ignored -> new java.util.LinkedHashSet<>());
+            for (String officeId : device.officeIds()) {
+                if (officeId != null && !officeId.isBlank()) offices.add(officeId);
+            }
+        }
+        List<Mono<Map<String, Object>>> reads = new ArrayList<>();
+        for (OfficeDeviceSource source : routes.officeDeviceSources()) {
+            Set<String> offices = source.requiresOfficeContext()
+                    ? officesByKind.get(source.kind().toLowerCase(Locale.ROOT)) : null;
+            if (offices == null || offices.isEmpty()) continue;
+            for (String officeId : offices) {
+                Map<String, String> params = new LinkedHashMap<>(source.params());
+                params.put("elementId", officeId);
+                reads.add(page(source.path(), params, identity).map(rows -> {
+                    Map<String, Object> records = new LinkedHashMap<>();
+                    for (JsonNode row : rows) {
+                        String id = text(row, "id");
+                        if (id != null) records.putIfAbsent(id, row);
                     }
-                    return page(source.path(), source.params(), identity).flux();
-                }))
-                .collectList()
-                .map(groups -> groups.stream().flatMap(List::stream).toList());
+                    return records;
+                }));
+            }
+        }
+        return drainQueue(reads).map(collected -> {
+            Map<String, JsonNode> recordsById = new LinkedHashMap<>();
+            collected.forEach((id, record) -> recordsById.put(id, (JsonNode) record));
+            return recordsById;
+        });
     }
 
     private AuthorizedDeviceScope mergeScope(RequestIdentity identity, List<List<AuthorizedDevice>> groups) {
@@ -1293,6 +1383,23 @@ public final class WebClientIotAdapter implements IotAdapter {
         List<AuthorizedDevice> authorized = physical.values().stream()
                 .filter(device -> !associationOnly(device)).toList();
         return new AuthorizedDeviceScopeSnapshot(identity, authorized);
+    }
+
+    @Override
+    public Mono<String> readCreatorDisplayName(RequestIdentity identity) {
+        return webClient.get().uri("/sso-api/account/me")
+                .headers(headers -> {
+                    headers.set("Authorization", identity.authorization());
+                    headers.set("tenantcode", identity.tenantCode());
+                })
+                .retrieve().bodyToMono(JsonNode.class).timeout(callTimeout)
+                .map(body -> {
+                    int code = body.path("code").asInt(-1);
+                    JsonNode name = body.path("content").path("personalName");
+                    return (code == 0 || code == 200) && name.isTextual() && !name.asText().isBlank()
+                            ? name.asText().trim() : "成员";
+                })
+                .defaultIfEmpty("成员").onErrorReturn("成员");
     }
 
     private static boolean associationOnly(AuthorizedDevice device) {

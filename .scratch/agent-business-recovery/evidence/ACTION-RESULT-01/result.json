@@ -1,0 +1,81 @@
+{
+  "date": "2026-11-04",
+  "completedDate": "2026-11-05",
+  "source": "S-HIST + S-SYN (separated in README)",
+  "backendVerification": {
+    "command": "mvn -q verify",
+    "tests": 515,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "frontendVerification": {
+    "command": "npm run test:agent",
+    "tests": 298,
+    "failures": 0,
+    "boundarySourceFiles": 169,
+    "miniProgramCompiled": true
+  },
+  "originalResultRegression": {
+    "tests": 14,
+    "failures": 12,
+    "errors": 0
+  },
+  "originalGatewayRegression": {
+    "tests": 13,
+    "failures": 4,
+    "errors": 3
+  },
+  "httpSmoke": [
+    {
+      "message": "已下发",
+      "confirmHttpStatus": 200,
+      "status": "ACCEPTED",
+      "dispatchCount": 0,
+      "readAndConfirmAgree": true
+    },
+    {
+      "message": "未受理",
+      "confirmHttpStatus": 502,
+      "status": "REJECTED",
+      "dispatchCount": 0,
+      "readAndConfirmAgree": true
+    },
+    {
+      "message": "下发结果未知",
+      "confirmHttpStatus": 502,
+      "status": "INTERRUPTED",
+      "dispatchCount": 0,
+      "readAndConfirmAgree": true
+    }
+  ],
+  "deployment": {
+    "javaPort": 3381,
+    "nodePort": 3382,
+    "nodeProcessUnchanged": true,
+    "configurationChange": "java.artifact only",
+    "artifact": "backend-action-result-delivery.jar",
+    "sha256": "5a2e3f34498fce43147c586646c54980b84bd4b36436a9016cddbe93a816450b",
+    "productionPrefixes": 7,
+    "productionClasses": 16,
+    "unownedEntriesChanged": 0,
+    "preservedBase": "backend-draft-exclusion-final.jar",
+    "verifiedActionClassesIdenticalToScreenshotBuild": true
+  },
+  "frontendEvidence": {
+    "screenshot": "door-dispatched.png",
+    "nativeState": "frontend.json",
+    "existingDoorDraftId": "18e7be47-020f-404d-9b43-debe3ba8249d",
+    "originalEndedAt": "2026-11-04T13:50:43.440205Z",
+    "observedStatus": "ACCEPTED",
+    "observedMessage": "已下发",
+    "executingSpinner": false,
+    "composerDisabled": false
+  },
+  "safety": {
+    "realDeviceCommandsIssuedByThisVerification": 0,
+    "productionTasksCreated": 0,
+    "productionNotificationsSent": 0,
+    "realNewLightingAcAndFaultExecutionAccepted": false
+  }
+}

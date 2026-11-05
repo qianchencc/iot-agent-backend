@@ -1,0 +1,102 @@
+{
+  "case": "TASK-STATE-READ-01",
+  "environment": "existing real miniapp account; fixed Java3381, Node3382 unchanged",
+  "taskId": "occurrence:03bb85b6-776b-4243-a6bf-328f2aa59c89:2026-11-06",
+  "before": {
+    "httpStatus": 200,
+    "latencyMs": 8060,
+    "states": [
+      false,
+      false,
+      false
+    ]
+  },
+  "after": {
+    "samples": [
+      {
+        "status": 503,
+        "code": "TASK_READ_PREPARING",
+        "ms": 13
+      },
+      {
+        "status": 200,
+        "cache": "preparing",
+        "ms": 11
+      },
+      {
+        "status": 200,
+        "cache": "preparing",
+        "ms": 16
+      },
+      {
+        "status": 200,
+        "cache": "preparing",
+        "ms": 14
+      },
+      {
+        "status": 200,
+        "cache": "fresh",
+        "ms": 20
+      }
+    ],
+    "totalReadyMs": 4093,
+    "firstReady": {
+      "status": 200,
+      "count": 3,
+      "states": [
+        false,
+        false,
+        false
+      ],
+      "cache": "fresh"
+    },
+    "warm": {
+      "status": 200,
+      "ms": 11,
+      "count": 3,
+      "states": [
+        false,
+        false,
+        false
+      ],
+      "cache": "fresh"
+    }
+  },
+  "frontend": {
+    "ready": true,
+    "summary": "3 关闭",
+    "spinner": "",
+    "manualRefresh": true,
+    "manualUiReadyMs": 13,
+    "taskId": "occurrence:03bb85b6-776b-4243-a6bf-328f2aa59c89:2026-11-06"
+  },
+  "scope": "Existing task read and manual state refresh only; no task creation, confirmation, control dispatch or notification send",
+  "visualLimit": "Developer-tool exported screenshot has overlapping sheet layers; state row and native data are verified, but this screenshot is not layout acceptance. Real device and new task execution not accepted.",
+  "checks": {
+    "backend": {
+      "tests": 567,
+      "skipped": 25,
+      "failures": 0,
+      "errors": 0
+    },
+    "frontend": {
+      "tests": 301,
+      "failures": 0
+    },
+    "boundarySourceFiles": 169
+  },
+  "isolatedHttpSmoke": {
+    "coldStatus": "preparing",
+    "coldHttpMs": 4,
+    "warmHttpMs": 4,
+    "warmExtraUpstreamCalls": 0,
+    "beforePhase": true,
+    "afterPhase": false
+  },
+  "review": {
+    "standardsHardFindings": 0,
+    "specDefects": 0,
+    "followup": "Handled newly materialized phase identities and immediately superseded in-flight state reads"
+  },
+  "screenshot": "task-state-ready.png"
+}

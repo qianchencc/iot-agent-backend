@@ -1,0 +1,3860 @@
+{
+  "office": {
+    "find_device_candidates": {
+      "name": "find_device_candidates",
+      "label": "查询设备候选",
+      "description": "查询当前Office授权目录中的照明、空调、门禁和监控；其他类型以本轮device_context为准。scopeText保留原位置说法，scopeTerms为共同满足的硬条件，deviceText/nameHints只排序注释。返回真实成员明细、分组与范围解析。complete表示明细是否齐全，membersComplete表示服务器固定成员是否齐全；整组引用需要已精确查明成员（exact，或服务器固定成员的browse）的完整照明集合，fuzzy或未解析的结果只是调查线索，已明确设备可用get_device_details补读成精确引用。建议或局部展示不能代表用户选择或全部范围。",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "lighting"
+              },
+              {
+                "type": "string",
+                "const": "ac"
+              },
+              {
+                "type": "string",
+                "const": "access"
+              },
+              {
+                "type": "string",
+                "const": "video"
+              },
+              {
+                "type": "string",
+                "const": "environment"
+              },
+              {
+                "type": "string",
+                "const": "energy"
+              },
+              {
+                "type": "string",
+                "const": "safety"
+              },
+              {
+                "type": "string",
+                "const": "unknown"
+              }
+            ]
+          },
+          "scopeText": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "deviceText": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "scopeTerms": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1,
+            "maxItems": 8
+          },
+          "nameHints": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "maxItems": 8
+          }
+        }
+      }
+    },
+    "get_device_details": {
+      "name": "get_device_details",
+      "label": "读取设备详情",
+      "description": "补读已有候选集内明确设备句柄的名称与位置，返回精确候选集供状态、能力和提案引用。宽查询不完整时不需重新猜地点。只读；不能替用户选择尚有歧义的对象，不能读取候选集外设备。",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "candidateSetId",
+          "deviceIds"
+        ],
+        "properties": {
+          "candidateSetId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "deviceIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1,
+            "maxItems": 50
+          }
+        }
+      }
+    },
+    "inspect_device_capabilities": {
+      "name": "inspect_device_capabilities",
+      "label": "查询设备能力",
+      "description": "一次查询一个或多个候选集中指定设备实际支持的原子操作。当前用户操作涉及多个候选集时必须合并为一次调用。只读，不生成草案，也不控制设备。",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "candidateSets"
+        ],
+        "properties": {
+          "candidateSets": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "candidateSetId",
+                "deviceIds"
+              ],
+              "properties": {
+                "candidateSetId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "deviceIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "minItems": 1,
+                  "maxItems": 50
+                }
+              }
+            },
+            "minItems": 1,
+            "maxItems": 10
+          }
+        }
+      }
+    },
+    "read_device_states": {
+      "name": "read_device_states",
+      "label": "查询设备状态",
+      "description": "批量读取当前 Office 候选设备状态及观测时间；照明返回开关、空调返回参数，Office 视频返回在线态。未知不是关闭，历史观测不代表当前状态，查询不产生控制或草案。读取视频会生成含查看画面入口的实时监控卡；用户要求查看实时画面或直播时读取目标摄像头即可，前端点击后现取短期流，无须录像时间。",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "candidateSets"
+        ],
+        "properties": {
+          "candidateSets": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "candidateSetId",
+                "deviceIds"
+              ],
+              "properties": {
+                "candidateSetId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "deviceIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "minItems": 1,
+                  "maxItems": 50
+                }
+              }
+            },
+            "minItems": 1,
+            "maxItems": 10
+          }
+        }
+      }
+    },
+    "prepare_video_playback": {
+      "name": "prepare_video_playback",
+      "label": "准备录像入口",
+      "description": "为用户指定的本端摄像头与录像时间准备观看卡，不取流、不承诺录像存在。时间不明先澄清；最多三天。用户点击后才现取短期流。",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "deviceId",
+          "beginTime",
+          "endTime"
+        ],
+        "properties": {
+          "deviceId": {
+            "type": "string",
+            "description": "本端可见摄像头ID或候选句柄"
+          },
+          "beginTime": {
+            "type": "string",
+            "description": "带时区录像开始时间"
+          },
+          "endTime": {
+            "type": "string",
+            "description": "晚于开始，窗口最多三天"
+          }
+        }
+      }
+    },
+    "query_alerts": {
+      "name": "query_alerts",
+      "label": "查询安全告警",
+      "description": "按明确上海时间窗口查询烟感/水浸/燃气历史告警台账（平台分页记录，不是实时推送），返回三类及设备级统计和可引用明细。report 仅为平台上报标记，不代表处置或恢复；台账没有设备当前态证据，不能据此断定当前仍在报警或已恢复。单类读取失败时保留其它类别事实并标明覆盖缺口。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "types": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "smoke"
+                },
+                {
+                  "type": "string",
+                  "const": "water"
+                },
+                {
+                  "type": "string",
+                  "const": "gas"
+                }
+              ]
+            },
+            "minItems": 1,
+            "maxItems": 3,
+            "description": "告警类型：smoke=烟感，water=水浸，gas=燃气；缺省为全部"
+          },
+          "days": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 365,
+            "description": "回看天数；缺省 30"
+          },
+          "from": {
+            "type": "string",
+            "description": "明确的上海时间窗口起点，带时区 ISO 8601；仅可与to成对提供，否则使用days"
+          },
+          "to": {
+            "type": "string",
+            "description": "明确的上海时间窗口终点，带时区 ISO 8601；仅可与from成对提供，且不晚于当前时间"
+          },
+          "unreportedOnly": {
+            "type": "boolean",
+            "description": "只看平台标记未上报的记录"
+          }
+        }
+      }
+    },
+    "propose_action_draft": {
+      "name": "propose_action_draft",
+      "label": "生成操作草案",
+      "description": "基于一个或多个完整候选集生成唯一一份待确认草案，并标记推荐应用项。同一即时请求涉及多类设备时，先完成必要澄清，再将全部目标合并到本工具，不先提交部分设备。大范围照明及排除用lighting传集合，空调等目标放actions，由服务器合并，不受照明明细展示窗口限制。工具会自动完成最终能力校验；不得按候选集拆分调用，也不需要为了调用本工具而先调用能力查询。该工具不会控制设备。每个操作只传对应类型参数：照明 closeOrOpen、空调 ac（关机为power:off）、门禁 controlType；混入其他类型的参数会被忽略。空调设定可在关机时保存，不会自动开机；只传用户要求改变的参数，不以默认值覆盖，设定温度不是室温。",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "candidateSetIds",
+          "summary",
+          "actions"
+        ],
+        "properties": {
+          "lighting": {
+            "type": "object",
+            "required": [
+              "closeOrOpen"
+            ],
+            "properties": {
+              "candidateSetId": {
+                "type": "string",
+                "minLength": 1,
+                "description": "用户明确要操作的完整照明范围候选集句柄"
+              },
+              "excludeCandidateSetIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "maxItems": 10,
+                "description": "已查明的排除子集句柄；必须有实际成员且完全处于包含范围，不用软描述命中代替子集"
+              },
+              "excludedDeviceIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "maxItems": 50
+              },
+              "closeOrOpen": {
+                "anyOf": [
+                  {
+                    "type": "number",
+                    "const": 0
+                  },
+                  {
+                    "type": "number",
+                    "const": 1
+                  }
+                ],
+                "description": "0关闭、1打开"
+              },
+              "candidateSetIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "minItems": 1,
+                "maxItems": 10,
+                "description": "同一开关意图的全部完整包含范围，取成员并集后生成一份草案；与单范围 candidateSetId 二选一"
+              }
+            },
+            "description": "完整照明集合及明确排除；可与actions中的空调目标合并成一份草案，由服务器展开成员，不必抄写灯具。集合需已精确查明成员（exact，或服务器固定成员的browse，排除必须exact）；整组被拒后按精确设备引用或用户澄清恢复，不换句柄原样重提。"
+          },
+          "excludedDeviceIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "candidateSetIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "maxItems": 10,
+            "description": "逐设备actions引用的完整候选集；仅使用lighting范围时可为空。"
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1
+          },
+          "question": {
+            "type": "string",
+            "minLength": 1
+          },
+          "actions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "deviceId",
+                "selected"
+              ],
+              "properties": {
+                "deviceId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "controlType": {
+                  "type": "number",
+                  "const": 2,
+                  "description": "一次开门请求；不提供关门或常开"
+                },
+                "closeOrOpen": {
+                  "anyOf": [
+                    {
+                      "type": "number",
+                      "const": 0
+                    },
+                    {
+                      "type": "number",
+                      "const": 1
+                    }
+                  ],
+                  "description": "0关闭、1打开"
+                },
+                "ac": {
+                  "type": "object",
+                  "properties": {
+                    "power": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "on"
+                        },
+                        {
+                          "type": "string",
+                          "const": "off"
+                        }
+                      ],
+                      "description": "电源开关"
+                    },
+                    "temperature": {
+                      "type": "number",
+                      "minimum": 16,
+                      "maximum": 30,
+                      "multipleOf": 1,
+                      "description": "摄氏度设定温度，整数"
+                    },
+                    "mode": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "cool"
+                        },
+                        {
+                          "type": "string",
+                          "const": "heat"
+                        },
+                        {
+                          "type": "string",
+                          "const": "dry"
+                        },
+                        {
+                          "type": "string",
+                          "const": "fan"
+                        }
+                      ],
+                      "description": "运行模式；自动档无下发模板，不可下发"
+                    },
+                    "fanSpeed": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "low"
+                        },
+                        {
+                          "type": "string",
+                          "const": "high"
+                        }
+                      ],
+                      "description": "风速；中档被上游拒绝"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "description": "空调参数均可单独设置；温度不要求同时指定模式或风速，省略字段保持原设定。关机状态下照常可调，设定会保存"
+                },
+                "selected": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "maxItems": 50
+          }
+        }
+      }
+    },
+    "propose_lighting_draft": {
+      "name": "propose_lighting_draft",
+      "label": "生成范围照明草案",
+      "description": "本次即时请求只有照明操作时，对用户明确选择的完整照明范围统一开/关；涉及空调等其他类型时用 propose_action_draft 合并本次全部目标。多个地点用 candidateSetIds 一次包含全部集合，不按地点拆分调用；单范围兼容 candidateSetId。服务器合并去重后减去已识别排除子集或设备，不受明细上限影响；软名称命中不能代表排除子集。空排除、范围外排除和未解析范围会拒绝。整组范围必须已精确查明成员：包含范围需 exact（服务器固定成员的 browse 亦可），排除子集必须 exact；明细展示截断不代表成员不完整。整组被拒后不重复相同位置检索、不换新句柄原样重提同一范围；先用 get_device_details 把用户点名设备补读成精确引用后逐台生成，或请用户澄清确切范围与成员。只生成一份具体待确认草案，不执行；未来安排用任务工具。",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "closeOrOpen"
+        ],
+        "properties": {
+          "candidateSetId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "用户明确要操作的完整照明范围候选集句柄"
+          },
+          "excludeCandidateSetIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "maxItems": 10,
+            "description": "已查明的排除子集句柄；必须有实际成员且完全处于包含范围，不用软描述命中代替子集"
+          },
+          "excludedDeviceIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "maxItems": 50
+          },
+          "closeOrOpen": {
+            "anyOf": [
+              {
+                "type": "number",
+                "const": 0
+              },
+              {
+                "type": "number",
+                "const": 1
+              }
+            ],
+            "description": "0关闭、1打开"
+          },
+          "candidateSetIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1,
+            "maxItems": 10,
+            "description": "同一开关意图的全部完整包含范围，取成员并集后生成一份草案；与单范围 candidateSetId 二选一"
+          }
+        }
+      }
+    },
+    "propose_task": {
+      "name": "propose_task",
+      "label": "编排定时任务",
+      "description": "创建未来照明/空调任务提案，不会立即执行。空调可指定时刻检查一次（省略interval与cadenceMinutes，仅一个read.ac阶段），也可在有限窗口内按15/30/60分钟频率检查（传interval与cadenceMinutes，服务器展开检查点）；窗口只有一个模板点且缺少频率时返回needs_clarification，不注册任务，由助手自然询问。read.ac 用 read.all=true 或已发现设备的 read.deviceIds；窗口检查同时提供interval与cadenceMinutes，只给频率不能确定窗口。用户只给范围且尚未检索时先调用find_device_candidates取得设备。窗口按起点后一个频率生成首个检查点，起点本身不执行，终点含在窗口内；schedule.firstCheckpointAt 才是首个检查点，interval.startsAt 只是窗口边界。检查点必须按时序处于区间内；不以首末点代替区间，不添加隐含终点动作。无区间安排保留1–2阶段。照明范围可在每个检查点传 lighting 的包含集合、明确排除和开/关目标，actions 留空，服务器展开全部固定成员，包括当前已满足设备，不受明细窗口限制。同一检查点不可混用 lighting、逐设备 actions 或 read；逐设备路径仍引用完整候选集，明确目标可用 get_device_details 补读，时间须带时区，区间起点通常须在未来7天内；每月安排允许下一次有效月日（最多62天）。重复安排支持每天、工作日、每周和每月；工作日不识别法定节假日，每月必须传dayOfMonth，月末不存在该日期时跳过；首次模板开始已过自动顺延。门禁不支持定时或周期。Company空调使用read.ac：inspect只读巡检，adjust_to_26在开机、制冷且有效设定温度低于target时上调至target（target为16–30整数，缺省26；只上调不降温，用户要求维持恒定温度也按低于目标值才上调处理）。调温不自动开机、不切换模式或风速；每台下发前重新读取新鲜状态，状态变化让行，unknown或此前未核验结果不重发。Company只读检查点的普通read只读取到时设备状态或最新读数，不会进行统计、比较或生成报告。用户委托未来能耗统计或分析时，必须设置read.agent.objective保存完整分析目标，并用spec声明统计期间和比较要求；周报统计上一自然周，月报统计上一自然月，与repeat发送周期分开；要求保存报告时output为report，否则为result。固定电表成员由read.deviceIds确定；不提前调用统计工具，不得用普通read提案承诺分析或报告。",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "label",
+          "candidateSetIds",
+          "phases"
+        ],
+        "properties": {
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "description": "用动作与范围命名，保留用户指定名称（最多80字）；重复规则和执行时间单独保存，勿为短标题截断对象或动作"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 20,
+            "description": "仅当用户在本次请求中明确指定任务名称时填写；省略时空调检查任务由服务器派生短标题"
+          },
+          "candidateSetIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1,
+            "maxItems": 10
+          },
+          "interval": {
+            "type": "object",
+            "required": [
+              "startsAt",
+              "endsAt"
+            ],
+            "properties": {
+              "startsAt": {
+                "type": "string",
+                "description": "任务区间开始，带时区的 ISO 8601 时间，必须晚于当前时间"
+              },
+              "endsAt": {
+                "type": "string",
+                "description": "任务区间结束，带时区的 ISO 8601 时间，必须晚于开始；结束不隐含设备控制"
+              }
+            },
+            "description": "仅当用户给出起止区间时提供；单一时刻安排必须省略此字段，不能用提案有效期或执行超时补造区间终点。"
+          },
+          "repeat": {
+            "type": "object",
+            "required": [
+              "frequency"
+            ],
+            "properties": {
+              "frequency": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": "daily"
+                  },
+                  {
+                    "type": "string",
+                    "const": "weekdays"
+                  },
+                  {
+                    "type": "string",
+                    "const": "weekly"
+                  },
+                  {
+                    "type": "string",
+                    "const": "monthly"
+                  }
+                ]
+              },
+              "weekdays": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 7
+                },
+                "minItems": 1,
+                "maxItems": 7
+              },
+              "dayOfMonth": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 31,
+                "description": "每月发生日；月末不存在该日期时本月跳过"
+              },
+              "until": {
+                "type": "string",
+                "description": "含当天的开始日期截止 YYYY-MM-DD，跨午夜不截断结束"
+              }
+            }
+          },
+          "phases": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "at",
+                "actions"
+              ],
+              "properties": {
+                "at": {
+                  "type": "string",
+                  "description": "带时区的 ISO 8601 时间，例如 2026-09-27T14:00:00+08:00"
+                },
+                "lighting": {
+                  "type": "object",
+                  "required": [
+                    "candidateSetId",
+                    "closeOrOpen"
+                  ],
+                  "properties": {
+                    "candidateSetId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "用户明确要操作的完整照明范围候选集句柄"
+                    },
+                    "excludeCandidateSetIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "maxItems": 10,
+                      "description": "已查明的排除子集句柄；必须有实际成员且完全处于包含范围，不用软描述命中代替子集"
+                    },
+                    "excludedDeviceIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "maxItems": 50
+                    },
+                    "closeOrOpen": {
+                      "anyOf": [
+                        {
+                          "type": "number",
+                          "const": 0
+                        },
+                        {
+                          "type": "number",
+                          "const": 1
+                        }
+                      ],
+                      "description": "0关闭、1打开"
+                    }
+                  },
+                  "description": "完整照明范围开/关；包含和排除复用已发现集合，使用时 actions=[]，不与 read 混用。未来任务保留当前已满足设备。"
+                },
+                "read": {
+                  "type": "object",
+                  "properties": {
+                    "deviceIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "minItems": 1,
+                      "maxItems": 50,
+                      "description": "已发现的设备句柄（dN_M）。全范围只读用 read.all，不要逐台抄写；"
+                    },
+                    "all": {
+                      "type": "boolean",
+                      "const": true,
+                      "description": "读取当前授权范围内该类型的全部固定成员（不包含将来新增）。报告/巡检用 agent、告警统计用 alertWindow/alertDays、空调用 ac 指明类型；与 deviceIds 二选一。"
+                    },
+                    "alertDays": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 365,
+                      "description": "近N天滚动告警窗口；昨日自然日统计使用alertWindow。"
+                    },
+                    "alertWindow": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "previous_day"
+                        },
+                        {
+                          "type": "string",
+                          "const": "previous_week"
+                        }
+                      ],
+                      "description": "按阶段计划at的上海日期计算：previous_day为前一自然日，previous_week为上一自然周的周一00:00至本周一00:00，右端不含；与执行时间分别保存，不与alertDays、agent或ac混用。"
+                    },
+                    "ac": {
+                      "type": "object",
+                      "required": [
+                        "mode"
+                      ],
+                      "properties": {
+                        "mode": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "const": "inspect",
+                              "description": "空调只读巡检，不下发设备控制"
+                            },
+                            {
+                              "type": "string",
+                              "const": "adjust_to_26",
+                              "description": "有界调温：仅满足开机、制冷、有效设定温度低于目标值时上调至该值"
+                            }
+                          ]
+                        },
+                        "target": {
+                          "type": "integer",
+                          "minimum": 16,
+                          "maximum": 30,
+                          "description": "目标设定温度（整数℃，面板范围16–30，缺省26）；与用户给出的目标温度一致，不是室温"
+                        },
+                        "cadenceMinutes": {
+                          "anyOf": [
+                            {
+                              "type": "number",
+                              "const": 15
+                            },
+                            {
+                              "type": "number",
+                              "const": 30
+                            },
+                            {
+                              "type": "number",
+                              "const": 60
+                            }
+                          ],
+                          "description": "检查频率；提供时只提交一个检查点模板，服务器按监测窗口生成检查点。未提供时不得自作主张，先向用户确认"
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "agent": {
+                      "type": "object",
+                      "required": [
+                        "objective",
+                        "output"
+                      ],
+                      "properties": {
+                        "objective": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000,
+                          "description": "到本次检查点时调用 Agent 执行的已确认只读指令；不在确认前取数或执行。"
+                        },
+                        "output": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "const": "result"
+                            },
+                            {
+                              "type": "string",
+                              "const": "report"
+                            }
+                          ],
+                          "description": "result仅保存检查点结果；report在存在有效事实时另外保存报告产物。"
+                        },
+                        "spec": {
+                          "type": "object",
+                          "required": [
+                            "period",
+                            "comparisons"
+                          ],
+                          "properties": {
+                            "period": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "required": [
+                                    "kind",
+                                    "from",
+                                    "to"
+                                  ],
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "absolute"
+                                    },
+                                    "from": {
+                                      "type": "string"
+                                    },
+                                    "to": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "required": [
+                                    "kind",
+                                    "unit"
+                                  ],
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "previous"
+                                    },
+                                    "unit": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string",
+                                          "const": "day"
+                                        },
+                                        {
+                                          "type": "string",
+                                          "const": "week"
+                                        },
+                                        {
+                                          "type": "string",
+                                          "const": "month"
+                                        }
+                                      ]
+                                    }
+                                  },
+                                  "additionalProperties": false
+                                }
+                              ],
+                              "description": "明确窗口保留用户起止；昨日、上周、上月用previous，由服务器按本次上海时间解析"
+                            },
+                            "comparisons": {
+                              "type": "array",
+                              "items": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "const": "previousPeriod"
+                                  },
+                                  {
+                                    "type": "string",
+                                    "const": "yearOverYear"
+                                  }
+                                ]
+                              },
+                              "maxItems": 2,
+                              "description": "仅列本次要求的环比previousPeriod或同比yearOverYear，未要求时传空数组"
+                            }
+                          },
+                          "additionalProperties": false,
+                          "description": "本次报告的统计期间和要求，数字和完成判定由服务器提供"
+                        }
+                      },
+                      "additionalProperties": false,
+                      "description": "统计期间和比较要求放在 spec:{period,comparisons} 中，不能放在 agent 顶层。"
+                    }
+                  }
+                },
+                "actions": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "deviceId"
+                    ],
+                    "properties": {
+                      "deviceId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "closeOrOpen": {
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "const": 0
+                          },
+                          {
+                            "type": "number",
+                            "const": 1
+                          }
+                        ],
+                        "description": "0关闭、1打开"
+                      },
+                      "ac": {
+                        "type": "object",
+                        "properties": {
+                          "power": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "const": "on"
+                              },
+                              {
+                                "type": "string",
+                                "const": "off"
+                              }
+                            ]
+                          },
+                          "temperature": {
+                            "type": "number",
+                            "minimum": 16,
+                            "maximum": 30,
+                            "multipleOf": 1,
+                            "description": "摄氏度设定温度，整数；不是室温"
+                          },
+                          "mode": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "const": "cool"
+                              },
+                              {
+                                "type": "string",
+                                "const": "heat"
+                              },
+                              {
+                                "type": "string",
+                                "const": "dry"
+                              },
+                              {
+                                "type": "string",
+                                "const": "fan"
+                              }
+                            ]
+                          },
+                          "fanSpeed": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "const": "low"
+                              },
+                              {
+                                "type": "string",
+                                "const": "high"
+                              }
+                            ]
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "minItems": 0,
+                  "maxItems": 50
+                }
+              }
+            },
+            "minItems": 1
+          }
+        }
+      }
+    },
+    "list_tasks": {
+      "name": "list_tasks",
+      "label": "查询区域任务",
+      "description": "只读查询当前用户授权区域在中国标准时间指定日期的任务，不执行或取消任务。未指定区域时使用当前关注区域。",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "date"
+        ],
+        "properties": {
+          "regionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "date": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "中国标准时间的 YYYY-MM-DD 日期"
+          }
+        }
+      }
+    },
+    "propose_task_cancellation": {
+      "name": "propose_task_cancellation",
+      "label": "提出取消任务",
+      "description": "引用已通过 list_tasks 查到的精确 taskId，生成待用户确认的取消卡片；不会直接取消或回滚设备动作。",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "taskId"
+        ],
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "get_task": {
+      "name": "get_task",
+      "label": "读取任务与报告",
+      "description": "按本端真实 taskId/planId 读取授权任务、周期计划及同一次报告，包含虚拟发生。只读，不能执行。引用里的ID可直接查询；同名不明确先查/澄清。",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "type",
+          "id"
+        ],
+        "properties": {
+          "type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "task"
+              },
+              {
+                "type": "string",
+                "const": "task_plan"
+              }
+            ]
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "propose_task_change": {
+      "name": "propose_task_change",
+      "label": "提出任务修改",
+      "description": "用本端精确 task/plan ID 提出修改或周期启停/删除/跳过，绝不直接写入。必须先 get_task 核对；任务引用可读出ID。仅本次用虚拟 occurrence task ID；整个周期用 task_plan ID。仅改名称只传 template.label，省略 phases。已核验任务只改时间时各阶段可只给 at，服务器复用原成员、指令与控制绑定，不要求重抄大集合；需要改设备时才提交完整动作。只读阶段修改须带 actions:[] 与完整原 read（成员及报告统计要求）。未开始点必须在未来。只生成一张待确认差异卡。",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "type",
+          "id",
+          "operation"
+        ],
+        "properties": {
+          "type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "task"
+              },
+              {
+                "type": "string",
+                "const": "task_plan"
+              }
+            ]
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "operation": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "edit"
+              },
+              {
+                "type": "string",
+                "const": "pause"
+              },
+              {
+                "type": "string",
+                "const": "resume"
+              },
+              {
+                "type": "string",
+                "const": "delete"
+              },
+              {
+                "type": "string",
+                "const": "skip"
+              }
+            ]
+          },
+          "template": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "description": "用动作与范围命名，保留用户指定名称（最多80字）；重复规则和执行时间单独保存，勿为短标题截断对象或动作"
+              },
+              "interval": {
+                "type": "object",
+                "required": [
+                  "startsAt",
+                  "endsAt"
+                ],
+                "properties": {
+                  "startsAt": {
+                    "type": "string",
+                    "description": "任务区间开始，带时区的 ISO 8601 时间，必须晚于当前时间"
+                  },
+                  "endsAt": {
+                    "type": "string",
+                    "description": "任务区间结束，带时区的 ISO 8601 时间，必须晚于开始；结束不隐含设备控制"
+                  }
+                },
+                "description": "仅当用户给出起止区间时提供；单一时刻安排必须省略此字段，不能用提案有效期或执行超时补造区间终点。"
+              },
+              "repeat": {
+                "type": "object",
+                "required": [
+                  "frequency"
+                ],
+                "properties": {
+                  "frequency": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "const": "daily"
+                      },
+                      {
+                        "type": "string",
+                        "const": "weekdays"
+                      },
+                      {
+                        "type": "string",
+                        "const": "weekly"
+                      },
+                      {
+                        "type": "string",
+                        "const": "monthly"
+                      }
+                    ]
+                  },
+                  "weekdays": {
+                    "type": "array",
+                    "items": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 7
+                    },
+                    "minItems": 1,
+                    "maxItems": 7
+                  },
+                  "dayOfMonth": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 31,
+                    "description": "每月发生日；月末不存在该日期时本月跳过"
+                  },
+                  "until": {
+                    "type": "string",
+                    "description": "含当天的开始日期截止 YYYY-MM-DD，跨午夜不截断结束"
+                  }
+                }
+              },
+              "phases": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "at"
+                  ],
+                  "properties": {
+                    "at": {
+                      "type": "string",
+                      "description": "带时区的 ISO 8601 时间，例如 2026-09-27T14:00:00+08:00"
+                    },
+                    "lighting": {
+                      "type": "object",
+                      "required": [
+                        "candidateSetId",
+                        "closeOrOpen"
+                      ],
+                      "properties": {
+                        "candidateSetId": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "用户明确要操作的完整照明范围候选集句柄"
+                        },
+                        "excludeCandidateSetIds": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "maxItems": 10,
+                          "description": "已查明的排除子集句柄；必须有实际成员且完全处于包含范围，不用软描述命中代替子集"
+                        },
+                        "excludedDeviceIds": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "maxItems": 50
+                        },
+                        "closeOrOpen": {
+                          "anyOf": [
+                            {
+                              "type": "number",
+                              "const": 0
+                            },
+                            {
+                              "type": "number",
+                              "const": 1
+                            }
+                          ],
+                          "description": "0关闭、1打开"
+                        }
+                      },
+                      "description": "完整照明范围开/关；包含和排除复用已发现集合，使用时 actions=[]，不与 read 混用。未来任务保留当前已满足设备。"
+                    },
+                    "read": {
+                      "type": "object",
+                      "properties": {
+                        "deviceIds": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "minItems": 1,
+                          "maxItems": 50,
+                          "description": "已发现的设备句柄（dN_M）。全范围只读用 read.all，不要逐台抄写；"
+                        },
+                        "all": {
+                          "type": "boolean",
+                          "const": true,
+                          "description": "读取当前授权范围内该类型的全部固定成员（不包含将来新增）。报告/巡检用 agent、告警统计用 alertWindow/alertDays、空调用 ac 指明类型；与 deviceIds 二选一。"
+                        },
+                        "alertDays": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 365,
+                          "description": "近N天滚动告警窗口；昨日自然日统计使用alertWindow。"
+                        },
+                        "alertWindow": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "const": "previous_day"
+                            },
+                            {
+                              "type": "string",
+                              "const": "previous_week"
+                            }
+                          ],
+                          "description": "按阶段计划at的上海日期计算：previous_day为前一自然日，previous_week为上一自然周的周一00:00至本周一00:00，右端不含；与执行时间分别保存，不与alertDays、agent或ac混用。"
+                        },
+                        "ac": {
+                          "type": "object",
+                          "required": [
+                            "mode"
+                          ],
+                          "properties": {
+                            "mode": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "const": "inspect",
+                                  "description": "空调只读巡检，不下发设备控制"
+                                },
+                                {
+                                  "type": "string",
+                                  "const": "adjust_to_26",
+                                  "description": "有界调温：仅满足开机、制冷、有效设定温度低于目标值时上调至该值"
+                                }
+                              ]
+                            },
+                            "target": {
+                              "type": "integer",
+                              "minimum": 16,
+                              "maximum": 30,
+                              "description": "目标设定温度（整数℃，面板范围16–30，缺省26）；与用户给出的目标温度一致，不是室温"
+                            },
+                            "cadenceMinutes": {
+                              "anyOf": [
+                                {
+                                  "type": "number",
+                                  "const": 15
+                                },
+                                {
+                                  "type": "number",
+                                  "const": 30
+                                },
+                                {
+                                  "type": "number",
+                                  "const": 60
+                                }
+                              ],
+                              "description": "检查频率；提供时只提交一个检查点模板，服务器按监测窗口生成检查点。未提供时不得自作主张，先向用户确认"
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "agent": {
+                          "type": "object",
+                          "required": [
+                            "objective",
+                            "output"
+                          ],
+                          "properties": {
+                            "objective": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 2000,
+                              "description": "到本次检查点时调用 Agent 执行的已确认只读指令；不在确认前取数或执行。"
+                            },
+                            "output": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "const": "result"
+                                },
+                                {
+                                  "type": "string",
+                                  "const": "report"
+                                }
+                              ],
+                              "description": "result仅保存检查点结果；report在存在有效事实时另外保存报告产物。"
+                            },
+                            "spec": {
+                              "type": "object",
+                              "required": [
+                                "period",
+                                "comparisons"
+                              ],
+                              "properties": {
+                                "period": {
+                                  "anyOf": [
+                                    {
+                                      "type": "object",
+                                      "required": [
+                                        "kind",
+                                        "from",
+                                        "to"
+                                      ],
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "absolute"
+                                        },
+                                        "from": {
+                                          "type": "string"
+                                        },
+                                        "to": {
+                                          "type": "string"
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "required": [
+                                        "kind",
+                                        "unit"
+                                      ],
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "previous"
+                                        },
+                                        "unit": {
+                                          "anyOf": [
+                                            {
+                                              "type": "string",
+                                              "const": "day"
+                                            },
+                                            {
+                                              "type": "string",
+                                              "const": "week"
+                                            },
+                                            {
+                                              "type": "string",
+                                              "const": "month"
+                                            }
+                                          ]
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    }
+                                  ],
+                                  "description": "明确窗口保留用户起止；昨日、上周、上月用previous，由服务器按本次上海时间解析"
+                                },
+                                "comparisons": {
+                                  "type": "array",
+                                  "items": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "const": "previousPeriod"
+                                      },
+                                      {
+                                        "type": "string",
+                                        "const": "yearOverYear"
+                                      }
+                                    ]
+                                  },
+                                  "maxItems": 2,
+                                  "description": "仅列本次要求的环比previousPeriod或同比yearOverYear，未要求时传空数组"
+                                }
+                              },
+                              "additionalProperties": false,
+                              "description": "本次报告的统计期间和要求，数字和完成判定由服务器提供"
+                            }
+                          },
+                          "additionalProperties": false,
+                          "description": "统计期间和比较要求放在 spec:{period,comparisons} 中，不能放在 agent 顶层。"
+                        }
+                      }
+                    },
+                    "actions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "deviceId"
+                        ],
+                        "properties": {
+                          "deviceId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "closeOrOpen": {
+                            "anyOf": [
+                              {
+                                "type": "number",
+                                "const": 0
+                              },
+                              {
+                                "type": "number",
+                                "const": 1
+                              }
+                            ],
+                            "description": "0关闭、1打开"
+                          },
+                          "ac": {
+                            "type": "object",
+                            "properties": {
+                              "power": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "const": "on"
+                                  },
+                                  {
+                                    "type": "string",
+                                    "const": "off"
+                                  }
+                                ]
+                              },
+                              "temperature": {
+                                "type": "number",
+                                "minimum": 16,
+                                "maximum": 30,
+                                "multipleOf": 1,
+                                "description": "摄氏度设定温度，整数；不是室温"
+                              },
+                              "mode": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "const": "cool"
+                                  },
+                                  {
+                                    "type": "string",
+                                    "const": "heat"
+                                  },
+                                  {
+                                    "type": "string",
+                                    "const": "dry"
+                                  },
+                                  {
+                                    "type": "string",
+                                    "const": "fan"
+                                  }
+                                ]
+                              },
+                              "fanSpeed": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "const": "low"
+                                  },
+                                  {
+                                    "type": "string",
+                                    "const": "high"
+                                  }
+                                ]
+                              }
+                            },
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "minItems": 0,
+                      "maxItems": 50
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "minItems": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "list_task_plans": {
+      "name": "list_task_plans",
+      "label": "查询周期计划",
+      "description": "只读列出本端授权范围内的周期计划、启停、ID与下一次时间；不混用另一端计划。",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  },
+  "company": {
+    "find_device_candidates": {
+      "name": "find_device_candidates",
+      "label": "查询设备候选",
+      "description": "查询Company微脑环境、能耗、安全及智慧空调、照明、门禁、监控目录；不含Office。来源已限定，只有物理地点放scopeText/scopeTerms，全来源词不是地点。scopeText保留原位置说法，scopeTerms为共同满足的硬条件，deviceText/nameHints只排序注释。返回真实成员明细、分组与范围解析。complete表示明细是否齐全，membersComplete表示服务器固定成员是否齐全；整组引用需要已精确查明成员（exact，或服务器固定成员的browse）的完整照明集合，fuzzy或未解析的结果只是调查线索，已明确设备可用get_device_details补读成精确引用。建议或局部展示不能代表用户选择或全部范围。",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "lighting"
+              },
+              {
+                "type": "string",
+                "const": "ac"
+              },
+              {
+                "type": "string",
+                "const": "access"
+              },
+              {
+                "type": "string",
+                "const": "video"
+              },
+              {
+                "type": "string",
+                "const": "environment"
+              },
+              {
+                "type": "string",
+                "const": "energy"
+              },
+              {
+                "type": "string",
+                "const": "safety"
+              },
+              {
+                "type": "string",
+                "const": "unknown"
+              }
+            ]
+          },
+          "scopeText": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "deviceText": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "scopeTerms": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1,
+            "maxItems": 8
+          },
+          "nameHints": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "maxItems": 8
+          }
+        }
+      }
+    },
+    "get_device_details": {
+      "name": "get_device_details",
+      "label": "读取设备详情",
+      "description": "补读已有候选集内明确设备句柄的名称与位置，返回精确候选集供状态、能力和提案引用。宽查询不完整时不需重新猜地点。只读；不能替用户选择尚有歧义的对象，不能读取候选集外设备。",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "candidateSetId",
+          "deviceIds"
+        ],
+        "properties": {
+          "candidateSetId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "deviceIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1,
+            "maxItems": 50
+          }
+        }
+      }
+    },
+    "read_device_states": {
+      "name": "read_device_states",
+      "label": "查询设备状态",
+      "description": "批量读取 Company 候选中的环境、能耗、安全观察事实、视频在线态及智慧空调状态和观测时间。安全无实时报警状态；未知不是正常。读取只读、不产生控制或提案。读取视频会生成含查看画面入口的实时监控卡；用户要求查看实时画面或直播时读取目标摄像头即可，前端点击后现取短期流，无须录像时间。",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "candidateSets"
+        ],
+        "properties": {
+          "candidateSets": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "candidateSetId",
+                "deviceIds"
+              ],
+              "properties": {
+                "candidateSetId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "deviceIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "minItems": 1,
+                  "maxItems": 50
+                }
+              }
+            },
+            "minItems": 1,
+            "maxItems": 10
+          }
+        }
+      }
+    },
+    "prepare_video_playback": {
+      "name": "prepare_video_playback",
+      "label": "准备录像入口",
+      "description": "为用户指定的本端摄像头与录像时间准备观看卡，不取流、不承诺录像存在。时间不明先澄清；最多三天。用户点击后才现取短期流。",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "deviceId",
+          "beginTime",
+          "endTime"
+        ],
+        "properties": {
+          "deviceId": {
+            "type": "string",
+            "description": "本端可见摄像头ID或候选句柄"
+          },
+          "beginTime": {
+            "type": "string",
+            "description": "带时区录像开始时间"
+          },
+          "endTime": {
+            "type": "string",
+            "description": "晚于开始，窗口最多三天"
+          }
+        }
+      }
+    },
+    "query_alerts": {
+      "name": "query_alerts",
+      "label": "查询安全告警",
+      "description": "按明确上海时间窗口查询烟感/水浸/燃气历史告警台账（平台分页记录，不是实时推送），返回三类及设备级统计和可引用明细。report 仅为平台上报标记，不代表处置或恢复；台账没有设备当前态证据，不能据此断定当前仍在报警或已恢复。单类读取失败时保留其它类别事实并标明覆盖缺口。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "types": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "const": "smoke"
+                },
+                {
+                  "type": "string",
+                  "const": "water"
+                },
+                {
+                  "type": "string",
+                  "const": "gas"
+                }
+              ]
+            },
+            "minItems": 1,
+            "maxItems": 3,
+            "description": "告警类型：smoke=烟感，water=水浸，gas=燃气；缺省为全部"
+          },
+          "days": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 365,
+            "description": "回看天数；缺省 30"
+          },
+          "from": {
+            "type": "string",
+            "description": "明确的上海时间窗口起点，带时区 ISO 8601；仅可与to成对提供，否则使用days"
+          },
+          "to": {
+            "type": "string",
+            "description": "明确的上海时间窗口终点，带时区 ISO 8601；仅可与from成对提供，且不晚于当前时间"
+          },
+          "unreportedOnly": {
+            "type": "boolean",
+            "description": "只看平台标记未上报的记录"
+          }
+        }
+      }
+    },
+    "review_safety_event": {
+      "name": "review_safety_event",
+      "label": "查找事件候选监控",
+      "description": "按安全记录查找Company同地点或同楼层监控。仅一个候选或用户明确选定cameraDeviceId时生成对应录像卡（记录前后各15分钟且不超过当前时间）；多个候选尚未选定时不生成卡，先简短询问位置或摄像头，不罗列全部监控，不自行选择。用户回复后带原安全记录身份和选定cameraDeviceId重新调用。不证明覆盖，不取流，不处置告警。",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "eventId",
+          "deviceId",
+          "ledger"
+        ],
+        "properties": {
+          "eventId": {
+            "type": "string"
+          },
+          "deviceId": {
+            "type": "string"
+          },
+          "ledger": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "gas"
+              },
+              {
+                "type": "string",
+                "const": "smoke"
+              },
+              {
+                "type": "string",
+                "const": "flooding"
+              }
+            ]
+          },
+          "cameraDeviceId": {
+            "type": "string",
+            "description": "用户明确选定的候选摄像头ID或设备句柄；deviceId仍为原安全设备ID。多个候选时先询问，不能自行选取"
+          }
+        }
+      }
+    },
+    "query_environment_history": {
+      "name": "query_environment_history",
+      "label": "查询环境趋势",
+      "description": "只读查询 Company 站点环境历史。起止时间必须带时区；温湿度和 PM 指标来自真实采样。deviceCode 缺失不归属具体房间，颗粒物单位未知，不判断达标。峰值仅代表本次读取样本；覆盖不完整时说明限制。追问同一趋势时沿用此前窗口。",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "from",
+          "to"
+        ],
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "含时区 ISO 起点，例如 2026-10-09T00:00:00+08:00"
+          },
+          "to": {
+            "type": "string",
+            "description": "含时区 ISO 终点"
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10000
+          }
+        }
+      }
+    },
+    "query_energy_history": {
+      "name": "query_energy_history",
+      "label": "查询计量历史",
+      "description": "只读查询当前 Company 计量点的原始累计示数与采样。使用已查到的 energy 计量点稳定 ID 或句柄，不混用 Office。起止时间带时区，无记录不退回旧日期；示数单位为度，累计示数不是期间用电。期间统计和对比使用相应报告工具。续页用 nextPage，追问保持原设备和窗口。",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "equipmentId",
+          "from",
+          "to"
+        ],
+        "properties": {
+          "equipmentId": {
+            "type": "string",
+            "description": "Company 计量点 ID 或已查到的设备句柄；不是采样记录 ID"
+          },
+          "from": {
+            "type": "string",
+            "description": "带时区 ISO 起点"
+          },
+          "to": {
+            "type": "string",
+            "description": "带时区 ISO 终点"
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10000
+          }
+        }
+      }
+    },
+    "summarize_energy": {
+      "name": "summarize_energy",
+      "label": "统计区间用电",
+      "description": "统计一个计量范围（scope）在一段时间跨度（from/to，[起,止)）内的用电总量、分段与位置构成。它用于统计或趋势分段，不表达两期之间的增减关系；用户明确要求环比、同比、前后、变化、差异或哪个更多时改用compare_energy。dailyWindow可限定每日20:00至次日08:00；全范围夜间分析使用scope=all，直接返回全部电表夜间排名与占比。scope可为all全部电表、floor明确整层、location单台表（meterId）、selection已通过当前目录发现确定的电表集合（meterIds）。具体子范围或纠错后的范围使用selection保留真实成员，不以整层或原词精确匹配代替。总量单位为「度」，金额按目录电价估算；服务器自动分页读取统一采样流并给出起止采样依据与覆盖情况（无数据/数据不全的表不计入）。",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "scope",
+          "from",
+          "to"
+        ],
+        "properties": {
+          "scope": {
+            "type": "object",
+            "required": [
+              "level"
+            ],
+            "properties": {
+              "level": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": "all"
+                  },
+                  {
+                    "type": "string",
+                    "const": "floor"
+                  },
+                  {
+                    "type": "string",
+                    "const": "location"
+                  },
+                  {
+                    "type": "string",
+                    "const": "selection"
+                  }
+                ],
+                "description": "计量范围：全部电表 / 明确整层 / 单台 / 由当前目录发现确定的电表集合。子区域、部门和纠错后的范围使用selection，不扩大成整层"
+              },
+              "floor": {
+                "type": "string",
+                "description": "level=floor 时必填，目录 areaName 的楼层前缀，仅表示用户要求的整层"
+              },
+              "meterId": {
+                "type": "string",
+                "description": "单台电表 ID 或已查到的设备句柄；level=location 时必填"
+              },
+              "meterIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "level=selection 时必填，依据当前目录与用户意图确定的非空电表句柄集合；可包含多个位置，服务端逐台核验授权、去重并回填真实位置，不按原文重新关键词过滤"
+              }
+            }
+          },
+          "from": {
+            "type": "string",
+            "description": "带时区 ISO 起点"
+          },
+          "to": {
+            "type": "string",
+            "description": "带时区 ISO 终点，不晚于当前时刻；区间为 [from, to)"
+          },
+          "grain": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "hour"
+              },
+              {
+                "type": "string",
+                "const": "day"
+              },
+              {
+                "type": "string",
+                "const": "week"
+              },
+              {
+                "type": "string",
+                "const": "month"
+              }
+            ],
+            "description": "分段柱粒度；省略按跨度自动选择（≤1 天时、≤14 天日、≤13 周周、更长月）"
+          },
+          "dailyWindow": {
+            "type": "object",
+            "required": [
+              "from",
+              "to"
+            ],
+            "properties": {
+              "from": {
+                "type": "string",
+                "const": "20:00"
+              },
+              "to": {
+                "type": "string",
+                "const": "08:00"
+              }
+            },
+            "description": "仅统计每日20:00到次日08:00。与日期跨度独立；服务器一次计算整个scope逐表夜间用量、同日占比、有效天数和位置排名，无需逐表再查"
+          }
+        }
+      }
+    },
+    "compare_energy": {
+      "name": "compare_energy",
+      "label": "对比用电",
+      "description": "只有用户明确要求对比关系时使用；对比必须固定一个维度并提供两个可比较侧面。axis=time：固定 scope，在本期 from/to 与 baseline（缺省紧邻上一等长区间）比较两期都有效的同一批表，返回两期用电、差额、可比比例、指标对照与位置贡献。axis=region：固定同一 from/to，比较 scope 与 other，各侧按有效表返回总量、差额、单台日均和各自前五排行；台数或层级不同时曲线用单台平均。region 必须给 other 且不接受 baseline；time 不接受 other。多个时间段但没有环比、同比、前后或变化关系时不要擅自两两比较；同时改变时间和区域而目标不明时先澄清，不猜比较。无有效数据或不可比时保留缺失状态；单位为度，金额只按目录电价估算。",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "axis",
+          "scope",
+          "from",
+          "to"
+        ],
+        "properties": {
+          "axis": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "time"
+              },
+              {
+                "type": "string",
+                "const": "region"
+              }
+            ],
+            "description": "对比维度：time 固定 scope 比较本期与基期；region 固定 from/to 比较 scope 与 other。一次只改变时间或范围之一"
+          },
+          "scope": {
+            "type": "object",
+            "required": [
+              "level"
+            ],
+            "properties": {
+              "level": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": "all"
+                  },
+                  {
+                    "type": "string",
+                    "const": "floor"
+                  },
+                  {
+                    "type": "string",
+                    "const": "location"
+                  },
+                  {
+                    "type": "string",
+                    "const": "selection"
+                  }
+                ],
+                "description": "计量范围：全部电表 / 明确整层 / 单台 / 由当前目录发现确定的电表集合。子区域、部门和纠错后的范围使用selection，不扩大成整层"
+              },
+              "floor": {
+                "type": "string",
+                "description": "level=floor 时必填，目录 areaName 的楼层前缀，仅表示用户要求的整层"
+              },
+              "meterId": {
+                "type": "string",
+                "description": "单台电表 ID 或已查到的设备句柄；level=location 时必填"
+              },
+              "meterIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "level=selection 时必填，依据当前目录与用户意图确定的非空电表句柄集合；可包含多个位置，服务端逐台核验授权、去重并回填真实位置，不按原文重新关键词过滤"
+              }
+            }
+          },
+          "other": {
+            "type": "object",
+            "required": [
+              "level"
+            ],
+            "properties": {
+              "level": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": "all"
+                  },
+                  {
+                    "type": "string",
+                    "const": "floor"
+                  },
+                  {
+                    "type": "string",
+                    "const": "location"
+                  },
+                  {
+                    "type": "string",
+                    "const": "selection"
+                  }
+                ],
+                "description": "计量范围：全部电表 / 明确整层 / 单台 / 由当前目录发现确定的电表集合。子区域、部门和纠错后的范围使用selection，不扩大成整层"
+              },
+              "floor": {
+                "type": "string",
+                "description": "level=floor 时必填，目录 areaName 的楼层前缀，仅表示用户要求的整层"
+              },
+              "meterId": {
+                "type": "string",
+                "description": "单台电表 ID 或已查到的设备句柄；level=location 时必填"
+              },
+              "meterIds": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "level=selection 时必填，依据当前目录与用户意图确定的非空电表句柄集合；可包含多个位置，服务端逐台核验授权、去重并回填真实位置，不按原文重新关键词过滤"
+              }
+            }
+          },
+          "from": {
+            "type": "string",
+            "description": "本期起点，带时区 ISO 时刻"
+          },
+          "to": {
+            "type": "string",
+            "description": "本期终点，带时区 ISO 时刻；区间为 [from, to)"
+          },
+          "baseline": {
+            "type": "object",
+            "required": [
+              "from",
+              "to"
+            ],
+            "properties": {
+              "from": {
+                "type": "string"
+              },
+              "to": {
+                "type": "string"
+              }
+            },
+            "description": "明确基期；日历周期的同比或环比必须给出对应日历起止，月与月可不等长；只有未指定日历关系的滚动对比才省略为紧邻上一等长区间"
+          }
+        }
+      }
+    },
+    "create_energy_report": {
+      "name": "create_energy_report",
+      "label": "生成用电报告附件",
+      "description": "用户明确要求报告、日报、周报、月报或可预览附件时使用。声明本次期间、所需比较和已确定电表，服务器统一取得并校验事实后保存附件；普通统计或对比问题继续使用原工具。引用报告时省略deviceIds沿用原报告成员，其余请求省略为当前公司全部电表；改变范围须用已核验候选明确成员。comparisons只列用户要求的同比/环比，不为缺数换时期；无有效事实不生成附件，不控制设备或创建任务。",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "title",
+          "spec"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "description": "报告标题，不包含未经统计的数值或结论"
+          },
+          "deviceIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1,
+            "description": "本端已确定的电表ID或句柄；引用已有报告且省略时沿用原报告成员，否则省略表示当前公司全部电表"
+          },
+          "spec": {
+            "type": "object",
+            "required": [
+              "period",
+              "comparisons"
+            ],
+            "properties": {
+              "period": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "from",
+                      "to"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "absolute"
+                      },
+                      "from": {
+                        "type": "string"
+                      },
+                      "to": {
+                        "type": "string"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "unit"
+                    ],
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "previous"
+                      },
+                      "unit": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "const": "day"
+                          },
+                          {
+                            "type": "string",
+                            "const": "week"
+                          },
+                          {
+                            "type": "string",
+                            "const": "month"
+                          }
+                        ]
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                ],
+                "description": "明确窗口保留用户起止；昨日、上周、上月用previous，由服务器按本次上海时间解析"
+              },
+              "comparisons": {
+                "type": "array",
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "const": "previousPeriod"
+                    },
+                    {
+                      "type": "string",
+                      "const": "yearOverYear"
+                    }
+                  ]
+                },
+                "maxItems": 2,
+                "description": "仅列本次要求的环比previousPeriod或同比yearOverYear，未要求时传空数组"
+              }
+            },
+            "additionalProperties": false,
+            "description": "本次报告的统计期间和要求，数字和完成判定由服务器提供"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "inspect_device_capabilities": {
+      "name": "inspect_device_capabilities",
+      "label": "查询设备能力",
+      "description": "一次查询一个或多个候选集中指定设备实际支持的原子操作。当前用户操作涉及多个候选集时必须合并为一次调用。只读，不生成草案，也不控制设备。",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "candidateSets"
+        ],
+        "properties": {
+          "candidateSets": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "candidateSetId",
+                "deviceIds"
+              ],
+              "properties": {
+                "candidateSetId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "deviceIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "minItems": 1,
+                  "maxItems": 50
+                }
+              }
+            },
+            "minItems": 1,
+            "maxItems": 10
+          }
+        }
+      }
+    },
+    "propose_action_draft": {
+      "name": "propose_action_draft",
+      "label": "生成操作草案",
+      "description": "基于一个或多个完整候选集生成唯一一份待确认草案，并标记推荐应用项。同一即时请求涉及多类设备时，先完成必要澄清，再将全部目标合并到本工具，不先提交部分设备。大范围照明及排除用lighting传集合，空调等目标放actions，由服务器合并，不受照明明细展示窗口限制。工具会自动完成最终能力校验；不得按候选集拆分调用，也不需要为了调用本工具而先调用能力查询。该工具不会控制设备。每个操作只传对应类型参数：照明 closeOrOpen、空调 ac（关机为power:off）、门禁 controlType；混入其他类型的参数会被忽略。空调设定可在关机时保存，不会自动开机；只传用户要求改变的参数，不以默认值覆盖，设定温度不是室温。",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "candidateSetIds",
+          "summary",
+          "actions"
+        ],
+        "properties": {
+          "lighting": {
+            "type": "object",
+            "required": [
+              "closeOrOpen"
+            ],
+            "properties": {
+              "candidateSetId": {
+                "type": "string",
+                "minLength": 1,
+                "description": "用户明确要操作的完整照明范围候选集句柄"
+              },
+              "excludeCandidateSetIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "maxItems": 10,
+                "description": "已查明的排除子集句柄；必须有实际成员且完全处于包含范围，不用软描述命中代替子集"
+              },
+              "excludedDeviceIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "maxItems": 50
+              },
+              "closeOrOpen": {
+                "anyOf": [
+                  {
+                    "type": "number",
+                    "const": 0
+                  },
+                  {
+                    "type": "number",
+                    "const": 1
+                  }
+                ],
+                "description": "0关闭、1打开"
+              },
+              "candidateSetIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "minItems": 1,
+                "maxItems": 10,
+                "description": "同一开关意图的全部完整包含范围，取成员并集后生成一份草案；与单范围 candidateSetId 二选一"
+              }
+            },
+            "description": "完整照明集合及明确排除；可与actions中的空调目标合并成一份草案，由服务器展开成员，不必抄写灯具。集合需已精确查明成员（exact，或服务器固定成员的browse，排除必须exact）；整组被拒后按精确设备引用或用户澄清恢复，不换句柄原样重提。"
+          },
+          "excludedDeviceIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "candidateSetIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "maxItems": 10,
+            "description": "逐设备actions引用的完整候选集；仅使用lighting范围时可为空。"
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1
+          },
+          "question": {
+            "type": "string",
+            "minLength": 1
+          },
+          "actions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "deviceId",
+                "selected"
+              ],
+              "properties": {
+                "deviceId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "controlType": {
+                  "type": "number",
+                  "const": 2,
+                  "description": "一次开门请求；不提供关门或常开"
+                },
+                "closeOrOpen": {
+                  "anyOf": [
+                    {
+                      "type": "number",
+                      "const": 0
+                    },
+                    {
+                      "type": "number",
+                      "const": 1
+                    }
+                  ],
+                  "description": "0关闭、1打开"
+                },
+                "ac": {
+                  "type": "object",
+                  "properties": {
+                    "power": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "on"
+                        },
+                        {
+                          "type": "string",
+                          "const": "off"
+                        }
+                      ],
+                      "description": "电源开关"
+                    },
+                    "temperature": {
+                      "type": "number",
+                      "minimum": 16,
+                      "maximum": 30,
+                      "multipleOf": 1,
+                      "description": "摄氏度设定温度，整数"
+                    },
+                    "mode": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "cool"
+                        },
+                        {
+                          "type": "string",
+                          "const": "heat"
+                        },
+                        {
+                          "type": "string",
+                          "const": "dry"
+                        },
+                        {
+                          "type": "string",
+                          "const": "fan"
+                        }
+                      ],
+                      "description": "运行模式；自动档无下发模板，不可下发"
+                    },
+                    "fanSpeed": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "low"
+                        },
+                        {
+                          "type": "string",
+                          "const": "high"
+                        }
+                      ],
+                      "description": "风速；中档被上游拒绝"
+                    }
+                  },
+                  "additionalProperties": false,
+                  "description": "空调参数均可单独设置；温度不要求同时指定模式或风速，省略字段保持原设定。关机状态下照常可调，设定会保存"
+                },
+                "selected": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "maxItems": 50
+          }
+        }
+      }
+    },
+    "propose_lighting_draft": {
+      "name": "propose_lighting_draft",
+      "label": "生成范围照明草案",
+      "description": "本次即时请求只有照明操作时，对用户明确选择的完整照明范围统一开/关；涉及空调等其他类型时用 propose_action_draft 合并本次全部目标。多个地点用 candidateSetIds 一次包含全部集合，不按地点拆分调用；单范围兼容 candidateSetId。服务器合并去重后减去已识别排除子集或设备，不受明细上限影响；软名称命中不能代表排除子集。空排除、范围外排除和未解析范围会拒绝。整组范围必须已精确查明成员：包含范围需 exact（服务器固定成员的 browse 亦可），排除子集必须 exact；明细展示截断不代表成员不完整。整组被拒后不重复相同位置检索、不换新句柄原样重提同一范围；先用 get_device_details 把用户点名设备补读成精确引用后逐台生成，或请用户澄清确切范围与成员。只生成一份具体待确认草案，不执行；未来安排用任务工具。",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "closeOrOpen"
+        ],
+        "properties": {
+          "candidateSetId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "用户明确要操作的完整照明范围候选集句柄"
+          },
+          "excludeCandidateSetIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "maxItems": 10,
+            "description": "已查明的排除子集句柄；必须有实际成员且完全处于包含范围，不用软描述命中代替子集"
+          },
+          "excludedDeviceIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "maxItems": 50
+          },
+          "closeOrOpen": {
+            "anyOf": [
+              {
+                "type": "number",
+                "const": 0
+              },
+              {
+                "type": "number",
+                "const": 1
+              }
+            ],
+            "description": "0关闭、1打开"
+          },
+          "candidateSetIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1,
+            "maxItems": 10,
+            "description": "同一开关意图的全部完整包含范围，取成员并集后生成一份草案；与单范围 candidateSetId 二选一"
+          }
+        }
+      }
+    },
+    "propose_task": {
+      "name": "propose_task",
+      "label": "编排定时任务",
+      "description": "准备待确认任务，不执行控制。一次性或周期照明/空调目标按阶段声明范围/排除、allAuthorized全部当前授权成员或精确选择，由服务器展开、核验和预检，不必先检索再抄设备。周期使用repeat保留每日/工作日/每周/每月规则，首次已过自动顺延；每月须dayOfMonth，不存在日期跳过。范围缺口必须补充完整阶段请求，不能从历史文字拼接成员。只读预约在phases中提供at与read：全授权范围直接用read.all=true（report用agent、告警用alertWindow/alertDays、空调用ac），省略设备列表不会被当成全部，必须显式read.all；也可传已检索的read.deviceIds；可省略actions和candidateSetIds，不要与targets混用或补造控制动作。窗口空调条件检查必须同时提供interval起止与cadenceMinutes，只给频率不能确定窗口；targets只用于直接控制，不能与read同阶段。窗口起点不执行，首个检查点在起点后一个频率，终点含在窗口内；当前已在窗口内且用户要求立即/持续时，保留今天剩余检查点并从下一个未来检查点开始，不要整体推到明天。告警统计用read.alertWindow表达昨日previous_day或上一自然周previous_week，近N天才用alertDays；统计期间与执行时间独立，到期读取并通过原任务收件箱通知，不承诺微信外部推送。能耗分析才用read.agent及其spec，不能用于安全台账。明确区间保留原候选集输入。已登记任务使用 get_task/propose_task_change，不重复创建。",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "label",
+          "phases"
+        ],
+        "properties": {
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "description": "用动作与范围命名，保留用户指定名称（最多80字）；重复规则和执行时间单独保存，勿为短标题截断对象或动作"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 20,
+            "description": "仅当用户在本次请求中明确指定任务名称时填写；省略时空调检查任务由服务器派生短标题"
+          },
+          "candidateSetIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "minItems": 1,
+            "maxItems": 10,
+            "description": "原候选集输入的明确来源；只读read可省略，服务器按read.deviceIds中已发现的dN_M句柄恢复对应sN，不依赖最近一次查询。"
+          },
+          "interval": {
+            "type": "object",
+            "required": [
+              "startsAt",
+              "endsAt"
+            ],
+            "properties": {
+              "startsAt": {
+                "type": "string",
+                "description": "任务区间开始，带时区的 ISO 8601 时间，必须晚于当前时间"
+              },
+              "endsAt": {
+                "type": "string",
+                "description": "任务区间结束，带时区的 ISO 8601 时间，必须晚于开始；结束不隐含设备控制"
+              }
+            },
+            "description": "仅当用户给出起止区间时提供；单一时刻安排必须省略此字段，不能用提案有效期或执行超时补造区间终点。"
+          },
+          "repeat": {
+            "type": "object",
+            "required": [
+              "frequency"
+            ],
+            "properties": {
+              "frequency": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": "daily"
+                  },
+                  {
+                    "type": "string",
+                    "const": "weekdays"
+                  },
+                  {
+                    "type": "string",
+                    "const": "weekly"
+                  },
+                  {
+                    "type": "string",
+                    "const": "monthly"
+                  }
+                ]
+              },
+              "weekdays": {
+                "type": "array",
+                "items": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 7
+                },
+                "minItems": 1,
+                "maxItems": 7
+              },
+              "dayOfMonth": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 31,
+                "description": "每月发生日；月末不存在该日期时本月跳过"
+              },
+              "until": {
+                "type": "string",
+                "description": "含当天的开始日期截止 YYYY-MM-DD，跨午夜不截断结束"
+              }
+            }
+          },
+          "phases": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "at"
+              ],
+              "properties": {
+                "at": {
+                  "type": "string",
+                  "description": "带时区的 ISO 8601 时间，例如 2026-09-27T14:00:00+08:00"
+                },
+                "lighting": {
+                  "type": "object",
+                  "required": [
+                    "candidateSetId",
+                    "closeOrOpen"
+                  ],
+                  "properties": {
+                    "candidateSetId": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "用户明确要操作的完整照明范围候选集句柄"
+                    },
+                    "excludeCandidateSetIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "maxItems": 10,
+                      "description": "已查明的排除子集句柄；必须有实际成员且完全处于包含范围，不用软描述命中代替子集"
+                    },
+                    "excludedDeviceIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "maxItems": 50
+                    },
+                    "closeOrOpen": {
+                      "anyOf": [
+                        {
+                          "type": "number",
+                          "const": 0
+                        },
+                        {
+                          "type": "number",
+                          "const": 1
+                        }
+                      ],
+                      "description": "0关闭、1打开"
+                    }
+                  },
+                  "description": "完整照明范围开/关；包含和排除复用已发现集合，使用时 actions=[]，不与 read 混用。未来任务保留当前已满足设备。"
+                },
+                "read": {
+                  "type": "object",
+                  "properties": {
+                    "deviceIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "minItems": 1,
+                      "maxItems": 50,
+                      "description": "已发现的设备句柄（dN_M）。全范围只读用 read.all，不要逐台抄写；"
+                    },
+                    "all": {
+                      "type": "boolean",
+                      "const": true,
+                      "description": "读取当前授权范围内该类型的全部固定成员（不包含将来新增）。报告/巡检用 agent、告警统计用 alertWindow/alertDays、空调用 ac 指明类型；与 deviceIds 二选一。"
+                    },
+                    "alertDays": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 365,
+                      "description": "近N天滚动告警窗口；昨日自然日统计使用alertWindow。"
+                    },
+                    "alertWindow": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "previous_day"
+                        },
+                        {
+                          "type": "string",
+                          "const": "previous_week"
+                        }
+                      ],
+                      "description": "按阶段计划at的上海日期计算：previous_day为前一自然日，previous_week为上一自然周的周一00:00至本周一00:00，右端不含；与执行时间分别保存，不与alertDays、agent或ac混用。"
+                    },
+                    "ac": {
+                      "type": "object",
+                      "required": [
+                        "mode"
+                      ],
+                      "properties": {
+                        "mode": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "const": "inspect",
+                              "description": "空调只读巡检，不下发设备控制"
+                            },
+                            {
+                              "type": "string",
+                              "const": "adjust_to_26",
+                              "description": "有界调温：仅满足开机、制冷、有效设定温度低于目标值时上调至该值"
+                            }
+                          ]
+                        },
+                        "target": {
+                          "type": "integer",
+                          "minimum": 16,
+                          "maximum": 30,
+                          "description": "目标设定温度（整数℃，面板范围16–30，缺省26）；与用户给出的目标温度一致，不是室温"
+                        },
+                        "cadenceMinutes": {
+                          "anyOf": [
+                            {
+                              "type": "number",
+                              "const": 15
+                            },
+                            {
+                              "type": "number",
+                              "const": 30
+                            },
+                            {
+                              "type": "number",
+                              "const": 60
+                            }
+                          ],
+                          "description": "检查频率；提供时只提交一个检查点模板，服务器按监测窗口生成检查点。未提供时不得自作主张，先向用户确认"
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "agent": {
+                      "type": "object",
+                      "required": [
+                        "objective",
+                        "output"
+                      ],
+                      "properties": {
+                        "objective": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 2000,
+                          "description": "到本次检查点时调用 Agent 执行的已确认只读指令；不在确认前取数或执行。"
+                        },
+                        "output": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "const": "result"
+                            },
+                            {
+                              "type": "string",
+                              "const": "report"
+                            }
+                          ],
+                          "description": "result仅保存检查点结果；report在存在有效事实时另外保存报告产物。"
+                        },
+                        "spec": {
+                          "type": "object",
+                          "required": [
+                            "period",
+                            "comparisons"
+                          ],
+                          "properties": {
+                            "period": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "required": [
+                                    "kind",
+                                    "from",
+                                    "to"
+                                  ],
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "absolute"
+                                    },
+                                    "from": {
+                                      "type": "string"
+                                    },
+                                    "to": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "required": [
+                                    "kind",
+                                    "unit"
+                                  ],
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "previous"
+                                    },
+                                    "unit": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string",
+                                          "const": "day"
+                                        },
+                                        {
+                                          "type": "string",
+                                          "const": "week"
+                                        },
+                                        {
+                                          "type": "string",
+                                          "const": "month"
+                                        }
+                                      ]
+                                    }
+                                  },
+                                  "additionalProperties": false
+                                }
+                              ],
+                              "description": "明确窗口保留用户起止；昨日、上周、上月用previous，由服务器按本次上海时间解析"
+                            },
+                            "comparisons": {
+                              "type": "array",
+                              "items": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "const": "previousPeriod"
+                                  },
+                                  {
+                                    "type": "string",
+                                    "const": "yearOverYear"
+                                  }
+                                ]
+                              },
+                              "maxItems": 2,
+                              "description": "仅列本次要求的环比previousPeriod或同比yearOverYear，未要求时传空数组"
+                            }
+                          },
+                          "additionalProperties": false,
+                          "description": "本次报告的统计期间和要求，数字和完成判定由服务器提供"
+                        }
+                      },
+                      "additionalProperties": false,
+                      "description": "统计期间和比较要求放在 spec:{period,comparisons} 中，不能放在 agent 顶层。"
+                    }
+                  }
+                },
+                "actions": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "deviceId"
+                    ],
+                    "properties": {
+                      "deviceId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "closeOrOpen": {
+                        "anyOf": [
+                          {
+                            "type": "number",
+                            "const": 0
+                          },
+                          {
+                            "type": "number",
+                            "const": 1
+                          }
+                        ],
+                        "description": "0关闭、1打开"
+                      },
+                      "ac": {
+                        "type": "object",
+                        "properties": {
+                          "power": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "const": "on"
+                              },
+                              {
+                                "type": "string",
+                                "const": "off"
+                              }
+                            ]
+                          },
+                          "temperature": {
+                            "type": "number",
+                            "minimum": 16,
+                            "maximum": 30,
+                            "multipleOf": 1,
+                            "description": "摄氏度设定温度，整数；不是室温"
+                          },
+                          "mode": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "const": "cool"
+                              },
+                              {
+                                "type": "string",
+                                "const": "heat"
+                              },
+                              {
+                                "type": "string",
+                                "const": "dry"
+                              },
+                              {
+                                "type": "string",
+                                "const": "fan"
+                              }
+                            ]
+                          },
+                          "fanSpeed": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "const": "low"
+                              },
+                              {
+                                "type": "string",
+                                "const": "high"
+                              }
+                            ]
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "minItems": 0,
+                  "maxItems": 50
+                },
+                "targets": {
+                  "type": "array",
+                  "items": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "required": [
+                          "kind",
+                          "command",
+                          "allAuthorized"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "const": "lighting"
+                              },
+                              {
+                                "type": "string",
+                                "const": "ac"
+                              }
+                            ]
+                          },
+                          "command": {
+                            "type": "object",
+                            "properties": {
+                              "closeOrOpen": {
+                                "anyOf": [
+                                  {
+                                    "type": "number",
+                                    "const": 0
+                                  },
+                                  {
+                                    "type": "number",
+                                    "const": 1
+                                  }
+                                ],
+                                "description": "仅照明：0关闭、1打开；不可与空调参数混用。"
+                              },
+                              "power": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "const": "on"
+                                  },
+                                  {
+                                    "type": "string",
+                                    "const": "off"
+                                  }
+                                ],
+                                "description": "仅空调：省略时不改变电源；关闭不能与其它参数同时提供。"
+                              },
+                              "temperature": {
+                                "type": "number",
+                                "minimum": 16,
+                                "maximum": 30,
+                                "multipleOf": 1,
+                                "description": "仅空调：整数摄氏度设定温度，不是室温；设温不隐含开机。"
+                              },
+                              "mode": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "const": "cool"
+                                  },
+                                  {
+                                    "type": "string",
+                                    "const": "heat"
+                                  },
+                                  {
+                                    "type": "string",
+                                    "const": "dry"
+                                  },
+                                  {
+                                    "type": "string",
+                                    "const": "fan"
+                                  }
+                                ],
+                                "description": "仅空调：只改变用户要求的模式，不补默认模式。"
+                              },
+                              "fanSpeed": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "const": "low"
+                                  },
+                                  {
+                                    "type": "string",
+                                    "const": "high"
+                                  }
+                                ],
+                                "description": "仅空调：只支持低/高风速，省略时保持原设定。"
+                              }
+                            },
+                            "additionalProperties": false,
+                            "minProperties": 1
+                          },
+                          "allAuthorized": {
+                            "type": "boolean",
+                            "const": true,
+                            "description": "仅用户明确要求全部公司设备时使用：该类型在当前Company授权目录中的完整固定成员，不按展示窗口截断，不包含将来新增设备；不能与scopeTexts或selection混用。"
+                          },
+                          "excludeTexts": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 120
+                            },
+                            "maxItems": 8,
+                            "uniqueItems": true,
+                            "description": "用户明确保留的地点，仍须核验为全部授权成员内的真实子集。"
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "kind",
+                          "command",
+                          "scopeTexts"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "const": "lighting"
+                              },
+                              {
+                                "type": "string",
+                                "const": "ac"
+                              }
+                            ]
+                          },
+                          "command": {
+                            "type": "object",
+                            "properties": {
+                              "closeOrOpen": {
+                                "anyOf": [
+                                  {
+                                    "type": "number",
+                                    "const": 0
+                                  },
+                                  {
+                                    "type": "number",
+                                    "const": 1
+                                  }
+                                ],
+                                "description": "仅照明：0关闭、1打开；不可与空调参数混用。"
+                              },
+                              "power": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "const": "on"
+                                  },
+                                  {
+                                    "type": "string",
+                                    "const": "off"
+                                  }
+                                ],
+                                "description": "仅空调：省略时不改变电源；关闭不能与其它参数同时提供。"
+                              },
+                              "temperature": {
+                                "type": "number",
+                                "minimum": 16,
+                                "maximum": 30,
+                                "multipleOf": 1,
+                                "description": "仅空调：整数摄氏度设定温度，不是室温；设温不隐含开机。"
+                              },
+                              "mode": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "const": "cool"
+                                  },
+                                  {
+                                    "type": "string",
+                                    "const": "heat"
+                                  },
+                                  {
+                                    "type": "string",
+                                    "const": "dry"
+                                  },
+                                  {
+                                    "type": "string",
+                                    "const": "fan"
+                                  }
+                                ],
+                                "description": "仅空调：只改变用户要求的模式，不补默认模式。"
+                              },
+                              "fanSpeed": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "const": "low"
+                                  },
+                                  {
+                                    "type": "string",
+                                    "const": "high"
+                                  }
+                                ],
+                                "description": "仅空调：只支持低/高风速，省略时保持原设定。"
+                              }
+                            },
+                            "additionalProperties": false,
+                            "minProperties": 1
+                          },
+                          "scopeTexts": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 120
+                            },
+                            "minItems": 1,
+                            "maxItems": 8,
+                            "uniqueItems": true
+                          },
+                          "excludeTexts": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 120
+                            },
+                            "maxItems": 8,
+                            "uniqueItems": true,
+                            "description": "本目标内真实保留区域；服务器核验成员和包含关系，未识别时返回缺口，不忽略排除。"
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "kind",
+                          "command",
+                          "selection"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "const": "lighting"
+                              },
+                              {
+                                "type": "string",
+                                "const": "ac"
+                              }
+                            ]
+                          },
+                          "command": {
+                            "type": "object",
+                            "properties": {
+                              "closeOrOpen": {
+                                "anyOf": [
+                                  {
+                                    "type": "number",
+                                    "const": 0
+                                  },
+                                  {
+                                    "type": "number",
+                                    "const": 1
+                                  }
+                                ],
+                                "description": "仅照明：0关闭、1打开；不可与空调参数混用。"
+                              },
+                              "power": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "const": "on"
+                                  },
+                                  {
+                                    "type": "string",
+                                    "const": "off"
+                                  }
+                                ],
+                                "description": "仅空调：省略时不改变电源；关闭不能与其它参数同时提供。"
+                              },
+                              "temperature": {
+                                "type": "number",
+                                "minimum": 16,
+                                "maximum": 30,
+                                "multipleOf": 1,
+                                "description": "仅空调：整数摄氏度设定温度，不是室温；设温不隐含开机。"
+                              },
+                              "mode": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "const": "cool"
+                                  },
+                                  {
+                                    "type": "string",
+                                    "const": "heat"
+                                  },
+                                  {
+                                    "type": "string",
+                                    "const": "dry"
+                                  },
+                                  {
+                                    "type": "string",
+                                    "const": "fan"
+                                  }
+                                ],
+                                "description": "仅空调：只改变用户要求的模式，不补默认模式。"
+                              },
+                              "fanSpeed": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "const": "low"
+                                  },
+                                  {
+                                    "type": "string",
+                                    "const": "high"
+                                  }
+                                ],
+                                "description": "仅空调：只支持低/高风速，省略时保持原设定。"
+                              }
+                            },
+                            "additionalProperties": false,
+                            "minProperties": 1
+                          },
+                          "selection": {
+                            "type": "object",
+                            "required": [
+                              "candidateSetId",
+                              "deviceIds"
+                            ],
+                            "properties": {
+                              "candidateSetId": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "deviceIds": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "minItems": 1,
+                                "uniqueItems": true
+                              }
+                            },
+                            "additionalProperties": false,
+                            "description": "已经明确选择的候选集及精确设备引用，只选声明成员，不扩大到整个候选范围。"
+                          }
+                        },
+                        "additionalProperties": false
+                      }
+                    ]
+                  },
+                  "description": "照明/空调控制目标；只读检查点一律省略或传空数组，不得与 read 混用。"
+                }
+              },
+              "additionalProperties": false
+            },
+            "minItems": 1
+          }
+        },
+        "additionalProperties": false,
+        "description": "两种互斥请求之一：照明/空调分阶段控制目标（可带repeat），或只读检查点。明确区间和只读检查点沿原任务输入，不补造区间、重复或控制；只读检查点全范围用read.all=true（agent、alertWindow/alertDays或ac指明设备类型），省略设备列表不会被当成全部，必须显式read.all；也可传已检索的read.deviceIds；窗口条件检查同时给interval与cadenceMinutes，targets不能与read混用，空targets会被忽略。"
+      }
+    },
+    "get_task": {
+      "name": "get_task",
+      "label": "读取任务与报告",
+      "description": "按本端真实 taskId/planId 读取授权任务、周期计划及同一次报告，包含虚拟发生。只读，不能执行。引用里的ID可直接查询；同名不明确先查/澄清。",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "type",
+          "id"
+        ],
+        "properties": {
+          "type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "task"
+              },
+              {
+                "type": "string",
+                "const": "task_plan"
+              }
+            ]
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "propose_task_change": {
+      "name": "propose_task_change",
+      "label": "提出任务修改",
+      "description": "用本端精确 task/plan ID 提出修改或周期启停/删除/跳过，绝不直接写入。必须先 get_task 核对；任务引用可读出ID。仅本次用虚拟 occurrence task ID；整个周期用 task_plan ID。仅改名称只传 template.label，省略 phases。已核验任务只改时间时各阶段可只给 at，服务器复用原成员、指令与控制绑定，不要求重抄大集合；需要改设备时才提交完整动作。只读阶段修改须带 actions:[] 与完整原 read（成员及报告统计要求）。未开始点必须在未来。只生成一张待确认差异卡。",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "type",
+          "id",
+          "operation"
+        ],
+        "properties": {
+          "type": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "task"
+              },
+              {
+                "type": "string",
+                "const": "task_plan"
+              }
+            ]
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "operation": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "edit"
+              },
+              {
+                "type": "string",
+                "const": "pause"
+              },
+              {
+                "type": "string",
+                "const": "resume"
+              },
+              {
+                "type": "string",
+                "const": "delete"
+              },
+              {
+                "type": "string",
+                "const": "skip"
+              }
+            ]
+          },
+          "template": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "description": "用动作与范围命名，保留用户指定名称（最多80字）；重复规则和执行时间单独保存，勿为短标题截断对象或动作"
+              },
+              "interval": {
+                "type": "object",
+                "required": [
+                  "startsAt",
+                  "endsAt"
+                ],
+                "properties": {
+                  "startsAt": {
+                    "type": "string",
+                    "description": "任务区间开始，带时区的 ISO 8601 时间，必须晚于当前时间"
+                  },
+                  "endsAt": {
+                    "type": "string",
+                    "description": "任务区间结束，带时区的 ISO 8601 时间，必须晚于开始；结束不隐含设备控制"
+                  }
+                },
+                "description": "仅当用户给出起止区间时提供；单一时刻安排必须省略此字段，不能用提案有效期或执行超时补造区间终点。"
+              },
+              "repeat": {
+                "type": "object",
+                "required": [
+                  "frequency"
+                ],
+                "properties": {
+                  "frequency": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "const": "daily"
+                      },
+                      {
+                        "type": "string",
+                        "const": "weekdays"
+                      },
+                      {
+                        "type": "string",
+                        "const": "weekly"
+                      },
+                      {
+                        "type": "string",
+                        "const": "monthly"
+                      }
+                    ]
+                  },
+                  "weekdays": {
+                    "type": "array",
+                    "items": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 7
+                    },
+                    "minItems": 1,
+                    "maxItems": 7
+                  },
+                  "dayOfMonth": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 31,
+                    "description": "每月发生日；月末不存在该日期时本月跳过"
+                  },
+                  "until": {
+                    "type": "string",
+                    "description": "含当天的开始日期截止 YYYY-MM-DD，跨午夜不截断结束"
+                  }
+                }
+              },
+              "phases": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "at"
+                  ],
+                  "properties": {
+                    "at": {
+                      "type": "string",
+                      "description": "带时区的 ISO 8601 时间，例如 2026-09-27T14:00:00+08:00"
+                    },
+                    "lighting": {
+                      "type": "object",
+                      "required": [
+                        "candidateSetId",
+                        "closeOrOpen"
+                      ],
+                      "properties": {
+                        "candidateSetId": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "用户明确要操作的完整照明范围候选集句柄"
+                        },
+                        "excludeCandidateSetIds": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "maxItems": 10,
+                          "description": "已查明的排除子集句柄；必须有实际成员且完全处于包含范围，不用软描述命中代替子集"
+                        },
+                        "excludedDeviceIds": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "maxItems": 50
+                        },
+                        "closeOrOpen": {
+                          "anyOf": [
+                            {
+                              "type": "number",
+                              "const": 0
+                            },
+                            {
+                              "type": "number",
+                              "const": 1
+                            }
+                          ],
+                          "description": "0关闭、1打开"
+                        }
+                      },
+                      "description": "完整照明范围开/关；包含和排除复用已发现集合，使用时 actions=[]，不与 read 混用。未来任务保留当前已满足设备。"
+                    },
+                    "read": {
+                      "type": "object",
+                      "properties": {
+                        "deviceIds": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "minItems": 1,
+                          "maxItems": 50,
+                          "description": "已发现的设备句柄（dN_M）。全范围只读用 read.all，不要逐台抄写；"
+                        },
+                        "all": {
+                          "type": "boolean",
+                          "const": true,
+                          "description": "读取当前授权范围内该类型的全部固定成员（不包含将来新增）。报告/巡检用 agent、告警统计用 alertWindow/alertDays、空调用 ac 指明类型；与 deviceIds 二选一。"
+                        },
+                        "alertDays": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 365,
+                          "description": "近N天滚动告警窗口；昨日自然日统计使用alertWindow。"
+                        },
+                        "alertWindow": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "const": "previous_day"
+                            },
+                            {
+                              "type": "string",
+                              "const": "previous_week"
+                            }
+                          ],
+                          "description": "按阶段计划at的上海日期计算：previous_day为前一自然日，previous_week为上一自然周的周一00:00至本周一00:00，右端不含；与执行时间分别保存，不与alertDays、agent或ac混用。"
+                        },
+                        "ac": {
+                          "type": "object",
+                          "required": [
+                            "mode"
+                          ],
+                          "properties": {
+                            "mode": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "const": "inspect",
+                                  "description": "空调只读巡检，不下发设备控制"
+                                },
+                                {
+                                  "type": "string",
+                                  "const": "adjust_to_26",
+                                  "description": "有界调温：仅满足开机、制冷、有效设定温度低于目标值时上调至该值"
+                                }
+                              ]
+                            },
+                            "target": {
+                              "type": "integer",
+                              "minimum": 16,
+                              "maximum": 30,
+                              "description": "目标设定温度（整数℃，面板范围16–30，缺省26）；与用户给出的目标温度一致，不是室温"
+                            },
+                            "cadenceMinutes": {
+                              "anyOf": [
+                                {
+                                  "type": "number",
+                                  "const": 15
+                                },
+                                {
+                                  "type": "number",
+                                  "const": 30
+                                },
+                                {
+                                  "type": "number",
+                                  "const": 60
+                                }
+                              ],
+                              "description": "检查频率；提供时只提交一个检查点模板，服务器按监测窗口生成检查点。未提供时不得自作主张，先向用户确认"
+                            }
+                          },
+                          "additionalProperties": false
+                        },
+                        "agent": {
+                          "type": "object",
+                          "required": [
+                            "objective",
+                            "output"
+                          ],
+                          "properties": {
+                            "objective": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 2000,
+                              "description": "到本次检查点时调用 Agent 执行的已确认只读指令；不在确认前取数或执行。"
+                            },
+                            "output": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "const": "result"
+                                },
+                                {
+                                  "type": "string",
+                                  "const": "report"
+                                }
+                              ],
+                              "description": "result仅保存检查点结果；report在存在有效事实时另外保存报告产物。"
+                            },
+                            "spec": {
+                              "type": "object",
+                              "required": [
+                                "period",
+                                "comparisons"
+                              ],
+                              "properties": {
+                                "period": {
+                                  "anyOf": [
+                                    {
+                                      "type": "object",
+                                      "required": [
+                                        "kind",
+                                        "from",
+                                        "to"
+                                      ],
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "absolute"
+                                        },
+                                        "from": {
+                                          "type": "string"
+                                        },
+                                        "to": {
+                                          "type": "string"
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    },
+                                    {
+                                      "type": "object",
+                                      "required": [
+                                        "kind",
+                                        "unit"
+                                      ],
+                                      "properties": {
+                                        "kind": {
+                                          "type": "string",
+                                          "const": "previous"
+                                        },
+                                        "unit": {
+                                          "anyOf": [
+                                            {
+                                              "type": "string",
+                                              "const": "day"
+                                            },
+                                            {
+                                              "type": "string",
+                                              "const": "week"
+                                            },
+                                            {
+                                              "type": "string",
+                                              "const": "month"
+                                            }
+                                          ]
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    }
+                                  ],
+                                  "description": "明确窗口保留用户起止；昨日、上周、上月用previous，由服务器按本次上海时间解析"
+                                },
+                                "comparisons": {
+                                  "type": "array",
+                                  "items": {
+                                    "anyOf": [
+                                      {
+                                        "type": "string",
+                                        "const": "previousPeriod"
+                                      },
+                                      {
+                                        "type": "string",
+                                        "const": "yearOverYear"
+                                      }
+                                    ]
+                                  },
+                                  "maxItems": 2,
+                                  "description": "仅列本次要求的环比previousPeriod或同比yearOverYear，未要求时传空数组"
+                                }
+                              },
+                              "additionalProperties": false,
+                              "description": "本次报告的统计期间和要求，数字和完成判定由服务器提供"
+                            }
+                          },
+                          "additionalProperties": false,
+                          "description": "统计期间和比较要求放在 spec:{period,comparisons} 中，不能放在 agent 顶层。"
+                        }
+                      }
+                    },
+                    "actions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "deviceId"
+                        ],
+                        "properties": {
+                          "deviceId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "closeOrOpen": {
+                            "anyOf": [
+                              {
+                                "type": "number",
+                                "const": 0
+                              },
+                              {
+                                "type": "number",
+                                "const": 1
+                              }
+                            ],
+                            "description": "0关闭、1打开"
+                          },
+                          "ac": {
+                            "type": "object",
+                            "properties": {
+                              "power": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "const": "on"
+                                  },
+                                  {
+                                    "type": "string",
+                                    "const": "off"
+                                  }
+                                ]
+                              },
+                              "temperature": {
+                                "type": "number",
+                                "minimum": 16,
+                                "maximum": 30,
+                                "multipleOf": 1,
+                                "description": "摄氏度设定温度，整数；不是室温"
+                              },
+                              "mode": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "const": "cool"
+                                  },
+                                  {
+                                    "type": "string",
+                                    "const": "heat"
+                                  },
+                                  {
+                                    "type": "string",
+                                    "const": "dry"
+                                  },
+                                  {
+                                    "type": "string",
+                                    "const": "fan"
+                                  }
+                                ]
+                              },
+                              "fanSpeed": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "const": "low"
+                                  },
+                                  {
+                                    "type": "string",
+                                    "const": "high"
+                                  }
+                                ]
+                              }
+                            },
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "minItems": 0,
+                      "maxItems": 50
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "minItems": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "list_tasks": {
+      "name": "list_tasks",
+      "label": "查询区域任务",
+      "description": "只读查询当前用户授权区域在中国标准时间指定日期的任务，不执行或取消任务。未指定区域时使用当前关注区域。",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "date"
+        ],
+        "properties": {
+          "regionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "date": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "中国标准时间的 YYYY-MM-DD 日期"
+          }
+        }
+      }
+    },
+    "list_task_plans": {
+      "name": "list_task_plans",
+      "label": "查询周期计划",
+      "description": "只读列出本端授权范围内的周期计划、启停、ID与下一次时间；不混用另一端计划。",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    "propose_task_cancellation": {
+      "name": "propose_task_cancellation",
+      "label": "提出取消任务",
+      "description": "引用已通过 list_tasks 查到的精确 taskId，生成待用户确认的取消卡片；不会直接取消或回滚设备动作。",
+      "parameters": {
+        "type": "object",
+        "required": [
+          "taskId"
+        ],
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}

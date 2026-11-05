@@ -1,0 +1,63 @@
+{
+  "date": "2026-11-03",
+  "javaSourceCommit": "3558952",
+  "javaArtifactSha256": "5b1eb362b99a8270a9cff9f1ab6f830cf398146a7faa5f7a52f07355462cc536",
+  "javaService": "runtime-real-java-3381",
+  "javaPid": 7655,
+  "javaPort": 3381,
+  "enginePort": 3382,
+  "upstream": "https://ncim.577119.com",
+  "executionMode": "real",
+  "readonlyProxy": {
+    "port": 3245,
+    "running": false,
+    "usedByCurrentInstance": false
+  },
+  "verification": {
+    "engineeringTests": {
+      "CompanyControlGatewayContractTest": {
+        "tests": 7,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "ActionDraftReadbackContractTest": {
+        "tests": 4,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "ActionDraftEditRevalidationContractTest": {
+        "tests": 4,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "RealTaskExecutionGatewayBehaviorTest": {
+        "tests": 9,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    },
+    "frontend": {
+      "automationPort": 9451,
+      "page": "pages/agent/dashboard",
+      "actualReadUrl": "http://127.0.0.1:3381/api/agent/conversations/current?source=company",
+      "httpStatus": 200,
+      "screenshot": "real-execution-direct-gateway.png"
+    },
+    "databaseAfterCutover": {
+      "confirmedTasks": 0,
+      "taskPhases": 0,
+      "recurringPlans": 0
+    }
+  },
+  "productionOperationsPerformed": {
+    "draftConfirmations": 0,
+    "createdTasks": 0,
+    "deviceControls": 0,
+    "notifications": 0
+  },
+  "businessAcceptance": "Not established by configuration, HTTP reads or isolated tests; no physical execution acceptance performed."
+}

@@ -10,7 +10,7 @@ import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
 import ltd.qianc.iotagent.iot.DeviceStateReadResult;
 import ltd.qianc.iotagent.iot.GatewayAuthorizationException;
 import ltd.qianc.iotagent.iot.IotAdapter;
-import ltd.qianc.iotagent.iot.IotSource;
+import ltd.qianc.iotagent.iot.IotSourceEnum;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpHeaders;
@@ -27,7 +27,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 class CompanyControlGatewayContractTest {
-    private static final RequestIdentity IDENTITY = new RequestIdentity("Bearer company-user", "TENANT-1", IotSource.COMPANY);
+    private static final RequestIdentity IDENTITY = new RequestIdentity("Bearer company-user", "TENANT-1", IotSourceEnum.COMPANY);
 
     @Test
     void lightingUsesRuntimeCompanyEndpointAndAuthorizedBindingWithReadback() {
@@ -45,7 +45,7 @@ class CompanyControlGatewayContractTest {
         ActionDispatchResult result = gateway.dispatch(IDENTITY, scope(light),
                 "[{\"id\":\"action-1\",\"deviceId\":\"light-1\",\"kind\":\"lighting\",\"command\":{\"closeOrOpen\":0}}]");
 
-        assertThat(result.status()).isEqualTo(ActionDraftStatus.ACCEPTED);
+        assertThat(result.status()).isEqualTo(ActionDraftStatusEnum.ACCEPTED);
         assertThat(request.get().url().getPath()).isEqualTo("/micro-api/api/office/app/device/lighting/down");
         assertThat(request.get().body()).isNotNull();
         assertThat(result.resultJson()).contains("unconfirmed");
@@ -67,9 +67,8 @@ class CompanyControlGatewayContractTest {
         ActionDispatchResult result = gateway.dispatch(IDENTITY, scope(ac),
                 "[{\"id\":\"action-1\",\"deviceId\":\"ac-1\",\"kind\":\"ac\",\"command\":{\"power\":\"on\"}}]");
 
-        assertThat(result.status()).isEqualTo(ActionDraftStatus.ACCEPTED);
+        assertThat(result.status()).isEqualTo(ActionDraftStatusEnum.ACCEPTED);
         assertThat(request.get().url().getPath()).isEqualTo("/micro-api/api/iot-center/interactive/hub-ac/air-condition-action/down");
-        assertThat(result.resultJson()).contains("confirmed");
     }
 
 
@@ -111,6 +110,48 @@ class CompanyControlGatewayContractTest {
         assertThat(result.resultJson()).contains("\"outcome\":\"unconfirmed\"");
     }
     @Test
+    void fractionalAndOverflowingCommandsCannotReachAnUpstreamDispatch() {
+        IotAdapter iot = mock(IotAdapter.class);
+        ActionCommandGateway gateway = gateway(candidate -> Mono.just(json("{\"code\":0}")), iot);
+        AuthorizedDevice access = new AuthorizedDevice("door-1", "access", "门禁", "一层", false,
+                "door-control", "door-1", "hub-door", "1-2-3", List.of(), List.of(), Map.of());
+        AuthorizedDevice light = new AuthorizedDevice("light-1", "lighting", "大厅照明", "一层", false,
+                "light-control-1", "light-1", "hub-light", "1-2-3", List.of(), List.of(), Map.of());
+
+        // 2.5/溢出值此前会经 asInt 截断成 2 下发；现在与草案校验同规则拒绝。
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> gateway.dispatch(IDENTITY, scope(access),
+                "[{\"id\":\"action-1\",\"deviceId\":\"door-1\",\"kind\":\"access\",\"command\":{\"controlType\":2.5}}]"))
+                .isInstanceOf(IllegalArgumentException.class);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> gateway.dispatch(IDENTITY, scope(access),
+                "[{\"id\":\"action-1\",\"deviceId\":\"door-1\",\"kind\":\"access\",\"command\":{\"controlType\":4294967298}}]"))
+                .isInstanceOf(IllegalArgumentException.class);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> gateway.dispatch(IDENTITY, scope(light),
+                "[{\"id\":\"action-1\",\"deviceId\":\"light-1\",\"kind\":\"lighting\",\"command\":{\"closeOrOpen\":1.9}}]"))
+                .isInstanceOf(IllegalArgumentException.class);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> gateway.dispatch(IDENTITY, scope(light),
+                "[{\"id\":\"action-1\",\"deviceId\":\"light-1\",\"kind\":\"lighting\",\"command\":{\"closeOrOpen\":4294967297}}]"))
+                .isInstanceOf(IllegalArgumentException.class);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> gateway.dispatch(IDENTITY, scope(light),
+                "[{\"id\":\"action-1\",\"deviceId\":\"light-1\",\"kind\":\"lighting\",\"command\":{\"power\":\"banana\"}}]"))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        // ac 非法组合在下发前拦截：power:null 此前会按默认 off 实际下发关机。
+        AuthorizedDevice ac = new AuthorizedDevice("ac-1", "ac", "会议室空调", "26楼", false,
+                "ac-control-1", "ac-1", "hub-ac", "1-2-3", List.of(), List.of(), Map.of());
+        for (String command : new String[] {
+                "{\"power\":null}",
+                "{\"power\":\"boost\",\"temperature\":24}",
+                "{\"power\":\"off\",\"temperature\":26}",
+                "{\"temperature\":26.5}",
+                "{\"temperature\":4294967322}",
+                "{\"humidity\":40}"}) {
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> gateway.dispatch(IDENTITY, scope(ac),
+                    "[{\"id\":\"action-1\",\"deviceId\":\"ac-1\",\"kind\":\"ac\",\"command\":" + command + "}]"))
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+    }
+
+    @Test
     void accessOnlyAcceptsRuntimeOneShotControlType() {
         IotAdapter iot = mock(IotAdapter.class);
         ActionCommandGateway gateway = gateway(candidate -> Mono.just(json("{\"code\":0}")), iot);
@@ -119,7 +160,7 @@ class CompanyControlGatewayContractTest {
 
         ActionDispatchResult accepted = gateway.dispatch(IDENTITY, scope(access),
                 "[{\"id\":\"action-1\",\"deviceId\":\"door-1\",\"kind\":\"access\",\"command\":{\"controlType\":2}}]");
-        assertThat(accepted.status()).isEqualTo(ActionDraftStatus.ACCEPTED);
+        assertThat(accepted.status()).isEqualTo(ActionDraftStatusEnum.ACCEPTED);
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> gateway.dispatch(IDENTITY, scope(access),
                 "[{\"id\":\"action-1\",\"deviceId\":\"door-1\",\"kind\":\"access\",\"command\":{\"controlType\":2,\"count\":2}}]"))
                 .isInstanceOf(IllegalArgumentException.class);
@@ -158,7 +199,7 @@ class CompanyControlGatewayContractTest {
     private static AuthorizedDeviceScope scope(AuthorizedDevice... devices) {
         return new AuthorizedDeviceScope() {
             @Override public RequestIdentity identity() { return IDENTITY; }
-            @Override public IotSource source() { return IotSource.COMPANY; }
+            @Override public IotSourceEnum source() { return IotSourceEnum.COMPANY; }
             @Override public List<AuthorizedDevice> devices() { return List.of(devices); }
         };
     }

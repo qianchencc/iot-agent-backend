@@ -1,0 +1,11 @@
+{
+  "checkedDocuments": 11,
+  "missingLocalLinks": [],
+  "adminKnownFieldCount": 30,
+  "liveFieldCount": 17,
+  "adminFieldsMissingFromInventory": [],
+  "observedTableCount": 27,
+  "tablesMissingFromInventory": [],
+  "businessSchemaTableCount": 27,
+  "frozenSchemaTableCount": 25
+}

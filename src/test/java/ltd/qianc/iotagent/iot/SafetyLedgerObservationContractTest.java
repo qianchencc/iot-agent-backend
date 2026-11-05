@@ -22,8 +22,8 @@ import reactor.core.publisher.Mono;
  * results instead of failures.
  */
 class SafetyLedgerObservationContractTest {
-    private static final RequestIdentity COMPANY = new RequestIdentity("Bearer company", "TENANT-1", IotSource.COMPANY);
-    private static final RequestIdentity OTHER_OWNER = new RequestIdentity("Bearer other", "TENANT-2", IotSource.COMPANY);
+    private static final RequestIdentity COMPANY = new RequestIdentity("Bearer company", "TENANT-1", IotSourceEnum.COMPANY);
+    private static final RequestIdentity OTHER_OWNER = new RequestIdentity("Bearer other", "TENANT-2", IotSourceEnum.COMPANY);
     private static final Instant NOW = Instant.parse("2026-10-17T00:00:00Z");
     private static final Clock CLOCK = Clock.fixed(NOW, ZoneOffset.UTC);
     private static final String FROM = "1970-01-01T00:00:00.000Z";
@@ -177,7 +177,7 @@ class SafetyLedgerObservationContractTest {
                 4, List.of(alarm("a4", "gas-1", "2026-10-16T06:00:00Z"))));
         ObservationAdapter adapter = composed(upstream, iot(COMPANY, device("gas-1", "27楼茶水间燃气感应器", null)));
 
-        Map<String, Object> payload = adapter.read(new ObservationRequest(COMPANY, ObservationOperation.SAFETY_EVENT,
+        Map<String, Object> payload = adapter.read(new ObservationRequest(COMPANY, ObservationOperationEnum.SAFETY_EVENT,
                         Map.of("id", "target", "ledger", "gas", "deviceId", "gas-1")))
                 .block().payload();
         Map<String, Object> record = (Map<String, Object>) payload.get("record");
@@ -190,14 +190,14 @@ class SafetyLedgerObservationContractTest {
         assertThat(payload.get("observedAt")).isEqualTo(NOW.toString());
 
         int readsBeforeMiss = upstream.reads.get();
-        assertThatThrownBy(() -> adapter.read(new ObservationRequest(COMPANY, ObservationOperation.SAFETY_EVENT,
+        assertThatThrownBy(() -> adapter.read(new ObservationRequest(COMPANY, ObservationOperationEnum.SAFETY_EVENT,
                         Map.of("id", "missing", "ledger", "gas", "deviceId", "gas-1"))).block())
                 .isInstanceOf(ObservationNotFoundException.class);
         assertThat(upstream.reads.get() - readsBeforeMiss).isEqualTo(5);
 
         PagedUpstream untouched = new PagedUpstream(Map.of());
         ObservationAdapter scoped = composed(untouched, iot(COMPANY));
-        assertThatThrownBy(() -> scoped.read(new ObservationRequest(COMPANY, ObservationOperation.SAFETY_EVENT,
+        assertThatThrownBy(() -> scoped.read(new ObservationRequest(COMPANY, ObservationOperationEnum.SAFETY_EVENT,
                         Map.of("id", "target", "ledger", "gas", "deviceId", "gas-1"))).block())
                 .isInstanceOf(ObservationNotFoundException.class)
                 .hasMessageContaining("当前授权与查询范围内未找到这条记录");
@@ -244,23 +244,78 @@ class SafetyLedgerObservationContractTest {
     }
 
     @Test
+    void ledgerEnrichmentRunsExactlySixMetadataReadsConcurrentlyInStableOrder() throws Exception {
+        List<Map<String, Object>> page = new ArrayList<>();
+        for (int index = 0; index < 12; index++) {
+            page.add(alarm(String.format("a%02d", index), "gas-" + index, "2026-10-16T09:00:00Z"));
+        }
+        PagedUpstream upstream = new PagedUpstream(Map.of(0, page));
+        AuthorizedDevice[] devices = java.util.stream.IntStream.range(0, 12)
+                .mapToObj(index -> device("gas-" + index, "27楼燃气感应器" + index, "hub-" + index))
+                .toArray(AuthorizedDevice[]::new);
+        java.util.concurrent.CountDownLatch sixReached = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
+        AtomicInteger inFlight = new AtomicInteger();
+        AtomicInteger peak = new AtomicInteger();
+        AtomicInteger started = new AtomicInteger();
+        ObservationAdapter adapter = ObservationAdapterFactory.safetyLedger(upstream, iot(COMPANY, devices),
+                (identity, hubDeviceId) -> Mono.fromCallable(() -> {
+                    started.incrementAndGet();
+                    int now = inFlight.incrementAndGet();
+                    peak.accumulateAndGet(now, Math::max);
+                    if (now == 6) sixReached.countDown();
+                    // The old three-wide batch never opens this gate.
+                    if (!release.await(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("ledger enrichment release latch timed out");
+                    }
+                    inFlight.decrementAndGet();
+                    return current("核验-" + hubDeviceId, "机房");
+                }).subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic()), CLOCK);
+
+        java.util.concurrent.CompletableFuture<ObservationResponse> future = adapter
+                .read(request(Map.of("type", "gas", "limit", "20"))).toFuture();
+
+        try {
+            assertThat(sixReached.await(3, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            assertThat(started.get()).isEqualTo(6);
+            assertThat(inFlight.get()).isEqualTo(6);
+        } finally {
+            release.countDown();
+            try { future.get(15, java.util.concurrent.TimeUnit.SECONDS); }
+            catch (Exception cleanupFailure) { future.cancel(true); }
+        }
+
+        Map<String, Object> payload = future.get(15, java.util.concurrent.TimeUnit.SECONDS).payload();
+
+        // Runtime metadata enrichment is a bounded queue (three, raised to six) per
+        // ledger read; the item order stays the scan order regardless of completion.
+        assertThat(peak.get()).isEqualTo(6);
+        assertThat(started.get()).isEqualTo(12);
+        assertThat(items(payload)).extracting(row -> row.get("eventId"))
+                .containsExactly(java.util.stream.IntStream.range(0, 12)
+                        .mapToObj(index -> String.format("a%02d", 11 - index)).toArray(String[]::new));
+        assertThat(items(payload)).allSatisfy(row ->
+                assertThat(((Map<?, ?>) row.get("currentDevice")).get("name")).asString().startsWith("核验-"));
+    }
+
+    @Test
     void officeLedgerFiltersByOwnScopeAndCursorsNeverCrossSources() {
         PagedUpstream upstream = new PagedUpstream(Map.of(
                 0, List.of(alarm("o1", "smoke-1", "2026-10-16T09:00:00Z"),
                         alarm("c1", "company-smoke-1", "2026-10-16T08:00:00Z"))));
         // Same authorization and tenant as COMPANY: identical owner key, different source.
         // One composed adapter shares its cursor key across both requesting sources.
-        RequestIdentity office = new RequestIdentity("Bearer company", "TENANT-1", IotSource.OFFICE);
+        RequestIdentity office = new RequestIdentity("Bearer company", "TENANT-1", IotSourceEnum.OFFICE);
         byte[] macKey = new byte[32];
         ObservationAdapter officeLedger = ObservationAdapterFactory.safetyLedger(upstream,
-                sourceIot(office, IotSource.OFFICE, device("smoke-1", "27楼光电感烟探测器", null)),
+                sourceIot(office, IotSourceEnum.OFFICE, device("smoke-1", "27楼光电感烟探测器", null)),
                 null, macKey, CLOCK);
         ObservationAdapter companyLedger = ObservationAdapterFactory.safetyLedger(upstream,
-                sourceIot(COMPANY, IotSource.COMPANY, device("company-smoke-1", "公司感烟", null)),
+                sourceIot(COMPANY, IotSourceEnum.COMPANY, device("company-smoke-1", "公司感烟", null)),
                 null, macKey, CLOCK);
 
         Map<String, Object> payload = officeLedger.read(new ObservationRequest(office,
-                ObservationOperation.SAFETY_EVENTS, Map.of("type", "smoke", "limit", "1"))).block().payload();
+                ObservationOperationEnum.SAFETY_EVENTS, Map.of("type", "smoke", "limit", "1"))).block().payload();
         assertThat(payload.get("source")).isEqualTo("office");
         assertThat(items(payload)).extracting(row -> row.get("eventId")).containsExactly("o1");
         // The bounded page scan stops once the requested one matching record is collected.
@@ -270,11 +325,11 @@ class SafetyLedgerObservationContractTest {
         // An Office continuation can never resume under the Company authorization of
         // the same owner, and Office cannot resolve event details at all.
         assertThat(catchBusiness(() -> companyLedger.read(new ObservationRequest(COMPANY,
-                ObservationOperation.SAFETY_EVENTS,
+                ObservationOperationEnum.SAFETY_EVENTS,
                 Map.of("type", "smoke", "limit", "1", "cursor", (String) payload.get("nextCursor")))).block())
                 .code()).isEqualTo("INVALID_SAFETY_CURSOR");
         assertThat(catchBusiness(() -> officeLedger.read(new ObservationRequest(office,
-                ObservationOperation.SAFETY_EVENT,
+                ObservationOperationEnum.SAFETY_EVENT,
                 Map.of("id", "o1", "ledger", "smoke", "deviceId", "smoke-1"))))
                 .code()).isEqualTo("SAFETY_SOURCE_UNAVAILABLE");
     }
@@ -300,7 +355,7 @@ class SafetyLedgerObservationContractTest {
     }
 
     private static ObservationRequest request(Map<String, String> parameters) {
-        return new ObservationRequest(COMPANY, ObservationOperation.SAFETY_EVENTS, parameters);
+        return new ObservationRequest(COMPANY, ObservationOperationEnum.SAFETY_EVENTS, parameters);
     }
 
     @SuppressWarnings("unchecked")
@@ -363,17 +418,17 @@ class SafetyLedgerObservationContractTest {
         return new IotAdapter() {
             @Override
             public Mono<AuthorizedDeviceScope> loadAuthorizedDeviceScope(RequestIdentity request) {
-                return Mono.just(AuthorizedDeviceScope.of(identity, IotSource.COMPANY, List.of(devices)));
+                return Mono.just(AuthorizedDeviceScope.of(identity, IotSourceEnum.COMPANY, List.of(devices)));
             }
 
             @Override
             public Mono<AuthorizedDeviceScope> loadAuthorizedSafetyScope(RequestIdentity request) {
-                return Mono.just(AuthorizedDeviceScope.of(identity, IotSource.COMPANY, List.of(devices)));
+                return Mono.just(AuthorizedDeviceScope.of(identity, IotSourceEnum.COMPANY, List.of(devices)));
             }
         };
     }
 
-    private static IotAdapter sourceIot(RequestIdentity identity, IotSource source,
+    private static IotAdapter sourceIot(RequestIdentity identity, IotSourceEnum source,
                                         AuthorizedDevice... devices) {
         return new IotAdapter() {
             @Override
@@ -405,7 +460,7 @@ class SafetyLedgerObservationContractTest {
 
         @Override
         public Mono<ObservationResponse> read(ObservationRequest request) {
-            if (request.operation() != ObservationOperation.SAFETY_EVENTS) {
+            if (request.operation() != ObservationOperationEnum.SAFETY_EVENTS) {
                 return Mono.error(new AssertionError("unexpected operation: " + request.operation()));
             }
             reads.incrementAndGet();

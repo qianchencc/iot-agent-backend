@@ -26,12 +26,12 @@ import ltd.qianc.iotagent.iot.AuthorizedDevice;
 import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
 import ltd.qianc.iotagent.iot.GatewayAuthorizationException;
 import ltd.qianc.iotagent.iot.IotAdapter;
-import ltd.qianc.iotagent.iot.IotSource;
+import ltd.qianc.iotagent.iot.IotSourceEnum;
 import ltd.qianc.iotagent.iot.ObservationAdapter;
-import ltd.qianc.iotagent.iot.ObservationOperation;
+import ltd.qianc.iotagent.iot.ObservationOperationEnum;
 import ltd.qianc.iotagent.iot.ObservationRequest;
 import ltd.qianc.iotagent.iot.ObservationResponse;
-import ltd.qianc.iotagent.iot.ObservationStatus;
+import ltd.qianc.iotagent.iot.ObservationStatusEnum;
 import ltd.qianc.iotagent.iot.ObservationUnavailableException;
 import ltd.qianc.iotagent.iot.ObservationNotFoundException;
 import ltd.qianc.iotagent.iot.RequestIdentity;
@@ -56,7 +56,9 @@ public final class SafetyLedgerComposer {
 
     private static final int PAGE_READS_PER_REQUEST = 3;
     private static final int DETAIL_PAGE_CAP = 5;
-    private static final int METADATA_CONCURRENCY = 3;
+    private static final int LATEST_PAGE_CAP = 20;
+    /** Runtime enriches safety metadata in bounded batches (three, raised to six); per-call bound. */
+    private static final int METADATA_CONCURRENCY = 6;
     private static final int CURSOR_MAX_LENGTH = 2200;
     private static final int CURSOR_MAX_PAGE = 10000;
     private static final int CURSOR_MAX_OFFSET = 100;
@@ -107,6 +109,7 @@ public final class SafetyLedgerComposer {
     public Mono<ObservationResponse> readLedger(ObservationRequest request) {
         requireLedgerSource(request.identity());
         Map<String, String> parameters = request.parameters();
+        if ("latest".equals(parameters.get("selection"))) return readLatest(request);
         String type = parameters.getOrDefault("type", "gas");
         if (!TYPES.contains(type)) throw invalidQuery("台账类别或分页数量无效");
         int limit = parseLimit(parameters.get("limit"));
@@ -145,6 +148,62 @@ public final class SafetyLedgerComposer {
                                             identity, type, windowFrom, windowTo, result.page, result.offset, result.before))));
         });
     }
+
+    private Mono<ObservationResponse> readLatest(ObservationRequest request) {
+        requireCompany(request.identity(), "最新告警仅支持公司来源");
+        String type = request.parameters().get("type");
+        String to = request.parameters().get("to");
+        String deviceId = request.parameters().get("deviceId");
+        if (type == null || !TYPES.contains(type) || !zonedTime(to)
+                || deviceId != null && (deviceId.isBlank() || deviceId.length() > 300)) {
+            throw invalidQuery("须指定告警类型、查询时刻及有效设备标识");
+        }
+        String ledger = ledgerOf(type);
+        return safetyScope(request.identity()).flatMap(scope -> {
+            Map<String, AuthorizedDevice> devices = safetyDevices(scope);
+            if (deviceId != null && (!devices.containsKey(deviceId)
+                    || !type.equals(subtypeOf(devices.get(deviceId))))) {
+                return Mono.error(new BusinessException("SAFETY_DEVICE_OUTSIDE_SCOPE", "设备不在当前告警类型的授权范围内", 403));
+            }
+            return latestRecord(request.identity(), ledger, type, devices, deviceId, instantMillis(to), 0, null)
+                    .flatMap(record -> currentDevice(request.identity(), devices.get(record.deviceId()))
+                            .map(current -> latestResponse(facts(record, current, type), type, to)))
+                    .switchIfEmpty(Mono.fromSupplier(() -> latestResponse(null, type, to)));
+        });
+    }
+
+    private Mono<AlarmRecord> latestRecord(RequestIdentity identity, String ledger, String type,
+            Map<String, AuthorizedDevice> devices, String deviceId, long to, int page, AlarmRecord best) {
+        if (page >= LATEST_PAGE_CAP) return Mono.error(unavailable("最新告警读取未完成，不能确定最新记录"));
+        return readPage(identity, ledger, page, deviceId).flatMap(result -> {
+            AlarmRecord latest = best;
+            for (AlarmRecord record : result.records()) {
+                if (!ledger.equals(record.ledger()) || !type.equals(subtypeOf(devices.get(record.deviceId())))
+                        || deviceId != null && !deviceId.equals(record.deviceId())) continue;
+                Long at = instantMillisOrNull(record.occurredAt());
+                if (at == null) return Mono.error(unavailable("告警发生时间不可核对"));
+                if (at <= to && (latest == null || fireAlarmKey(record).compareTo(fireAlarmKey(latest)) > 0)) latest = record;
+            }
+            return result.last() ? Mono.justOrEmpty(latest)
+                    : latestRecord(identity, ledger, type, devices, deviceId, to, page + 1, latest);
+        });
+    }
+
+    private ObservationResponse latestResponse(Map<String, Object> record, String type, String to) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("source", "company");
+        payload.put("record", record);
+        payload.put("reference", record == null ? null : Map.of(
+                "type", "safety_event", "ledger", record.get("ledger"), "eventId", record.get("eventId"),
+                "deviceId", record.get("deviceId"), "label", record.get("deviceName") + " · "
+                        + switch (type) { case "gas" -> "燃气"; case "smoke" -> "烟感"; default -> "水浸"; }
+                        + " · " + record.get("occurredAt")));
+        payload.put("queriedAt", to);
+        payload.put("observedAt", clock.instant().toString());
+        payload.put("coverageComplete", true);
+        return ObservationResponse.available(payload);
+    }
+
 
 
     /** SAFETY_EVENT: durable identity resolution across bounded alarm pages of the referenced device. */
@@ -235,9 +294,9 @@ public final class SafetyLedgerComposer {
         parameters.put("page", String.valueOf(page));
         parameters.put("limit", "100");
         if (deviceId != null) parameters.put("deviceId", deviceId);
-        return upstream.read(new ObservationRequest(identity, ObservationOperation.SAFETY_EVENTS, parameters))
+        return upstream.read(new ObservationRequest(identity, ObservationOperationEnum.SAFETY_EVENTS, parameters))
                 .flatMap(response -> {
-                    if (response.status() != ObservationStatus.AVAILABLE
+                    if (response.status() != ObservationStatusEnum.AVAILABLE
                             || !(response.payload().get("items") instanceof List<?> rows)) {
                         return Mono.error(unavailable("安全台账上游分页格式无效"));
                     }
@@ -274,7 +333,7 @@ public final class SafetyLedgerComposer {
         List<String> deviceIds = items.stream().map(AlarmRecord::deviceId).distinct().toList();
         if (deviceIds.isEmpty()) return Mono.just(Map.of());
         return Flux.fromIterable(deviceIds)
-                .flatMap(deviceId -> currentDevice(identity, devices.get(deviceId))
+                .flatMapSequential(deviceId -> currentDevice(identity, devices.get(deviceId))
                         .map(value -> Map.entry(deviceId, value)), METADATA_CONCURRENCY)
                 .collectList()
                 .map(entries -> {
@@ -364,13 +423,13 @@ public final class SafetyLedgerComposer {
     /** Ledger pages follow the Runtime: Company and Office both read the fire-alarm
      *  ledger; every other source is rejected before any scope or page read. */
     private static void requireLedgerSource(RequestIdentity identity) {
-        if (identity.source() != IotSource.COMPANY && identity.source() != IotSource.OFFICE) {
+        if (identity.source() != IotSourceEnum.COMPANY && identity.source() != IotSourceEnum.OFFICE) {
             throw new BusinessException("SAFETY_SOURCE_UNAVAILABLE", "安全历史仅支持公司或办公室来源", 404);
         }
     }
 
     private static void requireCompany(RequestIdentity identity, String message) {
-        if (identity.source() != IotSource.COMPANY) {
+        if (identity.source() != IotSourceEnum.COMPANY) {
             throw new BusinessException("SAFETY_SOURCE_UNAVAILABLE", message, 404);
         }
     }

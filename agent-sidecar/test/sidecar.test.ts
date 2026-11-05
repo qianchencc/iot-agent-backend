@@ -1,12 +1,24 @@
-import { afterEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { buildApp } from "../src/app.js";
 import { defaultConfigForTests, type SidecarConfig } from "../src/config.js";
-import type { Observability } from "../src/observability.js";
+import {
+  createObservability,
+  credentialsDigest,
+  fetchObservabilitySettings,
+  type Observability,
+} from "../src/observability.js";
 
 const servers: Server[] = [];
+
+/** Per-test model endpoint used by the default run definition, mirroring Java always sending a model snapshot. */
+let modelUrlForRuns = "http://127.0.0.1:9/v1";
+
+beforeEach(() => {
+  modelUrlForRuns = "http://127.0.0.1:9/v1";
+});
 
 afterEach(async () => {
   for (const server of servers.splice(0)) {
@@ -50,11 +62,7 @@ function runBody(overrides: Record<string, unknown> = {}): Record<string, unknow
     turnId: "turn-1",
     content: "hello",
     sessionScope: "scope-1",
-    definition: {
-      instructions: "Use a tool only when it provides evidence needed for the request.",
-      tools: [],
-      maxTurns: 4,
-    },
+    definition: definition(),
     ...overrides,
   };
 }
@@ -64,6 +72,7 @@ function definition(overrides: Record<string, unknown> = {}): Record<string, unk
     instructions: "Use a tool only when it provides evidence needed by the request.",
     tools: [],
     maxTurns: 4,
+    model: modelSettings(),
     ...overrides,
   };
 }
@@ -71,7 +80,7 @@ function definition(overrides: Record<string, unknown> = {}): Record<string, unk
 function modelSettings(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     modelId: "snapshot-model",
-    modelBaseUrl: "http://127.0.0.1:9/v1",
+    modelBaseUrl: modelUrlForRuns,
     modelApiKey: "snapshot-secret-key",
     contextWindow: 32_768,
     maxOutputTokens: 4_096,
@@ -117,10 +126,11 @@ function recordingObservability(): { observability: Observability; seen: unknown
       startAgentRun(input: unknown) {
         seen.push(input);
         return {
+          beginStage() { return { finish() {} }; },
           observeEvent(event: unknown) { seen.push(event); },
           beginGeneration(input: unknown) {
             seen.push(input);
-            return { finish(output: unknown) { seen.push(output); } };
+            return { firstText() {}, finish(output: unknown) { seen.push(output); } };
           },
           finish(input: unknown) { seen.push(input); },
         };
@@ -270,7 +280,8 @@ describe("private sidecar HTTP contract", () => {
     const app = buildApp(await config());
     const health = await app.inject({ method: "GET", url: "/healthz", headers: auth() });
     assert.equal(health.statusCode, 200);
-    assert.deepEqual(Object.keys(health.json()).sort(), ["activeRuns", "node", "service", "status"]);
+    assert.deepEqual(Object.keys(health.json()).sort(), ["activeRuns", "node", "observability", "service", "status"]);
+    assert.deepEqual(health.json().observability, {});
 
     const malformed = [
       { content: "missing identity" },
@@ -288,6 +299,7 @@ describe("private sidecar HTTP contract", () => {
       runBody({ definition: definition({ runTimeoutMs: 999 }) }),
       runBody({ definition: definition({ runTimeoutMs: 600_001 }) }),
       runBody({ definition: definition({ model: modelSettings({ modelApiKey: undefined }) }) }),
+      runBody({ definition: definition({ model: undefined }) }),
       runBody({ definition: definition({ model: modelSettings({ extra: true }) }) }),
       runBody({ definition: definition({ model: modelSettings({ contextWindow: 0 }) }) }),
       runBody({ definition: definition({ model: modelSettings({ maxOutputTokens: 32_768 }) }) }),
@@ -323,7 +335,8 @@ describe("private sidecar HTTP contract", () => {
 
 it("streams generic NDJSON and supports cancellation", async () => {
   const model = await openModel(() => ({ content: "收到" }));
-  const app = buildApp(await config({ modelBaseUrl: model.url }));
+  modelUrlForRuns = model.url;
+  const app = buildApp(await config());
   const run = await app.inject({ method: "POST", url: "/run", headers: { ...auth(), accept: "application/x-ndjson" }, payload: runBody() });
   assert.equal(run.statusCode, 200);
   const observed = events(run.body);
@@ -338,7 +351,8 @@ it("streams generic NDJSON and supports cancellation", async () => {
 
 it("reports provider failures instead of a successful empty run", async () => {
   const model = await openModel(() => ({ error: { status: 401, message: "provider rejected request" } }));
-  const app = buildApp(await config({ modelBaseUrl: model.url }));
+  modelUrlForRuns = model.url;
+  const app = buildApp(await config());
   try {
     const run = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody() });
     const observed = events(run.body);
@@ -351,7 +365,8 @@ it("reports provider failures instead of a successful empty run", async () => {
 
 it("rejects an empty model completion when no tool produced a result", async () => {
   const model = await openModel(() => ({ content: "" }));
-  const app = buildApp(await config({ modelBaseUrl: model.url }));
+  modelUrlForRuns = model.url;
+  const app = buildApp(await config());
   try {
     const run = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody() });
     const observed = events(run.body);
@@ -367,7 +382,8 @@ it("does not report success for an empty answer after a lookup", async () => {
     ? { tool: { name: "lookup_records", arguments: { query: "north" } } }
     : { content: "" });
   const java = await openJava();
-  const app = buildApp(await config({ modelBaseUrl: model.url, javaToolsUrl: java.url }));
+  modelUrlForRuns = model.url;
+  const app = buildApp(await config({ javaToolsUrl: java.url }));
   try {
     const run = await app.inject({ method: "POST", url: "/run", headers: auth(),
       payload: runBody({ definition: definition({ tools: [LOOKUP_TOOL] }) }) });
@@ -380,7 +396,7 @@ it("does not report success for an empty answer after a lookup", async () => {
 
 it("uses the per-run model snapshot without exposing its key", async () => {
   const model = await openModel(() => ({ content: "snapshot ok" }));
-  const current = await config({ modelBaseUrl: "http://127.0.0.1:9/not-the-fake", modelApiKey: "config-key" });
+  const current = await config();
   const recording = recordingObservability();
   const app = buildApp(current, recording.observability);
   const run = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
@@ -392,7 +408,7 @@ it("uses the per-run model snapshot without exposing its key", async () => {
   assert.ok(observed.some(event => event.type === "message.completed" && event.content === "snapshot ok"));
   assert.ok(observed.some(event => event.type === "run.completed"));
   assert.ok(model.authorizations[0]?.includes("snapshot-secret-key"));
-  assert.equal(model.authorizations[0]?.includes("config-key"), false);
+  assert.equal(model.authorizations.length, 1);
   const sent = JSON.stringify(model.requests[0]);
   assert.ok(sent.includes('"model":"snapshot-model"'));
   assert.ok(sent.includes('"max_tokens":4096'));
@@ -409,7 +425,8 @@ it("enforces the cumulative tool-call budget before calling Java", async () => {
     ? { tool: { name: "lookup_records", arguments: { query: "north" } } }
     : { content: "done" });
   const java = await openJava();
-  const app = buildApp(await config({ modelBaseUrl: model.url, javaToolsUrl: java.url }));
+  modelUrlForRuns = model.url;
+  const app = buildApp(await config({ javaToolsUrl: java.url }));
   const run = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
     sessionScope: "tool-budget",
     definition: definition({ tools: [LOOKUP_TOOL], maxToolCalls: 1 }),
@@ -424,7 +441,8 @@ it("enforces the cumulative tool-call budget before calling Java", async () => {
 
 it("uses the per-request run timeout override", async () => {
   const model = await openHangingModel();
-  const app = buildApp(await config({ modelBaseUrl: model.url, runTimeoutMs: 120_000 }));
+  modelUrlForRuns = model.url;
+  const app = buildApp(await config({ runTimeoutMs: 120_000 }));
   const started = Date.now();
   const run = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
     sessionScope: "request-timeout",
@@ -438,7 +456,8 @@ it("uses the per-request run timeout override", async () => {
 
 it("aborts an active run and fails a timed-out run", async () => {
   const model = await openHangingModel();
-  const app = buildApp(await config({ modelBaseUrl: model.url, runTimeoutMs: 120_000 }));
+  modelUrlForRuns = model.url;
+  const app = buildApp(await config({ runTimeoutMs: 120_000 }));
   const pending = app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
     runId: "cancel-run", conversationId: "cancel-conversation", sessionScope: "cancel-scope", content: "wait",
   }) }).then(response => response);
@@ -455,7 +474,8 @@ it("aborts an active run and fails a timed-out run", async () => {
   await app.close();
 
   // This intentionally uses the platform timer to verify the production timeout abort path.
-  const timeoutApp = buildApp(await config({ modelBaseUrl: model.url, runTimeoutMs: 20 }));
+  modelUrlForRuns = model.url;
+  const timeoutApp = buildApp(await config({ runTimeoutMs: 20 }));
   const timedOut = await timeoutApp.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
     runId: "timeout-run", conversationId: "timeout-conversation", sessionScope: "timeout-scope", content: "wait",
   }) });
@@ -468,7 +488,8 @@ it("forwards a tool call to Java with protocol data only and publishes the raw r
     ? { tool: { name: "lookup_records", arguments: { query: "north" } } }
     : { content: "done" });
   const java = await openJava();
-  const app = buildApp(await config({ modelBaseUrl: model.url, javaToolsUrl: java.url }));
+  modelUrlForRuns = model.url;
+  const app = buildApp(await config({ javaToolsUrl: java.url }));
   const run = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
     runId: "tool-run",
     toolContextId: "tool-context",
@@ -512,7 +533,8 @@ it("forwards the Java business result without lossy redaction", async () => {
     status: 200,
     payload: { protocolVersion: 1, result: longResult, halt: false },
   }));
-  const app = buildApp(await config({ modelBaseUrl: model.url, javaToolsUrl: java.url }));
+  modelUrlForRuns = model.url;
+  const app = buildApp(await config({ javaToolsUrl: java.url }));
   const run = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
     sessionScope: "result-fidelity",
     definition: definition({ tools: [LOOKUP_TOOL] }),
@@ -531,7 +553,8 @@ it("compacts long durable history before inference and reuses it after reopening
       ? { content: `The user selected ${marker}; preserve this selection and await confirmation.` }
       : { content: index < 5 ? largeReply : "The existing selection still awaits confirmation." };
   });
-  const settings = await config({ modelBaseUrl: model.url });
+  modelUrlForRuns = model.url;
+  const settings = await config();
   let app = buildApp(settings);
   try {
     for (let turn = 0; turn < 6; turn++) {
@@ -563,7 +586,8 @@ it("uses the Pi validator before calling Java for malformed tool arguments", asy
     ? { tool: { name: "lookup_records", arguments: {} } }
     : { content: "done" });
   const java = await openJava();
-  const app = buildApp(await config({ modelBaseUrl: model.url, javaToolsUrl: java.url }));
+  modelUrlForRuns = model.url;
+  const app = buildApp(await config({ javaToolsUrl: java.url }));
   const run = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
     sessionScope: "invalid-args",
     definition: definition({ tools: [LOOKUP_TOOL] }),
@@ -581,7 +605,8 @@ it("turns Java HTTP failures into tool errors without fabricating a result", asy
     ? { tool: { name: "lookup_records", arguments: { query: "north" } } }
     : { content: "done" });
   const java = await openJava(() => ({ status: 403, payload: { code: "DENIED", message: "not authorized" } }));
-  const app = buildApp(await config({ modelBaseUrl: model.url, javaToolsUrl: java.url }));
+  modelUrlForRuns = model.url;
+  const app = buildApp(await config({ javaToolsUrl: java.url }));
   const run = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
     sessionScope: "java-error",
     definition: definition({ tools: [LOOKUP_TOOL] }),
@@ -599,7 +624,8 @@ it("rejects a callback with a mismatched protocol version", async () => {
     ? { tool: { name: "lookup_records", arguments: { query: "north" } } }
     : { content: "done" });
   const java = await openJava(() => ({ status: 200, payload: { protocolVersion: 2, result: {}, halt: false } }));
-  const app = buildApp(await config({ modelBaseUrl: model.url, javaToolsUrl: java.url }));
+  modelUrlForRuns = model.url;
+  const app = buildApp(await config({ javaToolsUrl: java.url }));
   const run = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
     sessionScope: "callback-protocol",
     definition: definition({ tools: [LOOKUP_TOOL] }),
@@ -619,7 +645,8 @@ it("stops after the current turn when Java halts and still completes generically
     status: 200,
     payload: { protocolVersion: 1, result: { status: "PENDING_CONFIRMATION", draftId: "draft-1" }, halt: true },
   }));
-  const app = buildApp(await config({ modelBaseUrl: model.url, javaToolsUrl: java.url }));
+  modelUrlForRuns = model.url;
+  const app = buildApp(await config({ javaToolsUrl: java.url }));
   const run = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
     sessionScope: "halt-scope",
     definition: definition({ tools: [LOOKUP_TOOL] }),
@@ -632,6 +659,30 @@ it("stops after the current turn when Java halts and still completes generically
   await app.close();
 });
 
+it("keeps a server-completed result terminal instead of starting another model turn", async () => {
+  const model = await openModel(index => index === 0
+    ? { tool: { name: "lookup_records", arguments: { query: "north" } } }
+    : { content: "This extra model turn must never run." });
+  const java = await openJava(() => ({
+    status: 200, payload: { protocolVersion: 1, result: { id: "prepared-1" }, halt: true,
+      completion: "Prepared result retained; confirmation is still required." },
+  }));
+  modelUrlForRuns = model.url;
+  const app = buildApp(await config({ javaToolsUrl: java.url }));
+  try {
+    const run = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
+      definition: definition({ tools: [LOOKUP_TOOL], finalizationInstructions: "Finish using retained facts." }),
+    }) });
+    assert.equal(model.requests.length, 1);
+    assert.equal(java.calls.length, 1);
+    const observed = events(run.body);
+    assert.ok(observed.some(event => event.type === "message.completed"
+      && event.content === "Prepared result retained; confirmation is still required."));
+    assert.ok(observed.some(event => event.type === "run.completed"));
+    assert.equal(observed.some(event => event.type === "run.failed"), false);
+  } finally { await app.close(); }
+});
+
 it("finalizes retained results without tools after a Java halt decision", async () => {
   const model = await openModel(index => index === 0
     ? { tool: { name: "lookup_records", arguments: { query: "north" } } }
@@ -639,7 +690,8 @@ it("finalizes retained results without tools after a Java halt decision", async 
   const java = await openJava(() => ({
     status: 200, payload: { protocolVersion: 1, result: { id: "prepared-1" }, halt: true },
   }));
-  const app = buildApp(await config({ modelBaseUrl: model.url, javaToolsUrl: java.url }));
+  modelUrlForRuns = model.url;
+  const app = buildApp(await config({ javaToolsUrl: java.url }));
   try {
     const run = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
       definition: definition({ tools: [LOOKUP_TOOL], finalizationInstructions: "Retain the result; finish without further actions." }),
@@ -662,7 +714,8 @@ it("uses a tool-free final turn after a failed call consumes the run budget", as
     ? { tool: { name: "lookup_records", arguments: { query: "north" } } }
     : { content: "The requested result is unavailable; no result was invented." });
   const java = await openJava(() => ({ status: 503, payload: { code: "UNAVAILABLE", message: "The evidence is unavailable." } }));
-  const app = buildApp(await config({ modelBaseUrl: model.url, javaToolsUrl: java.url }));
+  modelUrlForRuns = model.url;
+  const app = buildApp(await config({ javaToolsUrl: java.url }));
   try {
     const run = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
       definition: definition({ tools: [LOOKUP_TOOL], maxToolCalls: 1,
@@ -686,7 +739,8 @@ it("honors the supplied maxTurns", async () => {
     ? { tool: { name: "lookup_records", arguments: { query: "north" } } }
     : { content: "unexpected second turn" });
   const java = await openJava();
-  const app = buildApp(await config({ modelBaseUrl: model.url, javaToolsUrl: java.url }));
+  modelUrlForRuns = model.url;
+  const app = buildApp(await config({ javaToolsUrl: java.url }));
   const run = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
     sessionScope: "turn-limit",
     definition: definition({ tools: [LOOKUP_TOOL], maxTurns: 1 }),
@@ -697,9 +751,30 @@ it("honors the supplied maxTurns", async () => {
   await app.close();
 });
 
+it("does not feed private reasoning text back into the next model turn", async () => {
+  const model = await openModel(index => ({ content: index === 0
+    ? "<thinking>PRIVATE_PLAN_NOT_A_USER_FACT</thinking>Public answer"
+    : "Follow-up answer" }));
+  modelUrlForRuns = model.url;
+  const app = buildApp(await config());
+  try {
+    await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
+      runId: "reasoning-first", turnId: "reasoning-turn-1", content: "first question", sessionScope: "reasoning-scope",
+    }) });
+    const second = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
+      runId: "reasoning-second", turnId: "reasoning-turn-2", content: "follow-up", sessionScope: "reasoning-scope",
+    }) });
+    assert.ok(events(second.body).some(event => event.type === "run.completed"), second.body);
+    const input = JSON.stringify(model.requests[1]);
+    assert.ok(input.includes("Public answer"));
+    assert.equal(input.includes("PRIVATE_PLAN_NOT_A_USER_FACT"), false);
+  } finally { await app.close(); }
+});
+
 it("restores prior Pi messages for a follow-up in the same session scope", async () => {
   const model = await openModel(index => ({ content: index === 0 ? "first answer" : "second answer" }));
-  const app = buildApp(await config({ modelBaseUrl: model.url }));
+  modelUrlForRuns = model.url;
+  const app = buildApp(await config());
   const first = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
     runId: "follow-1", turnId: "turn-1", content: "first question", sessionScope: "follow-scope",
   }) });
@@ -718,15 +793,38 @@ it("restores prior Pi messages for a follow-up in the same session scope", async
   await app.close();
 });
 
+it("continues a system decision without journaling a duplicate user request", async () => {
+  const model = await openModel(index => ({ content: index === 0 ? "prepared" : "choose a new time" }));
+  modelUrlForRuns = model.url;
+  const app = buildApp(await config());
+  await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
+    runId: "decision-first", turnId: "original-turn", content: "original goal", sessionScope: "decision-scope",
+  }) });
+  const continued = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
+    runId: "decision-resume", turnId: "original-turn", content: "original goal", sessionScope: "decision-scope",
+    definition: definition({ resume: true, context: "SYSTEM_DECISION_TIME_PASSED" }),
+  }) });
+  assert.ok(events(continued.body).some(event => event.type === "message.completed" && event.content === "choose a new time"), continued.body);
+  const input = JSON.stringify(model.requests[1]);
+  assert.equal(input.split("original goal").length - 1, 1);
+  assert.ok(input.indexOf("SYSTEM_DECISION_TIME_PASSED") > input.indexOf("prepared"));
+  await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
+    runId: "decision-follow", turnId: "follow-turn", content: "new time", sessionScope: "decision-scope",
+  }) });
+  assert.equal(JSON.stringify(model.requests[2]).includes("SYSTEM_DECISION_TIME_PASSED"), false);
+  await app.close();
+});
+
 it("uses current invocation context without persisting it into later conversations", async () => {
   const model = await openModel(index => ({ content: index === 0 ? "first answer" : "second answer" }));
-  const settings = await config({ modelBaseUrl: model.url });
+  modelUrlForRuns = model.url;
+  const settings = await config();
   const firstApp = buildApp(settings);
   const first = await firstApp.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
     runId: "context-first", turnId: "context-turn-1", content: "first question", sessionScope: "ephemeral-context",
     definition: definition({ context: "CURRENT_CONTEXT_A" }),
   }) });
-  assert.ok(events(first.body).some(event => event.type === "run.completed"));
+  assert.ok(events(first.body).some(event => event.type === "run.completed"), first.body);
   await firstApp.close();
   const secondApp = buildApp(settings);
   const second = await secondApp.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
@@ -747,7 +845,8 @@ it("uses current invocation context without persisting it into later conversatio
 
 it("binds history to the opaque session scope", async () => {
   const model = await openModel(index => ({ content: index === 0 ? "first answer" : "second answer" }));
-  const app = buildApp(await config({ modelBaseUrl: model.url }));
+  modelUrlForRuns = model.url;
+  const app = buildApp(await config());
   const first = await app.inject({ method: "POST", url: "/run", headers: auth(), payload: runBody({
     runId: "scope-1", turnId: "turn-1", content: "first question", sessionScope: "scope-a",
   }) });
@@ -760,4 +859,159 @@ it("binds history to the opaque session scope", async () => {
   assert.equal(serialized.includes("first question"), false);
   assert.ok(serialized.includes("second question"));
   await app.close();
+});
+
+describe("observability configuration contract", () => {
+  interface RecordingReceiver {
+    server: Server;
+    url: string;
+    hits: Array<{ path: string; authorization: string }>;
+  }
+
+  function openReceiver(): Promise<RecordingReceiver> {
+    const hits: RecordingReceiver["hits"] = [];
+    const listening = Promise.withResolvers<RecordingReceiver>();
+    const server = createServer((request, response) => {
+      hits.push({
+        path: request.url ?? "",
+        authorization: typeof request.headers.authorization === "string" ? request.headers.authorization : "",
+      });
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end("{}");
+    });
+    server.once("error", listening.reject);
+    server.listen(0, "127.0.0.1", () => {
+      servers.push(server);
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        listening.reject(new Error("observability receiver address unavailable"));
+        return;
+      }
+      listening.resolve({ server, url: `http://127.0.0.1:${address.port}`, hits });
+    });
+    return listening.promise;
+  }
+
+  function openJavaObservability(reply: (request: IncomingMessage) => { status: number; body: unknown }): Promise<{ url: string; requests: IncomingMessage[] }> {
+    const requests: IncomingMessage[] = [];
+    const listening = Promise.withResolvers<{ url: string; requests: IncomingMessage[] }>();
+    const server = createServer((request, response) => {
+      requests.push(request);
+      if (request.headers["x-agent-bridge-token"] !== "test-java") {
+        response.writeHead(401);
+        response.end();
+        return;
+      }
+      const result = reply(request);
+      response.writeHead(result.status, { "content-type": "application/json" });
+      response.end(JSON.stringify(result.body));
+    });
+    server.once("error", listening.reject);
+    server.listen(0, "127.0.0.1", () => {
+      servers.push(server);
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        listening.reject(new Error("observability fixture address unavailable"));
+        return;
+      }
+      listening.resolve({ url: `http://127.0.0.1:${address.port}/internal/agent/tools`, requests });
+    });
+    return listening.promise;
+  }
+
+  it("fetches the startup snapshot from Java with the bridge token", async () => {
+    const java = await openJavaObservability(() => ({
+      status: 200,
+      body: { enabled: false, revision: 4 },
+    }));
+    const settings = await fetchObservabilitySettings(defaultConfigForTests({ javaToolsUrl: java.url }));
+    assert.deepEqual(settings, { enabled: false, revision: 4 });
+    assert.equal(java.requests[0]?.url, "/internal/agent/observability");
+    assert.equal(java.requests[0]?.headers["x-agent-bridge-token"], "test-java");
+  });
+
+  it("rejects unauthorized or malformed observability responses at startup", async () => {
+    const unauthorized = await openJavaObservability(() => ({ status: 503, body: { code: "ADMIN_CONFIG_UNAVAILABLE" } }));
+    await assert.rejects(
+      fetchObservabilitySettings(defaultConfigForTests({ javaToolsUrl: unauthorized.url })),
+      /observability configuration unavailable/,
+    );
+
+    const malformed = await openJavaObservability(() => ({ status: 200, body: { enabled: "yes" } }));
+    await assert.rejects(
+      fetchObservabilitySettings(defaultConfigForTests({ javaToolsUrl: malformed.url })),
+      /malformed/,
+    );
+
+    const incomplete = await openJavaObservability(() => ({
+      status: 200,
+      body: { enabled: true, baseUrl: "https://langfuse.example.test" },
+    }));
+    await assert.rejects(
+      fetchObservabilitySettings(defaultConfigForTests({ javaToolsUrl: incomplete.url })),
+      /malformed: publicKey/,
+    );
+  });
+
+  it("sends spans only to the fetched receiver and ignores leftover langfuse environment values", async () => {
+    const expected = await openReceiver();
+    const ignored = await openReceiver();
+    process.env.LANGFUSE_BASE_URL = ignored.url;
+    process.env.LANGFUSE_PUBLIC_KEY = "pk-env-leftover";
+    process.env.LANGFUSE_SECRET_KEY = "sk-env-leftover";
+    try {
+      const settings = {
+        enabled: true,
+        revision: 7,
+        baseUrl: expected.url,
+        publicKey: "pk-run-expected",
+        secretKey: "sk-run-expected",
+      };
+      const observability = createObservability(settings);
+      const trace = observability.startAgentRun({ runId: "obs-run", turnId: "obs-turn", conversationId: "obs-conversation", content: "observed run" });
+      assert.ok(trace);
+      trace.finish({});
+      await observability.flush();
+      await observability.shutdown();
+      assert.ok(expected.hits.length > 0, "the fetched receiver must observe the run");
+      for (const hit of expected.hits) {
+        assert.ok(hit.path.startsWith("/api/public/"), `unexpected ingestion path ${hit.path}`);
+        assert.equal(hit.authorization, `Basic ${Buffer.from("pk-run-expected:sk-run-expected").toString("base64")}`);
+      }
+      assert.equal(ignored.hits.length, 0, "environment leftovers must never receive spans");
+      assert.equal(
+        credentialsDigest(settings),
+        createHash("sha256").update("pk-run-expected:sk-run-expected").digest("hex"),
+      );
+      assert.equal(credentialsDigest({ enabled: false }), undefined);
+    } finally {
+      delete process.env.LANGFUSE_BASE_URL;
+      delete process.env.LANGFUSE_PUBLIC_KEY;
+      delete process.env.LANGFUSE_SECRET_KEY;
+    }
+  });
+
+  it("reports adopted observability state in health without secrets", async () => {
+    const app = buildApp(await config(), createObservability(null), () => ({
+      enabled: true,
+      revision: 9,
+      baseUrl: "https://langfuse.example.test",
+      credentialsDigest: "digest-value",
+    }));
+    const health = await app.inject({ method: "GET", url: "/healthz", headers: auth() });
+    const observability = health.json().observability as Record<string, unknown>;
+    assert.equal(observability.enabled, true);
+    assert.equal(observability.revision, 9);
+    assert.equal(observability.baseUrl, "https://langfuse.example.test");
+    assert.equal(observability.credentialsDigest, "digest-value");
+    assert.equal("publicKey" in observability || "secretKey" in observability, false);
+    await app.close();
+  });
+
+  it("disabled settings produce a noop observability", async () => {
+    const observability = createObservability({ enabled: false });
+    assert.equal(observability.startAgentRun({ runId: "r", turnId: "t", conversationId: "c", content: "x" }), null);
+    await observability.flush();
+    await observability.shutdown();
+  });
 });

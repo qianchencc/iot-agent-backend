@@ -11,7 +11,7 @@ import ltd.qianc.iotagent.iot.AuthorizedDevice;
 import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
 import ltd.qianc.iotagent.iot.GatewayAuthorizationException;
 import ltd.qianc.iotagent.iot.IotAdapter;
-import ltd.qianc.iotagent.iot.IotSource;
+import ltd.qianc.iotagent.iot.IotSourceEnum;
 import ltd.qianc.iotagent.iot.ReportDownload;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.report.ReportFact;
@@ -66,7 +66,7 @@ public final class DefaultReportService implements ReportService {
 
     @Override
     public Map<String, Object> read(String reportId, RequestIdentity identity) {
-        if (identity == null || identity.source() != IotSource.COMPANY) throw new ReportNotFoundException();
+        if (identity == null || identity.source() != IotSourceEnum.COMPANY) throw new ReportNotFoundException();
         ReportFact fact = find(reportId);
         Map<String, Object> report = ownedReport(fact, identity);
         AuthorizedDeviceScope scope = loadScope(identity);
@@ -94,7 +94,7 @@ public final class DefaultReportService implements ReportService {
     @Override
     public java.util.List<Map<String, Object>> conversationFacts(String conversationId,
             java.util.List<String> reportIds, RequestIdentity identity) {
-        if (identity == null || identity.source() != IotSource.COMPANY) throw new ReportNotFoundException();
+        if (identity == null || identity.source() != IotSourceEnum.COMPANY) throw new ReportNotFoundException();
         java.util.List<Map<String, Object>> result = new java.util.ArrayList<>();
         for (String id : new java.util.LinkedHashSet<>(reportIds)) {
             ReportFact fact = find(id);
@@ -176,7 +176,7 @@ public final class DefaultReportService implements ReportService {
     private AuthorizedDeviceScope loadScope(RequestIdentity identity) {
         try {
             AuthorizedDeviceScope scope = iot.loadAuthorizedDeviceScope(identity).block(SCOPE_TIMEOUT);
-            if (scope == null || scope.source() != IotSource.COMPANY || !identity.equals(scope.identity())) {
+            if (scope == null || scope.source() != IotSourceEnum.COMPANY || !identity.equals(scope.identity())) {
                 throw new ReportUnavailableException("REPORT_SCOPE_UNAVAILABLE", "授权目录暂不可用，请稍后重试");
             }
             return scope;

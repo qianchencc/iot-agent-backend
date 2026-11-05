@@ -1,0 +1,14 @@
+FRESH: tables=33, all required fields/primary keys/types/comments verified
+CANDIDATES: 20 concurrent writes resolve to their own sets; explicit s40 -> s41; another conversation -> s1
+LEGACY_UPGRADE: tables=33, all required fields/primary keys/types/comments verified
+LEGACY_FACTS: preserved conversation, retry count, Pi lease/version/receipt and prior handle; second migration is idempotent
+COMMAND ac: overflow rejected
+COMMAND lighting: overflow rejected
+COMMAND access: overflow rejected
+REPORT: real detail projection preserves both null alert fields and reports one satisfied device
+HTTP /api/agent/conversations: 400 INVALID_AGENT_SOURCE
+HTTP /api/agent/action-drafts/missing/parameters: 400 INVALID_PARAMETERS
+HTTP /api/agent/task-proposals/missing/confirm: 400 INVALID_VERSION
+HTTP /api/agent/conversations: 400 INVALID_REQUEST
+HTTP admin/config: 400 CONFIG_INVALID for overflowing revision; cookie/CSRF path exercised
+ALL_ISOLATED_SMOKES_PASSED

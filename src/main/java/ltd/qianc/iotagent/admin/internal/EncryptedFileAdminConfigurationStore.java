@@ -1,6 +1,7 @@
 package ltd.qianc.iotagent.admin.internal;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import ltd.qianc.iotagent.instructions.AgentInstructions;
 import ltd.qianc.iotagent.admin.AdminConfigurationStore;
 import ltd.qianc.iotagent.error.BusinessException;
 
@@ -29,8 +30,10 @@ public final class EncryptedFileAdminConfigurationStore implements AdminConfigur
     private static final Set<String> KNOWN_KEYS = Set.of(
             "modelBaseUrl", "modelId", "modelApiKey", "contextWindow", "maxOutputTokens", "reasoning",
             "thinkingLevel", "supportsDeveloperRole", "supportsReasoningEffort", "supportsUsageInStreaming",
-            "maxTokensField", "maxAgentTurns", "maxToolCalls", "officeInstructions", "companyInstructions",
-            "replyInstructions", "runTimeoutMs", "draftTtlMs", "heartbeatMs", "readbackWaitMs", "controlTimeoutMs",
+            "maxTokensField", "maxAgentTurns", "maxToolCalls", "officeBaseInstructions", "companyBaseInstructions",
+            "sharedInstructions", "companyTaskInstructions", "checkpointInstructions", "finalizationInstructions",
+            "compactionInstructions", "officeInstructions", "companyInstructions", "replyInstructions",
+            "runTimeoutMs", "draftTtlMs", "heartbeatMs", "readbackWaitMs", "controlTimeoutMs",
             "scanIntervalMs", "catalogTtlMs", "authoritativeStateTtlMs", "actionIdTtlMs", "energyReadTtlMs",
             "langfuseEnabled", "langfuseBaseUrl", "langfusePublicKey", "langfuseSecretKey");
     private final ObjectMapper mapper;
@@ -73,6 +76,8 @@ public final class EncryptedFileAdminConfigurationStore implements AdminConfigur
         }
         List<String> unsupported = changes.keySet().stream().filter(RetiredCacheSettings.NAMES::contains).toList();
         if (!unsupported.isEmpty()) return new SaveResult(400, "CONFIG_UNSUPPORTED", unsupported);
+        List<String> deployment = changes.keySet().stream().filter(DeploymentReportedSettings.NAMES::contains).toList();
+        if (!deployment.isEmpty()) return new SaveResult(400, "CONFIG_READONLY_DEPLOYMENT", deployment);
         Map<String, Object> previous = state.revisions.get(state.revisions.size() - 1).settings;
         Map<String, Object> next = new LinkedHashMap<>(previous);
         for (Map.Entry<String, Object> change : changes.entrySet()) {
@@ -99,6 +104,7 @@ public final class EncryptedFileAdminConfigurationStore implements AdminConfigur
         if (target == null) return new SaveResult(404, "CONFIG_REVISION_NOT_FOUND", List.of());
         Map<String, Object> changes = new LinkedHashMap<>(target.settings);
         RetiredCacheSettings.NAMES.forEach(changes::remove);
+        DeploymentReportedSettings.NAMES.forEach(changes::remove);
         locked.forEach(changes::remove);
         return save(expectedRevision, changes, actor);
     }
@@ -132,8 +138,9 @@ public final class EncryptedFileAdminConfigurationStore implements AdminConfigur
     private State load(Map<String, Object> initial) {
         try {
             if (!Files.exists(path)) {
-                if (initial == null || !validate(initial).isEmpty()) throw unavailable();
-                State created = new State(new ArrayList<>(List.of(new Revision(1, new LinkedHashMap<>(initial), List.of(), "bootstrap", Instant.now().toString()))), 0);
+                if (initial == null || !seedIssues(initial).isEmpty()) throw unavailable();
+                State created = new State(new ArrayList<>(List.of(new Revision(1,
+                        AgentInstructions.withDefaults(initial), List.of(), "bootstrap", Instant.now().toString()))), 0);
                 persist(created);
                 return created;
             }
@@ -141,6 +148,11 @@ public final class EncryptedFileAdminConfigurationStore implements AdminConfigur
             byte[] plain = decrypt(encrypted);
             State loaded = mapper.readValue(plain, State.class);
             if (loaded.revisions == null || loaded.revisions.isEmpty()) throw unavailable();
+            // Hydration adds only missing instruction sections from the versioned program
+            // defaults; explicit sections survive and the next save persists full settings.
+            for (Revision revision : loaded.revisions) {
+                revision.settings = AgentInstructions.withDefaults(revision.settings);
+            }
             // A process restart activates the latest saved revision; save itself never mutates active state.
             loaded.activeIndex = loaded.revisions.size() - 1;
             return loaded;
@@ -151,6 +163,17 @@ public final class EncryptedFileAdminConfigurationStore implements AdminConfigur
         }
     }
 
+    /**
+     * First-boot seeding may leave the model connection blank so an operator can
+     * log in and complete it in the console; every other rule still applies.
+     */
+    private static List<String> seedIssues(Map<String, Object> initial) {
+        List<String> issues = new ArrayList<>(validate(initial));
+        for (String completable : List.of("modelBaseUrl", "modelId", "modelApiKey")) {
+            if (!(initial.get(completable) instanceof String text) || text.isBlank()) issues.remove(completable);
+        }
+        return issues;
+    }
 
     private void persist(State value) {
         try {
@@ -198,6 +221,7 @@ public final class EncryptedFileAdminConfigurationStore implements AdminConfigur
         Map<String, Object> result = new LinkedHashMap<>(value);
         SECRET_KEYS.forEach(result::remove);
         RetiredCacheSettings.NAMES.forEach(result::remove);
+        DeploymentReportedSettings.NAMES.forEach(result::remove);
         return result;
     }
 
@@ -208,6 +232,7 @@ public final class EncryptedFileAdminConfigurationStore implements AdminConfigur
     private static List<String> changedFields(Map<String, Object> before, Map<String, Object> after) {
         LinkedHashSet<String> fields = new LinkedHashSet<>();
         KNOWN_KEYS.forEach(key -> {
+            if (DeploymentReportedSettings.NAMES.contains(key)) return;
             if (!Objects.equals(before.get(key), after.get(key))) fields.add(key);
         });
         return List.copyOf(fields);
@@ -215,6 +240,7 @@ public final class EncryptedFileAdminConfigurationStore implements AdminConfigur
 
     private static List<String> validate(Map<String, Object> settings) {
         List<String> issues = new ArrayList<>();
+        issues.addAll(AgentInstructions.validate(settings));
         for (String key : settings.keySet()) if (!KNOWN_KEYS.contains(key)) issues.add(key);
         requireString(settings, issues, "modelBaseUrl", 1, 4096);
         requireString(settings, issues, "modelId", 1, 200);

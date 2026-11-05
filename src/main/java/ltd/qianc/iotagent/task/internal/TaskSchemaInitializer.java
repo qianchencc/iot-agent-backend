@@ -7,12 +7,16 @@ import java.time.Instant;
 import java.util.LinkedHashSet;
 import java.util.Set;
 import javax.sql.DataSource;
+import ltd.qianc.iotagent.schema.SchemaMigrations;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
  * Task-specific additive schema. It is deliberately independent from the shared
  * agent-facts baseline so the task slice can evolve protected identity and phase
- * evidence without racing other owners' migrations.
+ * evidence without racing other owners' migrations. All DDL and legacy-key
+ * upgrades (including the defensive task_phases columns) live in
+ * {@link SchemaMigrations}; this initializer keeps only the task-owned
+ * historical dispatch seeding over durable facts.
  */
 public final class TaskSchemaInitializer {
     private final JdbcTemplate jdbc;
@@ -24,25 +28,7 @@ public final class TaskSchemaInitializer {
     }
 
     public void initialize() {
-        ensureColumn("task_phases", "definition_json", "JSON NULL");
-        ensureColumn("task_phases", "result_json", "JSON NULL");
-        ensureColumn("task_phases", "failure_reason", "VARCHAR(1024) NULL");
-        jdbc.update("UPDATE task_phases SET definition_json=payload_json WHERE definition_json IS NULL");
-        jdbc.execute("CREATE TABLE IF NOT EXISTS task_execution_identities ("
-                + "owner_id VARCHAR(64) NOT NULL, owner_kind VARCHAR(16) NOT NULL,"
-                + "tenant_code VARCHAR(128) NOT NULL, owner_key CHAR(64) NOT NULL,"
-                + "payload MEDIUMTEXT NOT NULL, create_time DATETIME NOT NULL, update_time DATETIME NOT NULL,"
-                + "PRIMARY KEY (owner_id), KEY ix_task_execution_identity_kind (owner_kind)) ENGINE=InnoDB");
-        jdbc.execute("CREATE TABLE IF NOT EXISTS task_report_attempts ("
-                + "task_id VARCHAR(64) NOT NULL, status VARCHAR(16) NOT NULL, attempts INT NOT NULL DEFAULT 0,"
-                + "last_error VARCHAR(1024) NULL, next_attempt_at DATETIME NULL,"
-                + "create_time DATETIME NOT NULL, update_time DATETIME NOT NULL,"
-                + "PRIMARY KEY (task_id)) ENGINE=InnoDB");
-        jdbc.execute("CREATE TABLE IF NOT EXISTS task_device_dispatch_reservations ("
-                + "task_id VARCHAR(64) NOT NULL, device_id VARCHAR(64) NOT NULL, phase_id VARCHAR(64) NOT NULL,"
-                + "kind VARCHAR(16) NOT NULL, reserved_at DATETIME NOT NULL,"
-                + "create_time DATETIME NOT NULL, update_time DATETIME NOT NULL,"
-                + "PRIMARY KEY (task_id, device_id), KEY ix_task_dispatch_reservation_phase (phase_id)) ENGINE=InnoDB");
+        new SchemaMigrations(jdbc.getDataSource()).ensureTaskLifecycle();
         seedDispatchReservations();
     }
 
@@ -88,15 +74,5 @@ public final class TaskSchemaInitializer {
                     }
                     return null;
                 });
-    }
-
-    private void ensureColumn(String table, String column, String definition) {
-        Integer count = jdbc.queryForObject(
-                "SELECT COUNT(*) FROM information_schema.columns "
-                + "WHERE table_schema=DATABASE() AND table_name=? AND column_name=?",
-                Integer.class, table, column);
-        if (count == null || count == 0) {
-            jdbc.execute("ALTER TABLE " + table + " ADD COLUMN " + column + " " + definition);
-        }
     }
 }

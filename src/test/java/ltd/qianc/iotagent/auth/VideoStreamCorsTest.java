@@ -3,8 +3,12 @@ package ltd.qianc.iotagent.auth;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.context.TypeExcludeFilter;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Import;
+import org.springframework.core.type.classreading.MetadataReader;
+import org.springframework.core.type.classreading.MetadataReaderFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -21,7 +25,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /** Cross-origin behaviour of the single browser-readable video route. */
 @SpringBootTest(properties = {
-        "agent.bridge-token=test-bridge",
+        "agent.bridge.token=test-bridge",
         "iot.identity.verify=false",
         "agent.video.allowed-origin=http://127.0.0.1:9419"
 })
@@ -115,6 +119,12 @@ class VideoStreamCorsTest {
                 "http://user@127.0.0.1:9419", "file:///tmp/player")) {
             new org.springframework.boot.test.context.runner.WebApplicationContextRunner()
                     .withUserConfiguration(ltd.qianc.iotagent.IotAgentBackendApplication.class)
+                    .withBean(TypeExcludeFilter.class, () -> new TypeExcludeFilter() {
+                        @Override
+                        public boolean match(MetadataReader reader, MetadataReaderFactory factory) {
+                            return reader.getAnnotationMetadata().hasAnnotation(TestConfiguration.class.getName());
+                        }
+                    })
                     .withPropertyValues("agent.video.allowed-origin=" + origin,
                             "agent.storage.mysql.enabled=false", "agent.storage.redis.enabled=false")
                     .run(context -> {

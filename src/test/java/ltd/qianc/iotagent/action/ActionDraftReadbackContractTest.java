@@ -105,7 +105,7 @@ class ActionDraftReadbackContractTest {
             ltd.qianc.iotagent.iot.RequestIdentity identity = call.getArgument(0);
             return Mono.just(new ltd.qianc.iotagent.iot.AuthorizedDeviceScope() {
                 @Override public ltd.qianc.iotagent.iot.RequestIdentity identity() { return identity; }
-                @Override public ltd.qianc.iotagent.iot.IotSource source() { return identity.source(); }
+                @Override public ltd.qianc.iotagent.iot.IotSourceEnum source() { return identity.source(); }
                 @Override public List<ltd.qianc.iotagent.iot.AuthorizedDevice> devices() {
                     return List.of(new ltd.qianc.iotagent.iot.AuthorizedDevice(
                             "device-1", "lighting", "灯", "办公室", false));
@@ -119,7 +119,7 @@ class ActionDraftReadbackContractTest {
                 CLOCK, snapshotJobs::add, snapshotJobs::add, null, null, MAPPER,
                 ltd.qianc.iotagent.readmodel.ReadSnapshots.Settings.defaults());
         return new ActionDraftFacade(MAPPER, drafts, iot, mock(ActionCommandGateway.class),
-                null, null, null, readbacks, snapshots, CLOCK, Duration.ofSeconds(1), Duration.ofMinutes(5));
+                null, null, null, readbacks, snapshots, CLOCK, Duration.ofSeconds(1), Duration.ofMinutes(5), null);
     }
 
     private static ActionReadbackStore readbacks(ActionReadbackFact... facts) {

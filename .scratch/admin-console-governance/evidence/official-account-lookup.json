@@ -1,0 +1,73 @@
+{
+  "date": "2026-11-04",
+  "selectedRequirement": "Search any existing official account directly; target need not have logged into this miniapp; local-known-member fallback rejected",
+  "sources": {
+    "publicServiceCatalog": "https://ncim.577119.com/micro-api/swagger-resources",
+    "candidateSwagger": "https://ncim.577119.com/micro-api/api/card/v2/api-docs",
+    "desktopPortalEntry": "https://ncim.577119.com/portal/js/index-0a8dd1d4.js",
+    "desktopApplicationCatalogSource": "https://ncim.577119.com/portal/js/index-c2ba666c.js"
+  },
+  "credentialContext": "Existing authenticated user-supplied test account; no credentials saved",
+  "suppliedAccountMasked": "172****1949",
+  "officialSelf": {
+    "personalName": "刘志龙",
+    "stableIdPresent": true
+  },
+  "candidateQueries": [
+    {
+      "endpoint": "GET /micro-api/api/card/account/page",
+      "filter": "accountNumber = supplied login",
+      "httpStatus": 200,
+      "businessCode": 204,
+      "totalElements": 0
+    },
+    {
+      "endpoint": "GET /micro-api/api/card/account/page",
+      "filter": "fulltext = supplied login",
+      "httpStatus": 200,
+      "businessCode": 204,
+      "totalElements": 0
+    },
+    {
+      "endpoint": "GET /micro-api/api/card/account/page",
+      "filter": "name = supplied official name",
+      "httpStatus": 200,
+      "businessCode": 200,
+      "totalElements": 1,
+      "containsCurrentOfficialStableId": false
+    },
+    {
+      "endpoint": "GET /micro-api/api/card/account/{currentOfficialId}",
+      "httpStatus": 200,
+      "businessCode": 200,
+      "sameStableId": true,
+      "name": null,
+      "accountNumberMatchesSuppliedLogin": false,
+      "mobileMatchesSuppliedLogin": false
+    }
+  ],
+  "portalDiscovery": {
+    "currentUserClientList": "GET /sso-api/client/my/list",
+    "httpStatus": 200,
+    "businessCode": 200,
+    "identityCenterListed": true,
+    "identityCenterLoginUrlProvided": false,
+    "oauthLoginNotInvoked": true,
+    "resourceTreeMissingResourceCodeHttpStatus": 400,
+    "resourceTreeUsingDeclaredClientIdBusinessCode": 204
+  },
+  "ssoPublicDocsDiscovery": {
+    "/sso-api/swagger-resources": 404,
+    "/sso-api/v2/api-docs": 404
+  },
+  "conclusion": "Card directory cannot identify the supplied login correctly; same-name hit is not current official id. Do not bind by name or present card search as arbitrary SSO account lookup. Core SSO lookup contract and authorized read capability still unverified.",
+  "safety": {
+    "onlyReadRequestsIssued": true,
+    "admissionNotEnabled": true,
+    "allowlistRecordsAdded": 0,
+    "deviceControls": 0,
+    "tasksCreated": 0,
+    "notificationsSent": 0,
+    "rawProfilesOrTokensSaved": false
+  }
+}

@@ -30,7 +30,7 @@ public class IotAdapterConfiguration {
     @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
     @ConditionalOnMissingBean(DeviceCandidateSetStore.class)
     DeviceCandidateSetStore jdbcDeviceCandidateSetStore(JdbcTemplate jdbc, ObjectMapper mapper) {
-        return new JdbcDeviceCandidateSetStore(jdbc, mapper);
+        return IotAdapterFactory.candidateSets(jdbc, mapper);
     }
 
     @Bean

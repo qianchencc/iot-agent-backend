@@ -1,0 +1,58 @@
+{
+  "baseline": "945539f",
+  "originalImplementation": [
+    "apps/runtime/src/iot/adapter.ts:892-925",
+    "apps/runtime/src/agent/pi-runner.ts:645-669"
+  ],
+  "javaTests": {
+    "tests": 369,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "javaPort": 3381,
+  "nodePort": 3382,
+  "nodeChanged": false,
+  "sourceFiles": {
+    "src/main/java/ltd/qianc/iotagent/agent/internal/AgentBusinessEventProjection.java": "36ab20995d1dbdf40432e8e5d14e3d96f9a3dd80aa6b02aa2029bc078b3eff0f",
+    "src/main/java/ltd/qianc/iotagent/agent/internal/AgentBusinessToolDispatcher.java": "223607afcc8db501ca8b222817c52de58ce76fcef7918a54e7a7bc8d29cdd011",
+    "src/main/java/ltd/qianc/iotagent/iot/DeviceCandidateSet.java": "11e492c8dce9a56296fad87a968ace9e353d8680509a8626953613b2f9cc36cb",
+    "src/main/java/ltd/qianc/iotagent/iot/internal/WebClientIotAdapter.java": "c3ae49e0afab1df77a5e079869a8489843d7ac43d63915dc6a341f8902ade433",
+    "src/test/java/ltd/qianc/iotagent/agent/AgentBusinessDefinitionContractTest.java": "2479ecef85d33248708109687a8bf2f15e3f7d8a1b74c03d29521d0dc564b73c",
+    "src/test/java/ltd/qianc/iotagent/agent/AgentToolBridgeContractTest.java": "bb085a5019918819e1268c3397d9d65bf4d107f93631d8dab8d858343ac0c6ec",
+    "src/test/java/ltd/qianc/iotagent/task/TaskRangeTargetContractTest.java": "236e1d1dc0737b267b069c9109a623d0efc377a54589e0d3e6f20aaa36a73e32"
+  },
+  "javaArtifactSha256": "0469a000638378261d64dcf4fe24bdcf7a8cf445da23afeea4686703030646a7",
+  "businessAcceptance": {
+    "status": "passed-for-candidate-window-fix",
+    "sameConversationRetained": true,
+    "originalRequest": "帮我把公司的灯全关了",
+    "proposalTotal": 156,
+    "freshQuery": "重新查询26楼全部照明，告诉我完整匹配数量，不做任何操作。",
+    "visibleProgress": "找到 81 个设备候选",
+    "visibleFinalTotal": 81,
+    "actualModelResult": {
+      "totalMatches": 81,
+      "displayedToModel": 10,
+      "complete": false,
+      "membersComplete": true
+    },
+    "screenshots": [
+      "02-prepared-real-result.png",
+      "03-fresh-query-result.png"
+    ],
+    "productionConfirmationClicked": false,
+    "productionControlExecuted": false,
+    "taskCreated": false
+  },
+  "builtSourceFiles": {
+    "src/main/java/ltd/qianc/iotagent/agent/internal/AgentBusinessEventProjection.java": "36ab20995d1dbdf40432e8e5d14e3d96f9a3dd80aa6b02aa2029bc078b3eff0f",
+    "src/main/java/ltd/qianc/iotagent/agent/internal/AgentBusinessToolDispatcher.java": "223607afcc8db501ca8b222817c52de58ce76fcef7918a54e7a7bc8d29cdd011",
+    "src/main/java/ltd/qianc/iotagent/iot/DeviceCandidateSet.java": "18955e8fd3de1fdd207867dc402b4d5974d08240387c156cbee32a25a5f10860",
+    "src/main/java/ltd/qianc/iotagent/iot/internal/WebClientIotAdapter.java": "c3ae49e0afab1df77a5e079869a8489843d7ac43d63915dc6a341f8902ade433",
+    "src/test/java/ltd/qianc/iotagent/agent/AgentBusinessDefinitionContractTest.java": "d3b1de7fd2d95620dfe3bf244fb91736850d5b84b8e1f9d6a7b56a7b835f00b6",
+    "src/test/java/ltd/qianc/iotagent/agent/AgentToolBridgeContractTest.java": "bb085a5019918819e1268c3397d9d65bf4d107f93631d8dab8d858343ac0c6ec",
+    "src/test/java/ltd/qianc/iotagent/task/TaskRangeTargetContractTest.java": "236e1d1dc0737b267b069c9109a623d0efc377a54589e0d3e6f20aaa36a73e32"
+  },
+  "finalFocusedRegression": "AgentBusinessDefinitionContractTest#candidateProgressReportsTotalMatchesRatherThanTheDisplayWindow passed after replacing wording assertion with numeric result assertions"
+}

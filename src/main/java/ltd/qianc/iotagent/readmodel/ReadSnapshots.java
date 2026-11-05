@@ -93,7 +93,7 @@ public interface ReadSnapshots extends AutoCloseable {
         }
     }
 
-    enum Policy {
+    enum PolicyEnum {
         CURRENT, HISTORICAL;
         private static final ZoneId SHANGHAI = ZoneId.of("Asia/Shanghai");
         public Instant nextRefresh(Instant updatedAt) {
@@ -101,7 +101,7 @@ public interface ReadSnapshots extends AutoCloseable {
                     : updatedAt.atZone(SHANGHAI).toLocalDate().plusDays(1).atStartOfDay(SHANGHAI).toInstant();
         }
         /** Only an explicitly closed past window is historical; mixed/current/unknown windows stay current. */
-        public static Policy forQuery(Map<String, ?> query, Clock clock) {
+        public static PolicyEnum forQuery(Map<String, ?> query, Clock clock) {
             if (query.containsKey("weeks") && !query.containsKey("endDate")) return CURRENT;
             LocalDate today = LocalDate.now(clock.withZone(SHANGHAI));
             for (String key : new String[]{"from", "to", "windowFrom", "windowTo", "baselineFrom", "baselineTo",
@@ -139,7 +139,7 @@ public interface ReadSnapshots extends AutoCloseable {
     }
 
     Map<String, Object> read(Identity identity, String realm, Map<String, ?> fullTypedQuery,
-            Policy policy, Supplier<Map<String, Object>> loader);
+            PolicyEnum policy, Supplier<Map<String, Object>> loader);
 
     /**
      * Blocking background composition seam. Unlike {@link #read}, a miss is loaded on
@@ -150,7 +150,7 @@ public interface ReadSnapshots extends AutoCloseable {
      * ordinary HTTP must continue to use. Failed renewal never replaces a good body.
      */
     Map<String, Object> load(Identity identity, String realm, Map<String, ?> fullTypedQuery,
-            Policy policy, Supplier<Map<String, Object>> loader);
+            PolicyEnum policy, Supplier<Map<String, Object>> loader);
     /** Marks held credential projections stale and replaces their generation, without clearing visible data. */
     void invalidate(Identity identity);
     /** Discards credential projections and their persisted generation without denying a later newly verified read. */

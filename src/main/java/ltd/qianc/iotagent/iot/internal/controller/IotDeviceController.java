@@ -18,7 +18,7 @@ import ltd.qianc.iotagent.iot.DeviceCandidateSet;
 import ltd.qianc.iotagent.iot.DeviceCapabilityInspection;
 import ltd.qianc.iotagent.iot.DeviceCapabilityRequest;
 import ltd.qianc.iotagent.iot.IotAdapter;
-import ltd.qianc.iotagent.iot.IotSource;
+import ltd.qianc.iotagent.iot.IotSourceEnum;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.iot.UpstreamUnavailableException;
 import ltd.qianc.iotagent.readmodel.ReadSnapshots;
@@ -51,15 +51,15 @@ public final class IotDeviceController {
         ResponseEntity<?> source = requireCompanySource(request);
         if (source != null) return source;
         var principal = PrincipalContext.getPrincipalInfo();
-        RequestIdentity identity = new RequestIdentity(principal.authorization(), principal.tenantCode(), IotSource.COMPANY, principal.ownerKey());
+        RequestIdentity identity = new RequestIdentity(principal.authorization(), principal.tenantCode(), IotSourceEnum.COMPANY, principal.ownerKey());
         return ResponseEntity.ok(snapshots.read(snapshotIdentity(identity), "COMPANY_DEVICES", Map.of(),
-                ReadSnapshots.Policy.CURRENT, () -> companyDirectory(identity)));
+                ReadSnapshots.PolicyEnum.CURRENT, () -> companyDirectory(identity)));
     }
 
     private Map<String, Object> companyDirectory(RequestIdentity identity) {
         try {
             AuthorizedDeviceScope scope = adapter.loadAuthorizedDeviceScope(identity).block(ADAPTER_TIMEOUT);
-            if (scope == null || scope.source() != IotSource.COMPANY || !identity.equals(scope.identity())) {
+            if (scope == null || scope.source() != IotSourceEnum.COMPANY || !identity.equals(scope.identity())) {
                 throw new BusinessException("AUTHORIZED_SCOPE_UNAVAILABLE", "读取当前设备目录失败", 503);
             }
             List<Map<String, Object>> devices = scope.devices().stream().map(IotDeviceController::deviceView).toList();
@@ -99,7 +99,7 @@ public final class IotDeviceController {
         Map<String, Object> key = mapper.convertValue(query, new TypeReference<>() { });
         key.put("conversationId", conversationId);
         return ResponseEntity.ok(snapshots.read(snapshotIdentity(identity), "DEVICE_CANDIDATES", key,
-                ReadSnapshots.Policy.CURRENT, load));
+                ReadSnapshots.PolicyEnum.CURRENT, load));
     }
 
     @PostMapping({"/devices/states", "/devices/status", "/tools/read_device_states"})
@@ -121,7 +121,7 @@ public final class IotDeviceController {
             return ResponseEntity.ok(adapter.readDeviceStates(identity, ids).block(ADAPTER_TIMEOUT));
         }
         return ResponseEntity.ok(snapshots.read(snapshotIdentity(identity), "DEVICE_STATES", Map.of("deviceIds", ids),
-                ReadSnapshots.Policy.CURRENT, () -> json(adapter.readDeviceStates(identity, ids).block(ADAPTER_TIMEOUT))));
+                ReadSnapshots.PolicyEnum.CURRENT, () -> json(adapter.readDeviceStates(identity, ids).block(ADAPTER_TIMEOUT))));
     }
 
     @PostMapping({"/devices/capabilities", "/tools/inspect_device_capabilities"})
@@ -173,9 +173,9 @@ public final class IotDeviceController {
 
     private RequestIdentity identity(String source) {
         var principal = PrincipalContext.getPrincipalInfo();
-        IotSource iotSource;
+        IotSourceEnum iotSource;
         try {
-            iotSource = IotSource.parse(source == null || source.isBlank() ? "office" : source);
+            iotSource = IotSourceEnum.parse(source == null || source.isBlank() ? "office" : source);
         } catch (RuntimeException invalid) {
             throw new BusinessException("INVALID_AGENT_SOURCE", "Agent 来源无效");
         }

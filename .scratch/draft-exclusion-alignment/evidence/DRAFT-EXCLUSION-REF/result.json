@@ -1,0 +1,172 @@
+{
+  "case": "DRAFT-EXCLUSION-REF",
+  "status": "PASSED_DRAFT_ONLY",
+  "recordedAt": "2026-11-05 00:35:30 +0800",
+  "original": {
+    "turnId": "a55b51a1-2196-4c51-9b60-2765d6516ba6",
+    "message": "关闭这些26楼各办公区的照明和空调，保留过道区域照明",
+    "failures": [
+      "lighting s7 excludedDeviceIds d8_1..d8_7",
+      "lighting s7 excludedDeviceIds d9_1..d9_7"
+    ],
+    "error": "排除设备不属于已核验的候选范围",
+    "correctRuntimeReference": "apps/runtime/src/agent/pi-runner.ts:717-725,759-760,879",
+    "screenshot": "reported-double-failure.png"
+  },
+  "design": {
+    "crossSetExclusionSourcesResolved": true,
+    "allCandidateLookupsConversationScoped": true,
+    "rootAndLightingUnionUsesRealDeviceIdentity": true,
+    "identitySourceCatalogExactMembershipGuardsPreserved": true,
+    "exclusionSourceDoesNotAuthorizeActions": true,
+    "noNewRetryOrPromptRestriction": true
+  },
+  "engineering": {
+    "redBeforeGreen": [
+      "cross-set device exclusion",
+      "same short handle in two conversations using real MySQL",
+      "same short exclusions in root and lighting identity union"
+    ],
+    "fullMavenVerify": {
+      "tests": 516,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "isolatedRuntimeReplay": {
+      "fixture": true,
+      "sameAliasesInSecondConversation": true,
+      "controlGatewayCalls": 0,
+      "outsideLightingExclusionRejected": true,
+      "cases": [
+        {
+          "plannedTargets": 96,
+          "persistedThenCancelled": true,
+          "excludedDevices": 7,
+          "statusBeforeCancel": "PENDING_CONFIRMATION",
+          "case": "original-d8-device-refs",
+          "includedDevices": 104,
+          "sameAsOriginalSuccessfulTargets": true
+        },
+        {
+          "plannedTargets": 96,
+          "persistedThenCancelled": true,
+          "excludedDevices": 7,
+          "statusBeforeCancel": "PENDING_CONFIRMATION",
+          "case": "original-d9-detail-refs",
+          "includedDevices": 104,
+          "sameAsOriginalSuccessfulTargets": true
+        },
+        {
+          "plannedTargets": 96,
+          "persistedThenCancelled": true,
+          "excludedDevices": 7,
+          "statusBeforeCancel": "PENDING_CONFIRMATION",
+          "case": "original-s9-set-exclusion",
+          "includedDevices": 104,
+          "sameAsOriginalSuccessfulTargets": true
+        },
+        {
+          "plannedTargets": 96,
+          "persistedThenCancelled": true,
+          "excludedDevices": 7,
+          "statusBeforeCancel": "PENDING_CONFIRMATION",
+          "case": "root-and-lighting-same-device-refs",
+          "includedDevices": 104,
+          "sameAsOriginalSuccessfulTargets": true
+        }
+      ],
+      "receiptRows": 0
+    },
+    "fixtureBoundary": "Replay uses captured member facts and original arguments, isolated MySQL and explicit fixture states; not frontend business evidence."
+  },
+  "frontend": {
+    "route": "pages/agent/dashboard",
+    "source": "company",
+    "agentApi": "http://127.0.0.1:3381/api",
+    "conversationId": "10d867a8-c175-406c-b888-64df427a911f",
+    "turnId": "a269c9f9-0890-413c-83d6-767867673390",
+    "prompt": "验收重复排除：重新生成26楼关灯和关空调草案，不执行。照明s13、空调s12；请同时在顶层excludedDeviceIds和lighting.excludedDeviceIds填写[d15_1,d15_2,d15_3,d15_4,d15_5,d15_6,d15_7]，不要改用集合排除，其余动作不变。",
+    "qaPurpose": "Explicitly exercise a valid existing parameter form; no system prompt, model config, component private business method or UI data was modified.",
+    "providedIn": [
+      "excludedDeviceIds",
+      "lighting.excludedDeviceIds"
+    ],
+    "deviceRefs": [
+      "d15_1",
+      "d15_2",
+      "d15_3",
+      "d15_4",
+      "d15_5",
+      "d15_6",
+      "d15_7"
+    ],
+    "proposeCalls": 1,
+    "toolFailures": 0,
+    "draftId": "222da28c-31fd-45b8-be15-a056945e7d3f",
+    "statusBeforeCancel": "PENDING_CONFIRMATION",
+    "visibleCounts": {
+      "total": 104,
+      "operate": 5,
+      "standby": 0,
+      "excluded": 7,
+      "satisfied": 92,
+      "untouched": 0,
+      "considered": 104
+    },
+    "normalizedStoredExclusionCount": 7,
+    "sameSevenOriginalCorridorLights": true,
+    "noExcludedActionTargets": true,
+    "finalStatus": "CANCELLED",
+    "ourQaDraftReceiptRows": 0,
+    "screenshots": [
+      "ui-pending-after.png",
+      "ui-cancelled-after.png"
+    ],
+    "interaction": "Real native orb, textarea, Send and Cancel controls; no token/card/message injection, setData, or execution confirmation."
+  },
+  "otherActualAttempts": [
+    {
+      "turnId": "78f5c96a-2c14-4bcc-84b8-2768bf38a52b",
+      "result": "SIDECAR_OPERATION_FAILED before business tools; runtime artifact changed during verification",
+      "countsAsPass": false,
+      "screenshot": "ui-interrupted.png"
+    },
+    {
+      "turnId": "09f6739c-81f4-4a10-96e6-623f0551206a",
+      "result": "Natural-language request proposed once with set exclusions; actual card counts 104/5/7/92, later expired. Screenshot covered by an unrelated historical inspection, not accepted as short-reference proof.",
+      "countsAsPass": false
+    },
+    {
+      "turnId": "4a995a4b-204b-4929-adcc-8066d13432d9",
+      "result": "First proposal with both short-reference fields failed identity union, next attempt had a state-read failure, final model fallback used real IDs; cancelled through UI.",
+      "countsAsPass": false,
+      "screenshot": "ui-fallback-before-union-fix.png"
+    }
+  ],
+  "runtime": {
+    "java": 3381,
+    "node": 3382,
+    "artifact": "var/draft-exclusion-20261104-223454/backend-exclusion-alignment-release.jar",
+    "sha256": "5e8927bbdc11794edd79526033bb436e2c604cbf9c6122b4577c5e6747903fb2",
+    "frozenSource": "var/draft-exclusion-20261104-223454/release-source",
+    "preservedPreviousArtifact": "var/action-result-20261104-223838/backend-action-result-delivery.jar",
+    "unownedClassOrResourceDifferences": 0,
+    "nodeProcessUnchanged": true,
+    "thisChangeModelSettingsChanged": false,
+    "privateLauncherOnlyJavaArtifactChanged": true
+  },
+  "review": {
+    "standardsHardBreaches": 0,
+    "specActionableFindingsInReviewedPatch": 0,
+    "followups": "Clarified exclusion-only index naming and exact-source guard; subsequent actual UI failure is locked by the identity-union regression. Kept existing wire grammar rather than adding a parser platform."
+  },
+  "cleanup": {
+    "isolatedMysqlSchemasRemoved": true,
+    "isolatedMysqlGrantsRevoked": true,
+    "ownRedisMarkerRemoved": true,
+    "redisDb12RemainingKeyCount": 0,
+    "capturedCustomerFixtureAndSmokeProgramRemoved": true,
+    "immutableReleaseSourceAndPrivateRollbackRetained": true
+  }
+}

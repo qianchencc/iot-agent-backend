@@ -1,0 +1,58 @@
+{
+  "case": "REGION-ATTENTION-01",
+  "date": "2026-11-04",
+  "implementation": "implemented_and_deployed",
+  "baseline": {
+    "checkpoint": "eb84188",
+    "runtimeReference": "../iot-agent-runtime/apps/runtime/src/tasks/store.ts:469-477",
+    "httpRegression": {
+      "exitCode": 1,
+      "assertion": "No task and never-viewed region must not claim attention",
+      "expected": false,
+      "actual": true
+    }
+  },
+  "verification": {
+    "focusedTests": 21,
+    "fullCommand": "mvn -q verify",
+    "fullExitCode": 0,
+    "tests": 471,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "isolation": "Dedicated new MySQL schemas and Redis container, no business task insertion"
+  },
+  "deployment": {
+    "javaPort": 3381,
+    "nodePort": 3382,
+    "artifact": "var/region-attention-20261104-204338/backend-region-attention.jar",
+    "sha256": "9d070fedd4dc09510d3db545cb9316da4078d1b21e0401ee45829beece63a291",
+    "changedExistingClasses": 15,
+    "addedClasses": [
+      "BOOT-INF/classes/ltd/qianc/iotagent/region/RegionAttentionReader.class"
+    ],
+    "nonOwnedClassOrResourceChanges": 0,
+    "verifiedClassBytesIntegratedExactly": true,
+    "nodeProcessUnchanged": true,
+    "environmentOnlyArtifactChanged": true,
+    "privateLaunchMode": "0600"
+  },
+  "frontendAcceptance": {
+    "officeEntryFalseBadge": "verified_with_actual_screenshot",
+    "regionPickerBoundAttention": [
+      false,
+      false
+    ],
+    "regionPickerOpened": "verified_native_render_state",
+    "pickerVisualScreenshot": "not_obtained_screenshot_api_timeout",
+    "actualNewExceptionSeenNewExceptionUiSequence": "not_accepted",
+    "physicalPhone": "not_accepted",
+    "businessTaskCreationByThisChange": false,
+    "deviceControlByThisChange": false,
+    "notificationSendByThisChange": false
+  },
+  "review": {
+    "standards": "No remaining actionable findings in final inline review",
+    "spec": "Original exception, authorization, strict updated-time and per-viewer watermark semantics aligned; frontend limitations retained"
+  }
+}

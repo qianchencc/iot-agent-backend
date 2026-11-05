@@ -14,9 +14,15 @@ import ltd.qianc.iotagent.conversation.AgentEngineBridge;
 import ltd.qianc.iotagent.conversation.AgentRunPolicyProvider;
 import ltd.qianc.iotagent.conversation.ConversationEventStore;
 import ltd.qianc.iotagent.conversation.ConversationFacade;
+import ltd.qianc.iotagent.conversation.ConversationFacade;
 import ltd.qianc.iotagent.conversation.ConversationStore;
+import ltd.qianc.iotagent.audit.AuditEventStore;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
+import ltd.qianc.iotagent.admin.AdminConfigurationStore;
+import ltd.qianc.iotagent.admin.AdminSettingReader;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Configuration;
@@ -60,11 +66,15 @@ public class ConversationConfiguration {
                 java.time.Duration.ofMillis(timeoutMs), conversationScheduler, policies);
     }
     @Bean
-    ConversationFacade conversationFacade(ObjectMapper mapper, ConversationStore conversations,
-            ConversationEventStore events, AgentEngineBridge bridge, ConversationDrafts drafts, ConversationTaskCards taskCards,
+    ConversationFacade conversationFacade(ObjectMapper mapper, ConversationStore conversations, ConversationEventStore events,
+            AgentEngineBridge bridge, ConversationDrafts drafts, ConversationTaskCards taskCards,
             @Qualifier("conversationExecutor") ExecutorService executor,
             @Qualifier("conversationScheduler") ScheduledExecutorService conversationScheduler,
-            @Value("${agent.heartbeat-ms:15000}") long heartbeatMs) {
-        return new ConversationFacade(mapper, conversations, events, bridge, executor, conversationScheduler, heartbeatMs, drafts, taskCards);
+            @Value("${agent.heartbeat-ms:15000}") long heartbeatMs,
+            ObjectProvider<AdminConfigurationStore> adminConfigurations,
+            ObjectProvider<AuditEventStore> audit) {
+        return new ConversationFacade(mapper, conversations, events, bridge, executor, conversationScheduler,
+                AdminSettingReader.longSetting(adminConfigurations, "heartbeatMs", 0, 60_000, heartbeatMs),
+                drafts, taskCards, audit.getIfAvailable());
     }
 }

@@ -27,13 +27,14 @@ import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 import ltd.qianc.iotagent.admin.AdminConfigurationStore;
 import ltd.qianc.iotagent.agent.AgentCheckpointBridge;
+import ltd.qianc.iotagent.instructions.AgentInstructions;
 import ltd.qianc.iotagent.agent.AgentToolHaltException;
 import ltd.qianc.iotagent.error.BusinessException;
-import ltd.qianc.iotagent.iot.IotSource;
+import ltd.qianc.iotagent.iot.IotSourceEnum;
 import ltd.qianc.iotagent.iot.ObservationAdapter;
-import ltd.qianc.iotagent.iot.ObservationOperation;
+import ltd.qianc.iotagent.iot.ObservationOperationEnum;
 import ltd.qianc.iotagent.iot.ObservationRequest;
-import ltd.qianc.iotagent.iot.ObservationStatus;
+import ltd.qianc.iotagent.iot.ObservationStatusEnum;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.pisession.PiSessionService;
 import ltd.qianc.iotagent.report.ReportEvidencePort;
@@ -77,7 +78,7 @@ public final class DefaultAgentCheckpointBridge implements AgentCheckpointBridge
     @Override
     public TaskExecutionResult execute(RequestIdentity identity, TaskExecutionRequest request,
             List<String> meterIds, Map<String, Object> assignment, BooleanSupplier active) {
-        if (identity.source() != IotSource.COMPANY || meterIds.isEmpty()) throw invalid("用电检查点缺少已确认的公司电表范围");
+        if (identity.source() != IotSourceEnum.COMPANY || meterIds.isEmpty()) throw invalid("用电检查点缺少已确认的公司电表范围");
         if (baseUrl.isBlank() || token == null || token.isBlank()) throw unavailable("检查点 Agent Engine 未配置");
         String output = text(assignment, "output", 6);
         if (!Set.of("result", "report").contains(output)) throw invalid("检查点输出类型无效");
@@ -99,8 +100,13 @@ public final class DefaultAgentCheckpointBridge implements AgentCheckpointBridge
         boolean finished = false;
         try {
             state.checkActive();
+            AdminConfigurationStore configuration = configurations.get();
+            Map<String, Object> configured = configuration == null ? Map.of() : configuration.active();
+            Map<String, Object> settings = configured == null ? Map.of() : configured;
             Map<String, Object> definition = new LinkedHashMap<>();
-            definition.put("instructions", BusinessAgentInstructions.CHECKPOINT);
+            definition.put("instructions", AgentInstructions.section("checkpointInstructions", settings));
+            definition.put("finalizationInstructions", AgentInstructions.section("finalizationInstructions", settings));
+            definition.put("compactionInstructions", AgentInstructions.section("compactionInstructions", settings));
             definition.put("maxTurns", 6);
             definition.put("maxToolCalls", 10);
             definition.put("runTimeoutMs", 180_000);
@@ -109,12 +115,8 @@ public final class DefaultAgentCheckpointBridge implements AgentCheckpointBridge
                 return (state.prepared == null && Set.of("summarize_energy", "compare_energy").contains(name))
                         || ("report".equals(output) ? "publish_report" : "finish_checkpoint").equals(name);
             }).toList());
-            AdminConfigurationStore configuration = configurations.get();
-            if (configuration != null) {
-                Map<String, Object> settings = configuration.active();
-                Map<String, Object> model = AgentBusinessRunPolicyProvider.model(settings == null ? Map.of() : settings);
-                if (!model.isEmpty()) definition.put("model", model);
-            }
+            Map<String, Object> model = AgentBusinessRunPolicyProvider.model(settings);
+            if (!model.isEmpty()) definition.put("model", model);
             Map<String, Object> content = new LinkedHashMap<>();
             content.put("objective", text(assignment, "objective", 2000));
             content.put("checkpointTime", request.dueAt().toString());
@@ -266,9 +268,9 @@ public final class DefaultAgentCheckpointBridge implements AgentCheckpointBridge
                 params.put("baseFrom", baseFrom.toString()); params.put("baseTo", baseTo.toString());
             }
             try {
-                var response = observations.read(new ObservationRequest(identity, ObservationOperation.COMPANY_METER_REPORT, params)).block(Duration.ofSeconds(45));
+                var response = observations.read(new ObservationRequest(identity, ObservationOperationEnum.COMPANY_METER_REPORT, params)).block(Duration.ofSeconds(45));
                 checkActive();
-                if (response == null || response.status() == ObservationStatus.UNAVAILABLE) throw unavailable("检查点统计取证暂不可用");
+                if (response == null || response.status() == ObservationStatusEnum.UNAVAILABLE) throw unavailable("检查点统计取证暂不可用");
                 Map<String, Object> fact = new LinkedHashMap<>(response.payload());
                 facts.add(fact);
                 Map<String, Object> indexed = new LinkedHashMap<>(fact); indexed.put("index", facts.size());

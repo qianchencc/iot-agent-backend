@@ -14,4 +14,10 @@ public interface TaskProposalStore {
             String ownerKey, String source) {
         throw new UnsupportedOperationException("Task proposal store is not configured");
     }
+
+    /** Read-only conversation listing for confirmation context; never mutates state. */
+    default java.util.List<TaskProposalFact> listByConversation(String conversationId, String tenantCode,
+            String ownerKey, String source) {
+        throw new UnsupportedOperationException("Task proposal store is not configured");
+    }
 }

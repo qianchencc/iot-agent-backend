@@ -20,7 +20,11 @@ final class InMemoryCandidateStore implements DeviceCandidateSetStore {
     }
 
     @Override
-    public Optional<DeviceCandidateRecord> find(String candidateSetId) {
-        return Optional.ofNullable(records.get(candidateSetId));
+    public Optional<DeviceCandidateRecord> find(String candidateSetId, String conversationId) {
+        DeviceCandidateRecord direct = records.get(candidateSetId);
+        if (direct != null && conversationId.equals(direct.conversationId())) return Optional.of(direct);
+        return records.values().stream()
+                .filter(record -> conversationId.equals(record.conversationId()) && candidateSetId.equals(record.handle()))
+                .findFirst();
     }
 }

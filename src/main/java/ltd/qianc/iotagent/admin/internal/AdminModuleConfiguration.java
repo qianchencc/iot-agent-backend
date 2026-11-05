@@ -21,8 +21,6 @@ import org.springframework.web.reactive.function.client.WebClient;
 
 import ltd.qianc.iotagent.admin.AdminConfigurationFactory;
 
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -67,25 +65,9 @@ public class AdminModuleConfiguration {
     @ConditionalOnMissingBean
     AdminSessionManager adminSessionManager(
             @Value("${admin.password-minimum:${ADMIN_PASSWORD_MIN_LENGTH:6}}") int minimum,
-            @Value("${admin.password:${ADMIN_PASSWORD:}}") String configured,
-            @Value("${admin.password-file:${ADMIN_PASSWORD_FILE:var/admin-password}}") String passwordFile) {
-        String password = configured;
-        if (password == null || password.isBlank()) {
-            try {
-                Path path = Path.of(passwordFile);
-                if (Files.exists(path)) password = Files.readString(path, StandardCharsets.UTF_8).stripTrailing();
-            } catch (Exception ignored) {
-                password = null;
-            }
-        }
-        if (password != null && !password.isBlank()) {
-            try {
-                AdminPasswordPolicy.validate(password, minimum);
-            } catch (IllegalArgumentException e) {
-                password = null;
-            }
-        }
-        return new AdminSessionManager(password, Math.max(1, Math.min(128, minimum)));
+            @Value("${admin.password:${ADMIN_PASSWORD:}}") String configured) {
+        // Deployment-only credential: explicit Spring property or ADMIN_PASSWORD environment value.
+        return new AdminSessionManager(configured, Math.max(1, Math.min(128, minimum)));
     }
 
     @Bean
@@ -165,7 +147,7 @@ public class AdminModuleConfiguration {
         values.put("heartbeatMs", integer(environment, "HEARTBEAT_MS", 15000));
         values.put("readbackWaitMs", integer(environment, "READBACK_WAIT_MS", 6000));
         values.put("controlTimeoutMs", integer(environment, "CONTROL_TIMEOUT_MS", 25000));
-        values.put("scanIntervalMs", integer(environment, "SCAN_INTERVAL_MS", 15000));
+        values.put("scanIntervalMs", integer(environment, "SCAN_INTERVAL_MS", 1000));
         values.put("langfuseEnabled", bool(environment, "LANGFUSE_ENABLED", false));
         values.put("langfuseBaseUrl", environment.getProperty("LANGFUSE_BASE_URL", ""));
         values.put("langfusePublicKey", environment.getProperty("LANGFUSE_PUBLIC_KEY", ""));

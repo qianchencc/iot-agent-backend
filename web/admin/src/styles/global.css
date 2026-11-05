@@ -6,6 +6,53 @@ body,
 }
 
 body {
-  /* Subdued neutral backdrop; aligns with the runtime console's muted tone. */
-  background: var(--color-fill-2);
+  background: var(--surface-page);
+  color: var(--text-body);
+  font-size: 14px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Consistent focus signal across Element Plus and native controls. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.skip-link {
+  position: fixed;
+  inset-block-start: 8px;
+  inset-inline-start: 8px;
+  z-index: 3000;
+  padding: 8px 16px;
+  background: var(--surface-page);
+  color: var(--text-body);
+  transform: translateY(-200%);
+}
+
+.skip-link:focus-visible {
+  transform: none;
+}
+
+@media (max-width: 40rem) {
+  input,
+  textarea,
+  .el-input__inner,
+  .el-textarea__inner {
+    font-size: 16px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

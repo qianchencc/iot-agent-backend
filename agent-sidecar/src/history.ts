@@ -5,11 +5,15 @@ import {
 } from "@earendil-works/pi-agent-core";
 import { createModels, createProvider, hasApi, type Model } from "@earendil-works/pi-ai";
 import { stream, streamSimple } from "@earendil-works/pi-ai/api/openai-completions";
+import { toDurableMessage } from "./reply-text.js";
+import { traceStreamFn, type AgentRunTrace } from "./observability.js";
 
 /** Native Pi summaries are journal entries, never a replacement for original business facts. */
 export async function loadAgentHistory(session: Session, model: Model<"openai-completions">,
-  apiKey: string, overheadTokens: number, signal: AbortSignal, instructions?: string): Promise<AgentMessage[]> {
-  const entries = await session.findEntriesOnBranch({ order: "oldestFirst" });
+  apiKey: string, overheadTokens: number, signal: AbortSignal, instructions?: string,
+  trace: AgentRunTrace | null = null): Promise<AgentMessage[]> {
+  const entries = (await session.findEntriesOnBranch({ order: "oldestFirst" })).map(entry =>
+    entry.type === "message" ? { ...entry, message: toDurableMessage(entry.message) } : entry);
   const messages = buildSessionContext(entries).messages;
   // A retained assistant's usage predates the summary. Later provider usage is authoritative again.
   const lastCompaction = entries.findLastIndex(entry => entry.type === "compaction");
@@ -36,11 +40,11 @@ export async function loadAgentHistory(session: Session, model: Model<"openai-co
     api: {
       stream: (candidate, context, options) => {
         if (!hasApi(candidate, "openai-completions")) throw new Error("Unsupported summary API");
-        return stream(candidate, context, options);
+        return traceStreamFn(stream, trace, "model-compaction")(candidate, context, options);
       },
       streamSimple: (candidate, context, options) => {
         if (!hasApi(candidate, "openai-completions")) throw new Error("Unsupported summary API");
-        return streamSimple(candidate, context, options);
+        return traceStreamFn(streamSimple, trace, "model-compaction")(candidate, context, options);
       },
     },
   }));

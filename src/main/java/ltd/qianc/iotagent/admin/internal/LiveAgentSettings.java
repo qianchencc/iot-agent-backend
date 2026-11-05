@@ -9,8 +9,10 @@ final class LiveAgentSettings {
     private static final Set<String> FIELDS = Set.of(
             "modelBaseUrl", "modelId", "modelApiKey", "contextWindow", "maxOutputTokens", "reasoning",
             "thinkingLevel", "supportsDeveloperRole", "supportsReasoningEffort", "supportsUsageInStreaming",
-            "maxTokensField", "maxAgentTurns", "maxToolCalls", "officeInstructions", "companyInstructions",
-            "replyInstructions", "runTimeoutMs");
+            "maxTokensField", "maxAgentTurns", "maxToolCalls", "officeBaseInstructions", "companyBaseInstructions",
+            "sharedInstructions", "companyTaskInstructions", "checkpointInstructions", "finalizationInstructions",
+            "compactionInstructions", "officeInstructions", "companyInstructions",
+            "replyInstructions", "runTimeoutMs", "heartbeatMs", "scanIntervalMs");
 
     private LiveAgentSettings() { }
 

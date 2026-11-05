@@ -18,7 +18,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @SpringBootTest(properties = {
-        "agent.bridge-token=test-bridge",
+        "agent.bridge.token=test-bridge",
         "iot.identity.verify=false",
         "agent.video.allowed-origin="
 })

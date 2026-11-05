@@ -22,6 +22,6 @@ public final class AgentToolBridgeFactory {
             ObservationAdapter observations, TaskProjectionStore projections,
             ActionDraftFacade actions, TaskFacade tasks, ObjectMapper mapper, ReportGenerationPort reports) {
         return AgentBusinessEngineFactory.toolBridge(conversations, iot, observations, projections, actions,
-                tasks, mapper, reports);
+                tasks, mapper, reports, null);
     }
 }

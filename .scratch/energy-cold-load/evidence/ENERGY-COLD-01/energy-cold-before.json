@@ -1,0 +1,292 @@
+{
+  "query": {
+    "kind": "statistics",
+    "scopeLevel": "all",
+    "from": "2026-11-03T08:00:00.000+08:00",
+    "to": "2026-11-05T08:00:00.000+08:00",
+    "grain": "month"
+  },
+  "samples": [
+    {
+      "elapsedMs": 2,
+      "httpMs": 2,
+      "status": 200,
+      "cacheStatus": "preparing",
+      "updatedAt": null,
+      "message": "数据准备中"
+    },
+    {
+      "elapsedMs": 1004,
+      "httpMs": 2,
+      "status": 200,
+      "cacheStatus": "preparing",
+      "updatedAt": null,
+      "message": "数据准备中"
+    },
+    {
+      "elapsedMs": 2008,
+      "httpMs": 3,
+      "status": 200,
+      "cacheStatus": "preparing",
+      "updatedAt": null,
+      "message": "数据准备中"
+    },
+    {
+      "elapsedMs": 3013,
+      "httpMs": 4,
+      "status": 200,
+      "cacheStatus": "preparing",
+      "updatedAt": null,
+      "message": "数据准备中"
+    },
+    {
+      "elapsedMs": 4016,
+      "httpMs": 2,
+      "status": 200,
+      "cacheStatus": "preparing",
+      "updatedAt": null,
+      "message": "数据准备中"
+    },
+    {
+      "elapsedMs": 5019,
+      "httpMs": 2,
+      "status": 200,
+      "cacheStatus": "preparing",
+      "updatedAt": null,
+      "message": "数据准备中"
+    },
+    {
+      "elapsedMs": 6022,
+      "httpMs": 2,
+      "status": 200,
+      "cacheStatus": "preparing",
+      "updatedAt": null,
+      "message": "数据准备中"
+    },
+    {
+      "elapsedMs": 7026,
+      "httpMs": 2,
+      "status": 200,
+      "cacheStatus": "preparing",
+      "updatedAt": null,
+      "message": "数据准备中"
+    },
+    {
+      "elapsedMs": 8028,
+      "httpMs": 2,
+      "status": 200,
+      "cacheStatus": "preparing",
+      "updatedAt": null,
+      "message": "数据准备中"
+    },
+    {
+      "elapsedMs": 9030,
+      "httpMs": 1,
+      "status": 200,
+      "cacheStatus": "preparing",
+      "updatedAt": null,
+      "message": "数据准备中"
+    },
+    {
+      "elapsedMs": 10033,
+      "httpMs": 2,
+      "status": 200,
+      "cacheStatus": "preparing",
+      "updatedAt": null,
+      "message": "数据准备中"
+    },
+    {
+      "elapsedMs": 11035,
+      "httpMs": 1,
+      "status": 200,
+      "cacheStatus": "preparing",
+      "updatedAt": null,
+      "message": "数据准备中"
+    },
+    {
+      "elapsedMs": 12039,
+      "httpMs": 3,
+      "status": 200,
+      "cacheStatus": "preparing",
+      "updatedAt": null,
+      "message": "数据准备中"
+    },
+    {
+      "elapsedMs": 13042,
+      "httpMs": 2,
+      "status": 200,
+      "cacheStatus": "preparing",
+      "updatedAt": null,
+      "message": "数据准备中"
+    },
+    {
+      "elapsedMs": 14044,
+      "httpMs": 1,
+      "status": 200,
+      "cacheStatus": "preparing",
+      "updatedAt": null,
+      "message": "数据准备中"
+    },
+    {
+      "elapsedMs": 15046,
+      "httpMs": 1,
+      "status": 200,
+      "cacheStatus": "preparing",
+      "updatedAt": null,
+      "message": "数据准备中"
+    },
+    {
+      "elapsedMs": 16050,
+      "httpMs": 3,
+      "status": 200,
+      "cacheStatus": "preparing",
+      "updatedAt": null,
+      "message": "数据准备中"
+    },
+    {
+      "elapsedMs": 17051,
+      "httpMs": 1,
+      "status": 200,
+      "cacheStatus": "preparing",
+      "updatedAt": null,
+      "message": "数据准备中"
+    },
+    {
+      "elapsedMs": 18054,
+      "httpMs": 2,
+      "status": 200,
+      "cacheStatus": "preparing",
+      "updatedAt": null,
+      "message": "数据准备中"
+    },
+    {
+      "elapsedMs": 19057,
+      "httpMs": 2,
+      "status": 200,
+      "cacheStatus": "preparing",
+      "updatedAt": null,
+      "message": "数据准备中"
+    },
+    {
+      "elapsedMs": 20059,
+      "httpMs": 2,
+      "status": 200,
+      "cacheStatus": "preparing",
+      "updatedAt": null,
+      "message": "数据准备中"
+    },
+    {
+      "elapsedMs": 21061,
+      "httpMs": 1,
+      "status": 200,
+      "cacheStatus": "preparing",
+      "updatedAt": null,
+      "message": "数据准备中"
+    },
+    {
+      "elapsedMs": 22069,
+      "httpMs": 7,
+      "status": 200,
+      "cacheStatus": "preparing",
+      "updatedAt": null,
+      "message": "数据准备中"
+    },
+    {
+      "elapsedMs": 23071,
+      "httpMs": 1,
+      "status": 200,
+      "cacheStatus": "preparing",
+      "updatedAt": null,
+      "message": "数据准备中"
+    },
+    {
+      "elapsedMs": 24074,
+      "httpMs": 3,
+      "status": 200,
+      "cacheStatus": "preparing",
+      "updatedAt": null,
+      "message": "数据准备中"
+    },
+    {
+      "elapsedMs": 25076,
+      "httpMs": 1,
+      "status": 200,
+      "cacheStatus": "preparing",
+      "updatedAt": null,
+      "message": "数据准备中"
+    },
+    {
+      "elapsedMs": 26078,
+      "httpMs": 1,
+      "status": 200,
+      "cacheStatus": "preparing",
+      "updatedAt": null,
+      "message": "数据准备中"
+    },
+    {
+      "elapsedMs": 27084,
+      "httpMs": 4,
+      "status": 200,
+      "cacheStatus": "preparing",
+      "updatedAt": null,
+      "message": "数据准备中"
+    },
+    {
+      "elapsedMs": 28086,
+      "httpMs": 2,
+      "status": 200,
+      "cacheStatus": "preparing",
+      "updatedAt": null,
+      "message": "数据准备中"
+    },
+    {
+      "elapsedMs": 29092,
+      "httpMs": 3,
+      "status": 200,
+      "cacheStatus": "preparing",
+      "updatedAt": null,
+      "message": "数据准备中"
+    },
+    {
+      "elapsedMs": 30097,
+      "httpMs": 4,
+      "status": 200,
+      "cacheStatus": "preparing",
+      "updatedAt": null,
+      "message": "数据准备中"
+    },
+    {
+      "elapsedMs": 31101,
+      "httpMs": 3,
+      "status": 200,
+      "cacheStatus": "preparing",
+      "updatedAt": null,
+      "message": "数据准备中"
+    },
+    {
+      "elapsedMs": 32105,
+      "httpMs": 3,
+      "status": 200,
+      "cacheStatus": "fresh",
+      "updatedAt": "2026-11-05T02:00:22.937173Z",
+      "total": {
+        "value": 262.96,
+        "unit": "度",
+        "yuan": null,
+        "tariff": null
+      },
+      "coverage": {
+        "partial": [],
+        "dataMeters": 43,
+        "meters": 43,
+        "truncated": false,
+        "noData": [],
+        "latestSampleAt": "2026-11-05T08:00+08:00"
+      }
+    }
+  ],
+  "completeMs": 32105,
+  "warmReadMs": 2,
+  "nativeScreenshot": "/private/tmp/energy-cold-warm-panel.png",
+  "httpReadinessIsNotBusinessAcceptance": true
+}

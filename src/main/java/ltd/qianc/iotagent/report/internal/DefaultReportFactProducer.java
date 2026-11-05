@@ -16,7 +16,7 @@ import java.util.Set;
 import java.util.UUID;
 import ltd.qianc.iotagent.error.BusinessException;
 import ltd.qianc.iotagent.iot.IotAdapter;
-import ltd.qianc.iotagent.iot.IotSource;
+import ltd.qianc.iotagent.iot.IotSourceEnum;
 import ltd.qianc.iotagent.iot.ObservationAdapter;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.report.ReportFact;
@@ -67,7 +67,7 @@ public final class DefaultReportFactProducer implements ReportFactProducer {
             throw new ReportUnavailableException("REPORT_EVIDENCE_IDENTITY_MISSING",
                     "定时任务报告需要经过核验的服务身份，不能使用任务或模型自述数据");
         }
-        if (identity.source() != IotSource.COMPANY) {
+        if (identity.source() != IotSourceEnum.COMPANY) {
             throw new BusinessException("REPORT_SOURCE_UNSUPPORTED", "报告只支持 Company 来源");
         }
         if (!identity.tenantCode().equals(checkpoint.tenantCode())
@@ -279,8 +279,12 @@ public final class DefaultReportFactProducer implements ReportFactProducer {
     }
 
     private static boolean terminal(String outcome) {
+        // Runtime builds the task report for every terminal status, including
+        // missed, satisfied and cancelled tasks; the evidence projection must
+        // not silently drop those occurrences.
         return switch (outcome.trim().toUpperCase(java.util.Locale.ROOT)) {
-            case "COMPLETED", "PARTIAL", "FAILED", "UNCONFIRMED", "INTERRUPTED" -> true;
+            case "COMPLETED", "PARTIAL", "FAILED", "UNCONFIRMED", "INTERRUPTED",
+                    "MISSED", "SATISFIED", "CANCELLED" -> true;
             default -> false;
         };
     }

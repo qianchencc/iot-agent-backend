@@ -1,6 +1,6 @@
 # Ticket 10：本地迁移、Parity 与切换门禁
 
-本目录中的门禁只处理本地文件和本地 SQLite。它们**不会**启动 Java/Node、调用 HTTP、执行部署命令、连接云端或切换任何生产路由。命令输出是一行按键排序的 JSON evidence；返回码非零即为 fail-closed。
+本目录中的门禁只处理本地契约、迁移和切换 evidence。它们**不会**启动 Java/Node、调用 HTTP、执行部署命令、连接云端或切换任何生产路由。命令输出是一行按键排序的 JSON evidence；返回码非零即为 fail-closed。
 
 工具：[`tools/ticket10_local.py`](../../tools/ticket10_local.py)。运行环境只需要 Python 3 标准库。
 
@@ -18,31 +18,11 @@ python3 tools/ticket10_local.py contract \
 
 当前 Java 工作树仍有任务/计划/通知等未完成路由，因此这条门禁应当明确输出 `status=failed` 和缺失路径；这不是“通过”的假证据。
 
-## Pi Session SQLite 备份、恢复、容量
+## MySQL 权威备份与恢复
 
-`sqlite-disk` 以 SQLite `PRAGMA integrity_check` 和文件系统剩余空间为依据。`sqlite-backup` 从只读源做备份，目标已存在时必须显式 `--force`；备份完成后再次做完整性检查。恢复默认只验证临时副本，只有明确提供 `--apply` 才原子替换目标。
+Java/MySQL 是业务事实与 Pi Session 的唯一在线持久权威。备份必须由 MySQL 运维工具完成，覆盖业务表、Pi Session 表、`storage_migrations` 与一次性 cutover marker；恢复必须先落到独立数据库，再以真实开发者工具验证业务，不能用 HTTP 状态或 SQL 行数替代验收。
 
-```sh
-python3 tools/ticket10_local.py sqlite-disk \
-  --path /local/var/pi-session.sqlite \
-  --min-free-bytes 1073741824
-
-python3 tools/ticket10_local.py sqlite-backup \
-  --source /local/var/pi-session.sqlite \
-  --destination /local/backup/pi-session.sqlite \
-  --min-free-bytes 1073741824
-
-# 先验证，不改目标；确认人工恢复窗口后才允许 --apply。
-python3 tools/ticket10_local.py sqlite-restore \
-  --backup /local/backup/pi-session.sqlite \
-  --destination /local/var/pi-session-restored.sqlite
-python3 tools/ticket10_local.py sqlite-restore \
-  --backup /local/backup/pi-session.sqlite \
-  --destination /local/var/pi-session-restored.sqlite \
-  --apply
-```
-
-目标目录和数据库均必须是本地路径。备份 evidence 要进入发布归档；没有可读源、完整性错误或磁盘空间不足时不得继续。
+旧 Runtime 的 SQLite 文件只作为离线历史证据保留。新后端不读取、不导入、不恢复 SQLite，也不提供 SQLite 容量、备份、恢复或 writer-lease 运维入口。
 
 ## 业务事实迁移校验
 

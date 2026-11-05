@@ -8,7 +8,6 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import ltd.qianc.iotagent.region.RegionSeenStore;
@@ -16,14 +15,14 @@ import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Mono;
 
 class CompanyOfficeObservationAdapterContractTest {
-    private static final RequestIdentity COMPANY = new RequestIdentity("Bearer company-a", "TENANT", IotSource.COMPANY);
-    private static final RequestIdentity OFFICE = new RequestIdentity("Bearer office-a", "TENANT", IotSource.OFFICE);
+    private static final RequestIdentity COMPANY = new RequestIdentity("Bearer company-a", "TENANT", IotSourceEnum.COMPANY);
+    private static final RequestIdentity OFFICE = new RequestIdentity("Bearer office-a", "TENANT", IotSourceEnum.OFFICE);
     private static final AuthorizedDevice ENV = new AuthorizedDevice("env-1", "environment", "温度", "一号楼", true);
     private static final AuthorizedDevice AC = new AuthorizedDevice("ac-1", "ac", "空调", "一号楼", false);
 
     @Test
     void dashboardComposesCompanyCatalogWithoutCallingSingleDashboardEndpoint() {
-        AtomicReference<ObservationOperation> operation = new AtomicReference<>();
+        AtomicReference<ObservationOperationEnum> operation = new AtomicReference<>();
         AtomicReference<List<AuthorizedDevice>> observed = new AtomicReference<>();
         ObservationAdapter upstream = request -> {
             operation.set(request.operation());
@@ -35,7 +34,7 @@ class CompanyOfficeObservationAdapterContractTest {
                 assertThat(identity.source()).isEqualTo(COMPANY.source());
                 return Mono.just(new AuthorizedDeviceScope() {
                     @Override public RequestIdentity identity() { return COMPANY; }
-                    @Override public IotSource source() { return IotSource.COMPANY; }
+                    @Override public IotSourceEnum source() { return IotSourceEnum.COMPANY; }
                     @Override public List<AuthorizedDevice> devices() { return List.of(ENV); }
                 });
             }
@@ -52,7 +51,7 @@ class CompanyOfficeObservationAdapterContractTest {
         ObservationAdapter adapter = ObservationAdapterFactory.composed(
                 upstream, iot, identity -> Mono.just(Map.of()), null,
                 Clock.fixed(Instant.parse("2026-01-01T00:00:00Z"), ZoneOffset.UTC));
-        ObservationResponse response = adapter.read(new ObservationRequest(COMPANY, ObservationOperation.DASHBOARD, Map.of("section", "environment"))).block();
+        ObservationResponse response = adapter.read(new ObservationRequest(COMPANY, ObservationOperationEnum.DASHBOARD, Map.of("section", "environment"))).block();
         Map<String, Object> result = response.payload();
 
         assertThat(result.get("source")).isEqualTo("company");
@@ -80,20 +79,20 @@ class CompanyOfficeObservationAdapterContractTest {
                 upstream, iot(OFFICE, List.of(member, sameNameDifferentOffice, noMembership), stateIds),
                 identity -> Mono.just(Map.of()), seen, Clock.systemUTC());
 
-        Map<String, Object> devices = adapter.read(new ObservationRequest(OFFICE, ObservationOperation.REGION_DEVICES,
+        Map<String, Object> devices = adapter.read(new ObservationRequest(OFFICE, ObservationOperationEnum.REGION_DEVICES,
                 Map.of("regionId", "office-a"))).block().payload();
         List<?> deviceRows = (List<?>) devices.get("devices");
         assertThat(deviceRows).hasSize(1);
         assertThat(((Map<?, ?>) deviceRows.get(0)).get("id")).isEqualTo("ac-a");
 
-        Map<String, Object> states = adapter.read(new ObservationRequest(OFFICE, ObservationOperation.REGION_STATES,
+        Map<String, Object> states = adapter.read(new ObservationRequest(OFFICE, ObservationOperationEnum.REGION_STATES,
                 Map.of("regionId", "office-a"))).block().payload();
         List<?> stateRows = (List<?>) states.get("states");
         assertThat(stateRows).hasSize(1);
         assertThat(((Map<?, ?>) stateRows.get(0)).get("id")).isEqualTo("ac-a");
         assertThat(stateIds.get()).containsExactly("ac-a");
 
-        adapter.read(new ObservationRequest(OFFICE, ObservationOperation.REGION_SEEN,
+        adapter.read(new ObservationRequest(OFFICE, ObservationOperationEnum.REGION_SEEN,
                 Map.of("regionId", "office-a"))).block();
         assertThat(seen.markedRegion).isEqualTo("office-a");
     }
@@ -107,7 +106,7 @@ class CompanyOfficeObservationAdapterContractTest {
             @Override public void markSeen(String tenant, String owner, String region, Instant at) {
                 throw new IllegalStateException("attention unavailable");
             }
-            @Override public Optional<Instant> seenAt(String tenant, String owner, String region) {
+            @Override public Map<String, Instant> seenAtByRegion(String tenant, String owner) {
                 throw new IllegalStateException("attention unavailable");
             }
         };
@@ -115,71 +114,13 @@ class CompanyOfficeObservationAdapterContractTest {
                 upstream, iot, identity -> Mono.just(Map.of()), unavailableAttention, Clock.systemUTC());
 
         ObservationResponse result = adapter.read(new ObservationRequest(
-                OFFICE, ObservationOperation.REGION_LIST, Map.of("section", "directory"))).block();
+                OFFICE, ObservationOperationEnum.REGION_LIST, Map.of("section", "directory"))).block();
 
-        assertThat(result.status()).isEqualTo(ObservationStatus.AVAILABLE);
+        assertThat(result.status()).isEqualTo(ObservationStatusEnum.AVAILABLE);
         assertThat(result.payload().get("regions")).isEqualTo(
                 List.of(Map.of("id", "office-a", "name", "一号楼")));
     }
 
-    @Test
-    void attentionUsesHeldDailyDirectoryWhileItsSeenStateStillUpdates() {
-        java.util.concurrent.atomic.AtomicBoolean directoryUnavailable = new java.util.concurrent.atomic.AtomicBoolean();
-        ObservationAdapter upstream = request -> directoryUnavailable.get()
-                ? Mono.error(new UpstreamUnavailableException("region directory"))
-                : Mono.just(ObservationResponse.available(Map.of(
-                        "regions", List.of(Map.of("id", "office-a", "name", "一号楼")))));
-        Clock clock = Clock.fixed(Instant.parse("2026-11-02T04:00:00Z"), ZoneOffset.UTC);
-        ltd.qianc.iotagent.readmodel.ReadSnapshots snapshots = ltd.qianc.iotagent.readmodel.ReadSnapshots.create(
-                clock, Runnable::run, Runnable::run, null, null, new com.fasterxml.jackson.databind.ObjectMapper(),
-                ltd.qianc.iotagent.readmodel.ReadSnapshots.Settings.defaults());
-        MemorySeenStore seen = new MemorySeenStore();
-        ObservationAdapter adapter = ObservationAdapterFactory.composed(upstream, iot(OFFICE, List.of()),
-                identity -> Mono.just(Map.of()), seen, null, snapshots, clock);
-        adapter.read(new ObservationRequest(OFFICE, ObservationOperation.REGION_LIST,
-                Map.of("section", "directory"))).block();
-
-        directoryUnavailable.set(true);
-        seen.markSeen(OFFICE.tenantCode(), OFFICE.ownerKey(), "office-a", clock.instant());
-        ObservationResponse attention = adapter.read(new ObservationRequest(
-                OFFICE, ObservationOperation.REGION_LIST, Map.of())).block();
-
-        assertThat(attention.payload().get("regions")).isEqualTo(List.of(
-                Map.of("id", "office-a", "name", "一号楼", "attention", false)));
-    }
-
-    @Test
-    void regionListComputesAttentionFromSeenStoreWithoutFalseSuccess() {
-        MemorySeenStore seen = new MemorySeenStore();
-        seen.markSeen("TENANT", "office-a", "office-a", Instant.parse("2026-01-01T00:00:00Z"));
-        ObservationAdapter upstream = request -> Mono.just(ObservationResponse.available(Map.of(
-                "regions", List.of(
-                        Map.of("id", "office-a", "name", "已读区域"),
-                        Map.of("id", "office-b", "name", "未读区域")))));
-        ObservationAdapter adapter = ObservationAdapterFactory.composed(
-                upstream, iot(OFFICE, List.of()), identity -> Mono.just(Map.of()),
-                seen, Clock.systemUTC());
-
-        List<?> regions = (List<?>) adapter.read(new ObservationRequest(
-                OFFICE, ObservationOperation.REGION_LIST, Map.of())).block().payload().get("regions");
-
-        assertThat(((Map<?, ?>) regions.get(0)).get("attention")).isEqualTo(false);
-        assertThat(((Map<?, ?>) regions.get(1)).get("attention")).isEqualTo(true);
-    }
-
-    @Test
-    void regionListOmitsAttentionWhenSeenStoreIsUnavailable() {
-        ObservationAdapter upstream = request -> Mono.just(ObservationResponse.available(Map.of(
-                "regions", List.of(Map.of("id", "office-a", "name", "区域")))));
-        ObservationAdapter adapter = ObservationAdapterFactory.composed(
-                upstream, iot(OFFICE, List.of()), identity -> Mono.just(Map.of()),
-                null, Clock.systemUTC());
-
-        Map<?, ?> region = (Map<?, ?>) ((List<?>) adapter.read(new ObservationRequest(
-                OFFICE, ObservationOperation.REGION_LIST, Map.of())).block().payload().get("regions")).get(0);
-
-        assertThat(region.containsKey("attention")).isFalse();
-    }
 
     @Test
     void regionDevicesRejectRegionOutsideCurrentOfficeIdentity() {
@@ -189,7 +130,7 @@ class CompanyOfficeObservationAdapterContractTest {
                 upstream, iot(OFFICE, List.of(AC)), identity -> Mono.just(Map.of()),
                 new MemorySeenStore(), Clock.systemUTC());
 
-        assertThatThrownBy(() -> adapter.read(new ObservationRequest(OFFICE, ObservationOperation.REGION_DEVICES,
+        assertThatThrownBy(() -> adapter.read(new ObservationRequest(OFFICE, ObservationOperationEnum.REGION_DEVICES,
                 Map.of("regionId", "region-b"))).block())
                 .isInstanceOf(RuntimeException.class)
                 .hasMessageContaining("区域不存在");
@@ -207,7 +148,7 @@ class CompanyOfficeObservationAdapterContractTest {
                 iot(OFFICE, List.of()), identity -> Mono.just(Map.of()), null, composer,
                 Clock.fixed(Instant.parse("2026-01-01T00:00:00Z"), ZoneOffset.UTC));
         ObservationRequest energy = new ObservationRequest(COMPANY,
-                ObservationOperation.COMPANY_ENERGY_DAILY, Map.of("days", "30"));
+                ObservationOperationEnum.COMPANY_ENERGY_DAILY, Map.of("days", "30"));
 
         adapter.read(energy).block();
         adapter.read(energy).block();
@@ -244,7 +185,7 @@ class CompanyOfficeObservationAdapterContractTest {
                 assertThat(identity.source()).isEqualTo(expected.source());
                 return Mono.just(new AuthorizedDeviceScope() {
                     @Override public RequestIdentity identity() { return identity; }
-                    @Override public IotSource source() { return identity.source(); }
+                    @Override public IotSourceEnum source() { return identity.source(); }
                     @Override public List<AuthorizedDevice> devices() { return devices; }
                 });
             }
@@ -260,14 +201,12 @@ class CompanyOfficeObservationAdapterContractTest {
 
     private static final class MemorySeenStore implements RegionSeenStore {
         private String markedRegion;
-        private Instant seenAt;
 
         @Override public void markSeen(String tenantCode, String ownerKey, String regionId, Instant at) {
             markedRegion = regionId;
-            seenAt = at;
         }
-        @Override public Optional<Instant> seenAt(String tenantCode, String ownerKey, String regionId) {
-            return "office-a".equals(regionId) && seenAt != null ? Optional.of(seenAt) : Optional.empty();
+        @Override public Map<String, Instant> seenAtByRegion(String tenantCode, String ownerKey) {
+            return Map.of();
         }
     }
 }

@@ -15,12 +15,14 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
+import java.util.regex.Pattern;
 import ltd.qianc.iotagent.auth.PrincipalInfo;
 import ltd.qianc.iotagent.error.BusinessException;
 import ltd.qianc.iotagent.iot.AuthorizedDevice;
 import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
+import ltd.qianc.iotagent.iot.DeviceCommands;
 import ltd.qianc.iotagent.iot.IotAdapter;
-import ltd.qianc.iotagent.iot.IotSource;
+import ltd.qianc.iotagent.iot.IotSourceEnum;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.task.TaskFacade;
 import ltd.qianc.iotagent.task.TaskPayloadSafety;
@@ -44,11 +46,14 @@ public final class TaskProposalNormalizer {
     private static final Set<String> REPORT_LEVELS = Set.of("all", "floor", "location", "nameMatch", "selection");
     private static final Set<String> REPORT_GRAINS = Set.of("day", "week", "month");
     private static final Set<String> SAFETY_TYPES = Set.of("smoke", "gas", "flooding");
+    private static final Pattern RELATIVE_TASK_NAME = Pattern.compile(
+            "^(?:今天|今日|明天|明日|后天|昨天|昨日|今晚|今早|明早|明晚)\\s*(?:的\\s*)?");
 
     private final ObjectMapper mapper;
     private final IotAdapter iot;
     private final Clock clock;
     private final Duration scopeTimeout;
+    private final TaskControlPreflight controlPreflight;
 
     public TaskProposalNormalizer(ObjectMapper mapper, IotAdapter iot, Clock clock, Duration scopeTimeout) {
         this.mapper = Objects.requireNonNull(mapper, "mapper");
@@ -56,6 +61,7 @@ public final class TaskProposalNormalizer {
         this.clock = Objects.requireNonNull(clock, "clock");
         this.scopeTimeout = scopeTimeout == null || scopeTimeout.isNegative() || scopeTimeout.isZero()
                 ? Duration.ofSeconds(30) : scopeTimeout;
+        this.controlPreflight = new TaskControlPreflight(mapper, iot, this.scopeTimeout);
     }
 
     public String normalizeProposal(PrincipalInfo principal, String source, String payloadJson) {
@@ -77,14 +83,6 @@ public final class TaskProposalNormalizer {
         ObjectNode repeat = normalizeRepeat(root.get("repeat"));
         ObjectNode interval = normalizeInterval(root.get("interval"));
         preparePhases(root, interval, repeat);
-        // Proposals declare scope; stored plans already contain server-materialized actions.
-        if (!plan && "company".equals(normalizedSource)) {
-            for (JsonNode phase : root.path("phases")) {
-                if (!phase.path("actions").isEmpty()) {
-                    throw invalid("公司控制任务必须用targets声明范围；全部使用allAuthorized，精确设备使用selection");
-                }
-            }
-        }
         TaskTargetResolver.materialize(mapper, iot, scopeTimeout, principal, normalizedSource, root);
         ObjectNode reportRequest = validateReportRequest(root.get("reportRequest"));
         ArrayNode phases = normalizePhases(root, normalizedSource);
@@ -138,8 +136,21 @@ public final class TaskProposalNormalizer {
             String label = root.path("label").asText("").trim();
             root.put("title", label.isBlank() ? "定时任务" : label);
         }
-        authorizeDevices(root, phases, principal, normalizedSource);
+        String datePrefix = repeat == null ? TaskRecurrence.localDate(Instant.parse(
+                interval != null ? interval.path("startsAt").asText() : phases.get(0).path("at").asText())) + " " : "";
+        root.put("title", stableTaskName(root.path("title").asText(), datePrefix));
+        if (root.has("label")) root.put("label", stableTaskName(root.path("label").asText(), datePrefix));
+        AuthorizedDeviceScope authorized = authorizeDevices(root, phases, principal, normalizedSource);
+        controlPreflight.apply(root, authorized);
         return TaskPayloadSafety.withoutCredentials(mapper, root).toString();
+    }
+
+    private static String stableTaskName(String value, String datePrefix) {
+        String name = value.trim();
+        var relative = RELATIVE_TASK_NAME.matcher(name);
+        if (!relative.find()) return name;
+        String subject = name.substring(relative.end()).trim();
+        return datePrefix + (subject.isBlank() ? "定时任务" : subject);
     }
 
     private void preparePhases(ObjectNode root, ObjectNode interval, ObjectNode repeat) {
@@ -228,7 +239,12 @@ public final class TaskProposalNormalizer {
                 } else if (controlType != null) {
                     if (!kind.isBlank() && !"access".equals(kind)) throw invalid("任务动作参数与设备类型不一致");
                     kind = "access";
-                    command = mapper.createObjectNode().put("controlType", controlType.asInt(-1));
+                    try {
+                        command = mapper.createObjectNode()
+                                .put("controlType", DeviceCommands.accessControlType(controlType));
+                    } catch (IllegalArgumentException invalidControlType) {
+                        throw invalid("门禁指令仅支持开门确认指令");
+                    }
                 }
             }
             if (command != null && command.isObject()) {
@@ -250,70 +266,46 @@ public final class TaskProposalNormalizer {
     }
 
     private ObjectNode lightingCommand(JsonNode closeOrOpen) {
-        if (closeOrOpen == null || !closeOrOpen.isIntegralNumber()) throw invalid("照明指令参数无效");
-        int value = closeOrOpen.asInt(-1);
-        if (value != 0 && value != 1) throw invalid("照明指令参数无效");
-        return mapper.createObjectNode().put("closeOrOpen", value);
+        try {
+            return mapper.createObjectNode().put("closeOrOpen", DeviceCommands.lightingCloseOrOpen(closeOrOpen));
+        } catch (IllegalArgumentException invalidValue) {
+            throw invalid("照明指令参数无效");
+        }
     }
 
     private ObjectNode canonicalLightingCommand(ObjectNode command) {
         if (command.has("closeOrOpen")) {
-            if (command.size() != 1 || !command.path("closeOrOpen").isIntegralNumber()) throw invalid("照明指令参数无效");
-            int value = command.path("closeOrOpen").asInt(-1);
-            if (value != 0 && value != 1) throw invalid("照明指令参数无效");
-            return command;
+            try {
+                return DeviceCommands.canonical("lighting", command);
+            } catch (IllegalArgumentException invalidValue) {
+                throw invalid("照明指令参数无效");
+            }
         }
-        String power = command.path("power").asText("");
-        if (command.size() == 1 && Set.of("on", "off").contains(power)) {
-            return mapper.createObjectNode().put("closeOrOpen", "on".equals(power) ? 1 : 0);
+        if (command.size() == 1) {
+            try {
+                return mapper.createObjectNode()
+                        .put("closeOrOpen", DeviceCommands.closeOrOpenFromPower(command.path("power")));
+            } catch (IllegalArgumentException invalidPower) {
+                throw invalid("照明指令参数无效");
+            }
         }
         throw invalid("照明指令参数无效");
     }
 
+    /**
+     * 指令规则（整数性、无损 int、范围与字段集合）统一在 {@link DeviceCommands}；
+     * 这里只保留任务提案对外错误码 INVALID_TASK_PAYLOAD 与既有文案。
+     */
     private void validateCommand(String kind, ObjectNode command) {
-        switch (kind) {
-            case "lighting" -> {
-                if (command.size() != 1 || !command.has("closeOrOpen")
-                        || !command.path("closeOrOpen").isIntegralNumber()) {
-                    throw invalid("照明指令参数无效");
-                }
-                int value = command.path("closeOrOpen").asInt(-1);
-                if (value != 0 && value != 1) throw invalid("照明指令参数无效");
-            }
-            case "access" -> {
-                if (command.size() != 1 || command.path("controlType").asInt(-1) != 2) {
-                    throw invalid("门禁指令仅支持开门确认指令");
-                }
-            }
-            case "ac" -> {
-                if (command.isEmpty()) throw invalid("空调指令参数无效");
-                List<String> keys = new ArrayList<>();
-                command.fieldNames().forEachRemaining(keys::add);
-                for (String key : keys) {
-                    JsonNode value = command.get(key);
-                    switch (key) {
-                        case "power" -> {
-                            if (!Set.of("on", "off").contains(value.asText(""))) throw invalid("空调电源参数无效");
-                        }
-                        case "mode" -> {
-                            if (!Set.of("cool", "heat", "dry", "fan").contains(value.asText(""))) throw invalid("空调模式参数无效");
-                        }
-                        case "fanSpeed" -> {
-                            if (!Set.of("low", "high").contains(value.asText(""))) throw invalid("空调风速参数无效");
-                        }
-                        case "temperature" -> {
-                            if (!value.isIntegralNumber() || value.asInt() < AC_MIN_TARGET || value.asInt() > AC_MAX_TARGET) {
-                                throw invalid("空调温度仅支持" + AC_MIN_TARGET + "–" + AC_MAX_TARGET + "℃的整数");
-                            }
-                        }
-                        default -> throw invalid("空调指令参数无效");
-                    }
-                }
-                if ("off".equals(command.path("power").asText("")) && command.size() > 1) {
-                    throw invalid("关闭空调时不能同时设置其他参数");
-                }
-            }
-            default -> throw invalid("设备类型不可控");
+        try {
+            DeviceCommands.canonical(kind, command);
+        } catch (IllegalArgumentException invalidValue) {
+            throw switch (kind) {
+                case "lighting" -> invalid("照明指令参数无效");
+                case "access" -> invalid("门禁指令仅支持开门确认指令");
+                case "ac" -> invalid("空调指令参数无效");
+                default -> invalid("设备类型不可控");
+            };
         }
     }
 
@@ -335,9 +327,14 @@ public final class TaskProposalNormalizer {
                 || !Set.of("previous_day", "previous_week").contains(value.path("alertWindow").asText()))) {
             throw invalid("安全告警窗口参数无效");
         }
-        if (value.has("alertDays") && (!value.path("alertDays").isIntegralNumber()
-                || value.path("alertDays").asInt() < 1 || value.path("alertDays").asInt() > 365)) {
-            throw invalid("安全告警窗口参数无效");
+        if (value.has("alertDays")) {
+            int alertDays;
+            try {
+                alertDays = DeviceCommands.losslessInt(value.path("alertDays"));
+            } catch (IllegalArgumentException invalidDays) {
+                throw invalid("安全告警窗口参数无效");
+            }
+            if (alertDays < 1 || alertDays > 365) throw invalid("安全告警窗口参数无效");
         }
         if (value.has("agent")) normalizeCheckpointAssignment(value);
         JsonNode ac = value.get("ac");
@@ -385,18 +382,34 @@ public final class TaskProposalNormalizer {
         if (mode.isBlank()) mode = spec.path("action").isObject() ? "adjust_to_26" : "inspect";
         if (!Set.of("inspect", "adjust_to_26").contains(mode)) throw invalid("空调检查模式无效");
         int target = AC_DEFAULT_TARGET;
-        if (spec.path("action").path("setpoint").isIntegralNumber()) {
-            target = spec.path("action").path("setpoint").asInt();
-        } else if (spec.path("target").isIntegralNumber()) {
-            target = spec.path("target").asInt();
+        // Runtime acInspectionTarget: the normalized condition.setpoint.value is the
+        // single source of truth, then a legacy action.setpoint, then target, then 26.
+        // 任一候选位置出现显式数值就必须是可无损表示的合法整数，显式 null 同样拒绝；
+        // 只有键真正缺失才跳过并回落默认 26——不截断、不静默跳过。
+        for (JsonNode candidate : List.of(spec.path("condition").path("setpoint").path("value"),
+                spec.path("action").path("setpoint"), spec.path("target"))) {
+            if (candidate.isNumber()) {
+                try {
+                    target = DeviceCommands.acTemperature(candidate);
+                } catch (IllegalArgumentException invalidTarget) {
+                    throw invalid("空调目标温度仅支持" + AC_MIN_TARGET + "–" + AC_MAX_TARGET + "℃的整数");
+                }
+                break;
+            }
+            if (!candidate.isMissingNode()) {
+                throw invalid("空调目标温度仅支持" + AC_MIN_TARGET + "–" + AC_MAX_TARGET + "℃的整数");
+            }
         }
-        if (target < AC_MIN_TARGET || target > AC_MAX_TARGET) {
-            throw invalid("空调目标温度仅支持" + AC_MIN_TARGET + "–" + AC_MAX_TARGET + "℃的整数");
-        }
-        if (spec.has("cadenceMinutes")
-                && (!spec.path("cadenceMinutes").isIntegralNumber()
-                || !AC_CADENCES.contains(spec.path("cadenceMinutes").asInt()))) {
-            throw invalid("空调检查频率仅支持每15、30或60分钟一次");
+        if (spec.has("cadenceMinutes")) {
+            int cadenceMinutes;
+            try {
+                cadenceMinutes = DeviceCommands.losslessInt(spec.path("cadenceMinutes"));
+            } catch (IllegalArgumentException invalidCadence) {
+                throw invalid("空调检查频率仅支持每15、30或60分钟一次");
+            }
+            if (!AC_CADENCES.contains(cadenceMinutes)) {
+                throw invalid("空调检查频率仅支持每15、30或60分钟一次");
+            }
         }
         ObjectNode condition = mapper.createObjectNode();
         condition.put("power", "on").put("mode", "cool");
@@ -441,8 +454,11 @@ public final class TaskProposalNormalizer {
         if (value == null || value.isNull()) value = phase.get("cadenceMinutes");
         if (value == null || value.isNull()) value = phase.path("read").get("cadenceMinutes");
         if (value == null || value.isNull()) return null;
-        if (!value.isIntegralNumber()) throw invalid("任务检查频率无效");
-        return value.asInt();
+        try {
+            return DeviceCommands.losslessInt(value);
+        } catch (IllegalArgumentException invalidCadence) {
+            throw invalid("任务检查频率无效");
+        }
     }
 
     private void expandAcCheckpoints(ArrayNode phases, ObjectNode interval, ObjectNode repeat) {
@@ -592,7 +608,7 @@ public final class TaskProposalNormalizer {
         }
     }
 
-    private void authorizeDevices(ObjectNode root, ArrayNode phases, PrincipalInfo principal, String source) {
+    private AuthorizedDeviceScope authorizeDevices(ObjectNode root, ArrayNode phases, PrincipalInfo principal, String source) {
         boolean referenced = false;
         LinkedHashSet<String> ids = new LinkedHashSet<>();
         for (JsonNode phase : phases) {
@@ -610,10 +626,10 @@ public final class TaskProposalNormalizer {
                 for (JsonNode id : deviceIds) ids.add(id.asText(""));
             }
         }
-        if (!referenced) return;
+        if (!referenced) return null;
         if (iot == null) throw new BusinessException("TASK_DEVICE_AUTHORIZATION_UNAVAILABLE", "当前设备授权范围暂不可用", 503);
-        IotSource requested;
-        try { requested = IotSource.parse(source); }
+        IotSourceEnum requested;
+        try { requested = IotSourceEnum.parse(source); }
         catch (RuntimeException invalid) { throw new BusinessException("INVALID_AGENT_SOURCE", "Agent 来源无效", 400); }
         AuthorizedDeviceScope scope;
         try {
@@ -704,7 +720,7 @@ public final class TaskProposalNormalizer {
                 }
             }
             if (read.has("agent")) {
-                if (requested != IotSource.COMPANY || normalized.isEmpty()) throw invalid("用电检查点缺少公司电表范围");
+                if (requested != IotSourceEnum.COMPANY || normalized.isEmpty()) throw invalid("用电检查点缺少公司电表范围");
                 for (JsonNode device : normalized) {
                     if (!"energy".equals(device.path("kind").asText())) throw invalid("用电检查点只能绑定电表");
                 }
@@ -715,6 +731,7 @@ public final class TaskProposalNormalizer {
         ArrayNode regionArray = mapper.createArrayNode();
         regions.forEach(regionArray::add);
         root.set("regionIds", regionArray);
+        return scope;
     }
 
     private static boolean hasAction(ArrayNode phases, String deviceId) {
@@ -748,10 +765,23 @@ public final class TaskProposalNormalizer {
         if (value.has("weekdays")) {
             if (!value.get("weekdays").isArray()) throw invalid("请指定有效且不重复的周几");
             List<Integer> parsed = new ArrayList<>();
-            for (JsonNode item : value.get("weekdays")) parsed.add(item.isIntegralNumber() ? item.intValue() : -1);
+            for (JsonNode item : value.get("weekdays")) {
+                try {
+                    parsed.add(DeviceCommands.losslessInt(item));
+                } catch (IllegalArgumentException invalidDay) {
+                    parsed.add(-1);
+                }
+            }
             weekdays = TaskRecurrence.weekdays(parsed);
         }
-        Integer day = value.has("dayOfMonth") ? value.path("dayOfMonth").asInt(-1) : null;
+        Integer day = null;
+        if (value.has("dayOfMonth")) {
+            try {
+                day = DeviceCommands.losslessInt(value.path("dayOfMonth"));
+            } catch (IllegalArgumentException invalidDay) {
+                day = -1;
+            }
+        }
         LocalDate until = null;
         if (value.has("until")) {
             String raw = value.path("until").asText("");

@@ -15,17 +15,16 @@ import ltd.qianc.iotagent.iot.AuthorizedDevice;
 import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
 import ltd.qianc.iotagent.iot.DeviceStateReadResult;
 import ltd.qianc.iotagent.iot.IotAdapter;
-import ltd.qianc.iotagent.iot.IotSource;
+import ltd.qianc.iotagent.iot.IotSourceEnum;
 import ltd.qianc.iotagent.iot.ObservationAdapter;
-import ltd.qianc.iotagent.iot.ObservationOperation;
+import ltd.qianc.iotagent.iot.ObservationOperationEnum;
 import ltd.qianc.iotagent.iot.ObservationRequest;
 import ltd.qianc.iotagent.iot.ObservationResponse;
-import ltd.qianc.iotagent.iot.ObservationStatus;
+import ltd.qianc.iotagent.iot.ObservationStatusEnum;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.report.ReportService;
 import ltd.qianc.iotagent.task.TaskFact;
 import ltd.qianc.iotagent.task.TaskFacade;
-import ltd.qianc.iotagent.task.TaskPlanFact;
 
 /**
  * Resolves client-selected references against current Java-owned business facts.
@@ -72,8 +71,8 @@ final class AgentReferenceResolver {
         if (raw == null || raw.isEmpty()) return new ReferenceResolution(Map.of(), Map.of());
         String type = text(raw, "type");
         if (type == null) throw invalid("引用身份无效");
-        IotSource source = parseSource(context.source());
-        if (COMPANY_ONLY.contains(type) && source != IotSource.COMPANY) {
+        IotSourceEnum source = parseSource(context.source());
+        if (COMPANY_ONLY.contains(type) && source != IotSourceEnum.COMPANY) {
             throw invalid("该引用仅用于公司 Agent");
         }
         return switch (type) {
@@ -82,7 +81,7 @@ final class AgentReferenceResolver {
             case "task_plan" -> taskPlan(context, source, raw);
             case "safety_event" -> safetyEvent(context, source, raw);
             case "environment_window" -> environmentWindow(context, source, raw);
-            case "report", "energy_report" -> report(context, source, raw, type);
+            case "report" -> report(context, source, raw, type);
             case "device" -> device(context, source, raw);
             default -> throw invalid("引用类型不受支持");
         };
@@ -99,18 +98,17 @@ final class AgentReferenceResolver {
                 "content", content, "verified", false)));
     }
 
-    private ReferenceResolution task(AgentToolContext context, IotSource source, Map<String, Object> raw) {
+    private ReferenceResolution task(AgentToolContext context, IotSourceEnum source, Map<String, Object> raw) {
         if (tasks == null) throw unavailable("任务事实暂不可读取");
         String taskId = required(raw, "taskId", 300, "任务引用身份无效");
         try {
-            TaskFact fact = tasks.current(context.principal(), taskId, source.wireValue());
-            Map<String, Object> view = tasks.view(context.principal(), fact, source.wireValue());
+            Map<String, Object> view = tasks.taskView(context.principal(), taskId, source.wireValue());
             String label = textOr(view, "label", "任务");
             Map<String, Object> reference = new LinkedHashMap<>();
             reference.put("type", "task");
             reference.put("taskId", taskId);
             reference.put("label", label);
-            reference.put("status", textOr(view, "status", fact.status()));
+            reference.put("status", textOr(view, "status", "任务状态未知"));
             reference.put("verified", true);
             return new ReferenceResolution(reference, Map.of("task", view));
         } catch (BusinessException error) {
@@ -120,18 +118,17 @@ final class AgentReferenceResolver {
         }
     }
 
-    private ReferenceResolution taskPlan(AgentToolContext context, IotSource source, Map<String, Object> raw) {
+    private ReferenceResolution taskPlan(AgentToolContext context, IotSourceEnum source, Map<String, Object> raw) {
         if (tasks == null) throw unavailable("周期计划事实暂不可读取");
         String planId = required(raw, "planId", 300, "周期计划引用身份无效");
         try {
-            TaskPlanFact plan = tasks.plan(context.principal(), planId, source.wireValue());
-            Map<String, Object> view = tasks.planView(plan);
-            String label = textOr(view, "label", textOr(map(view.get("payload")), "label", "周期计划"));
+            Map<String, Object> view = tasks.planView(context.principal(), planId, source.wireValue());
+            String label = textOr(view, "label", "周期计划");
             Map<String, Object> reference = new LinkedHashMap<>();
             reference.put("type", "task_plan");
             reference.put("planId", planId);
             reference.put("label", label);
-            reference.put("status", textOr(view, "status", plan.status()));
+            reference.put("status", textOr(view, "status", "任务状态未知"));
             reference.put("verified", true);
             return new ReferenceResolution(reference, Map.of("taskPlan", view));
         } catch (BusinessException error) {
@@ -141,7 +138,8 @@ final class AgentReferenceResolver {
         }
     }
 
-    private ReferenceResolution safetyEvent(AgentToolContext context, IotSource source, Map<String, Object> raw) {
+
+    private ReferenceResolution safetyEvent(AgentToolContext context, IotSourceEnum source, Map<String, Object> raw) {
         if (observations == null) throw unavailable("安全台账事实暂不可读取");
         String eventId = required(raw, "eventId", 300, "安全台账引用身份无效");
         String deviceId = required(raw, "deviceId", 300, "安全台账引用身份无效");
@@ -150,14 +148,14 @@ final class AgentReferenceResolver {
         ObservationResponse response;
         try {
             response = observations.read(new ObservationRequest(identity(context, source),
-                    ObservationOperation.SAFETY_EVENT,
+                    ObservationOperationEnum.SAFETY_EVENT,
                     Map.of("id", eventId, "deviceId", deviceId, "ledger", ledger))).block(TIMEOUT);
         } catch (BusinessException error) {
             throw error;
         } catch (RuntimeException error) {
             throw unavailable("安全台账事实暂不可读取");
         }
-        if (response == null || response.status() == ObservationStatus.UNAVAILABLE) {
+        if (response == null || response.status() == ObservationStatusEnum.UNAVAILABLE) {
             throw unavailable("安全台账事实暂不可读取");
         }
         Map<String, Object> record = map(response.payload().get("record"));
@@ -197,7 +195,7 @@ final class AgentReferenceResolver {
         return new ReferenceResolution(reference, facts);
     }
 
-    private ReferenceResolution environmentWindow(AgentToolContext context, IotSource source, Map<String, Object> raw) {
+    private ReferenceResolution environmentWindow(AgentToolContext context, IotSourceEnum source, Map<String, Object> raw) {
         if (observations == null) throw unavailable("环境历史事实暂不可读取");
         String from = required(raw, "from", 64, "环境引用窗口无效");
         String to = required(raw, "to", 64, "环境引用窗口无效");
@@ -214,13 +212,13 @@ final class AgentReferenceResolver {
         ObservationResponse response;
         try {
             response = observations.read(new ObservationRequest(identity(context, source),
-                    ObservationOperation.ENVIRONMENT_HISTORY, Map.of("from", from, "to", to))).block(TIMEOUT);
+                    ObservationOperationEnum.ENVIRONMENT_HISTORY, Map.of("from", from, "to", to))).block(TIMEOUT);
         } catch (BusinessException error) {
             throw error;
         } catch (RuntimeException error) {
             throw unavailable("环境历史事实暂不可读取");
         }
-        if (response == null || response.status() == ObservationStatus.UNAVAILABLE) {
+        if (response == null || response.status() == ObservationStatusEnum.UNAVAILABLE) {
             throw unavailable("环境历史事实暂不可读取");
         }
         Map<String, Object> report = new LinkedHashMap<>(response.payload());
@@ -267,7 +265,7 @@ final class AgentReferenceResolver {
         }
     }
 
-    private ReferenceResolution report(AgentToolContext context, IotSource source, Map<String, Object> raw, String type) {
+    private ReferenceResolution report(AgentToolContext context, IotSourceEnum source, Map<String, Object> raw, String type) {
         if (reports == null) throw unavailable("报告事实暂不可读取");
         String reportId = required(raw, "reportId", 100, "报告引用身份无效");
         try {
@@ -295,7 +293,7 @@ final class AgentReferenceResolver {
         }
     }
 
-    private ReferenceResolution device(AgentToolContext context, IotSource source, Map<String, Object> raw) {
+    private ReferenceResolution device(AgentToolContext context, IotSourceEnum source, Map<String, Object> raw) {
         if (iot == null) throw unavailable("设备事实暂不可读取");
         String deviceId = required(raw, "deviceId", 300, "设备引用身份无效");
         try {
@@ -328,14 +326,14 @@ final class AgentReferenceResolver {
         }
     }
 
-    private static RequestIdentity identity(AgentToolContext context, IotSource source) {
+    private static RequestIdentity identity(AgentToolContext context, IotSourceEnum source) {
         return new RequestIdentity(context.principal().authorization(), context.principal().tenantCode(),
                 source, context.principal().ownerKey());
     }
 
-    private static IotSource parseSource(String source) {
+    private static IotSourceEnum parseSource(String source) {
         try {
-            return IotSource.parse(source);
+            return IotSourceEnum.parse(source);
         } catch (RuntimeException error) {
             throw new BusinessException("INVALID_AGENT_SOURCE", "Agent 来源无效", 400);
         }

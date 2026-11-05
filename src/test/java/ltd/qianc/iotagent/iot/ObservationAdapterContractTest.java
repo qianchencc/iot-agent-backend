@@ -17,7 +17,7 @@ import reactor.test.StepVerifier;
 
 class ObservationAdapterContractTest {
     private static final RequestIdentity COMPANY =
-            new RequestIdentity("Bearer company", "TENANT-1", IotSource.COMPANY);
+            new RequestIdentity("Bearer company", "TENANT-1", IotSourceEnum.COMPANY);
 
 
     @Test
@@ -32,11 +32,11 @@ class ObservationAdapterContractTest {
                         """).build());
         ObservationAdapter adapter = ObservationAdapterFactory.webClient(
                 WebClient.builder().exchangeFunction(fixture).build(),
-                new ObservationGatewayRoutes(Map.of(ObservationOperation.ENERGY_HISTORY, "/history")),
+                new ObservationGatewayRoutes(Map.of(ObservationOperationEnum.ENERGY_HISTORY, "/history")),
                 Duration.ofSeconds(1), IotCallPolicy.passThrough());
 
         ObservationResponse response = adapter.read(new ObservationRequest(COMPANY,
-                ObservationOperation.ENERGY_HISTORY, Map.of("size", "500"))).block();
+                ObservationOperationEnum.ENERGY_HISTORY, Map.of("size", "500"))).block();
 
         java.util.List<?> samples = (java.util.List<?>) response.payload().get("samples");
         assertThat(samples.stream().map(sample -> ((Map<?, ?>) sample).get("equipmentId")).toList())
@@ -57,11 +57,11 @@ class ObservationAdapterContractTest {
                 .build());
         ObservationAdapter adapter = ObservationAdapterFactory.webClient(
                 WebClient.builder().exchangeFunction(fixture).build(),
-                new ObservationGatewayRoutes(Map.of(ObservationOperation.ENERGY_HISTORY, "/history")),
+                new ObservationGatewayRoutes(Map.of(ObservationOperationEnum.ENERGY_HISTORY, "/history")),
                 Duration.ofSeconds(1), IotCallPolicy.passThrough());
 
         ObservationResponse response = adapter.read(new ObservationRequest(COMPANY,
-                ObservationOperation.ENERGY_HISTORY, Map.of())).block();
+                ObservationOperationEnum.ENERGY_HISTORY, Map.of())).block();
 
         assertThat(response.payload().get("nextPage")).isEqualTo(1);
         assertThat(response.coverageComplete()).isFalse();
@@ -78,12 +78,12 @@ class ObservationAdapterContractTest {
         };
         ObservationAdapter adapter = ObservationAdapterFactory.webClient(
                 WebClient.builder().exchangeFunction(fixture).build(),
-                new ObservationGatewayRoutes(Map.of(ObservationOperation.COMPANY_ENERGY_DAILY,
+                new ObservationGatewayRoutes(Map.of(ObservationOperationEnum.COMPANY_ENERGY_DAILY,
                         "/customer/company-energy/daily")),
                 Duration.ofSeconds(1), IotCallPolicy.passThrough());
 
         ObservationResponse response = adapter.read(new ObservationRequest(COMPANY,
-                ObservationOperation.COMPANY_ENERGY_DAILY, Map.of("days", "7", "end", "2026-01-01"))).block();
+                ObservationOperationEnum.COMPANY_ENERGY_DAILY, Map.of("days", "7", "end", "2026-01-01"))).block();
 
         assertThat(request.get().url().getQuery()).contains("days=7", "end=2026-01-01");
         assertThat(response.payload()).containsKey("days");
@@ -101,11 +101,11 @@ class ObservationAdapterContractTest {
         };
         ObservationAdapter adapter = ObservationAdapterFactory.webClient(
                 WebClient.builder().exchangeFunction(fixture).build(),
-                new ObservationGatewayRoutes(Map.of(ObservationOperation.SAFETY_EVENT_CAMERAS,
+                new ObservationGatewayRoutes(Map.of(ObservationOperationEnum.SAFETY_EVENT_CAMERAS,
                         "/customer/safety/{ledger}/cameras")),
                 Duration.ofSeconds(1), IotCallPolicy.passThrough());
 
-        adapter.read(new ObservationRequest(COMPANY, ObservationOperation.SAFETY_EVENT_CAMERAS,
+        adapter.read(new ObservationRequest(COMPANY, ObservationOperationEnum.SAFETY_EVENT_CAMERAS,
                 Map.of("ledger", "smoke", "id", "event-1"))).block();
 
         assertThat(request.get().url().getPath()).isEqualTo("/customer/safety/smoke/cameras");
@@ -119,11 +119,11 @@ class ObservationAdapterContractTest {
                 .build());
         ObservationAdapter adapter = ObservationAdapterFactory.webClient(
                 WebClient.builder().exchangeFunction(fixture).build(),
-                new ObservationGatewayRoutes(Map.of(ObservationOperation.ENVIRONMENT_HISTORY, "/customer/environment/history")),
+                new ObservationGatewayRoutes(Map.of(ObservationOperationEnum.ENVIRONMENT_HISTORY, "/customer/environment/history")),
                 Duration.ofSeconds(1), IotCallPolicy.passThrough());
-        ObservationResponse response = adapter.read(new ObservationRequest(COMPANY, ObservationOperation.ENVIRONMENT_HISTORY,
+        ObservationResponse response = adapter.read(new ObservationRequest(COMPANY, ObservationOperationEnum.ENVIRONMENT_HISTORY,
                 Map.of("from", "2026-10-09T00:00:00+08:00", "to", "2026-10-09T23:59:59+08:00", "page", "0"))).block();
-        assertThat(response.status()).isEqualTo(ObservationStatus.PARTIAL);
+        assertThat(response.status()).isEqualTo(ObservationStatusEnum.PARTIAL);
         assertThat(response.coverageComplete()).isFalse();
         Map<?, ?> sample = (Map<?, ?>) ((java.util.List<?>) response.payload().get("samples")).get(0);
         assertThat(sample.get("recordedAt")).isEqualTo("2026-10-09T00:00:00Z");
@@ -138,10 +138,10 @@ class ObservationAdapterContractTest {
             ExchangeFunction fixture = candidate -> Mono.just(ClientResponse.create(status).build());
             ObservationAdapter adapter = ObservationAdapterFactory.webClient(
                     WebClient.builder().exchangeFunction(fixture).build(),
-                    new ObservationGatewayRoutes(Map.of(ObservationOperation.ENVIRONMENT_HISTORY, "/customer/environment/history")),
+                    new ObservationGatewayRoutes(Map.of(ObservationOperationEnum.ENVIRONMENT_HISTORY, "/customer/environment/history")),
                     Duration.ofSeconds(1), IotCallPolicy.passThrough());
             Throwable error = org.assertj.core.api.Assertions.catchThrowable(() -> adapter.read(new ObservationRequest(
-                    COMPANY, ObservationOperation.ENVIRONMENT_HISTORY, Map.of())).block());
+                    COMPANY, ObservationOperationEnum.ENVIRONMENT_HISTORY, Map.of())).block());
             if (status == HttpStatus.UNAUTHORIZED) assertThat(error).isInstanceOf(GatewayAuthorizationException.class);
             else assertThat(error).isInstanceOf(ObservationUnavailableException.class);
         }
@@ -154,7 +154,7 @@ class ObservationAdapterContractTest {
                 Duration.ofSeconds(1), IotCallPolicy.passThrough());
 
         StepVerifier.create(adapter.read(new ObservationRequest(COMPANY,
-                        ObservationOperation.COMPANY_METER_REPORT, Map.of())))
+                        ObservationOperationEnum.COMPANY_METER_REPORT, Map.of())))
                 .expectErrorSatisfies(error -> {
                     assertThat(error).isInstanceOf(ObservationUnavailableException.class);
                     assertThat(((ObservationUnavailableException) error).httpStatus()).isEqualTo(503);
@@ -168,7 +168,7 @@ class ObservationAdapterContractTest {
                 Duration.ofSeconds(1), IotCallPolicy.passThrough());
 
         StepVerifier.create(adapter.read(new ObservationRequest(COMPANY,
-                        ObservationOperation.ENERGY_REPORT, Map.of("kind", "statistics"))))
+                        ObservationOperationEnum.ENERGY_REPORT, Map.of("kind", "statistics"))))
                 .expectErrorSatisfies(error -> {
                     assertThat(error).isInstanceOf(ObservationUnavailableException.class);
                     assertThat(((ObservationUnavailableException) error).code())

@@ -2,6 +2,8 @@
 
 Node 22 / published Pi 0.84.4. Java owns business instructions, tool schemas, authorization, device/task/report behavior, model policy and durable Pi Session storage in MySQL. Node owns the generic Pi loop, streaming, tool transport and checkpoint/recovery mechanics. It has no runtime dependency on `../iot-agent-runtime`, no database credentials and no SQLite or local session volume.
 
+> 配置迁移状态（2026-11-03）：下方环境启动命令记录当前旧实现。新规范已确定以显式外置配置启动、不使用 `.env`；启动器与全部调用方尚未切换。修改启动前先读[统一治理规范](../docs/configuration-governance.md)和[盘点／交付入口](../.scratch/admin-console-governance/README.md)，不要仅改文档后重启现有实例。
+
 ## Build and run
 
 ```sh
@@ -9,25 +11,30 @@ npm ci
 npm run build
 ```
 
-From the backend root, inject configuration into the launcher, not directly into Node:
+The deployment process provides an explicit environment to the launcher, not directly to Node:
 
 ```sh
-set -a
-source .env
-set +a
+SIDECAR_HOST=127.0.0.1 \
+SIDECAR_PORT=3382 \
+AGENT_BRIDGE_TOKEN='deployment-token' \
+JAVA_AGENT_TOOLS_URL='http://127.0.0.1:3381/internal/agent/tools' \
+JAVA_AGENT_TOOLS_TOKEN='deployment-callback-token' \
+JAVA_AGENT_SESSIONS_URL='http://127.0.0.1:3381/internal/agent/sessions' \
 python tools/start-sidecar.py
 ```
 
-The launcher passes only the sidecar environment allowlist. An optional directory argument selects an immutable release containing `dist/`, `package.json` and installed dependencies. The application directory may be read-only; session data is not written there.
+The launcher never reads `.env` or another implicit dotenv file. It passes only the sidecar environment allowlist. An optional directory argument selects an immutable release containing `dist/`, `package.json` and installed dependencies. The application directory may be read-only; session data is not written there.
+
 
 ## Configuration
 
-- `SIDECAR_HOST` / `SIDECAR_PORT`: loopback by default; private bridge only.
+- `SIDECAR_HOST` / `SIDECAR_PORT`: default `127.0.0.1:3382`; private bridge only. Java's fixed frontend-facing port is `3381`; the frontend never calls Node directly.
 - `AGENT_BRIDGE_TOKEN`: Java → Node bearer authentication.
-- `JAVA_AGENT_TOOLS_URL` / `JAVA_AGENT_TOOLS_TOKEN`: private Java tool callback.
+- `JAVA_AGENT_TOOLS_URL` / `JAVA_AGENT_TOOLS_TOKEN`: private Java tool callback. The callback token must equal Java's `AGENT_BRIDGE_TOKEN`; an independently generated value is rejected before tools or Pi Session access.
 - `JAVA_AGENT_SESSIONS_URL`: private Java `/internal/agent/sessions`; defaults to the tools URL's origin plus that path. Uses the same private callback token.
-- `MODEL_BASE_URL`, `MODEL_ID`, `MODEL_API_KEY`: bootstrap only; production runs receive Java's immutable `definition.model` snapshot.
-- `SIDECAR_RUN_TIMEOUT_MS`, `JAVA_AGENT_TOOL_TIMEOUT_MS`, `SIDECAR_HEARTBEAT_MS`, `AGENT_THINKING_LEVEL`: optional runtime limits.
+- Model and observability settings are no longer environment inputs. Every `/run` request must carry a complete `definition.model` snapshot; when the Java admin console has not configured a model yet, runs fail explicitly with a clear error while the sidecar itself stays up for configuration.
+- Observability (Langfuse) is fetched once at process start from Java's private `GET /internal/agent/observability` (same callback token) and never swapped at runtime: one process owns one OTel SDK, and adopting new saved values requires the supervised restart path. `/healthz` reports the adopted `observability` state (`enabled`, `revision`, `baseUrl`, `credentialsDigest`) without secrets.
+- `SIDECAR_RUN_TIMEOUT_MS`, `JAVA_AGENT_TOOL_TIMEOUT_MS`, `SIDECAR_HEARTBEAT_MS`: optional runtime limits (`SIDECAR_HEARTBEAT_MS` is the bridge stream heartbeat, independent of Java's console-managed conversation heartbeat).
 
 Java must have MySQL enabled and available. There is no SQLite fallback and no old-session import. The one-time Java cutover retires old public conversations while preserving historical business facts. New MySQL conversations survive subsequent Java/Node replacement within the application's conversation retention policy.
 
@@ -41,11 +48,17 @@ All Node routes require `Authorization: Bearer $AGENT_BRIDGE_TOKEN`.
 
 Run fields: `protocolVersion:1`, `runId`, `conversationId`, `turnId`, `toolContextId`, `content`, opaque `sessionScope`, and `definition`. Unknown fields are rejected.
 
-`definition` contains Java-owned `instructions`, `tools` (`name`, `label`, `description`, JSON Schema `parameters`), `maxTurns`, optional `maxToolCalls`, `runTimeoutMs`, `finalizationInstructions`, `compactionInstructions` and `model`. A model snapshot contains `modelId`, `modelBaseUrl`, `modelApiKey`, `contextWindow`, `maxOutputTokens`, `reasoning`, `thinkingLevel`, `supportsDeveloperRole`, `supportsReasoningEffort`, `supportsUsageInStreaming`, `maxTokensField`. Keys and private URLs are never emitted in public events or operational errors.
+`definition` contains Java-owned `instructions`, `tools` (`name`, `label`, `description`, JSON Schema `parameters`), `maxTurns`, optional `context`, `resume`, `maxToolCalls`, `runTimeoutMs`, `finalizationInstructions`, `compactionInstructions` and `model`. A model snapshot contains `modelId`, `modelBaseUrl`, `modelApiKey`, `contextWindow`, `maxOutputTokens`, `reasoning`, `thinkingLevel`, `supportsDeveloperRole`, `supportsReasoningEffort`, `supportsUsageInStreaming`, `maxTokensField`. Keys and private URLs are never emitted in public events or operational errors.
+
+`context` is bounded, ephemeral invocation data. Node inserts it immediately before the current user input for inference, after loading or compacting durable history; it never appends that context to the session journal or a summary. Java supplies and interprets current-time, scope and reference facts. Node does not inspect their business fields. `instructions` remains the stable system policy; `compactionInstructions` governs durable-history summaries.
+
+`resume:true` continues the existing turn after a Java-owned system decision. It requires invocation context, replaces the current turn's inference input with that decision, and does not journal a duplicate user request or carry the decision into a later run. It never grants task-confirmation authority.
 
 Node enforces the supplied loop/tool/time budgets. Java may return `halt:true` on a successful or failed tool response. Optional Java-supplied finalization instructions permit a tool-free final answer; no business fallback is embedded in Node.
 
 Tool callbacks include the four run-binding IDs, protocol, tool name/call ID, arguments and `sessionWriter` fencing proof. Java resolves tenant/owner/source from its active authenticated run and rejects stale writers before dispatch. The session callback carries the same run binding and opaque virtual filesystem operations; it accepts neither database credentials nor tenant/source claims.
+
+Failed tool callbacks preserve Java's opaque `code` and `recovery` on the error. The model-visible message includes the whole recovery JSON only when its rendering fits within 2,000 characters; oversized metadata is omitted from that rendering, not truncated into invalid JSON, and remains attached to the error. Node does not interpret business recovery fields or automatically retry the tool.
 
 ## Persistence and recovery
 
@@ -69,7 +82,7 @@ Native summaries truncate large individual tool results; they are not the busine
 
 File failures map to Pi's `aborted`, `not_found`, `permission_denied`, `not_directory`, `is_directory`, `invalid`, `not_supported`, or `unknown`. Authentication, stale writers and conflicts fail closed. A transport/body-read failure may retry **one identical storage mutation** with the same commit ID and content; it never retries a model run or business tool. Append chunks are checked for missing sequence numbers rather than silently truncating history.
 
-Public text also follows Runtime's generic reasoning-channel normalization: `<think>` / `<thinking>` spans, including split tag prefixes, are not published as answer/process text. The native durable model messages retain their original content; business errors and legitimate public text are not suppressed.
+Assistant text follows Runtime `app.ts`'s `toDurableMessage` on persistence and history loading: `<think>` / `<thinking>` spans, including tags split across text blocks, do not become answer text or later-turn facts. Existing journal records are not rewritten; their model-facing read projection receives the same normalization. Tool calls, explicit reasoning blocks, business errors and legitimate public text remain intact. Java owns compact business tool projections and deterministic proposal receipts; the generic engine does not inspect device or draft fields.
 
 
 The former SQLite capacity, integrity, backup, restore and writer-lease HTTP operations are removed. Administration exposes only Java's `/api/admin/pi-session/health`; backups cover the authoritative MySQL database together with linked business facts and the cutover marker.

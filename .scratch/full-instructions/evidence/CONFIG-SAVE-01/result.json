@@ -1,0 +1,112 @@
+{
+  "case": "CONFIG-SAVE-01",
+  "acceptance_surface": "real Chrome through browser relay, http://127.0.0.1:5185/",
+  "result": "passed",
+  "scope": "Full business-instruction configuration display/edit/save and actual backend active/composed read; not physical device/task/model acceptance",
+  "instruction_sections": 7,
+  "optional_additions": 3,
+  "all_ten_real_textareas": true,
+  "legacy_additions_exactly_preserved": true,
+  "baseline_lengths": {
+    "checkpointInstructions": 399,
+    "compactionInstructions": 526,
+    "companyBaseInstructions": 2642,
+    "companyInstructions": 0,
+    "companyTaskInstructions": 927,
+    "finalizationInstructions": 425,
+    "officeBaseInstructions": 756,
+    "officeInstructions": 97,
+    "replyInstructions": 0,
+    "sharedInstructions": 2435
+  },
+  "ui_blank_attempt": {
+    "inline_error": "请填写办公助手基础指令",
+    "saved_revision_and_text_unchanged": true
+  },
+  "ui_save": {
+    "change_keys": [
+      "officeBaseInstructions"
+    ],
+    "http_status": 200,
+    "edit": "one trailing newline only",
+    "reload_saved_text_exact": true,
+    "active_text_exact": true,
+    "existing_composed_office_read_uses_saved_text": true,
+    "other_instruction_values_unchanged": true
+  },
+  "ui_restore": {
+    "method": "ordinary Save, not historical restore",
+    "change_keys": [
+      "officeBaseInstructions"
+    ],
+    "http_status": 200,
+    "all_saved_and_active_values_exact_original": true,
+    "clean_draft_after_reload": true
+  },
+  "narrow": {
+    "viewport": 320,
+    "document_width": 320,
+    "all_ten_fields_horizontal_bounds_within_viewport": true,
+    "input_font_size": "16px",
+    "advanced_group_height_after_animations": 1240.171875,
+    "running_animations_at_capture": 0
+  },
+  "keyboard": {
+    "boxShadow": "none",
+    "expanded": "false",
+    "focusVisible": true,
+    "name": "运行阶段指令检查点 / 收尾 / 压缩，原样使用",
+    "outline": "rgb(37, 99, 235) solid 2px",
+    "role": "button",
+    "enter_opens_advanced_group": true
+  },
+  "contrast_light": {
+    "label_and_input": 10.29,
+    "hint_and_counter": 7.58,
+    "required_label": 6.47
+  },
+  "engineering": {
+    "focused_tests": 12,
+    "full_suite": {
+      "tests": 608,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 25
+    },
+    "frontend_production_build": "passed; existing >500kB chunk warning remains",
+    "actual_artifact_encrypted_store_probe": "passed: save, active compose, invalid atomicity, encryption, reopen",
+    "new_run_snapshot_contract": "passed; old prepared definition unchanged, subsequent prepare reads saved values"
+  },
+  "runtime": {
+    "java_artifact_at_own_cutover": "var/full-instructions-20261105-153053/backend-v3.jar",
+    "only_java_restarted_by_this_cutover": true,
+    "node_pid_at_own_cutover": 35439,
+    "console_pid_at_own_cutover": 93176,
+    "launch_manifest_mode": "0600",
+    "metadata_abi_dependencies_included": true,
+    "final_continuity_check": {
+      "java_artifact": "var/agent-latency-20261105-170113/backend.jar",
+      "node_artifact": "var/agent-latency-20261105-170113/node-source/dist/server.js",
+      "java_pid": 98705,
+      "node_pid": 98707,
+      "console_pid": 93176,
+      "intervening_deployment_preserved": true,
+      "fresh_real_console_read": 200,
+      "all_ten_saved_active_values_still_original": true,
+      "editor_clean": true,
+      "java_health": 200,
+      "node_authenticated_health": 200
+    }
+  },
+  "not_exercised": [
+    "real model invocation/business conversation",
+    "device commands",
+    "task creation/confirmation",
+    "production notifications",
+    "VoiceOver/NVDA",
+    "200 percent browser zoom",
+    "RTL",
+    "dark theme"
+  ],
+  "temporary_instrumentation": "JFR recordings stopped; probes and failed artifacts removed during cleanup"
+}

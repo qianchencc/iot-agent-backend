@@ -8,10 +8,10 @@ import java.util.Objects;
  * Explicit customer read-only routes. A missing route is an unavailable capability;
  * callers must not infer a customer endpoint from an operation name.
  */
-public record ObservationGatewayRoutes(Map<ObservationOperation, String> paths) {
+public record ObservationGatewayRoutes(Map<ObservationOperationEnum, String> paths) {
     public ObservationGatewayRoutes {
         Objects.requireNonNull(paths, "paths");
-        EnumMap<ObservationOperation, String> copy = new EnumMap<>(ObservationOperation.class);
+        EnumMap<ObservationOperationEnum, String> copy = new EnumMap<>(ObservationOperationEnum.class);
         paths.forEach((operation, path) -> {
             if (operation == null || path == null || path.isBlank() || !path.startsWith("/")) {
                 throw new IllegalArgumentException("observation route must be an absolute path");
@@ -29,17 +29,17 @@ public record ObservationGatewayRoutes(Map<ObservationOperation, String> paths) 
         paths = Map.copyOf(copy);
     }
 
-    public String path(ObservationOperation operation) {
+    public String path(ObservationOperationEnum operation) {
         Objects.requireNonNull(operation, "operation");
         return paths.get(operation);
     }
 
     /** Resolve the only Runtime-derived observation route template. */
-    public String resolvedPath(ObservationOperation operation, Map<String, String> parameters) {
+    public String resolvedPath(ObservationOperationEnum operation, Map<String, String> parameters) {
         String path = path(operation);
         if (path == null || !path.contains("{ledger}")) return path;
         String ledger = parameters == null ? null : parameters.get("ledger");
-        if (ledger == null && operation == ObservationOperation.SAFETY_EVENTS) {
+        if (ledger == null && operation == ObservationOperationEnum.SAFETY_EVENTS) {
             String type = parameters == null ? null : parameters.get("type");
             ledger = "water".equals(type) ? "flooding" : type;
             if (ledger == null) ledger = "gas";
@@ -48,10 +48,10 @@ public record ObservationGatewayRoutes(Map<ObservationOperation, String> paths) 
         return path.replace("{ledger}", ledger);
     }
 
-    private static boolean isLedgerTemplate(ObservationOperation operation, String path) {
-        return (operation == ObservationOperation.SAFETY_EVENTS
-                || operation == ObservationOperation.SAFETY_EVENT
-                || operation == ObservationOperation.SAFETY_EVENT_CAMERAS)
+    private static boolean isLedgerTemplate(ObservationOperationEnum operation, String path) {
+        return (operation == ObservationOperationEnum.SAFETY_EVENTS
+                || operation == ObservationOperationEnum.SAFETY_EVENT
+                || operation == ObservationOperationEnum.SAFETY_EVENT_CAMERAS)
                 && path.indexOf("{ledger}") >= 0
                 && path.indexOf('{') == path.indexOf("{ledger}")
                 && path.indexOf('}') == path.indexOf("{ledger}") + "{ledger}".length() - 1;

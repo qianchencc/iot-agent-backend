@@ -56,7 +56,7 @@ class RuntimeContractGateTest {
 
 
     @Test
-    void rejectsInvalidSourceAndCompanyOnlyFocusContext() throws Exception {
+    void rejectsInvalidSource() throws Exception {
         mockMvc.perform(post("/api/agent/conversations")
                         .queryParam("source", "unknown")
                         .header("Authorization", "Bearer fixture")
@@ -65,17 +65,29 @@ class RuntimeContractGateTest {
                         .content("{}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("INVALID_AGENT_SOURCE"));
+    }
 
-        String id = new ObjectMapper().readTree(mockMvc.perform(post("/api/agent/conversations")
-                        .header("Authorization", "Bearer fixture").header("Tenantcode", "FIXTURE")
-                        .contentType("application/json").content("{\"source\":\"company\"}"))
-                .andReturn().getResponse().getContentAsString()).get("id").asText();
-        mockMvc.perform(post("/api/agent/conversations/" + id + "/messages")
-                        .queryParam("source", "company")
-                        .header("Authorization", "Bearer fixture").header("Tenantcode", "FIXTURE")
-                        .contentType("application/json").content("{\"content\":\"x\",\"focusRegionId\":\"r1\"}"))
+    @Test
+    void rejectsNonStringSourceInConversationBodyInsteadOfFailingInternally() throws Exception {
+        mockMvc.perform(post("/api/agent/conversations")
+                        .header("Authorization", "Bearer fixture")
+                        .header("Tenantcode", "FIXTURE")
+                        .contentType("application/json")
+                        .content("{\"source\":5}"))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.code").value("SOURCE_CONTEXT_UNAVAILABLE"));
+                .andExpect(jsonPath("$.code").value("INVALID_AGENT_SOURCE"));
+    }
+
+    @Test
+    void companySourceInBodyCanCreateConversationWithoutDraftAdmission() throws Exception {
+        mockMvc.perform(post("/api/agent/conversations")
+                        .contentType("application/json").content("{\"source\":\"company\"}"))
+                .andExpect(status().isUnauthorized());
+        mockMvc.perform(post("/api/agent/conversations")
+                        .header("Authorization", "Bearer fixture")
+                        .header("Tenantcode", "FIXTURE")
+                        .contentType("application/json").content("{\"source\":\"company\"}"))
+                .andExpect(status().isCreated());
     }
 
     @TestConfiguration(proxyBeanMethods = false)

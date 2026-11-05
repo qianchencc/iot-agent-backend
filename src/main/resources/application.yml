@@ -1,6 +1,6 @@
 server:
   address: ${SERVER_ADDRESS:127.0.0.1}
-  port: ${SERVER_PORT:3200}
+  port: ${SERVER_PORT:3381}
 
 spring:
   application:

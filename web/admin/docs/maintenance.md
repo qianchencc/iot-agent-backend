@@ -1,70 +1,91 @@
 # web/admin 维护手册
 
-运维/部署/升级/排障；开发规范见同目录 `AGENTS.md`。
+运维/部署/升级/排障；开发规范见 `../AGENTS.md`。
 
-## 环境变量（部署必须给全）
+> 本文描述当前 Element Plus／部署外置配置实现。管理员密码自 2026-11-04 起只来自部署配置／环境，控制台不再提供改密入口。修改部署或配置前先读[统一治理规范](../../../docs/configuration-governance.md)与[当前设计入口](../../../.scratch/admin-console-governance/README.md)；旧 SQLite 文件运维条目不适用于当前 Java/MySQL Pi Session。
 
-| 变量 | 作用 | 缺省/后果 |
+## 部署配置
+
+管理员密码由部署层显式提供：Spring 属性 `admin.password` 或环境变量 `ADMIN_PASSWORD`；不满足密码策略时后端以“凭据未配置或无效”拒绝登录（503），需在部署配置修正后重启。不存在 `var/admin-config.properties` 密码文件，控制台也没有修改密码的接口。
+
+| 配置项 | 作用 | 缺省/后果 |
 |---|---|---|
-| `ADMIN_ORIGIN` | 控制台浏览器源，非 GET 请求 `Origin` 必须精确相等 | 默认 `http://127.0.0.1:3200`；配错 → 所有写操作 403 `ADMIN_ORIGIN_REJECTED` |
-| `ADMIN_PASSWORD` | 初始管理员密码（部署托管） | 设置后控制台改密功能禁用（409 `ADMIN_PASSWORD_DEPLOYMENT_MANAGED`） |
-| `ADMIN_PASSWORD_FILE` | 本地密码文件路径 | 默认 `var/admin-password`；无 `ADMIN_PASSWORD` 且无文件 → 登录 `503` 不可用 |
+| `ADMIN_ORIGIN` | 控制台浏览器源，非 GET 请求 `Origin` 必须精确相等 | 默认 `http://127.0.0.1:3200`；配错 → 所有写操作 403 |
+| `ADMIN_PASSWORD` | 单管理员部署凭据（或外置 YAML `admin.password`） | 缺失/非法 → 登录 503，提示联系部署人员 |
 | `ADMIN_PASSWORD_MIN_LENGTH` | 密码最小长度 | 默认 6，范围 1–128 |
-| `ADMIN_CONFIG_FILE` | 加密配置存储 | 默认 `var/admin-config.bin` |
-| `CONFIG_SECRET_KEY` | 配置加密密钥（hex） | 缺失 → `FailClosedAdminConfigurationStore`，配置接口 503 |
-| `ADMIN_API_TARGET` | 前端 dev 代理目标 | 默认 `http://127.0.0.1:3200`，仅 dev server 用 |
+| `ADMIN_CONFIG_FILE` | 加密业务配置存储（MySQL 关闭时） | 默认 `var/admin-config.bin` |
+| `CONFIG_SECRET_KEY` | 配置加密密钥（64 hex / 32 字节） | 缺失 → 配置接口 503 |
+| `ADMIN_API_TARGET` | 前端 dev 代理目标 | 默认 `http://127.0.0.1:3381`，仅 dev server 用 |
+| `ADMIN_PROXY_ORIGIN` | 同源开发代理使用的 Java 管理端规范源 | 默认 `http://127.0.0.1:5185`；必须与 Java `ADMIN_ORIGIN`／`admin.origin` 一致，不填 `0.0.0.0` |
+
+`ADMIN_API_TARGET` 与 `ADMIN_PROXY_ORIGIN` 均为非秘密的部署 URL 字符串，由 `console.environment` 显式提供、Vite启动时读取，不是控制台可写的业务修订。前者为 HTTP(S) 后端地址；后者为不带路径的规范源，须与 Java 精确一致。缺省采用上表默认值，源错配由 Java 返回403；修改这两个控制台参数后只需重启自己的 `console` 窗口，不替换存活 Java／Node。不要在 URL 中加入凭据。
 
 ## 启动
 
 ```sh
-# 后端（仓根）
-JAVA_HOME=/opt/homebrew/opt/openjdk \
-ADMIN_PASSWORD=<strong-password> \
-ADMIN_ORIGIN=https://admin.example.com \
-mvn spring-boot:run          # 或打 jar
-
-# 前端 dev
-cd web/admin && npm ci && npm run dev     # http://127.0.0.1:5173, /api → 3200
+# 仓根：显式0600部署配置，统一启动三个tmux窗口
+/Users/qianchen/anaconda3/bin/python tools/start-fixed-backend.py
+tmux -L iot-agent-backend attach -t fixed-backend
 ```
+
+默认部署配置包含 `java`、`node`、`console`；控制台首次安装依赖执行 `npm ci`。完整 `console` 段见[仓根启动说明](../../../README.md#固定开发后端tmux-常驻)。组件各自的显式环境相互隔离，不把后端密码、数据库或模型密钥传给 Vite；不加载 `.env`。
+
+控制台绑定 `0.0.0.0:5185`，访问 `http://127.0.0.1:5185/login` 或 `http://<本机局域网IP>:5185/login`。重复执行入口只补缺失／退出组件，不替换存活后端；未知进程占用5185则拒绝启动，不杀进程或切到5186。单独前端调试可在本目录运行 `npm run dev`，不要与统一入口重复占用端口。
+
+这是可信开发网络上的 HTTP 服务，不是公网发布。开发代理仅转发 `/api/admin`，只改写与本请求 Host 同源的 Origin；外部 Origin 仍由 Java 拒绝，Cookie和CSRF校验不变。
 
 生产：前端 `npm run build` 产物交 nginx 静态服务；nginx 反代 `/api` 到后端（对外只开 443）。`ADMIN_ORIGIN` 填用户实际访问的 https 源。
 
 ## 配置维护页（登录后 `/`）
 
-- **模型与密钥**：模型地址必须是 http(s) 根地址，不能带登录信息、查询参数或片段。API Key 输入框只用于替换：留空保持当前密钥，填入新值才会提交新值；页面和后端都不回显已保存密钥。`测试模型连接` 会调用 Java 侧 `/test-model`，使用服务端已保存密钥叠加当前草稿中的地址、模型 ID 和新密钥，不会保存配置。
-- **业务指令与执行预算**：保存时只提交差异字段，并带上当前 `expectedRevision`。模型、业务指令、`maxAgentTurns`、`maxToolCalls`、`runTimeoutMs` 等热字段在**下一轮执行边界**生效；正在执行的轮次保持开始时的快照，不会中途切换。
+- **首次初始化**：业务配置存储允许在模型连接（地址／模型 ID／API Key）为空时创建首个修订，管理员登录后在配置页补齐模型连接并保存即可；补齐前新业务运行会因缺少模型定义而明确失败。
+- **模型与密钥**：模型地址必须是 http(s) 根地址，不能带登录信息、查询参数或片段。API Key 输入框只用于替换：留空保持当前密钥，填入新值才会提交新值；不支持清空。页面和后端都不回显已保存密钥。`测试模型连接` 会调用 Java 侧 `/test-model`，使用服务端已保存密钥叠加当前草稿中的地址、模型 ID 和新密钥，不会保存配置。它发送固定1 token上限的最小请求并丢弃响应内容，只检查HTTP接受情况；不证明生成参数兼容、回答正确或整套业务配置已生效。
+- **热字段**：保存时只提交差异字段，并带上当前 `expectedRevision`。模型、生成参数、业务指令、`maxAgentTurns`、`maxToolCalls`、`runTimeoutMs`、`heartbeatMs`（会话心跳，0=关闭）、`scanIntervalMs`（任务扫描）在**下一轮对话／下一个轮询周期**生效；正在执行的轮次保持开始时的快照。检查点运行使用固定的 6 回合／10 次工具／180000 毫秒预算，不受这些值影响。
+- **完整业务指令**：业务指令区可直接编辑办公室基础、公司基础、公共规则、公司任务、任务检查点、收尾答复、历史压缩7段完整文本；原办公室／公司／回复风格3项作为可选追加内容保留。使用现有保存入口，不增加指令版本、历史管理、预览或发布步骤。7段完整文本不可为空；收尾和压缩每段最多16000字符，其余单段最多65536字符；追加内容可清空。办公室或公司指令组装后（含分隔行）不得超过引擎65536字符上限，超限拒绝保存。它们是非秘密的业务配置，保存后由后端在新一轮或新检查点开始时读取；当前轮次保持原快照。旧配置未保存完整段时采用程序随附的原文本，既有追加内容不丢失；显式保存后的完整文本不被程序默认覆盖。
+- **指令组装**：办公室＝办公室基础＋办公室追加＋回复风格追加＋公共规则；公司＝公司基础＋公司任务＋公司追加＋回复风格追加＋公共规则；检查点使用检查点文本，收尾及压缩按各自阶段使用。时间、已授权目录、会话引用等动态事实和工具契约由后端生成，不是这些文本框的手工配置；后端鉴权、人工确认与设备参数校验不依赖管理员保留某句提示词。
+- **完整指令验收**：[实现票据与真实控制台保存／刷新／恢复原文证据](../../../.scratch/full-instructions/issues/01-complete-instruction-settings.md)；验收不等同于模型或设备业务执行验收。
+- **运行观测（Langfuse）**：`langfuseEnabled` 与地址／公钥／密钥保存后**不热生效**——sidecar 进程启动时从 Java 私有接口拉取一次快照；需通过受监督重启应用，未接入受监督通道时按部署流程手动重启后端与 sidecar。页面以 sidecar 上报的真实采用状态（enabled／地址／凭据摘要）判断是否已采用，保存成功不等于已采用。观测公钥／密钥只写不回显；关闭启用开关后可清除已保存密钥。
+- **只读部署参数**：动作草稿有效期（`agent.action-draft-ttl-ms`）、状态回读等待（`iot.gateway.readback-wait-ms`）、控制调用超时（`iot.gateway.call-timeout-ms`）由部署属性在进程启动时消费；配置页只读展示当前启动值，不接受保存。
+- **生效证据边界**：配置的已保存／下一轮读取快照不是每个消费者的采用回执；Langfuse采用回执也不是云端已收到新trace。扫描间隔按扫描周期读取，不是下一轮对话。真实控制台的名单增删、审计查询、观测采用与逐组配置验证边界见[CONSOLE-REAL-01](../../../.scratch/console-integration/evidence/CONSOLE-REAL-01/README.md)；本轮沿用普通保存，没有新增指令版本、预览或发布流程。
 - **并发冲突**：另一个会话先保存时，页面显示冲突并保留本地草稿，保存暂停。`载入最新修订（保留草稿）` 会更新基线修订，之后重新保存；可能覆盖服务端新值，需先核对。`放弃草稿并刷新` 会丢弃本地修改。
 - **恢复历史版本**：恢复不会删除审计历史；它基于目标修订内容新建一个修订。操作前会二次确认，成功后本地草稿重置。
-- **待应用字段**：页面给出已保存值与下一轮生效快照的差异。非热字段需要部署层应用或重启；此页面**不会重启 Node、Java 或任何宿主进程**，也不能替代受监督部署流程。
 - **审计**：只展示修订、时间、操作者与变更字段名，不展示配置值、密钥或供应商凭证。变更值请按字段名在配置页核对。
-- **范围**：模型密钥状态只显示“已配置/未配置”，不提供明文查询。
+
+## 独立名单与业务审计
+
+- `/allowlist` 只维护手机号和可选姓名备注；添加、移除不触发认证、公司Agent准入、设备权限或任务取消。管理员变更归入 `ADMIN` 管理审计，不作为真实成员身份。
+- `/audit` 按园区、可信身份域和主体组织成员；公司／办公室是操作来源。成员标识可完整查询，服务端先过滤再分页；没有姓名来源时显示主体ID，不把备注或owner hash充当姓名。
+- 可按成员、来源、期间、事件类型和结果检索。详情只读展示公开请求／答复、关联业务ID、上游回执和状态回读；没有事实就显示未记录，不展示Pi隐藏思维或原始工具响应。
+- 人工提案／确认与自动执行分别留痕。新确认任务写入服务端核验主体，自动执行仍标记 `actor=system`，历史缺失身份不补造。阶段审计故障不重派设备，任务终态事务从已存阶段事实补齐审计。
+- 当前隔离预览及验证边界见[治理入口](../../../.scratch/admin-console-governance/README.md)，不是生产发布说明。
+
 
 ## 常见故障
 
 | 现象 | 原因 | 处置 |
 |---|---|---|
-| 登录后一切写操作 403 | `ADMIN_ORIGIN` ≠ 浏览器 `Origin`（端口/协议/尾斜杠） | 核对变量值与地址栏完全一致，重启后端 |
-| 登录 503 | `ADMIN_PASSWORD` 未设且 `var/admin-password` 不存在 | 设 `ADMIN_PASSWORD` 或写密码文件（首行即密码，权限 600） |
+| 登录 503（提示凭据未配置或无效） | `ADMIN_PASSWORD` 缺失或不符合策略 | 在部署配置设置后重启后端 |
 | 登录一直 429 | 同 IP 5 分钟 5 次失败限流 | 等 5 分钟；别反复试错 |
 | 刷新掉登录 | cookie 过期（8h）或后端重启 | 正常，重新登录 |
-| 改密 409 | `ADMIN_PASSWORD` 环境变量存在 | 部署托管密码，改部署配置不是改页面 |
-| 配置接口 503 | `CONFIG_SECRET_KEY` 缺失 | 补密钥重启；密钥丢失 = 密文不可读，需重配 |
+| 配置接口 503 | `CONFIG_SECRET_KEY` 缺失/非法 | 补密钥重启；密钥丢失 = 密文不可读，需重配 |
+| sidecar 启动失败提示观测配置不可用 | Java 不可达或 `/internal/agent/observability` 返回异常 | 先恢复 Java 管理配置存储，再按受监督流程重启 sidecar |
+| 审计报 `Route GET:/api/admin/audit/tenants not found` | 前端与实际运行包的审计契约不一致；此JSON格式也可能由Java错误处理器生成 | 核对Vite实际代理及运行JAR的控制器，不只检查工作区源码；使用具备tenants/members/events/detail的完整后端包，不能伪造空列表 |
+| 手机号表单要求园区／身份域／主体 | 实际运行的是旧身份元组名单接口，而界面使用独立手机号契约 | 对齐完整运行包；不能给手机号表单塞虚构身份字段，也不能把旧身份记录猜成手机号 |
+| Langfuse已接入但页面未上报／关闭 | 旧Node从部署环境初始化SDK却不报告采用；或新Node读取了Java中关闭的保存值 | 先区分部署凭据、Java保存值和实际SDK快照；通过普通保存安全迁移已有连接，空闲时重启并确认采用，不能以默认false静默覆盖已有集成 |
 
 ## 升级依赖
 
 `package.json` 已锁主版本；升级小版本：
 
 ```sh
-cd web/admin && npm update && npm run typecheck && npm run build
+cd web/admin && npm update && npm run build
 ```
-
-Arco/Vue 跨主版本升级先建 `.scratch/` 分支验证，别直接升——`tokens.css` 的 `--arcoblue-*` 覆盖对 Arco token 结构敏感，破肤先查这里。
 
 ## 密码与密钥轮换
 
-- 控制台改密：页面操作，即时清所有会话，写回 `ADMIN_PASSWORD_FILE`。
-- 部署改密：换 `ADMIN_PASSWORD` 重启；控制台改密同步失效（预期行为）。
-- `CONFIG_SECRET_KEY` 轮换：现版本不支持在线换密钥；换了旧密文读不出，等于重置配置——变更前先在 `var/` 备份 `admin-config.bin`。
+- 管理员密码是部署凭据：轮换在部署配置（YAML／环境／secret 管理）中修改并重启后端；控制台不参与。
+- `CONFIG_SECRET_KEY` 现版本不支持在线换密钥。MySQL模式须备份整个权威schema并安全保留对应密钥，恢复先进入独立库；文件模式备份 `admin-config.bin`。不得通过更换密钥“重置”已有配置修订。
+- Langfuse 公钥／密钥：在配置页替换后需受监督重启由 sidecar 采用；轮换后以页面显示的 sidecar 采用状态确认。
 
 ## 会话/安全边界（排障时先核这里）
 

@@ -8,10 +8,16 @@ import {
   type AgentTool,
   type StreamFn,
 } from "@earendil-works/pi-agent-core";
-import type { Model, TSchema } from "@earendil-works/pi-ai";
+import {
+  createAssistantMessageEventStream,
+  type AssistantMessage,
+  type AssistantMessageEvent,
+  type Model,
+  type TSchema,
+} from "@earendil-works/pi-ai";
 import { streamSimple } from "@earendil-works/pi-ai/api/openai-completions";
 import type { SidecarConfig } from "./config.js";
-import { traceStreamFn, type Observability } from "./observability.js";
+import { traceOperation, traceStreamFn, type Observability } from "./observability.js";
 import type { PiSessionRun, PiSessionStore } from "./session.js";
 import { createReplyTextFilter, publicReplyText, type ReplyTextFilter } from "./reply-text.js";
 import { loadAgentHistory } from "./history.js";
@@ -44,13 +50,15 @@ export interface RunDefinition {
   instructions: string;
   /** Ephemeral invocation data, placed beside the current user input and never journaled. */
   context?: string;
+  /** Continue the restored conversation without adding a new user message. */
+  resume?: boolean;
   tools: ToolDefinition[];
   maxTurns: number;
   maxToolCalls?: number;
   runTimeoutMs?: number;
   finalizationInstructions?: string;
   compactionInstructions?: string;
-  model?: ModelSettings;
+  model: ModelSettings;
 }
 
 export interface RunRequest {
@@ -79,7 +87,7 @@ const RUN_FIELDS: Record<string, true> = {
 };
 const DEFINITION_FIELDS: Record<string, true> = {
   instructions: true, tools: true, maxTurns: true, maxToolCalls: true, runTimeoutMs: true, model: true,
-  finalizationInstructions: true, compactionInstructions: true, context: true,
+  finalizationInstructions: true, compactionInstructions: true, context: true, resume: true,
 };
 const TOOL_FIELDS: Record<string, true> = { name: true, label: true, description: true, parameters: true };
 const MODEL_FIELDS: Record<string, true> = {
@@ -89,31 +97,24 @@ const MODEL_FIELDS: Record<string, true> = {
 };
 const PROTOCOL_VERSION = 1;
 
-function modelFor(config: SidecarConfig, settings?: ModelSettings): Model<"openai-completions"> {
+function modelFor(settings: ModelSettings): Model<"openai-completions"> {
   return {
-    id: settings?.modelId ?? config.modelId,
-    name: settings?.modelId ?? config.modelId,
+    id: settings.modelId,
+    name: settings.modelId,
     api: "openai-completions",
     provider: "agent-sidecar",
-    baseUrl: settings?.modelBaseUrl ?? config.modelBaseUrl,
-    reasoning: settings?.reasoning ?? true,
+    baseUrl: settings.modelBaseUrl,
+    reasoning: settings.reasoning,
     input: ["text"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: settings?.contextWindow ?? 128_000,
-    maxTokens: settings?.maxOutputTokens ?? 16_384,
-    compat: settings
-      ? {
-        supportsDeveloperRole: settings.supportsDeveloperRole,
-        supportsReasoningEffort: settings.supportsReasoningEffort,
-        supportsUsageInStreaming: settings.supportsUsageInStreaming,
-        maxTokensField: settings.maxTokensField,
-      }
-      : {
-        supportsDeveloperRole: false,
-        supportsReasoningEffort: true,
-        supportsUsageInStreaming: true,
-        maxTokensField: "max_completion_tokens",
-      },
+    contextWindow: settings.contextWindow,
+    maxTokens: settings.maxOutputTokens,
+    compat: {
+      supportsDeveloperRole: settings.supportsDeveloperRole,
+      supportsReasoningEffort: settings.supportsReasoningEffort,
+      supportsUsageInStreaming: settings.supportsUsageInStreaming,
+      maxTokensField: settings.maxTokensField,
+    },
   };
 }
 
@@ -132,6 +133,95 @@ function messageText(message: unknown): string {
 
 function jsonText(value: unknown): string {
   try { return JSON.stringify(value); } catch { return "[unserializable]"; }
+}
+
+/**
+ * Java-owned typed recovery rendered for the model-visible error text. The
+ * sidecar never interprets business meaning; object recovery is emitted as one
+ * compact JSON value or not at all, so a size bound can never cut it into an
+ * invalid fragment. String recovery is already model-facing Java text.
+ */
+function recoveryText(value: unknown): string | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value === "string") return value.trim() ? value.slice(0, 2_000) : undefined;
+  if (typeof value !== "object") return undefined;
+  try {
+    const json = JSON.stringify(value);
+    return json && json.length <= 2_000 ? json : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Connect-phase transport failure of a model request; safe to retry the same call. */
+function isConnectTimeout(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  const cause = error && typeof error === "object" && "cause" in error ? error.cause : undefined;
+  const code = error && typeof error === "object" && "code" in error ? error.code
+    : cause && typeof cause === "object" && "code" in cause ? cause.code : undefined;
+  return code === "UND_ERR_CONNECT_TIMEOUT"
+    || /UND_ERR_CONNECT_TIMEOUT|connect(?:ion)? timeout/i.test(message);
+}
+
+/**
+ * Retries only the in-flight model request once on a connect-phase timeout
+ * (nothing was streamed yet and the run was not aborted), then fails safely
+ * with a terminal error message so the SDK result() never hangs.
+ */
+function withConnectRetry(streamFn: StreamFn): StreamFn {
+  return (model, context, streamOptions) => {
+    const forwarded = createAssistantMessageEventStream();
+    void (async () => {
+      let retried = false;
+      while (true) {
+        let started = false;
+        let final: AssistantMessage | undefined;
+        let deferredError: Extract<AssistantMessageEvent, { type: "error" }> | undefined;
+        try {
+          const underlying = streamFn(model, context, streamOptions);
+          for await (const event of underlying as AsyncIterable<AssistantMessageEvent>) {
+            if (event.type === "start") started = true;
+            else if (event.type === "done") final = event.message;
+            else if (event.type === "error") { final = event.error; deferredError = event; break; }
+            forwarded.push(event);
+          }
+          if (deferredError) {
+            if (!retried && !started && !streamOptions?.signal?.aborted && isConnectTimeout(deferredError.error)) {
+              retried = true;
+              continue;
+            }
+            forwarded.push(deferredError);
+            forwarded.end(final);
+            return;
+          }
+          if (!final) throw new Error("model stream returned no terminal state");
+          forwarded.end(final);
+          return;
+        } catch (error) {
+          if (!retried && !started && !streamOptions?.signal?.aborted && isConnectTimeout(error)) {
+            retried = true;
+            continue;
+          }
+          const failed: AssistantMessage = {
+            role: "assistant",
+            content: [],
+            api: model.api,
+            provider: model.provider,
+            model: model.id,
+            stopReason: streamOptions?.signal?.aborted ? "aborted" : "error",
+            errorMessage: error instanceof Error ? error.message : String(error),
+            usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+            timestamp: Date.now(),
+          };
+          forwarded.push({ type: "error", reason: failed.stopReason as "error" | "aborted", error: failed });
+          forwarded.end(failed);
+          return;
+        }
+      }
+    })();
+    return forwarded;
+  };
 }
 
 function rejectUnknownFields(value: Record<string, unknown>, allowed: Record<string, true>, where: string): void {
@@ -258,13 +348,16 @@ function parseDefinition(input: unknown): RunDefinition {
   const runTimeoutMs = value.runTimeoutMs === undefined
     ? undefined
     : integerInRange(value.runTimeoutMs, "definition.runTimeoutMs", 1_000, 600_000);
-  const model = value.model === undefined ? undefined : parseModel(value.model);
+  if (value.model === undefined) throw new Error("definition.model is required; configure the model connection in the admin console");
+  const model = parseModel(value.model);
   const finalizationInstructions = value.finalizationInstructions === undefined ? undefined
     : boundedText(value.finalizationInstructions, "definition.finalizationInstructions", 16_000);
   const compactionInstructions = value.compactionInstructions === undefined ? undefined
     : boundedText(value.compactionInstructions, "definition.compactionInstructions", 16_000);
   const context = value.context === undefined ? undefined : boundedText(value.context, "definition.context", 80_000);
-  return { instructions, context, tools, maxTurns, maxToolCalls, runTimeoutMs, model, finalizationInstructions, compactionInstructions };
+  if (value.resume !== undefined && typeof value.resume !== "boolean") throw new Error("definition.resume must be boolean");
+  if (value.resume === true && !context) throw new Error("definition.resume requires invocation context");
+  return { instructions, context, resume: value.resume as boolean | undefined, tools, maxTurns, maxToolCalls, runTimeoutMs, model, finalizationInstructions, compactionInstructions };
 }
 
 function validateRequest(input: unknown): RunRequest {
@@ -293,21 +386,32 @@ export class AgentRunner {
   parseRequest(input: unknown): RunRequest { return validateRequest(input); }
 
   async run(request: RunRequest, emit: (event: PublicEvent) => void, signal: AbortSignal): Promise<RunOutcome> {
+    const trace = this.observability.startAgentRun({
+      runId: request.runId, turnId: request.turnId,
+      conversationId: request.conversationId, content: request.content,
+    });
     let checkpoint: PiSessionRun;
-    try { checkpoint = await this.sessions.openRun(request); }
-    catch (cause) { throw new Error("智能体会话暂不可用，请稍后重新发起请求", { cause }); }
+    try { checkpoint = await traceOperation(trace, "open-session", () => this.sessions.openRun(request)); }
+    catch (cause) {
+      trace?.finish({ error: cause });
+      void this.observability.flush().catch(() => undefined);
+      throw new Error("智能体会话暂不可用，请稍后重新发起请求", { cause });
+    }
     let history: AgentMessage[];
-    try { history = await checkpoint.recoverAndStart(request.content); }
-    catch (error) { await checkpoint.close().catch(() => undefined); throw new Error("智能体会话未能恢复，请重新发起请求"); }
+    try {
+      history = await traceOperation(trace, "recover-session",
+        () => checkpoint.recoverAndStart(request.content, request.definition.resume === true));
+    } catch (error) {
+      trace?.finish({ error });
+      void this.observability.flush().catch(() => undefined);
+      await checkpoint.close().catch(() => undefined);
+      throw new Error("智能体会话未能恢复，请重新发起请求");
+    }
     const initialMessageCount = history.length;
     // Java-owned snapshot for this run. Never log, trace, or emit this object or its key.
     const modelSettings = request.definition.model;
-    const model = modelFor(this.config, modelSettings);
-    const modelApiKey = modelSettings?.modelApiKey ?? this.config.modelApiKey;
-    const trace = this.observability.startAgentRun({
-      conversationId: request.conversationId,
-      content: request.content,
-    });
+    const model = modelFor(modelSettings);
+    const modelApiKey = modelSettings.modelApiKey;
     const observedEmit = (event: PublicEvent) => {
       trace?.observeEvent(event);
       emit(event);
@@ -320,8 +424,11 @@ export class AgentRunner {
       toolCalls: number;
       finalizing: boolean;
       replyText: ReplyTextFilter;
+      completion?: string;
+      closingContext?: string;
+      toolErrorCodes: Map<string, string>;
     } = { halt: false, heldAssistantText: "", draftPublished: false, finalText: "", toolCalls: 0, finalizing: false,
-      replyText: createReplyTextFilter() };
+      replyText: createReplyTextFilter(), toolErrorCodes: new Map() };
     let turns = 0;
     const tools = this.createTools(request, signal, observedEmit, state, checkpoint);
     const overheadTokens = estimateTokens({ role: "user", timestamp: 0,
@@ -333,26 +440,40 @@ export class AgentRunner {
       initialState: {
         model,
         systemPrompt: request.definition.instructions,
-        thinkingLevel: modelSettings?.thinkingLevel ?? this.config.thinkingLevel,
-        messages: history,
+        thinkingLevel: modelSettings.thinkingLevel,
+        messages: request.definition.resume && invocationContext ? [...history, invocationContext] : history,
         tools,
       },
-      streamFn: traceStreamFn(streamSimple as StreamFn, trace),
       getApiKey: () => modelApiKey,
+      streamFn: withConnectRetry(traceStreamFn(streamSimple, trace) as StreamFn),
+      // Runtime parity: sequential execution lets mid-batch stop decisions
+      // (budget/no-progress) block the rest of the same batch immediately.
+      toolExecution: "sequential",
       transformContext: async () => {
-        const messages = await loadAgentHistory(checkpoint.session, model, modelApiKey, overheadTokens, signal,
-          request.definition.compactionInstructions);
+        const messages = await traceOperation(trace, "load-history",
+          () => loadAgentHistory(checkpoint.session, model, modelApiKey, overheadTokens, signal,
+            request.definition.compactionInstructions, trace));
         if (!invocationContext) return messages;
+        if (request.definition.resume) return [...messages, invocationContext];
         const currentInput = messages.findLastIndex(message => message.role === "user");
         return messages.toSpliced(currentInput < 0 ? messages.length : currentInput, 0, invocationContext);
       },
-      beforeToolCall: async () => state.halt || state.finalizing
-        ? { block: true, reason: request.definition.finalizationInstructions ?? "The tool phase is closed." }
-        : undefined,
+      beforeToolCall: async ({ toolCall }) => {
+        if (state.halt || state.finalizing) {
+          // Runtime parity: a call refused because the tool phase already closed
+          // is a skip ("已改用现有结果收尾"), not a failed business step.
+          if (state.finalizing) state.toolErrorCodes.set(toolCall.id, "AGENT_TOOL_PHASE_CLOSED");
+          return { block: true, reason: request.definition.finalizationInstructions ?? "The tool phase is closed." };
+        }
+        return undefined;
+      },
       shouldStopAfterTurn: async ({ toolResults }) => {
         turns += 1;
+        if (state.completion !== undefined) return true;
         if (!toolResults.length || state.finalizing) return true;
-        const stopped = state.halt || turns >= request.definition.maxTurns
+        const toolTurns = request.definition.finalizationInstructions
+          ? Math.max(1, request.definition.maxTurns - 1) : request.definition.maxTurns;
+        const stopped = state.halt || turns >= toolTurns
           || (request.definition.maxToolCalls !== undefined && state.toolCalls >= request.definition.maxToolCalls);
         if (stopped && request.definition.finalizationInstructions) {
           state.finalizing = true;
@@ -362,30 +483,41 @@ export class AgentRunner {
       },
       prepareNextTurnWithContext: ({ context }) => state.finalizing ? {
         context: { ...context, tools: [],
-          systemPrompt: `${context.systemPrompt}\n\n${request.definition.finalizationInstructions}` },
+          systemPrompt: `${context.systemPrompt}\n\n${request.definition.finalizationInstructions}`
+            + (state.closingContext ? `\n\n${state.closingContext}` : "") },
       } : undefined,
     });
     const detachAbort = () => agent.abort();
     signal.addEventListener("abort", detachAbort, { once: true });
     const unsubscribe = agent.subscribe(async (event, eventSignal) => {
-      if (event.type === "message_end") await checkpoint.append(event.message);
+      if (event.type === "message_end")
+        await traceOperation(trace, "append-message", () => checkpoint.append(event.message));
       this.publishAgentEvent(request, event, emit, state, trace ? observedEvent => trace.observeEvent(observedEvent) : undefined);
       if (eventSignal.aborted) return;
     });
     try {
       signal.throwIfAborted();
-      await agent.prompt(request.content);
+      if (request.definition.resume) await agent.continue();
+      else await agent.prompt(request.content);
       signal.throwIfAborted();
+      if (state.completion !== undefined) state.finalText = state.completion;
       const modelFailed = agent.state.messages.some((message, index) => index >= initialMessageCount && message.role === "assistant" && message.stopReason === "error");
       if (modelFailed) {
         // Pi resolves prompt() for provider errors; the persisted assistant
         // message retains diagnostics, but the public run must fail safely.
         throw new Error("Agent model request failed");
       }
+      // Runtime parity (pi-runner.ts length stop): a truncated answer is replaced
+      // by a bounded receipt instead of publishing a partial answer as final.
+      const lengthLimited = agent.state.messages.some((message, index) => index >= initialMessageCount
+        && message.role === "assistant" && message.stopReason === "length");
+      if (lengthLimited) {
+        state.finalText = "本次请求未能完整处理：模型输出达到长度上限；请缩小请求范围后重试。";
+      }
       if (!state.finalText.trim() && (!state.halt || request.definition.finalizationInstructions)) {
         throw new Error("Agent model returned no displayable response");
       }
-      await checkpoint.finish("completed");
+      await traceOperation(trace, "finish-session", () => checkpoint.finish("completed"));
       if (state.finalText) {
         observedEmit({ type: "message.completed", content: state.finalText, phase: "final" });
       }
@@ -394,7 +526,8 @@ export class AgentRunner {
       void this.observability.flush().catch(() => undefined);
       return outcome;
     } catch (error) {
-      await checkpoint.finish(signal.aborted ? "aborted" : "failed").catch(() => undefined);
+      await traceOperation(trace, "finish-session",
+        () => checkpoint.finish(signal.aborted ? "aborted" : "failed")).catch(() => undefined);
       trace?.finish({ error });
       void this.observability.flush().catch(() => undefined);
       if (error instanceof SessionError || error instanceof FileError) {
@@ -412,7 +545,7 @@ export class AgentRunner {
     request: RunRequest,
     signal: AbortSignal,
     emit: (event: PublicEvent) => void,
-    state: { halt: boolean; toolCalls: number },
+    state: { halt: boolean; toolCalls: number; completion?: string; toolErrorCodes: Map<string, string> },
     checkpoint: PiSessionRun,
   ): AgentTool[] {
     return request.definition.tools.map(tool => ({
@@ -422,35 +555,63 @@ export class AgentRunner {
       // Plain JSON Schema is structurally a TSchema; Pi consumes it as data.
       parameters: tool.parameters as TSchema,
       execute: async (toolCallId: string, params: unknown, toolSignal?: AbortSignal) => {
-        if (!params || typeof params !== "object" || Array.isArray(params)) {
-          throw new Error("tool arguments must be a JSON object");
+        try {
+          return await this.executeTool(request, tool, toolCallId, params, signal, toolSignal, emit, state, checkpoint);
+        } catch (error) {
+          // Keep the opaque engine-protocol code so the projection can classify
+          // the outcome; the wrapped message text alone loses it.
+          if (error && typeof error === "object" && "code" in error && typeof error.code === "string") {
+            state.toolErrorCodes.set(toolCallId, error.code);
+          }
+          throw error;
         }
-        const limit = request.definition.maxToolCalls;
-        if (limit !== undefined && state.toolCalls >= limit) {
-          throw new Error(`AGENT_TOOL_BUDGET_EXHAUSTED: tool call budget exhausted (maxToolCalls=${limit})`);
-        }
-        state.toolCalls += 1;
-        await checkpoint.toolStarted(toolCallId, tool.name, params as Record<string, unknown>);
-        const callback = await this.callJavaTool(
-          request,
-          tool.name,
-          params as Record<string, unknown>,
-          toolCallId,
-          checkpoint.writerBinding(),
-          toolSignal ?? signal,
-          () => { state.halt = true; },
-        );
-        await checkpoint.toolCheckpoint({ role: "toolResult", toolCallId, toolName: tool.name,
-          content: [{ type: "text", text: jsonText(callback.result) }], details: callback.result,
-          isError: false, timestamp: Date.now() });
-        emit({ type: "tool.result", tool: tool.name, toolCallId, result: callback.result });
-        if (callback.halt) state.halt = true;
-        return {
-          content: [{ type: "text" as const, text: jsonText(callback.result) }],
-          details: callback.result,
-        };
       },
     }));
+  }
+
+  private async executeTool(
+    request: RunRequest,
+    tool: ToolDefinition,
+    toolCallId: string,
+    params: unknown,
+    signal: AbortSignal,
+    toolSignal: AbortSignal | undefined,
+    emit: (event: PublicEvent) => void,
+    state: { halt: boolean; toolCalls: number; completion?: string; closingContext?: string },
+    checkpoint: PiSessionRun,
+  ): Promise<{ content: Array<{ type: "text"; text: string }>; details: unknown }> {
+    if (!params || typeof params !== "object" || Array.isArray(params)) {
+      throw new Error("tool arguments must be a JSON object");
+    }
+    const limit = request.definition.maxToolCalls;
+    if (limit !== undefined && state.toolCalls >= limit) {
+      state.halt = true;
+      throw Object.assign(
+        new Error(`AGENT_TOOL_BUDGET_EXHAUSTED: tool call budget exhausted (maxToolCalls=${limit})`),
+        { code: "AGENT_TOOL_BUDGET_EXHAUSTED" });
+    }
+    state.toolCalls += 1;
+    await checkpoint.toolStarted(toolCallId, tool.name, params as Record<string, unknown>);
+    const callback = await this.callJavaTool(
+      request,
+      tool.name,
+      params as Record<string, unknown>,
+      toolCallId,
+      checkpoint.writerBinding(),
+      toolSignal ?? signal,
+      () => { state.halt = true; },
+    );
+    await checkpoint.toolCheckpoint({ role: "toolResult", toolCallId, toolName: tool.name,
+      content: [{ type: "text", text: jsonText(callback.modelResult ?? callback.result) }], details: callback.result,
+      isError: false, timestamp: Date.now() });
+    emit({ type: "tool.result", tool: tool.name, toolCallId, result: callback.result });
+    if (callback.halt) state.halt = true;
+    if (callback.completion !== undefined) state.completion = callback.completion;
+    if (callback.closingContext !== undefined) state.closingContext = callback.closingContext;
+    return {
+      content: [{ type: "text" as const, text: jsonText(callback.modelResult ?? callback.result) }],
+      details: callback.result,
+    };
   }
 
   private async callJavaTool(
@@ -461,7 +622,7 @@ export class AgentRunner {
     writer: { writerId: string; epoch: number },
     signal: AbortSignal,
     onHalt: () => void,
-  ): Promise<{ result: unknown; halt: boolean }> {
+  ): Promise<{ result: unknown; modelResult?: unknown; halt: boolean; completion?: string; closingContext?: string }> {
     const controller = new AbortController();
     const onAbort = () => controller.abort();
     if (signal.aborted) controller.abort();
@@ -494,11 +655,21 @@ export class AgentRunner {
           && "protocolVersion" in payload && payload.protocolVersion === PROTOCOL_VERSION
           && "halt" in payload && payload.halt === true) onHalt();
       if (!response.ok) {
-        const message = payload && typeof payload === "object" && !Array.isArray(payload)
-          && "message" in payload && typeof payload.message === "string"
-          ? payload.message.slice(0, 1_000)
+        const body = payload && typeof payload === "object" && !Array.isArray(payload) ? payload : undefined;
+        const message = body && "message" in body && typeof body.message === "string"
+          ? body.message.slice(0, 1_000)
           : `Java tool call failed with HTTP ${response.status}`;
-        throw new Error(message);
+        const code = body && "code" in body && typeof body.code === "string" ? body.code : undefined;
+        // The code is an opaque engine-protocol marker; Java decides what it means.
+        // Typed recovery rides along so the model sees the same structured facts the
+        // public bridge response carries; without it the rendering path would discard them.
+        const recoveryValue = body && "recovery" in body ? body.recovery : undefined;
+        const recovery = recoveryText(recoveryValue);
+        const text = recovery ? `${message}\n${recovery}` : message;
+        throw Object.assign(new Error(text), {
+          ...(code ? { code } : {}),
+          ...(recoveryValue !== undefined ? { recovery: recoveryValue } : {}),
+        });
       }
       if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
         throw new Error("Java tool call returned an invalid response");
@@ -510,7 +681,24 @@ export class AgentRunner {
         throw new Error("Java tool call returned an invalid halt flag");
       }
       if (!("result" in payload)) throw new Error("Java tool call returned an invalid result");
-      return { result: payload.result, halt: payload.halt };
+      const completion = "completion" in payload ? payload.completion : undefined;
+      if (completion !== undefined && (typeof completion !== "string" || !completion.trim() || completion.length > 8_000)) {
+        throw new Error("Java tool call returned an invalid completion");
+      }
+      if (completion !== undefined && payload.halt !== true) {
+        throw new Error("Java tool completion must close the tool phase");
+      }
+      // Optional Java-owned closing facts (Runtime prepareNextTurnWithContext):
+      // the latest value is appended verbatim to the no-tool finalization turn.
+      const closingContext = "closingContext" in payload ? payload.closingContext : undefined;
+      if (closingContext !== undefined && (typeof closingContext !== "string"
+          || !closingContext.trim() || closingContext.length > 16_000)) {
+        throw new Error("Java tool call returned an invalid closingContext");
+      }
+      return { result: payload.result, halt: payload.halt,
+        ...("modelResult" in payload ? { modelResult: payload.modelResult } : {}),
+        ...(typeof completion === "string" ? { completion } : {}),
+        ...(typeof closingContext === "string" ? { closingContext } : {}) };
     } catch (error) {
       if (controller.signal.aborted && !signal.aborted) {
         throw new Error("Java tool call timed out");
@@ -528,7 +716,7 @@ export class AgentRunner {
     event: AgentEvent,
     emit: (event: PublicEvent) => void,
     state: { heldAssistantText: string; draftPublished: boolean; finalText: string;
-      replyText: ReplyTextFilter },
+      replyText: ReplyTextFilter; toolErrorCodes: Map<string, string> },
     observe?: (event: PublicEvent) => void,
   ): void {
     const publish = (value: PublicEvent) => {
@@ -555,9 +743,23 @@ export class AgentRunner {
       case "tool_execution_update":
         publish({ type: "tool.progress", tool: event.toolName, toolCallId: event.toolCallId, details: event.partialResult });
         break;
-      case "tool_execution_end":
-        publish({ type: "tool.completed", tool: event.toolName, toolCallId: event.toolCallId, status: event.isError ? "failed" : "completed" });
+      case "tool_execution_end": {
+        // Bounded failure evidence, mirroring the Runtime timeline item; the
+        // opaque code lets the Java projection classify stop decisions.
+        const completed: PublicEvent = { type: "tool.completed", tool: event.toolName,
+          toolCallId: event.toolCallId, status: event.isError ? "failed" : "completed" };
+        if (event.isError) {
+          const errorText = messageText(event.result).slice(0, 200);
+          if (errorText) completed.error = errorText;
+          const code = state.toolErrorCodes.get(event.toolCallId);
+          if (code) {
+            completed.code = code;
+            state.toolErrorCodes.delete(event.toolCallId);
+          }
+        }
+        publish(completed);
         break;
+      }
       case "message_end": {
         // Only assistant messages carry public text; forwarding tool-result/user
         // ends echoes the caller's input back as a draft delta.

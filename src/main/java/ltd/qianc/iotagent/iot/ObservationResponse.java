@@ -11,7 +11,7 @@ import java.util.Objects;
  * object supplied by the upstream protocol fixture or adapter.
  */
 public record ObservationResponse(
-        ObservationStatus status,
+        ObservationStatusEnum status,
         Map<String, Object> payload,
         List<ObservationFailure> failures,
         boolean coverageComplete) {
@@ -20,23 +20,23 @@ public record ObservationResponse(
         Objects.requireNonNull(status, "status");
         payload = payload == null ? Map.of() : Collections.unmodifiableMap(new LinkedHashMap<>(payload));
         failures = failures == null ? List.of() : List.copyOf(failures);
-        if (status == ObservationStatus.AVAILABLE && !failures.isEmpty()) {
+        if (status == ObservationStatusEnum.AVAILABLE && !failures.isEmpty()) {
             throw new IllegalArgumentException("available observation cannot carry failures");
         }
     }
 
     public static ObservationResponse available(Map<String, Object> payload) {
-        return new ObservationResponse(ObservationStatus.AVAILABLE, payload, List.of(), true);
+        return new ObservationResponse(ObservationStatusEnum.AVAILABLE, payload, List.of(), true);
     }
 
     public static ObservationResponse empty(Map<String, Object> payload) {
-        return new ObservationResponse(ObservationStatus.EMPTY, payload, List.of(), true);
+        return new ObservationResponse(ObservationStatusEnum.EMPTY, payload, List.of(), true);
     }
 
     public static ObservationResponse partial(
             Map<String, Object> payload,
             List<ObservationFailure> failures,
             boolean coverageComplete) {
-        return new ObservationResponse(ObservationStatus.PARTIAL, payload, failures, coverageComplete);
+        return new ObservationResponse(ObservationStatusEnum.PARTIAL, payload, failures, coverageComplete);
     }
 }

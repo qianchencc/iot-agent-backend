@@ -19,7 +19,7 @@ public final class FailClosedDeviceCandidateSetStore implements DeviceCandidateS
     }
 
     @Override
-    public Optional<DeviceCandidateRecord> find(String candidateSetId) {
+    public Optional<DeviceCandidateRecord> find(String candidateSetId, String conversationId) {
         throw new BusinessException("CANDIDATE_SET_STORE_UNAVAILABLE", reason, 503);
     }
 }

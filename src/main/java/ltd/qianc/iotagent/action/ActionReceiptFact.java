@@ -5,6 +5,6 @@ public record ActionReceiptFact(
         String draftId,
         long draftRevision,
         String actionId,
-        ActionReceiptOutcome outcome,
+        ActionReceiptOutcomeEnum outcome,
         String payloadJson) {
 }

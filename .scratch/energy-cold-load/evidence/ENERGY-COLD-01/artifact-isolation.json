@@ -1,0 +1,21 @@
+{
+  "sourceBaselineArtifactSha256": "5e8927bbdc11794edd79526033bb436e2c604cbf9c6122b4577c5e6747903fb2",
+  "energyArtifactSha256": "94bb1a14235009c7b2238b6b4060ec4a6679538460f41c0621c8e64698831765",
+  "changedOwnedEntries": [
+    "BOOT-INF/classes/ltd/qianc/iotagent/iot/internal/CompanyEnergyObservationComposerImpl$MeterRead.class",
+    "BOOT-INF/classes/ltd/qianc/iotagent/iot/internal/CompanyEnergyObservationComposerImpl$MonthWindow.class",
+    "BOOT-INF/classes/ltd/qianc/iotagent/iot/internal/CompanyEnergyObservationComposerImpl$PageRead.class",
+    "BOOT-INF/classes/ltd/qianc/iotagent/iot/internal/CompanyEnergyObservationComposerImpl$ReportWindow.class",
+    "BOOT-INF/classes/ltd/qianc/iotagent/iot/internal/CompanyEnergyObservationComposerImpl$Sample.class",
+    "BOOT-INF/classes/ltd/qianc/iotagent/iot/internal/CompanyEnergyObservationComposerImpl$StreamPage.class",
+    "BOOT-INF/classes/ltd/qianc/iotagent/iot/internal/CompanyEnergyObservationComposerImpl$StreamScan.class",
+    "BOOT-INF/classes/ltd/qianc/iotagent/iot/internal/CompanyEnergyObservationComposerImpl$Zoned.class",
+    "BOOT-INF/classes/ltd/qianc/iotagent/iot/internal/CompanyEnergyObservationComposerImpl.class",
+    "BOOT-INF/classes/ltd/qianc/iotagent/observation/internal/controller/CompanyEnergyHistoryPreparation.class",
+    "BOOT-INF/classes/ltd/qianc/iotagent/observation/internal/controller/ObservationController$1.class",
+    "BOOT-INF/classes/ltd/qianc/iotagent/observation/internal/controller/ObservationController.class"
+  ],
+  "unownedClassesIdentical": true,
+  "allDependenciesIdentical": true,
+  "nodeArtifactUnchanged": true
+}

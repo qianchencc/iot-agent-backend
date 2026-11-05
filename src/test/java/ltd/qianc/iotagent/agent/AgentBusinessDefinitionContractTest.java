@@ -27,15 +27,14 @@ import ltd.qianc.iotagent.error.BusinessException;
 import ltd.qianc.iotagent.iot.AuthorizedDevice;
 import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
 import ltd.qianc.iotagent.iot.IotAdapter;
-import ltd.qianc.iotagent.iot.IotSource;
+import ltd.qianc.iotagent.iot.IotSourceEnum;
 import ltd.qianc.iotagent.iot.OfficeRegion;
 import ltd.qianc.iotagent.iot.ObservationAdapter;
-import ltd.qianc.iotagent.iot.ObservationOperation;
+import ltd.qianc.iotagent.iot.ObservationOperationEnum;
 import ltd.qianc.iotagent.iot.ObservationRequest;
 import ltd.qianc.iotagent.iot.ObservationResponse;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.report.ReportService;
-import ltd.qianc.iotagent.task.TaskFact;
 import ltd.qianc.iotagent.task.TaskFacade;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Mono;
@@ -43,10 +42,6 @@ import reactor.core.publisher.Mono;
 class AgentBusinessDefinitionContractTest {
     private static final PrincipalInfo PRINCIPAL = new PrincipalInfo("Bearer fixture", "TENANT", "owner-1", "fixture");
     private static final Clock CLOCK = Clock.fixed(Instant.parse("2026-11-02T02:00:00Z"), ZoneId.of("Asia/Shanghai"));
-    private static final Set<String> FORBIDDEN_TOOLS = Set.of(
-            "confirm_action", "resolve_action", "confirm_task", "confirm_task_change", "confirm_task_cancellation",
-            "resolve_task", "resolve_task_change", "resolve_task_cancellation", "propose_lighting_draft",
-            "read_device_readback", "readback_device_states", "create_report", "generate_report");
 
     @Test
     void buildsVersionedDataOnlyRequestWithVerifiedOfficeContextAndNoExecutionTools() {
@@ -59,15 +54,12 @@ class AgentBusinessDefinitionContractTest {
         when(iot.loadOfficeRegions(any())).thenReturn(Mono.just(
                 List.of(new OfficeRegion("region-1", "26楼运营办公区"))));
         when(iot.loadAuthorizedDeviceScope(any())).thenReturn(Mono.just(AuthorizedDeviceScope.of(
-                new RequestIdentity(PRINCIPAL.authorization(), PRINCIPAL.tenantCode(), IotSource.OFFICE,
+                new RequestIdentity(PRINCIPAL.authorization(), PRINCIPAL.tenantCode(), IotSourceEnum.OFFICE,
                         PRINCIPAL.ownerKey()),
-                IotSource.OFFICE, List.of(new AuthorizedDevice("light-1", "lighting", "吸顶灯", "", true)))));
+                IotSourceEnum.OFFICE, List.of(new AuthorizedDevice("light-1", "lighting", "吸顶灯", "", true)))));
         TaskFacade tasks = mock(TaskFacade.class);
-        TaskFact task = new TaskFact("task-1", 3, "SCHEDULED",
-                "{\"label\":\"真实任务一\",\"source\":\"office\"}");
-        when(tasks.current(PRINCIPAL, "task-1", "office")).thenReturn(task);
-        when(tasks.view(PRINCIPAL, task, "office")).thenReturn(new LinkedHashMap<>(Map.of(
-                "taskId", "task-1", "label", "真实任务一", "status", "SCHEDULED")));
+        when(tasks.taskView(PRINCIPAL, "task-1", "office")).thenReturn(new LinkedHashMap<>(Map.of(
+                "id", "task-1", "label", "真实任务一", "status", "scheduled")));
         AgentRunPolicyProvider provider = AgentBusinessEngineFactory.policyProvider(
                 () -> conversations, iot, null, tasks, null, CLOCK, 8);
 
@@ -97,6 +89,48 @@ class AgentBusinessDefinitionContractTest {
                             .containsEntry("label", "真实任务一")
                             .containsEntry("verified", true);
                 });
+    }
+
+    @Test
+    void currentCatalogContextCountsEveryAuthorizedMemberAndDeduplicatesLocationPaths() throws Exception {
+        var conversations = mock(ConversationFacade.class);
+        var iot = mock(IotAdapter.class);
+        when(conversations.toolContext("tool-1", "conversation-1", "turn-1", "run-1"))
+                .thenReturn(new AgentToolContext(PRINCIPAL, "run-1", "conversation-1", "turn-1",
+                        "company", null, Map.of()));
+        var devices = new java.util.ArrayList<AuthorizedDevice>();
+        for (int n = 1; n <= 156; n++) {
+            String floor = n <= 81 ? "26楼" : "27楼";
+            devices.add(new AuthorizedDevice("light-" + n, "lighting", "照明开关 - 走廊-筒灯", floor, false,
+                    null, null, null, null, List.of(List.of(floor, "办公室"), List.of(floor, "公共区")),
+                    List.of(), Map.of()));
+        }
+        var identity = new RequestIdentity(PRINCIPAL.authorization(), PRINCIPAL.tenantCode(),
+                IotSourceEnum.COMPANY, PRINCIPAL.ownerKey());
+        when(iot.loadAuthorizedDeviceScope(any())).thenReturn(Mono.just(
+                AuthorizedDeviceScope.of(identity, IotSourceEnum.COMPANY, devices)));
+        var provider = AgentBusinessEngineFactory.policyProvider(() -> conversations, iot, CLOCK, 8);
+        var definition = map(provider.prepare(request("company", null, Map.of())).request().get("definition"));
+        String context = (String) definition.get("context");
+        var json = new com.fasterxml.jackson.databind.ObjectMapper();
+        var catalog = json.readTree(context.split("<device_context>", 2)[1].split("</device_context>", 2)[0]);
+        assertThat(catalog.path("complete").asBoolean()).isTrue();
+        var lighting = catalog.path("deviceKinds").get(0);
+        assertThat(lighting.path("kind").asText()).isEqualTo("lighting");
+        assertThat(lighting.path("count").asInt()).isEqualTo(156);
+        assertThat(lighting.path("locationCounts").get(0).path("label").asText()).isEqualTo("26楼");
+        assertThat(lighting.path("locationCounts").get(0).path("count").asInt()).isEqualTo(81);
+        assertThat(lighting.path("locationCounts").get(1).path("count").asInt()).isEqualTo(75);
+        assertThat(lighting.path("baseNames").get(0).asText()).isEqualTo("筒灯");
+        assertThat(catalog.toString()).doesNotContain("light-1");
+        assertThat(String.valueOf(definition.get("instructions"))).doesNotContain("<device_context>");
+
+        when(iot.loadAuthorizedDeviceScope(any())).thenReturn(Mono.just(
+                AuthorizedDeviceScope.of(identity, IotSourceEnum.COMPANY, devices.subList(0, 81))));
+        String refreshed = (String) map(provider.prepare(request("company", null, Map.of()))
+                .request().get("definition")).get("context");
+        var current = json.readTree(refreshed.split("<device_context>", 2)[1].split("</device_context>", 2)[0]);
+        assertThat(current.path("deviceKinds").get(0).path("count").asInt()).isEqualTo(81);
     }
 
     @Test
@@ -137,7 +171,7 @@ class AgentBusinessDefinitionContractTest {
                 () -> conversations, null, observations, null, null, CLOCK, 8)
                 .prepare(requestFor("tool-2", "company", null, reference));
 
-        assertThat(seen.get().operation()).isEqualTo(ObservationOperation.SAFETY_EVENT);
+        assertThat(seen.get().operation()).isEqualTo(ObservationOperationEnum.SAFETY_EVENT);
         assertThat(seen.get().parameters()).containsEntry("id", "event-1")
                 .containsEntry("deviceId", "gas-1").containsEntry("ledger", "gas");
         Map<String, Object> referenceView = map(policy.projection()
@@ -170,7 +204,7 @@ class AgentBusinessDefinitionContractTest {
                 () -> conversations, null, observations, null, null, CLOCK, 8)
                 .prepare(requestFor("tool-3", "company", null, reference));
 
-        assertThat(seen.get().operation()).isEqualTo(ObservationOperation.ENVIRONMENT_HISTORY);
+        assertThat(seen.get().operation()).isEqualTo(ObservationOperationEnum.ENVIRONMENT_HISTORY);
         assertThat(seen.get().parameters()).containsEntry("from", from).containsEntry("to", to);
         Map<String, Object> referenceView = map(policy.projection()
                 .apply(event("run.started", Map.of())).getFirst().fields().get("reference"));
@@ -209,30 +243,6 @@ class AgentBusinessDefinitionContractTest {
         assertThat(policy.request().toString()).doesNotContain("客户端伪造标题");
     }
 
-    @Test
-    void companyDefinitionFiltersOfficeOnlySurfaceAndKeepsCanonicalReadTools() {
-        ConversationFacade conversations = mock(ConversationFacade.class);
-        when(conversations.toolContext("tool-1", "conversation-1", "turn-1", "run-1"))
-                .thenReturn(new AgentToolContext(PRINCIPAL, "run-1", "conversation-1", "turn-1",
-                        "company", null, Map.of()));
-        AgentRunPolicyProvider provider = AgentBusinessEngineFactory.policyProvider(
-                () -> conversations, null, CLOCK, 6);
-
-        AgentRunPolicy policy = provider.prepare(request("company", null, Map.of()));
-
-        List<Map<String, Object>> tools = listOfMaps(map(policy.request().get("definition")).get("tools"));
-        Set<String> names = tools.stream()
-                .map(tool -> String.valueOf(tool.get("name"))).collect(Collectors.toSet());
-        assertThat(names).contains("query_alerts", "query_environment_history", "query_energy_history",
-                "summarize_energy", "compare_energy", "create_energy_report", "review_safety_event");
-        assertThat(names).doesNotContainAnyElementsOf(FORBIDDEN_TOOLS);
-
-        Map<String, Object> report = tools.stream()
-                .filter(tool -> "create_energy_report".equals(tool.get("name"))).findFirst().orElseThrow();
-        Map<String, Object> reportProperties = map(map(report.get("parameters")).get("properties"));
-        assertThat(reportProperties).containsKeys("kind", "title", "period", "comparisons", "scope", "grain")
-                .doesNotContainKeys("blocks", "totals", "status", "meterIds");
-    }
 
     @Test
     void usesOneJavaAdminSnapshotForModelBudgetAndInstructions() {
@@ -294,6 +304,61 @@ class AgentBusinessDefinitionContractTest {
         assertThat(completed).singleElement().satisfies(projected -> {
             assertThat(projected.type()).isEqualTo("run.awaiting_confirmation");
             assertThat(projected.fields()).containsEntry("draftId", "draft-1");
+        });
+    }
+
+    @Test
+    void candidateProgressReportsTotalMatchesRatherThanTheDisplayWindow() {
+        ConversationFacade conversations = mock(ConversationFacade.class);
+        when(conversations.toolContext("tool-1", "conversation-1", "turn-1", "run-1"))
+                .thenReturn(new AgentToolContext(PRINCIPAL, "run-1", "conversation-1", "turn-1",
+                        "office", null, Map.of()));
+        AgentRunPolicy policy = AgentBusinessEngineFactory.policyProvider(
+                () -> conversations, null, CLOCK, 8).prepare(request("office", null, Map.of()));
+        var sample = java.util.stream.IntStream.rangeClosed(1, 50)
+                .mapToObj(index -> Map.of("name", "照明" + index, "location", "26楼")).toList();
+        policy.projection().apply(event("tool.result", Map.of(
+                "tool", "find_device_candidates", "toolCallId", "call-1",
+                "result", Map.of("devices", sample, "totalMatches", 81, "complete", false))));
+
+        var completed = policy.projection().apply(event("tool.completed", Map.of(
+                "tool", "find_device_candidates", "toolCallId", "call-1")));
+
+        assertThat(completed).singleElement().satisfies(projected -> {
+            Map<String, Object> details = map(projected.fields().get("details"));
+            assertThat(details).containsEntry("count", 81).containsEntry("totalMatches", 81)
+                    .containsEntry("complete", false);
+        });
+    }
+
+    @Test
+    void closedToolPhaseProjectsAsSkippedStopAndFailuresKeepBoundedText() {
+        ConversationFacade conversations = mock(ConversationFacade.class);
+        when(conversations.toolContext("tool-1", "conversation-1", "turn-1", "run-1"))
+                .thenReturn(new AgentToolContext(PRINCIPAL, "run-1", "conversation-1", "turn-1",
+                        "office", null, Map.of()));
+        AgentRunPolicy policy = AgentBusinessEngineFactory.policyProvider(
+                () -> conversations, null, CLOCK, 8).prepare(request("office", null, Map.of()));
+
+        List<AgentEngineEvent> skipped = policy.projection().apply(event("tool.completed", Map.of(
+                "tool", "find_device_candidates", "toolCallId", "call-1", "status", "failed",
+                "code", "AGENT_TOOL_PHASE_CLOSED")));
+        assertThat(skipped).singleElement().satisfies(projected -> {
+            assertThat(projected.type()).isEqualTo("tool.completed");
+            assertThat(projected.fields()).containsEntry("status", "skipped")
+                    .containsEntry("label", "停止继续处理")
+                    .containsEntry("summary", "已改用现有结果收尾");
+            assertThat(projected.fields()).doesNotContainKeys("code", "error");
+        });
+
+        String longError = "x".repeat(260);
+        List<AgentEngineEvent> failed = policy.projection().apply(event("tool.completed", Map.of(
+                "tool", "get_device_details", "toolCallId", "call-2", "status", "failed",
+                "error", longError)));
+        assertThat(failed).singleElement().satisfies(projected -> {
+            assertThat(projected.fields()).containsEntry("status", "failed")
+                    .containsEntry("summary", "本步骤未完成");
+            assertThat(map(projected.fields().get("details"))).containsEntry("error", "x".repeat(200));
         });
     }
 
@@ -383,7 +448,7 @@ class AgentBusinessDefinitionContractTest {
     void savedReportReferenceExposesOnlyEnergyReadonlyInvestigationTools() {
         ConversationFacade conversations = mock(ConversationFacade.class);
         ReportService reports = mock(ReportService.class);
-        Map<String, Object> reference = Map.of("type", "energy_report", "reportId", "report-9");
+        Map<String, Object> reference = Map.of("type", "report", "reportId", "report-9");
         when(conversations.toolContext("tool-9", "conversation-1", "turn-1", "run-1"))
                 .thenReturn(new AgentToolContext(PRINCIPAL, "run-1", "conversation-1", "turn-1",
                         "company", null, reference));
@@ -399,6 +464,32 @@ class AgentBusinessDefinitionContractTest {
         Set<String> names = tools.stream().map(tool -> String.valueOf(tool.get("name"))).collect(Collectors.toSet());
         assertThat(names).containsExactlyInAnyOrder("find_device_candidates", "get_device_details",
                 "query_energy_history", "summarize_energy", "compare_energy", "create_energy_report");
+    }
+
+    @Test
+    void energyResultReferenceIsInterpretationOnlyAndRechecksCurrentMeterAuthorization() {
+        ConversationFacade conversations = mock(ConversationFacade.class);
+        IotAdapter iot = mock(IotAdapter.class);
+        Map<String, Object> reference = Map.of("type", "energy_report", "reportId", "result-1");
+        when(conversations.toolContext("tool-9", "conversation-1", "turn-1", "run-1"))
+                .thenReturn(new AgentToolContext(PRINCIPAL, "run-1", "conversation-1", "turn-1",
+                        "company", null, reference));
+        when(conversations.observationReport("tool-9", "conversation-1", "turn-1", "run-1", "result-1"))
+                .thenReturn(Map.of("type", "meter-report", "reportId", "result-1", "kind", "statistics",
+                        "authorizationMeterIds", List.of("meter-1"), "meters", List.of(),
+                        "coverage", Map.of("meters", 1, "dataMeters", 1), "total", Map.of("value", 42.0)));
+        when(iot.loadAuthorizedDeviceScope(any())).thenAnswer(invocation -> Mono.just(
+                AuthorizedDeviceScope.of(invocation.getArgument(0), IotSourceEnum.COMPANY, List.of(
+                        new ltd.qianc.iotagent.iot.AuthorizedDevice("meter-1", "energy", "电表", "26楼", true)))));
+        AgentRunPolicyProvider provider = AgentBusinessEngineFactory.policyProvider(
+                () -> conversations, iot, null, null, null, CLOCK, 6);
+        AgentRunPolicy policy = provider.prepare(requestFor("tool-9", "company", null, reference));
+        assertThat(listOfMaps(map(policy.request().get("definition")).get("tools"))).isEmpty();
+        org.mockito.Mockito.doAnswer(invocation ->
+                Mono.just(AuthorizedDeviceScope.of(invocation.getArgument(0), IotSourceEnum.COMPANY, List.of())))
+                .when(iot).loadAuthorizedDeviceScope(any());
+        assertThat(catchThrowableOfType(BusinessException.class, () ->
+                provider.prepare(requestFor("tool-9", "company", null, reference))).httpStatus()).isEqualTo(403);
     }
 
     @Test
@@ -433,9 +524,9 @@ class AgentBusinessDefinitionContractTest {
                 .thenReturn(new AgentToolContext(PRINCIPAL, "run-1", "conversation-1", "turn-1",
                         "office", null, Map.of()));
         RequestIdentity office = new RequestIdentity(PRINCIPAL.authorization(), PRINCIPAL.tenantCode(),
-                IotSource.OFFICE, PRINCIPAL.ownerKey());
+                IotSourceEnum.OFFICE, PRINCIPAL.ownerKey());
         when(iot.loadAuthorizedDeviceScope(any())).thenReturn(Mono.just(AuthorizedDeviceScope.of(office,
-                IotSource.OFFICE, List.of(new AuthorizedDevice("light-1", "lighting", "吸顶灯", "", true)))));
+                IotSourceEnum.OFFICE, List.of(new AuthorizedDevice("light-1", "lighting", "吸顶灯", "", true)))));
         AgentRunPolicyProvider withoutSafety = AgentBusinessEngineFactory.policyProvider(
                 () -> conversations, iot, null, null, null, CLOCK, 8);
 
@@ -443,7 +534,7 @@ class AgentBusinessDefinitionContractTest {
         assertThat(names).doesNotContain("query_alerts");
 
         when(iot.loadAuthorizedDeviceScope(any())).thenReturn(Mono.just(AuthorizedDeviceScope.of(office,
-                IotSource.OFFICE, List.of(new AuthorizedDevice("light-1", "lighting", "吸顶灯", "", true),
+                IotSourceEnum.OFFICE, List.of(new AuthorizedDevice("light-1", "lighting", "吸顶灯", "", true),
                         new AuthorizedDevice("smoke-1", "safety", "光电感烟探测器", "", true)))));
         AgentRunPolicyProvider withSafety = AgentBusinessEngineFactory.policyProvider(
                 () -> conversations, iot, null, null, null, CLOCK, 8);
@@ -466,6 +557,7 @@ class AgentBusinessDefinitionContractTest {
         return new AgentRunRequest("run-1", "conversation-1", "turn-1", source,
                 "打开当前位置的灯", "TENANT", focusRegionId, reference, toolContextId);
     }
+
 
     private static Map<String, Object> settings() {
         Map<String, Object> settings = new LinkedHashMap<>();

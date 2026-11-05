@@ -19,8 +19,10 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 
-public final class JdbcTaskPlanStore extends JdbcFactSupport implements TaskPlanStore {
+public final class JdbcTaskPlanStore extends AbstractJdbcFactSupport implements TaskPlanStore {
     public JdbcTaskPlanStore(JdbcTemplate jdbc, TransactionTemplate transactions, ObjectMapper mapper) { super(jdbc, transactions, mapper); }
+    private static final String MANUAL_PAUSE_REASON = "用户手动停用";
+
     @Override public TaskPlanFact save(TaskPlanFact plan) {
         var body = json(plan.payloadJson());
         JsonNode payloadNode = readPayload(plan.payloadJson());
@@ -49,14 +51,58 @@ public final class JdbcTaskPlanStore extends JdbcFactSupport implements TaskPlan
         Pointer pointer = Set.of("DELETED", "PAUSED").contains(replacement.status()) || !payload.has("repeat")
                 ? new Pointer(null, null) : nextPointer(replacement.planId(), replacement.payloadJson(),
                         repeatJson(payload.get("repeat")), updatedAt);
-        int changed = jdbc.update("UPDATE task_plans SET version=?,status=?,next_at=?,next_date=?,repeat_json=?,payload_json=?,update_time=? "
+        // Runtime pause/resume/delete transitions maintain pause_reason in the
+        // same write: manual pause annotates the user action, resume and delete clear it.
+        String pauseReason = "PAUSED".equals(replacement.status()) ? MANUAL_PAUSE_REASON : null;
+        int changed = jdbc.update("UPDATE task_plans SET version=?,status=?,next_at=?,next_date=?,repeat_json=?,payload_json=?,pause_reason=?,update_time=? "
                         + "WHERE plan_id=? AND version=?",
                 replacement.version(), replacement.status(),
                 pointer.at() == null ? null : time(pointer.at()),
                 pointer.date() == null ? null : java.sql.Date.valueOf(pointer.date()),
-                repeatJson(payload.get("repeat")), replacement.payloadJson(), time(updatedAt),
+                repeatJson(payload.get("repeat")), replacement.payloadJson(), pauseReason, time(updatedAt),
                 replacement.planId(), expectedVersion);
         return changed == 1 ? Optional.of(replacement) : Optional.empty();
+    }
+
+    @Override public java.util.List<TaskPlanFact> listByTenant(String tenantCode, String source) {
+        return jdbc.query("SELECT plan_id,version,status,payload_json,idempotency_key FROM task_plans WHERE tenant_code=? AND source=? ORDER BY update_time DESC",
+                this::map, tenantCode, source);
+    }
+
+    @Override public Optional<TaskPlanFact> pauseForInvalidation(String planId, String reason, Instant now) {
+        if (planId == null || planId.isBlank() || now == null) return Optional.empty();
+        String annotation = "自动停用：" + (reason == null || reason.isBlank() ? "授权或绑定失效" : reason);
+        return transactions.execute(status -> {
+            CancelRow row = jdbc.query("SELECT version,status,payload_json,idempotency_key FROM task_plans WHERE plan_id=? FOR UPDATE",
+                    (rs, index) -> new CancelRow(rs.getLong(1), rs.getString(2), rs.getString(3), rs.getString(4)), planId)
+                    .stream().findFirst().orElse(null);
+            if (row == null) return Optional.<TaskPlanFact>empty();
+            TaskPlanFact current = new TaskPlanFact(planId, row.version(), row.status(), row.payloadJson(), row.idempotencyKey());
+            if (!"ENABLED".equals(row.status())) return Optional.of(current);
+            int changed = jdbc.update("UPDATE task_plans SET status='PAUSED',pause_reason=?,next_at=NULL,next_date=NULL,"
+                            + "version=version+1,update_time=? WHERE plan_id=? AND version=? AND status='ENABLED'",
+                    annotation, time(now), planId, row.version());
+            if (changed != 1) {
+                status.setRollbackOnly();
+                return Optional.<TaskPlanFact>empty();
+            }
+            return Optional.of(new TaskPlanFact(planId, row.version() + 1, "PAUSED", row.payloadJson(), row.idempotencyKey()));
+        });
+    }
+
+    @Override public Optional<String> pauseReason(String planId) {
+        return jdbc.query("SELECT pause_reason FROM task_plans WHERE plan_id=?",
+                (rs, row) -> rs.getString(1), planId).stream().filter(java.util.Objects::nonNull).findFirst();
+    }
+
+    @Override public Optional<TaskPlanStore.PlanPointer> pointer(String planId) {
+        return one("SELECT next_at,next_date,update_time FROM task_plans WHERE plan_id=?", (rs, row) -> {
+            java.sql.Timestamp nextAt = rs.getTimestamp(1);
+            java.sql.Timestamp updatedAt = rs.getTimestamp(3);
+            return new TaskPlanStore.PlanPointer(nextAt == null ? null : nextAt.toInstant(),
+                    rs.getDate(2) == null ? null : rs.getDate(2).toLocalDate(),
+                    updatedAt == null ? Instant.now() : updatedAt.toInstant());
+        }, planId);
     }
     @Override public boolean claimOccurrence(String planId, String occurrenceDate, long expectedVersion) {
         return Boolean.TRUE.equals(transactions.execute(status -> {
@@ -82,16 +128,15 @@ public final class JdbcTaskPlanStore extends JdbcFactSupport implements TaskPlan
                 jdbc.update("UPDATE task_phases SET status='CANCELLED',version=version+1,ended_at=?,update_time=? "
                                 + "WHERE task_id=? AND status='PENDING'",
                         time(now), time(now), taskId);
-                Integer executing = jdbc.queryForObject("SELECT COUNT(*) FROM task_phases WHERE task_id=? AND status='EXECUTING'",
-                        Integer.class, taskId);
-                if (executing == null || executing == 0) {
-                    jdbc.update("UPDATE task_facts SET status='CANCELLED',version=version+1,update_time=? "
-                                    + "WHERE task_id=? AND status='SCHEDULED' "
-                                    + "AND NOT EXISTS (SELECT 1 FROM task_phases p WHERE p.task_id=task_facts.task_id "
-                                    + "AND p.status NOT IN ('PENDING','CANCELLED'))", time(now), taskId);
-                }
+                // Runtime store.cancelPlan flips every still-scheduled/executing
+                // materialized task to CANCELLED unconditionally — a partially
+                // completed occurrence is cancelled too; completed or unknown
+                // checkpoints stay as history and an executing phase keeps
+                // settling under the scanner's cancelled-first rule.
+                jdbc.update("UPDATE task_facts SET status='CANCELLED',version=version+1,update_time=? "
+                                + "WHERE task_id=? AND status IN ('SCHEDULED','EXECUTING')", time(now), taskId);
             }
-            int changed = jdbc.update("UPDATE task_plans SET status='DELETED',version=?,next_at=NULL,next_date=NULL,update_time=? "
+            int changed = jdbc.update("UPDATE task_plans SET status='DELETED',version=?,next_at=NULL,next_date=NULL,pause_reason=NULL,update_time=? "
                             + "WHERE plan_id=? AND version=? AND status <> 'DELETED'",
                     expectedVersion + 1, time(now), planId, expectedVersion);
             if (changed != 1) { status.setRollbackOnly(); return Optional.empty(); }
@@ -142,6 +187,13 @@ public final class JdbcTaskPlanStore extends JdbcFactSupport implements TaskPlan
                 (rs, index) -> new TaskPlanOccurrence(rs.getString(1), rs.getDate(2).toLocalDate(), rs.getString(3),
                         rs.getString(4), rs.getString(5), rs.getLong(6), rs.getLong(7)), planId, occurrenceDate)
                 .stream().findFirst();
+    }
+    @Override public List<TaskPlanOccurrence> occurrences(String planId) {
+        return jdbc.query("SELECT o.plan_id,o.occurrence_date,o.task_id,o.status,o.override_payload_json,o.version,p.version "
+                        + "FROM task_plan_occurrences o JOIN task_plans p ON p.plan_id=o.plan_id WHERE o.plan_id=? "
+                        + "ORDER BY o.occurrence_date",
+                (rs, index) -> new TaskPlanOccurrence(rs.getString(1), rs.getDate(2).toLocalDate(), rs.getString(3),
+                        rs.getString(4), rs.getString(5), rs.getLong(6), rs.getLong(7)), planId);
     }
     @Override public List<TaskPlanFact> list(String tenantCode, String ownerKey, String source) { return jdbc.query("SELECT plan_id,version,status,payload_json,idempotency_key FROM task_plans WHERE tenant_code=? AND owner_key=? AND source=? ORDER BY update_time DESC", this::map, tenantCode, ownerKey, source); }
     @Override public Optional<String> latestTaskId(String planId) {

@@ -32,6 +32,14 @@ public interface AdminConfigurationStore extends AutoCloseable {
     record ConfigurationView(long revision, long activeRevision, Map<String, Object> saved,
             Map<String, Object> active, Map<String, Map<String, Boolean>> secrets, List<String> locked,
             boolean pendingRestart, List<String> changedFields, boolean applyEnabled,
-            DeploymentInfo deployment) {
+            DeploymentInfo deployment, List<AdminSettingField> fields, Map<String, Object> deploymentSettings,
+            Map<String, Object> runtime) {
+        public ConfigurationView(long revision, long activeRevision, Map<String, Object> saved,
+                Map<String, Object> active, Map<String, Map<String, Boolean>> secrets, List<String> locked,
+                boolean pendingRestart, List<String> changedFields, boolean applyEnabled,
+                DeploymentInfo deployment) {
+            this(revision, activeRevision, saved, active, secrets, locked, pendingRestart, changedFields,
+                    applyEnabled, deployment, AdminSettingCatalog.fields(), Map.of(), Map.of());
+        }
     }
 }

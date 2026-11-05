@@ -1,0 +1,28 @@
+{
+  "source": "S-HIST",
+  "observation": "Real existing door draft, read-only; no confirm or device dispatch",
+  "route": "pages/agent/dashboard",
+  "cards": [
+    {
+      "status": "ACCEPTED",
+      "resultStatus": "ACCEPTED",
+      "message": "已下发",
+      "renderedNotice": "已下发",
+      "spinning": ""
+    }
+  ],
+  "composer": [
+    {
+      "disabled": false,
+      "running": false
+    }
+  ],
+  "sheets": [
+    {
+      "draftId": "18e7be47-020f-404d-9b43-debe3ba8249d",
+      "status": "ACCEPTED",
+      "resultStatus": "ACCEPTED",
+      "message": "已下发"
+    }
+  ]
+}

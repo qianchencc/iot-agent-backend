@@ -1,19 +1,12 @@
 #!/usr/bin/env python3
 """Deterministic, local-only migration and parity gates for Ticket 10.
-
-This tool only reads local contract/evidence files and, for sqlite backup/restore,
-local sqlite files. It never starts a process, sends HTTP, invokes a deployment
-command, or changes a route. Every command emits one JSON evidence document and
-returns non-zero on an unsafe or incomplete result.
+This tool only reads local contract, migration and cutover evidence files. It never starts a process, sends HTTP, invokes a deployment command, or changes a route. Every command emits one JSON evidence document and returns non-zero on an unsafe or incomplete result.
 """
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
-import shutil
-import sqlite3
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -171,89 +164,6 @@ def check_contract(args: argparse.Namespace) -> int:
     return fail("contract", errors, **evidence) if errors else ok("contract", **evidence)
 
 
-def sqlite_integrity(path: Path) -> tuple[bool, str]:
-    try:
-        with sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True) as db:
-            result = db.execute("PRAGMA integrity_check").fetchone()
-            value = str(result[0]) if result else ""
-            return value.lower() == "ok", value
-    except sqlite3.Error as exc:
-        return False, str(exc)
-
-
-def check_disk(path: Path, minimum: int) -> int:
-    if not path.exists():
-        return fail("sqlite-disk", [f"database does not exist: {path}"])
-    free = shutil.disk_usage(path.parent).free
-    valid, integrity = sqlite_integrity(path)
-    errors = []
-    if free < minimum:
-        errors.append(f"free bytes {free} below minimum {minimum}")
-    if not valid:
-        errors.append(f"integrity_check={integrity}")
-    evidence = {"database": str(path), "freeBytes": free, "minimumFreeBytes": minimum, "integrity": integrity}
-    return fail("sqlite-disk", errors, **evidence) if errors else ok("sqlite-disk", **evidence)
-
-
-def check_backup(args: argparse.Namespace) -> int:
-    source, destination = Path(args.source), Path(args.destination)
-    if not source.is_file():
-        return fail("sqlite-backup", [f"source does not exist: {source}"])
-    if destination.exists() and not args.force:
-        return fail("sqlite-backup", [f"destination exists; pass --force to replace: {destination}"])
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    free = shutil.disk_usage(destination.parent).free
-    if free < args.min_free_bytes:
-        return fail("sqlite-backup", [f"free bytes {free} below minimum {args.min_free_bytes}"], freeBytes=free)
-    valid, integrity = sqlite_integrity(source)
-    if not valid:
-        return fail("sqlite-backup", [f"source integrity_check={integrity}"])
-    temporary = destination.with_name(f".{destination.name}.tmp-{os.getpid()}")
-    try:
-        if temporary.exists():
-            temporary.unlink()
-        with sqlite3.connect(f"file:{source.resolve()}?mode=ro", uri=True) as src, sqlite3.connect(temporary) as dst:
-            src.backup(dst)
-            dst.commit()
-        copied_ok, copied_integrity = sqlite_integrity(temporary)
-        if not copied_ok:
-            return fail("sqlite-backup", [f"backup integrity_check={copied_integrity}"])
-        os.replace(temporary, destination)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
-    return ok("sqlite-backup", source=str(source), destination=str(destination), sourceIntegrity=integrity, backupIntegrity=copied_integrity, freeBytes=free)
-
-
-def check_restore(args: argparse.Namespace) -> int:
-    backup, destination = Path(args.backup), Path(args.destination)
-    if not backup.is_file():
-        return fail("sqlite-restore", [f"backup does not exist: {backup}"])
-    valid, integrity = sqlite_integrity(backup)
-    if not valid:
-        return fail("sqlite-restore", [f"backup integrity_check={integrity}"])
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    free = shutil.disk_usage(destination.parent).free
-    if free < args.min_free_bytes:
-        return fail("sqlite-restore", [f"free bytes {free} below minimum {args.min_free_bytes}"], freeBytes=free)
-    if destination.exists() and not args.apply:
-        return fail("sqlite-restore", [f"destination exists; restore is dry-run unless --apply is explicit: {destination}"])
-    temporary = destination.with_name(f".{destination.name}.restore-{os.getpid()}")
-    try:
-        if temporary.exists():
-            temporary.unlink()
-        with sqlite3.connect(f"file:{backup.resolve()}?mode=ro", uri=True) as src, sqlite3.connect(temporary) as dst:
-            src.backup(dst)
-            dst.commit()
-        restored_ok, restored_integrity = sqlite_integrity(temporary)
-        if not restored_ok:
-            return fail("sqlite-restore", [f"restored integrity_check={restored_integrity}"])
-        if args.apply:
-            os.replace(temporary, destination)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
-    return ok("sqlite-restore", backup=str(backup), destination=str(destination), applied=bool(args.apply), backupIntegrity=integrity, restoredIntegrity=restored_integrity, freeBytes=free)
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -434,22 +344,6 @@ def parser() -> argparse.ArgumentParser:
     contract.add_argument("--expected-paths", type=int, default=66)
     contract.add_argument("--expected-operations", type=int, default=69)
     contract.set_defaults(run=check_contract)
-    disk = sub.add_parser("sqlite-disk", help="check local Pi SQLite capacity and integrity")
-    disk.add_argument("--path", required=True)
-    disk.add_argument("--min-free-bytes", type=int, default=1)
-    disk.set_defaults(run=lambda a: check_disk(Path(a.path), a.min_free_bytes))
-    backup = sub.add_parser("sqlite-backup", help="make and verify a local SQLite backup")
-    backup.add_argument("--source", required=True)
-    backup.add_argument("--destination", required=True)
-    backup.add_argument("--min-free-bytes", type=int, default=1)
-    backup.add_argument("--force", action="store_true")
-    backup.set_defaults(run=check_backup)
-    restore = sub.add_parser("sqlite-restore", help="verify or explicitly apply a local SQLite restore")
-    restore.add_argument("--backup", required=True)
-    restore.add_argument("--destination", required=True)
-    restore.add_argument("--min-free-bytes", type=int, default=1)
-    restore.add_argument("--apply", action="store_true")
-    restore.set_defaults(run=check_restore)
     migration = sub.add_parser("migration", help="compare exported fact JSONL without writing either side")
     migration.add_argument("--source", required=True)
     migration.add_argument("--target", required=True)
@@ -473,10 +367,10 @@ def parser() -> argparse.ArgumentParser:
     cutover.add_argument("--backup", required=True)
     cutover.add_argument("--migration", required=True)
     cutover.add_argument("--shadow", required=True)
+    cutover.add_argument("--execution", required=True)
     cutover.add_argument("--logs", required=True)
     cutover.add_argument("--config", required=True)
     cutover.add_argument("--rollback", required=True)
-    cutover.add_argument("--execution", required=True)
     cutover.set_defaults(run=check_cutover)
     return root
 
@@ -485,7 +379,7 @@ def main() -> int:
     args = parser().parse_args()
     try:
         return int(args.run(args))
-    except (OSError, sqlite3.Error, ValueError) as exc:
+    except (OSError, ValueError) as exc:
         return fail(args.command, [str(exc)])
 
 

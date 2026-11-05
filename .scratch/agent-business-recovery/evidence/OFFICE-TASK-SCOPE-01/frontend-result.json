@@ -1,0 +1,51 @@
+{
+  "case": "OFFICE-TASK-SCOPE-01",
+  "date": "2026-11-05",
+  "turnId": "32fca641-8d4c-41c5-b973-3a6105de9ff8",
+  "proposalId": "3b4e44a2-1d34-4e84-93cf-8beb581bb3cc",
+  "source": "office",
+  "sameOriginalAuthenticatedConversation": true,
+  "statusObserved": "PENDING_CONFIRMATION",
+  "frontendCreatedObserved": false,
+  "confirmedByAgent": false,
+  "repeat": {
+    "frequency": "weekdays"
+  },
+  "phaseFacts": [
+    {
+      "at": "2026-11-06T08:45:00Z",
+      "targetCount": 4,
+      "commandValues": [
+        1
+      ],
+      "includedScopeCount": 4,
+      "excludedCount": 0,
+      "alreadySatisfiedCount": 0,
+      "unreadableCount": 0
+    },
+    {
+      "at": "2026-11-06T08:46:00Z",
+      "targetCount": 4,
+      "commandValues": [
+        0
+      ],
+      "includedScopeCount": 4,
+      "excludedCount": 0,
+      "alreadySatisfiedCount": 4,
+      "unreadableCount": 0
+    }
+  ],
+  "toolEvents": {
+    "tool.started": 1,
+    "task.proposed": 1,
+    "tool.completed": 1
+  },
+  "screenshots": [
+    "office-proposal-after.png"
+  ],
+  "interaction": "Real authenticated native development build; existing public prefill populated the composer, then the actual send button was tapped. No token copying, mocked responses, injected proposal cards, or confirmation.",
+  "limits": [
+    "Visible fresh proposal used explicit fixed members. Whole browse inclusion, exact exclusions and canonical-region discovery additionally have focused contract coverage, not separately claimed as real-device execution acceptance.",
+    "No start date was specified; this fresh model proposal explicitly shows 2026-11-06 as its first day. No earliest-start policy was changed or accepted by this case."
+  ]
+}

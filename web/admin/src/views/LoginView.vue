@@ -1,31 +1,39 @@
 <template>
-  <div class="login-page">
-    <a-card class="login-card" :bordered="false">
+  <main class="login-page">
+    <el-card class="login-card" shadow="never">
       <div class="login-head">
-        <h1 class="login-title">物联 Agent 管理控制台</h1>
-        <p class="login-sub">管理员登录</p>
+        <h1 class="login-title">物联 Agent</h1>
+        <p class="login-sub">管理控制台</p>
       </div>
-      <a-form :model="form" layout="vertical" @submit-success="submit">
-        <a-form-item field="password" hide-label>
-          <a-input-password
+      <el-form :model="form" label-position="top" @submit.prevent="submit">
+        <el-form-item label="管理员密码" for="admin-password">
+          <el-input
+            ref="passwordInput"
+            id="admin-password"
+            name="password"
             v-model="form.password"
+            type="password"
             size="large"
-            placeholder="管理员密码"
-            allow-clear
+            placeholder="输入部署管理员密码"
+            show-password
+            autocomplete="current-password"
             :disabled="busy"
+            :aria-invalid="Boolean(error)"
+            :aria-describedby="error ? 'login-error' : 'login-help'"
             @keyup.enter="submit"
           />
-        </a-form-item>
-        <a-alert v-if="error" type="error" class="login-error">{{ error }}</a-alert>
-        <a-button type="primary" size="large" long :loading="busy" html-type="submit">
+        </el-form-item>
+        <el-alert v-if="error" id="login-error" :title="error" type="error" show-icon :closable="false" class="login-error" />
+        <el-button native-type="submit" type="primary" size="large" :loading="busy" class="login-submit">
           登录
-        </a-button>
-      </a-form>
-    </a-card>
-  </div>
+        </el-button>
+      </el-form>
+      <p id="login-help" class="login-help">使用部署配置中的独立管理员密码；业务用户账号不能登录此控制台。</p>
+    </el-card>
+  </main>
 </template>
 
-<script setup lang="ts">
+<script setup>
 import { reactive, ref } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import { useSessionStore } from "../stores/session";
@@ -34,21 +42,26 @@ import { errorOf } from "../api/admin";
 const router = useRouter();
 const route = useRoute();
 const session = useSessionStore();
-
 const form = reactive({ password: "" });
+const passwordInput = ref(null);
 const busy = ref(false);
 const error = ref("");
 
 async function submit() {
-  if (!form.password || busy.value) return;
+  if (busy.value) return;
+  if (!form.password) {
+    error.value = "请输入部署管理员密码后重试";
+    passwordInput.value?.focus();
+    return;
+  }
   busy.value = true;
   error.value = "";
   try {
     await session.login(form.password);
     const redirect = typeof route.query.redirect === "string" ? route.query.redirect : "/";
     await router.replace(redirect);
-  } catch (e) {
-    error.value = errorOf(e, "登录失败，请稍后重试").message;
+  } catch (cause) {
+    error.value = errorOf(cause, "登录失败，请稍后重试").message;
   } finally {
     busy.value = false;
     form.password = "";
@@ -58,35 +71,38 @@ async function submit() {
 
 <style scoped>
 .login-page {
+  box-sizing: border-box;
   min-height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display: grid;
+  place-items: center;
   padding: 24px;
+  background: var(--surface-page);
 }
-
 .login-card {
-  width: 360px;
+  width: min(100%, 360px);
 }
-
 .login-head {
   margin-bottom: 24px;
 }
-
 .login-title {
   margin: 0;
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--color-text-1);
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-strong);
 }
-
 .login-sub {
-  margin: 4px 0 0;
-  font-size: 13px;
-  color: var(--color-text-3);
+  margin: 6px 0 0;
+  color: var(--text-muted);
 }
-
 .login-error {
-  margin-bottom: 12px;
+  margin-bottom: 16px;
+}
+.login-help {
+  margin-block: 16px 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.login-submit {
+  width: 100%;
 }
 </style>

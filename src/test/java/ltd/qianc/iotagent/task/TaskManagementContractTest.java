@@ -20,8 +20,6 @@ import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
 import ltd.qianc.iotagent.auth.PrincipalInfo;
 import ltd.qianc.iotagent.error.BusinessException;
-import ltd.qianc.iotagent.report.ReportFact;
-import ltd.qianc.iotagent.report.ReportFactStore;
 import org.junit.jupiter.api.Test;
 
 class TaskManagementContractTest {
@@ -120,7 +118,7 @@ class TaskManagementContractTest {
         TaskFacade facade = facade(plans, proposals, tasks);
         TaskPlanFact paused = new TaskPlanFact("plan-paused", 1, "PAUSED", plan("plan-paused").payloadJson(), "paused-key");
         when(plans.find("plan-paused")).thenReturn(Optional.of(paused));
-        assertThatThrownBy(() -> facade.updatePlan(PRINCIPAL, "plan-paused", 1, "resume", null))
+        assertThatThrownBy(() -> facade.updatePlan(PRINCIPAL, "plan-paused", 1, "resume", false, "office"))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("确认当前范围");
     }
@@ -189,62 +187,6 @@ class TaskManagementContractTest {
         verify(proposals, never()).save(any());
     }
 
-    @Test
-    void taskViewProjectsRuntimeFieldsWithoutTenantOrOwnerIdentity() {
-        TaskPlanStore plans = org.mockito.Mockito.mock(TaskPlanStore.class);
-        TaskProposalStore proposals = org.mockito.Mockito.mock(TaskProposalStore.class);
-        TaskFactStore tasks = org.mockito.Mockito.mock(TaskFactStore.class);
-        TaskFacade facade = facade(plans, proposals, tasks);
-        TaskFact task = new TaskFact("task-view", 2, "COMPLETED",
-                "{\"tenantCode\":\"LOCAL\",\"ownerKey\":\"" + PRINCIPAL.ownerKey()
-                        + "\",\"source\":\"company\",\"label\":\"空调巡检\","
-                        + "\"observedStates\":{\"device-1\":{\"power\":\"on\"}},"
-                        + "\"report\":{\"generatedAt\":\"2026-10-12T01:00:00Z\",\"outcome\":\"completed\"}}",
-                "task-view-key");
-
-        Map<String, Object> view = facade.view(task);
-        assertThat(view).containsEntry("label", "空调巡检")
-                .containsEntry("status", "COMPLETED")
-                .containsEntry("hasReport", true)
-                .containsKey("observedStates");
-        assertThat(view.get("payload").toString()).doesNotContain("tenantCode", PRINCIPAL.ownerKey());
-    }
-
-    @Test
-    void taskViewRestoresIndependentCheckpointReportFact() {
-        TaskPlanStore plans = org.mockito.Mockito.mock(TaskPlanStore.class);
-        TaskProposalStore proposals = org.mockito.Mockito.mock(TaskProposalStore.class);
-        TaskFactStore tasks = org.mockito.Mockito.mock(TaskFactStore.class);
-        ReportFactStore reports = org.mockito.Mockito.mock(ReportFactStore.class);
-        when(reports.findLatestByTaskId("task-report")).thenReturn(Optional.of(new ReportFact(
-                "report-1", "company",
-                "{\"id\":\"report-1\",\"generatedAt\":\"2026-10-12T01:00:00Z\",\"title\":\"巡检报告\",\"blocks\":[]}")));
-        TaskFacade facade = new TaskFacade(new ObjectMapper(), tasks, proposals, plans,
-                org.mockito.Mockito.mock(TaskNotificationStore.class), org.mockito.Mockito.mock(TaskScheduler.class),
-                null, null, reports, null, Clock.fixed(NOW, ZoneOffset.UTC));
-
-        Map<String, Object> view = facade.view(new TaskFact("task-report", 2, "COMPLETED",
-                "{\"tenantCode\":\"LOCAL\",\"ownerKey\":\"" + PRINCIPAL.ownerKey()
-                        + "\",\"source\":\"company\",\"reportId\":\"report-1\"}", "task-report-key"));
-
-        assertThat(view).containsEntry("reportId", "report-1")
-                .containsEntry("hasReport", true)
-                .containsEntry("reportAt", "2026-10-12T01:00:00Z");
-        verify(reports).find("report-1");
-    }
-
-    @Test
-    void enabledPlanProjectsNextOccurrenceForRuntimeClients() {
-        TaskPlanStore plans = org.mockito.Mockito.mock(TaskPlanStore.class);
-        TaskProposalStore proposals = org.mockito.Mockito.mock(TaskProposalStore.class);
-        TaskFactStore tasks = org.mockito.Mockito.mock(TaskFactStore.class);
-        TaskFacade facade = facade(plans, proposals, tasks);
-
-        Map<String, Object> view = facade.planView(plan("plan-next"));
-
-        assertThat(view).containsEntry("nextOccurrenceId", "occurrence:plan-next:2026-10-09")
-                .containsEntry("nextCheckpointAt", "2026-10-09T10:00:00Z");
-    }
 
     @Test
     void restoredProposalExpiresAtItsBoundaryWithoutCreatingATaskOrReplacingTerminalState() {

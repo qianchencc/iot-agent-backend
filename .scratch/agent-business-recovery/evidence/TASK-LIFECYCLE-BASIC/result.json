@@ -1,0 +1,157 @@
+{
+  "date": "2026-11-04",
+  "scope": "基础任务生命周期；不新增状态体系、设备控制重试或基础设施",
+  "baseline": "064cdec83a9182b7ad37969a3b3329874fddadc8",
+  "engineering": {
+    "backend": {
+      "command": "mvn -q verify",
+      "tests": {
+        "tests": 465,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    },
+    "frontend": {
+      "command": "npm run test:agent",
+      "tests": 289,
+      "failures": 0,
+      "boundaryCheck": "npm run lint:boundaries passed",
+      "wechatDevelopCompile": "HBuilderX launch mp-weixin --compile true passed"
+    },
+    "actualSpringMysqlProgram": {
+      "isolatedDatabase": true,
+      "fixtureExecutionGateway": true,
+      "realCustomerControls": 0,
+      "liveDatabaseWrites": 0,
+      "trace": [
+        {
+          "notifications": 0,
+          "step": "scheduled",
+          "task": "SCHEDULED",
+          "phases": [
+            "PENDING",
+            "PENDING"
+          ],
+          "reports": 0,
+          "fixtureOnly": true
+        },
+        {
+          "notifications": 0,
+          "step": "waiting-next-stage",
+          "task": "EXECUTING",
+          "phases": [
+            "COMPLETED",
+            "PENDING"
+          ],
+          "reports": 0,
+          "fixtureOnly": true
+        },
+        {
+          "notifications": 1,
+          "step": "terminal-notified-before-slow-report",
+          "task": "COMPLETED",
+          "phases": [
+            "COMPLETED",
+            "COMPLETED"
+          ],
+          "reports": 0,
+          "fixtureOnly": true
+        },
+        {
+          "notifications": 1,
+          "step": "later-task-finished-while-report-held",
+          "task": "COMPLETED",
+          "phases": [
+            "COMPLETED"
+          ],
+          "reports": 0,
+          "fixtureOnly": true
+        },
+        {
+          "notifications": 1,
+          "step": "report-ready-without-outcome-rewrite",
+          "task": "COMPLETED",
+          "phases": [
+            "COMPLETED",
+            "COMPLETED"
+          ],
+          "reports": 1,
+          "fixtureOnly": true
+        },
+        {
+          "notifications": 1,
+          "step": "repaired-parent-gap",
+          "task": "COMPLETED",
+          "phases": [
+            "COMPLETED"
+          ],
+          "reports": 0,
+          "fixtureOnly": true
+        },
+        {
+          "notifications": 1,
+          "step": "repaired-missing-notification",
+          "task": "COMPLETED",
+          "phases": [
+            "COMPLETED"
+          ],
+          "reports": 0,
+          "fixtureOnly": true
+        }
+      ],
+      "slowReportDidNotDelayTerminalNotificationOrLaterTask": true,
+      "ordinaryBackgroundRefreshContinuedWhileReportHeld": true,
+      "regressionBeforeFix": [
+        "慢报告使正常scanOnce在2秒内无法返回",
+        "单后台线程使报告期间普通后台刷新停止"
+      ]
+    }
+  },
+  "realFrontend": {
+    "environment": "微信开发者工具，既有真实登录账号，未注入任务或消息",
+    "checked": [
+      "公司总览保留最近任务结果",
+      "既有两阶段任务详情显示两次已结束、两次已下发，不伪造设备已完成",
+      "报告时间从15:28修正为实际最后阶段15:31",
+      "日历实际切换并显示11月4日两项既有任务",
+      "通知中心读取既有任务结果消息"
+    ],
+    "screenshots": [
+      "dashboard-after.png",
+      "detail-before.png",
+      "detail-after.png",
+      "calendar-after.png",
+      "inbox-after.png"
+    ],
+    "notAccepted": [
+      "本轮新建真实定时任务的完整实时生命周期",
+      "真实设备关灯与开灯执行",
+      "真机移动端路径"
+    ],
+    "finalBackendRecheck": {
+      "method": "真实刷新公司总览，原生agenda-row进入任务列表，再由原生task-row打开详情",
+      "observedTask": "26楼运营部照明关闭后1分钟开启",
+      "observedResult": "已下发；已结束2次、还有0次安排；执行报告2026-11-04 15:31",
+      "screenshotLimit": "最后重读的原生页面文本成功；最终截图接口两次超时。保留此前同版前端的真实界面截图，不伪造新截图。"
+    }
+  },
+  "deployment": {
+    "javaPort": 3381,
+    "nodePort": 3382,
+    "nodeRestarted": false,
+    "modelChanged": false,
+    "newArtifact": "var/task-lifecycle-20261104-164210/backend-final.jar",
+    "artifactSha256": "ecfd2f61dc6d676e19764e1d22689f308881eade4b70ede36901b50a2e3a5b9b",
+    "preservedDeployedBaseline": "var/center-read-latency-20261104-160625/backend-read-centers-integrated.jar",
+    "unexpectedUnrelatedClassOrResourceDifferences": [],
+    "rollbackConfig": "var/task-lifecycle-20261104-164210/launch-before-final.yaml",
+    "comparisonBaseline": "var/task-lifecycle-20261104-164210/backend-report-clock.jar"
+  },
+  "review": {
+    "standards": "两项低优先级发现：满六任务时重复查询、过期日历说明，均已修正",
+    "spec": "无未解决需求发现",
+    "additionalFixes": "真实界面发现报告早于执行；完整回归发现中断信号交接竞态；追加实跑发现报告阻塞整单及普通后台刷新。均先复现再修复，并以回归和真实隔离程序验证。"
+  },
+  "limits": "隔离程序与测试是工程证据，不冒充真实设备前端案例通过。"
+}

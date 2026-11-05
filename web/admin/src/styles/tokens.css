@@ -1,20 +1,95 @@
 /*
- * Theme: subdued green/neutral, matching the runtime admin console
- * (iot-agent-runtime apps/admin: primary #275e47, surface #f0f4f0).
- * Arco reads --primary-* which aliases --arcoblue-*; it defines the
- * palette on `body`, so the override must sit on `body` too — a `:root`
- * override loses because body's own declaration beats the inherited one.
- * Values are RGB triplets — Arco wraps them in rgb()/rgba() itself.
+ * Console theme: cold-white workspace, dark sidebar, one blue accent.
+ * Element Plus reads --el-* variables; the page styles consume the semantic
+ * --text-, --surface-, --border- aliases below so views never touch raw hues.
+ * Accent: #2563eb family (blue-600).
  */
-body {
-  --arcoblue-1: 234, 242, 236;
-  --arcoblue-2: 225, 234, 225;
-  --arcoblue-3: 200, 219, 205;
-  --arcoblue-4: 146, 178, 156;
-  --arcoblue-5: 88, 136, 106;
-  --arcoblue-6: 39, 94, 71;
-  --arcoblue-7: 36, 85, 62;
-  --arcoblue-8: 30, 74, 55;
-  --arcoblue-9: 25, 62, 46;
-  --arcoblue-10: 20, 50, 37;
+:root {
+  --el-color-white: #ffffff;
+  --el-color-black: #000000;
+  --el-color-primary: #2563eb;
+  --el-color-primary-light-3: #5b8def;
+  --el-color-primary-light-5: #92b1f5;
+  --el-color-primary-light-7: #bcd0f9;
+  --el-color-primary-light-8: #d7e3fb;
+  --el-color-primary-light-9: #ebf1fd;
+  --el-color-primary-dark-2: #1e4fbc;
+
+  --el-color-success: #166534;
+  --el-color-success-light-3: #4aba75;
+  --el-color-success-light-5: #8ad0a4;
+  --el-color-success-light-7: #bde2cb;
+  --el-color-success-light-8: #d3ebdf;
+  --el-color-success-light-9: #e8f6ee;
+  --el-color-success-dark-2: #14532d;
+
+  --el-color-warning: #92400e;
+  --el-color-warning-light-3: #e19645;
+  --el-color-warning-light-5: #ecbb83;
+  --el-color-warning-light-7: #f4d7b4;
+  --el-color-warning-light-9: #fbf2e6;
+  --el-color-warning-dark-2: #78350f;
+
+  --el-color-danger: #b91c1c;
+  --el-color-danger-light-3: #e45d5d;
+  --el-color-danger-light-5: #ee9393;
+  --el-color-danger-light-7: #f6bcbc;
+  --el-color-danger-light-8: #f9d2d2;
+  --el-color-danger-light-9: #fce9e9;
+  --el-color-danger-dark-2: #991b1b;
+  --el-color-error: var(--el-color-danger);
+  --el-color-error-light-3: var(--el-color-danger-light-3);
+  --el-color-error-light-5: var(--el-color-danger-light-5);
+  --el-color-error-light-7: var(--el-color-danger-light-7);
+  --el-color-error-light-8: var(--el-color-danger-light-8);
+  --el-color-error-light-9: var(--el-color-danger-light-9);
+  --el-color-error-dark-2: var(--el-color-danger-dark-2);
+
+  --el-color-info: #475569;
+  --el-color-info-light-3: #74849b;
+  --el-color-info-light-5: #a3abb6;
+  --el-color-info-light-7: #c7cdd6;
+  --el-color-info-light-8: #dbe0e6;
+  --el-color-info-light-9: #ebedf0;
+  --el-color-info-dark-2: #394555;
+
+  --el-text-color-primary: #17202b;
+  --el-text-color-regular: #374152;
+  --el-text-color-secondary: #5a6678;
+  --el-text-color-placeholder: #95a0b0;
+  --el-text-color-disabled: #b7bfcc;
+
+  --el-border-color: #d5dbe4;
+  --el-border-color-light: #e2e7ee;
+  --el-border-color-lighter: #e9edf3;
+  --el-border-color-extra-light: #f0f3f7;
+  --el-border-radius-base: 6px;
+
+  --el-bg-color: #ffffff;
+  --el-bg-color-page: #f4f6f9;
+  --el-fill-color: #f2f4f7;
+  --el-fill-color-light: #f6f8fa;
+  --el-fill-color-lighter: #f9fafc;
+  --el-fill-color-extra-light: #fbfcfe;
+  --el-fill-color-blank: #ffffff;
+
+  /* Semantic aliases consumed by the views. */
+  --surface-page: var(--el-bg-color-page);
+  --surface-card: var(--el-bg-color);
+  --surface-subtle: var(--el-fill-color-light);
+  --border-subtle: var(--el-border-color-light);
+  --border-strong: var(--el-border-color);
+  --text-strong: var(--el-text-color-primary);
+  --text-body: var(--el-text-color-regular);
+  --text-muted: var(--el-text-color-secondary);
+  --text-faint: var(--el-text-color-placeholder);
+  --accent: var(--el-color-primary);
+  --accent-soft: var(--el-color-primary-light-9);
+
+  /* Dark sidebar palette (not a second accent: neutral depth only). */
+  --sider-bg: #1e2734;
+  --sider-bg-active: #2b3542;
+  --sider-text: #aeb8c7;
+  --sider-text-strong: #ffffff;
+  --sider-border: rgba(255, 255, 255, 0.08);
 }

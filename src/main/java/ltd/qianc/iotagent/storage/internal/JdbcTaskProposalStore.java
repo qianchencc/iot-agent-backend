@@ -8,7 +8,7 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 
-public final class JdbcTaskProposalStore extends JdbcFactSupport implements TaskProposalStore {
+public final class JdbcTaskProposalStore extends AbstractJdbcFactSupport implements TaskProposalStore {
     public JdbcTaskProposalStore(JdbcTemplate jdbc, TransactionTemplate transactions, ObjectMapper mapper) { super(jdbc, transactions, mapper); }
     @Override public TaskProposalFact save(TaskProposalFact proposal) {
         MapValues values = values(proposal.payloadJson());

@@ -8,7 +8,7 @@ import java.util.Map;
 import java.util.Objects;
 import ltd.qianc.iotagent.error.BusinessException;
 import ltd.qianc.iotagent.iot.ObservationAdapter;
-import ltd.qianc.iotagent.iot.ObservationOperation;
+import ltd.qianc.iotagent.iot.ObservationOperationEnum;
 import ltd.qianc.iotagent.iot.ObservationRequest;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.task.TaskSafetyLedgerReader;
@@ -58,7 +58,7 @@ public final class ObservationSafetyLedgerReader implements TaskSafetyLedgerRead
         parameters.put("to", to.toString());
         parameters.put("limit", PAGE_LIMIT);
         if (cursor != null) parameters.put("cursor", cursor);
-        ObservationRequest request = new ObservationRequest(identity, ObservationOperation.SAFETY_EVENTS, parameters);
+        ObservationRequest request = new ObservationRequest(identity, ObservationOperationEnum.SAFETY_EVENTS, parameters);
         Map<String, Object> payload;
         try {
             payload = upstream.read(request).block(timeout).payload();

@@ -30,12 +30,12 @@ import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
 import ltd.qianc.iotagent.iot.CompanyEnergyObservationComposer;
 import ltd.qianc.iotagent.iot.CompanyEnergyPolicy;
 import ltd.qianc.iotagent.iot.IotAdapter;
-import ltd.qianc.iotagent.iot.IotSource;
+import ltd.qianc.iotagent.iot.IotSourceEnum;
 import ltd.qianc.iotagent.iot.ObservationAdapter;
-import ltd.qianc.iotagent.iot.ObservationOperation;
+import ltd.qianc.iotagent.iot.ObservationOperationEnum;
 import ltd.qianc.iotagent.iot.ObservationRequest;
 import ltd.qianc.iotagent.iot.ObservationResponse;
-import ltd.qianc.iotagent.iot.ObservationStatus;
+import ltd.qianc.iotagent.iot.ObservationStatusEnum;
 import ltd.qianc.iotagent.iot.ObservationUnavailableException;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.readmodel.ReadSnapshots;
@@ -119,7 +119,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
     public Mono<ObservationResponse> readEnergyReport(ObservationRequest request) {
         return Mono.defer(() -> {
             requireCompany(request.identity());
-            if (request.operation() != ObservationOperation.ENERGY_REPORT) {
+            if (request.operation() != ObservationOperationEnum.ENERGY_REPORT) {
                 return Mono.error(new ObservationUnavailableException("公司能耗组合器不支持该观察操作"));
             }
             Map<String, String> p = request.parameters();
@@ -140,7 +140,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
                         }
                         Instant from = windows.stream().map(ReportWindow::from).min(Instant::compareTo).orElseThrow();
                         Instant to = windows.stream().map(ReportWindow::to).max(Instant::compareTo).orElseThrow();
-                        return readAllBestEffort(request.identity(), selected, from, to)
+                        return readMeterHistory(request.identity(), all, selected, from, to, true)
                                 .map(reads -> energyResponse(energyBusinessPayload(
                                         request, selected, reads, windows, kind, p)));
                     });
@@ -515,10 +515,10 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         Objects.requireNonNull(request, "request");
         return Mono.defer(() -> {
             requireCompany(request.identity());
-            if (request.operation() != ObservationOperation.COMPANY_ENERGY_DAILY
-                    && request.operation() != ObservationOperation.ENERGY_COMPARISON
-                    && request.operation() != ObservationOperation.COMPANY_ENERGY_REPORT
-                    && request.operation() != ObservationOperation.COMPANY_METER_REPORT) {
+            if (request.operation() != ObservationOperationEnum.COMPANY_ENERGY_DAILY
+                    && request.operation() != ObservationOperationEnum.ENERGY_COMPARISON
+                    && request.operation() != ObservationOperationEnum.COMPANY_ENERGY_REPORT
+                    && request.operation() != ObservationOperationEnum.COMPANY_METER_REPORT) {
                 return Mono.error(new ObservationUnavailableException("公司能耗组合器不支持该观察操作"));
             }
             return authorizedScope(request.identity())
@@ -527,13 +527,13 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
                         validateScope(request.identity(), scope);
                         List<AuthorizedDevice> meters = energyMeters(scope);
                         if (meters.isEmpty()) return Mono.error(new BusinessException("FORBIDDEN", "当前来源没有公司电表观察范围", 403));
-                        if (request.operation() == ObservationOperation.COMPANY_ENERGY_DAILY) {
+                        if (request.operation() == ObservationOperationEnum.COMPANY_ENERGY_DAILY) {
                             return daily(request, meters);
                         }
-                        if (request.operation() == ObservationOperation.ENERGY_COMPARISON) {
+                        if (request.operation() == ObservationOperationEnum.ENERGY_COMPARISON) {
                             return comparison(request, meters);
                         }
-                        if (request.operation() == ObservationOperation.COMPANY_ENERGY_REPORT) {
+                        if (request.operation() == ObservationOperationEnum.COMPANY_ENERGY_REPORT) {
                             return monthlyReport(request, meters);
                         }
                         return meterReport(request, meters);
@@ -597,6 +597,26 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
                 List.<EnergyHistoryStore.Reading>of(), combined), from, false);
     }
 
+    /**
+     * Raw samples for metered statistics, keyed by the same natural-month blocks
+     * the daily strip uses. Blocks are scoped to the full authorized meter set,
+     * so overlapping statistics, comparison, night and region windows reuse the
+     * held samples instead of walking per-meter upstream pages again.
+     */
+    private List<MeterRead> readMonthBlocks(
+            RequestIdentity identity, List<AuthorizedDevice> authorized, List<AuthorizedDevice> needed,
+            Instant from, Instant to) {
+        List<EnergyHistoryStore.Reading> combined = new ArrayList<>();
+        YearMonth first = YearMonth.from(from.atZone(SHANGHAI));
+        YearMonth last = YearMonth.from(to.atZone(SHANGHAI));
+        for (YearMonth month = first; !month.isAfter(last); month = month.plusMonths(1)) {
+            for (EnergyHistoryStore.Reading reading : blockReadings(loadMonthBlock(identity, authorized, month))) {
+                if (!reading.readTime().isAfter(to)) combined.add(reading);
+            }
+        }
+        return buildMeterReads(needed, mergeReadings(List.<EnergyHistoryStore.Reading>of(), combined), from, false);
+    }
+
     private Map<String, Object> loadMonthBlock(
             RequestIdentity identity, List<AuthorizedDevice> meters, YearMonth month) {
         List<String> meterIds = meters.stream().map(AuthorizedDevice::id).sorted().toList();
@@ -604,8 +624,8 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         ReadSnapshots.Identity snapshotIdentity = new ReadSnapshots.Identity(
                 identity.tenantCode(), identity.authorization(), identity.source().name(), identity.ownerKey());
         Instant monthEnd = month.plusMonths(1).atDay(1).atTime(8, 0).atZone(SHANGHAI).toInstant();
-        ReadSnapshots.Policy policy = monthEnd.isAfter(clock.instant())
-                ? ReadSnapshots.Policy.CURRENT : ReadSnapshots.Policy.HISTORICAL;
+        ReadSnapshots.PolicyEnum policy = monthEnd.isAfter(clock.instant())
+                ? ReadSnapshots.PolicyEnum.CURRENT : ReadSnapshots.PolicyEnum.HISTORICAL;
         // Earlier bodies used unreliable upstream time filters and may contain false empty months.
         return historySnapshots.load(snapshotIdentity, "ENERGY_HISTORY_MONTH:v4:" + scope,
                 Map.of("month", month.toString()), policy,
@@ -669,6 +689,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
             row.put("id", reading.id());
             row.put("readTime", reading.readTime().toString());
             row.put("value", reading.value());
+            row.put("powerFactor", reading.powerFactor());
             rows.add(row);
         }
         Map<String, Object> body = new LinkedHashMap<>();
@@ -813,16 +834,16 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         params.put("equipmentId", meterId);
         params.put("page", Integer.toString(page));
         params.put("size", "500");
-        return rawHistory.read(new ObservationRequest(identity, ObservationOperation.ENERGY_HISTORY, params))
+        return rawHistory.read(new ObservationRequest(identity, ObservationOperationEnum.ENERGY_HISTORY, params))
                 .flatMap(response -> {
-                    if (response.status() == ObservationStatus.EMPTY) return Mono.empty();
-                    if (response.status() != ObservationStatus.AVAILABLE
-                            && response.status() != ObservationStatus.PARTIAL) {
+                    if (response.status() == ObservationStatusEnum.EMPTY) return Mono.empty();
+                    if (response.status() != ObservationStatusEnum.AVAILABLE
+                            && response.status() != ObservationStatusEnum.PARTIAL) {
                         return Mono.error(new ObservationUnavailableException("计量历史边界锚点上游不可用"));
                     }
                     boolean continuationOnly = response.payload().get("nextPage") != null
                             && response.failures().stream().allMatch(failure -> "HISTORY_PARTIAL".equals(failure.code()));
-                    if (response.status() == ObservationStatus.PARTIAL && !continuationOnly) {
+                    if (response.status() == ObservationStatusEnum.PARTIAL && !continuationOnly) {
                         return Mono.error(new ObservationUnavailableException("计量历史边界锚点读取不完整"));
                     }
                     List<Sample> pageRows = parseRows(response.payload(), meterId);
@@ -831,7 +852,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
                             .max(Comparator.comparing(Sample::readTime)).orElse(null);
                     if (candidate != null) {
                         return Mono.just(new EnergyHistoryStore.Reading(
-                                meterId, candidate.id, candidate.readTime, candidate.value));
+                                meterId, candidate.id, candidate.readTime, candidate.value, candidate.powerFactor));
                     }
                     if (isLast(response.payload())) return Mono.empty();
                     return readBoundaryPage(identity, meterId, monthStart, deadlineAt, page + 1);
@@ -855,7 +876,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
             if (meterId == null || at == null || epf == null) {
                 throw new ObservationUnavailableException("计量历史月块样本无效");
             }
-            result.add(new EnergyHistoryStore.Reading(meterId, text(row.get("id")), at, epf));
+            result.add(new EnergyHistoryStore.Reading(meterId, text(row.get("id")), at, epf, numberOrNull(row.get("powerFactor"))));
         }
         return result;
     }
@@ -881,7 +902,8 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         }
         Instant start = end.minus((count + 1L) * 7L, ChronoUnit.DAYS);
         Instant finalEnd = end;
-        return readAll(request.identity(), List.of(meter), start, now.isBefore(end.plus(7, ChronoUnit.DAYS)) ? now : end.plus(7, ChronoUnit.DAYS))
+        return readMeterHistory(request.identity(), meters, List.of(meter), start,
+                now.isBefore(end.plus(7, ChronoUnit.DAYS)) ? now : end.plus(7, ChronoUnit.DAYS), false)
                 .map(reads -> energyResponse(comparisonPayload(meter, reads.get(0), start, finalEnd, count, boundary, now)));
     }
 
@@ -905,7 +927,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         }
         Instant from = windows.get(0).from.minusSeconds(TWELVE_HOURS_SECONDS);
         Instant to = windows.get(windows.size() - 1).to;
-        return readAllBestEffort(request.identity(), meters, from, to)
+        return readMeterHistory(request.identity(), meters, meters, from, to, true)
                 .map(reads -> energyResponse(monthlyPayload(meters, reads, windows, boundary)));
     }
 
@@ -943,6 +965,48 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
             throw new ObservationUnavailableException("计量范围内没有授权电表");
         }
         boolean comparison = "comparison".equalsIgnoreCase(p.getOrDefault("kind", "statistics"));
+        if (!Set.of("statistics", "comparison").contains(p.getOrDefault("kind", "statistics"))
+                || p.containsKey("grain") && !Set.of("hour", "day", "week", "month").contains(p.get("grain"))
+                || comparison && !Set.of("time", "region").contains(p.getOrDefault("axis", "time"))) {
+            throw new BusinessException("INVALID_ENERGY_WINDOW", "计量报告种类、粒度或对比轴无效", 400);
+        }
+        if ((p.containsKey("windowFrom") || p.containsKey("windowTo"))
+                && (comparison || !"20:00".equals(p.get("windowFrom")) || !"08:00".equals(p.get("windowTo")))) {
+            throw new BusinessException("INVALID_ENERGY_WINDOW", "每日时段统计目前仅支持20:00至次日08:00，且不接受对比参数", 400);
+        }
+        if (!comparison && (p.containsKey("baseFrom") || p.containsKey("baseTo"))) {
+            throw new BusinessException("INVALID_ENERGY_WINDOW", "统计报告不接受基期或对照范围", 400);
+        }
+        if (comparison && "region".equalsIgnoreCase(p.getOrDefault("axis", "time"))) {
+            if (p.containsKey("baseFrom") || p.containsKey("baseTo")) {
+                throw new BusinessException("INVALID_ENERGY_WINDOW", "区域对比固定时间跨度，不接受基期", 400);
+            }
+            if (!p.containsKey("otherScopeLevel")) {
+                throw new BusinessException("INVALID_ENERGY_WINDOW", "缺少对照计量范围", 400);
+            }
+            List<AuthorizedDevice> other = selectMeters(meters, otherScopeParams(p));
+            if (other.isEmpty()) {
+                throw new BusinessException("FORBIDDEN", "对照计量范围不在当前授权范围内", 403);
+            }
+            return readMeterHistory(request.identity(), meters, meters, from.minus(7, ChronoUnit.DAYS), to, false)
+                    .map(reads -> energyResponse(MeterReports.region(
+                            baseReport(request, selected, reads, from, to, "comparison"),
+                            scopeParam(request, selected), scopeParam(otherScopeParams(p), other),
+                            selected, other, reads, from.toEpochMilli(), to.toEpochMilli())));
+        }
+        boolean hasOther = p.containsKey("otherScopeLevel") || p.containsKey("otherFloor") || p.containsKey("otherText")
+                || p.containsKey("otherMeterId") || p.containsKey("otherMeterIds");
+        if (hasOther) {
+            throw new BusinessException("INVALID_ENERGY_WINDOW", comparison
+                    ? "时间对比固定计量范围，不接受另一个范围" : "统计报告不接受基期或对照范围", 400);
+        }
+        boolean nightly = p.containsKey("windowFrom") || p.containsKey("windowTo");
+        if (nightly) {
+            return readMeterHistory(request.identity(), meters, selected, from.minus(7, ChronoUnit.DAYS), to, false)
+                    .map(reads -> energyResponse(NightMeterReport.build(
+                            baseReport(request, selected, reads, from, to, "statistics"), request, selected, reads,
+                            from.toEpochMilli(), to.toEpochMilli())));
+        }
         Instant baseFrom = null, baseTo = null;
         if (comparison) {
             baseFrom = p.containsKey("baseFrom") ? instant(p.get("baseFrom")) : from.minus(to.toEpochMilli() - from.toEpochMilli(), ChronoUnit.MILLIS);
@@ -951,13 +1015,16 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
                 return Mono.error(new ObservationUnavailableException("计量对比时间窗口无效"));
             }
         }
-        Instant readFrom = (comparison && baseFrom.isBefore(from) ? baseFrom : from).minusSeconds(TWELVE_HOURS_SECONDS);
+        Instant readFrom = (comparison && baseFrom.isBefore(from) ? baseFrom : from).minus(7, ChronoUnit.DAYS);
         Instant readTo = comparison ? (baseTo.isAfter(to) ? baseTo : to) : to;
         Instant finalBaseFrom = baseFrom, finalBaseTo = baseTo;
-        return readAll(request.identity(), selected, readFrom, readTo)
-                .map(reads -> comparison
-                        ? energyResponse(comparisonPayload(request, selected, reads, from, to, finalBaseFrom, finalBaseTo))
-                        : energyResponse(statisticsPayload(request, selected, reads, from, to)));
+        return readMeterHistory(request.identity(), meters, meters, readFrom, readTo, false)
+                .map(reads -> energyResponse(comparison
+                        ? MeterReports.time(baseReport(request, selected, reads, from, to, "comparison"),
+                                scopeParam(request, selected), selected, reads, from.toEpochMilli(), to.toEpochMilli(),
+                                finalBaseFrom.toEpochMilli(), finalBaseTo.toEpochMilli())
+                        : MeterReports.statistics(baseReport(request, selected, reads, from, to, "statistics"),
+                                p, scopeParam(request, selected), selected, reads, from.toEpochMilli(), to.toEpochMilli())));
     }
     private static ObservationResponse energyResponse(Map<String, Object> payload) {
         boolean truncated = Boolean.TRUE.equals(payload.get("truncated"));
@@ -1062,13 +1129,13 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         if (requestTo != null) params.put("to", format(requestTo));
         params.put("page", Integer.toString(page));
         params.put("size", "500");
-        return rawHistory.read(new ObservationRequest(identity, ObservationOperation.ENERGY_HISTORY, params))
+        return rawHistory.read(new ObservationRequest(identity, ObservationOperationEnum.ENERGY_HISTORY, params))
                 .flatMap(response -> {
-                    if (response.status() == ObservationStatus.EMPTY) {
+                    if (response.status() == ObservationStatusEnum.EMPTY) {
                         return Mono.just(new StreamPage(List.of(), true, false, 0));
                     }
-                    if (response.status() != ObservationStatus.AVAILABLE
-                            && response.status() != ObservationStatus.PARTIAL) {
+                    if (response.status() != ObservationStatusEnum.AVAILABLE
+                            && response.status() != ObservationStatusEnum.PARTIAL) {
                         return Mono.error(new ObservationUnavailableException("计量样本流上游不可用"));
                     }
                     List<Map<String, Object>> samples = streamSamples(response.payload());
@@ -1079,7 +1146,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
                         total = content.get("totalElements");
                     }
                     return Mono.just(new StreamPage(samples, isLast(response.payload()),
-                            response.status() == ObservationStatus.PARTIAL && !continuationOnly,
+                            response.status() == ObservationStatusEnum.PARTIAL && !continuationOnly,
                             total instanceof Number count ? count.longValue() : -1));
                 })
                 .onErrorMap(error -> error instanceof BusinessException
@@ -1120,7 +1187,8 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
                 Object values = sample.get("values");
                 Double epf = values instanceof Map<?, ?> mapValues ? numberOrNull(mapValues.get("epf")) : null;
                 if (epf == null) continue;
-                result.add(new EnergyHistoryStore.Reading(meterId, text(sample.get("id")), at, epf));
+                result.add(new EnergyHistoryStore.Reading(meterId, text(sample.get("id")), at, epf,
+                        numberOrNull(sample.get("totalPowerFactor"))));
             }
         }
         return result;
@@ -1148,7 +1216,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         Map<String, List<Sample>> inWindow = new LinkedHashMap<>();
         Map<String, Sample> anchors = new LinkedHashMap<>();
         for (EnergyHistoryStore.Reading reading : readings) {
-            Sample value = new Sample(reading.id(), reading.readTime(), reading.value());
+            Sample value = new Sample(reading.id(), reading.readTime(), reading.value(), reading.powerFactor());
             if (reading.readTime().isBefore(from)) {
                 // Interval differences need the last reading at or before the window start.
                 Sample prior = anchors.get(reading.meterId());
@@ -1225,6 +1293,25 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
                 .collectList();
     }
 
+    private Mono<List<MeterRead>> readMeterHistory(
+            RequestIdentity identity, List<AuthorizedDevice> authorized, List<AuthorizedDevice> needed,
+            Instant from, Instant to, boolean bestEffort) {
+        if (historySnapshots == null) {
+            return bestEffort ? readAllBestEffort(identity, needed, from, to)
+                    : readAll(identity, needed, from, to);
+        }
+        return Mono.fromCallable(() -> readMonthBlocks(identity, authorized, needed, from, to))
+                .subscribeOn(Schedulers.boundedElastic())
+                .onErrorResume(error -> {
+                    if (!bestEffort || error instanceof BusinessException business
+                            && (business.httpStatus() == 401 || business.httpStatus() == 403)) {
+                        return Mono.error(error);
+                    }
+                    // Preserve healthy meters when the shared stream is unavailable.
+                    return readAllBestEffort(identity, needed, from, to);
+                });
+    }
+
     /**
      * Energy composition needs only observation fields. The readable projection is
      * reused through the guarded snapshot model for the day instead of re-reading
@@ -1241,7 +1328,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         ReadSnapshots.Identity snapshot = new ReadSnapshots.Identity(
                 identity.tenantCode(), identity.authorization(), identity.source().name(), identity.ownerKey());
         Map<String, Object> body = historySnapshots.load(snapshot, "ENERGY_AUTH_SCOPE",
-                Map.of("source", identity.source().name()), ReadSnapshots.Policy.HISTORICAL,
+                Map.of("source", identity.source().name()), ReadSnapshots.PolicyEnum.HISTORICAL,
                 () -> scopeBody(identity));
         return scopeFromBody(identity, body);
     }
@@ -1306,20 +1393,20 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         params.put("equipmentId", meter.id());
         params.put("page", Integer.toString(page));
         params.put("size", "500");
-        return rawHistory.read(new ObservationRequest(identity, ObservationOperation.ENERGY_HISTORY, params))
+        return rawHistory.read(new ObservationRequest(identity, ObservationOperationEnum.ENERGY_HISTORY, params))
                 .flatMap(response -> {
-                    if (response.status() == ObservationStatus.UNAVAILABLE) {
+                    if (response.status() == ObservationStatusEnum.UNAVAILABLE) {
                         return Mono.error(new ObservationUnavailableException("计量历史上游不可用"));
                     }
-                    if (response.status() != ObservationStatus.AVAILABLE
-                            && response.status() != ObservationStatus.EMPTY
-                            && response.status() != ObservationStatus.PARTIAL) {
+                    if (response.status() != ObservationStatusEnum.AVAILABLE
+                            && response.status() != ObservationStatusEnum.EMPTY
+                            && response.status() != ObservationStatusEnum.PARTIAL) {
                         return Mono.error(new ObservationUnavailableException("计量历史上游返回不可用结果"));
                     }
                     boolean continuationOnly = response.payload().get("nextPage") != null
                             && response.failures().stream().allMatch(failure -> "HISTORY_PARTIAL".equals(failure.code()));
-                    boolean pagePartial = response.status() == ObservationStatus.PARTIAL && !continuationOnly;
-                    List<Sample> pageRows = response.status() == ObservationStatus.EMPTY
+                    boolean pagePartial = response.status() == ObservationStatusEnum.PARTIAL && !continuationOnly;
+                    List<Sample> pageRows = response.status() == ObservationStatusEnum.EMPTY
                             ? List.of() : parseRows(response.payload(), meter.id());
                     int nextCount = rowCount;
                     for (Sample sample : pageRows) {
@@ -1329,7 +1416,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
                         }
                     }
                     boolean reachesRequestedStart = pageRows.stream().anyMatch(sample -> !sample.readTime.isAfter(from));
-                    boolean last = response.status() == ObservationStatus.EMPTY
+                    boolean last = response.status() == ObservationStatusEnum.EMPTY
                             || isLast(response.payload()) || reachesRequestedStart;
                     boolean pageTruncated = truncated || pagePartial;
                     if (last) return Mono.just(new PageRead(unique(collected), pageTruncated));
@@ -1421,30 +1508,6 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         return payload;
     }
 
-    private Map<String, Object> statisticsPayload(
-            ObservationRequest request, List<AuthorizedDevice> meters, List<MeterRead> reads, Instant from, Instant to) {
-        Map<String, Object> payload = baseReport(request, meters, reads, from, to, "statistics");
-        List<Map<String, Object>> meterRows = reportMeters(meters, reads, from, to);
-        int dataMeters = (int) meterRows.stream().filter(row -> "ok".equals(row.get("status"))).count();
-        Double total = sumValues(meterRows);
-        List<Map<String, Object>> buckets = buckets(meters, reads, from, to);
-        Map<String, Object> totalView = new LinkedHashMap<>();
-        totalView.put("value", total); totalView.put("unit", "度"); totalView.put("yuan", null); totalView.put("tariff", null);
-        payload.put("total", totalView);
-        Map<String, Object> summary = new LinkedHashMap<>();
-        summary.put("value", total); summary.put("unit", "度"); summary.put("dataMeters", dataMeters);
-        summary.put("meters", meters.size()); summary.put("partial", dataMeters != meters.size());
-        payload.put("summary", summary);
-        payload.put("meters", meterRows);
-        payload.put("buckets", Map.of("grain", p(request, "grain", "day"), "items", buckets));
-        payload.put("bucketsAll", Map.of("day", buckets, "hour", List.of(), "week", List.of(), "month", List.of()));
-        payload.put("composition", composition(meterRows));
-        payload.put("metrics", List.of(metric("dayTotal", total, "度"),
-                metric("dailyAvg", total == null ? null : total / Math.max(1, dayCount(from, to)), "度/日")));
-        Map<String, Object> shape24 = new LinkedHashMap<>(); shape24.put("rates", null); shape24.put("coveredFraction", 0);
-        payload.put("shape24", shape24);
-        return payload;
-    }
 
     private Map<String, Object> comparisonPayload(
             AuthorizedDevice meter, MeterRead read, Instant start, Instant end, int count, int boundary, Instant now) {
@@ -1690,51 +1753,22 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         return value instanceof Number number ? number.doubleValue() : null;
     }
 
-    private Map<String, Object> comparisonPayload(
-            ObservationRequest request, List<AuthorizedDevice> meters, List<MeterRead> reads,
-            Instant from, Instant to, Instant baseFrom, Instant baseTo) {
-        Map<String, Object> payload = baseReport(request, meters, reads, from, to, "comparison");
-        List<Map<String, Object>> aMeters = reportMeters(meters, reads, from, to);
-        List<Map<String, Object>> bMeters = reportMeters(meters, reads, baseFrom, baseTo);
-        Double aTotal = sumValues(aMeters), bTotal = sumValues(bMeters);
-        List<Map<String, Object>> comparisonMeters = new ArrayList<>();
-        Map<String, Map<String, Object>> bById = index(bMeters);
-        for (Map<String, Object> a : aMeters) {
-            Map<String, Object> b = bById.get(a.get("id"));
-            Map<String, Object> comparisonMeter = new LinkedHashMap<>();
-            comparisonMeter.put("id", a.get("id")); comparisonMeter.put("name", a.get("name"));
-            comparisonMeter.put("areaName", a.get("areaName")); comparisonMeter.put("floor", a.get("floor"));
-            comparisonMeter.put("a", a);
-            if (b == null) {
-                Map<String, Object> empty = new LinkedHashMap<>(); empty.put("value", null); empty.put("status", "noData");
-                comparisonMeter.put("b", empty);
-            } else comparisonMeter.put("b", b);
-            comparisonMeters.add(comparisonMeter);
+
+    private static Map<String, String> otherScopeParams(Map<String, String> p) {
+        Map<String, String> shadow = new LinkedHashMap<>();
+        for (var entry : Map.of("otherScopeLevel", "scopeLevel", "otherFloor", "floor",
+                "otherText", "text", "otherMeterId", "meterId", "otherMeterIds", "meterIds").entrySet()) {
+            String value = p.get(entry.getKey());
+            if (value != null) shadow.put(entry.getValue(), value);
         }
-        Map<String, Object> sideA = side(aTotal, aMeters, buckets(meters, reads, from, to));
-        Map<String, Object> sideB = side(bTotal, bMeters, buckets(meters, reads, baseFrom, baseTo));
-        Double diff = aTotal == null || bTotal == null ? null : round(aTotal - bTotal);
-        payload.put("params", comparisonParams(request, meters, from, to, baseFrom, baseTo));
-        payload.put("sides", Map.of("a", sideA, "b", sideB));
-        Map<String, Object> diffView = new LinkedHashMap<>();
-        diffView.put("value", diff);
-        diffView.put("pct", bTotal == null || bTotal == 0 || diff == null ? null : round(diff / bTotal * 100));
-        if (bTotal == null) diffView.put("pctNote", "缺少可比较的基期数据");
-        else if (bTotal == 0) diffView.put("pctNote", "基期为零，比例不可计算");
-        diffView.put("basis", "total"); diffView.put("unit", "度");
-        payload.put("diff", diffView);
-        payload.put("meters", comparisonMeters);
-        payload.put("coverage", coverage(meters, reads));
-        Map<String, Object> contribution = new LinkedHashMap<>();
-        contribution.put("rows", List.of()); contribution.put("rest", null); contribution.put("topShare", null); contribution.put("unit", "度");
-        payload.put("contribution", contribution);
-        return payload;
+        return shadow;
     }
+
 
     private Map<String, Object> baseReport(ObservationRequest request, List<AuthorizedDevice> meters,
             List<MeterRead> reads, Instant from, Instant to, String kind) {
         Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("reportId", "local-energy-" + Integer.toHexString(Objects.hash(request.identity().ownerKey(), from, to, kind)));
+        payload.put("reportId", java.util.UUID.randomUUID().toString());
         payload.put("type", "meter-report");
         payload.put("kind", kind);
         payload.put("source", "company");
@@ -1752,72 +1786,22 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         return payload;
     }
 
-    private Map<String, Object> scopeParam(ObservationRequest request, List<AuthorizedDevice> meters) {
-        String level = request.parameters().getOrDefault("scopeLevel", "all");
+    private Map<String, Object> scopeParam(Map<String, String> parameters, List<AuthorizedDevice> meters) {
+        String level = parameters.getOrDefault("scopeLevel", "all");
         String label = switch (level) {
             case "location" -> meters.get(0).installAddress().isBlank() ? meters.get(0).name() : meters.get(0).installAddress();
-            case "floor" -> request.parameters().getOrDefault("floor", "");
-            case "nameMatch" -> "按名称匹配「" + request.parameters().getOrDefault("text", "") + "」";
+            case "floor" -> parameters.getOrDefault("floor", "");
+            case "selection" -> "所选" + meters.size() + "台电表";
+            case "nameMatch" -> "按名称匹配「" + parameters.getOrDefault("text", "") + "」";
             default -> "全部授权电表";
         };
         String basis = "location".equals(level) || "selection".equals(level) ? "deviceIds" : "nameMatch".equals(level) ? "nameMatch" : "areaName";
         return Map.of("level", level, "label", label, "basis", basis, "meterCount", meters.size());
     }
-
-    private Map<String, Object> comparisonParams(ObservationRequest request, List<AuthorizedDevice> meters,
-            Instant from, Instant to, Instant baseFrom, Instant baseTo) {
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("axis", "time");
-        result.put("span", Map.of("requested", Map.of("from", format(from), "to", format(to)), "observed", Map.of()));
-        result.put("baseline", Map.of("requested", Map.of("from", format(baseFrom), "to", format(baseTo)), "observed", Map.of()));
-        result.put("scope", scopeParam(request, meters));
-        return result;
+    private Map<String, Object> scopeParam(ObservationRequest request, List<AuthorizedDevice> meters) {
+        return scopeParam(request.parameters(), meters);
     }
 
-    private List<Map<String, Object>> reportMeters(List<AuthorizedDevice> meters, List<MeterRead> reads, Instant from, Instant to) {
-        Map<String, MeterRead> byId = new HashMap<>();
-        for (MeterRead read : reads) byId.put(read.device.id(), read);
-        List<Map<String, Object>> result = new ArrayList<>();
-        for (AuthorizedDevice meter : meters) {
-            MeterRead read = byId.get(meter.id());
-            Window window = read == null ? Window.empty() : window(read.samples, from, to);
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("id", meter.id());
-            row.put("name", meter.name());
-            row.put("areaName", meter.installAddress());
-            row.put("floor", floor(meter.installAddress()));
-            row.put("value", window.value);
-            row.put("status", window.status(read == null || read.truncated));
-            Map<String, Object> observed = new LinkedHashMap<>();
-            observed.put("fromSample", sampleMap(window.from)); observed.put("toSample", sampleMap(window.to));
-            row.put("observed", observed);
-            result.add(row);
-        }
-        return result;
-    }
-
-    private List<Map<String, Object>> buckets(List<AuthorizedDevice> meters, List<MeterRead> reads, Instant from, Instant to) {
-        List<Map<String, Object>> result = new ArrayList<>();
-        Instant cursor = nextShanghaiEight(from);
-        while (cursor.plusSeconds(DAY_SECONDS).compareTo(to) <= 0) {
-            Instant bucketTo = cursor.plusSeconds(DAY_SECONDS);
-            double sum = 0;
-            int complete = 0;
-            for (MeterRead read : reads) {
-                Double value = usage(read.samples, cursor, bucketTo);
-                if (value != null && !read.truncated) { sum += value; complete++; }
-            }
-            Map<String, Object> bucket = new LinkedHashMap<>();
-            bucket.put("from", format(cursor));
-            bucket.put("to", format(bucketTo));
-            bucket.put("value", complete == meters.size() ? round(sum) : null);
-            bucket.put("partial", complete != meters.size());
-            bucket.put("days", 1);
-            result.add(bucket);
-            cursor = bucketTo;
-        }
-        return result;
-    }
 
     private Map<String, Object> coverage(List<AuthorizedDevice> meters, List<MeterRead> reads) {
         List<String> noData = new ArrayList<>();
@@ -1836,30 +1820,6 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         return result;
     }
 
-    private Map<String, Object> composition(List<Map<String, Object>> meters) {
-        Map<String, Double> sums = new HashMap<>();
-        for (Map<String, Object> meter : meters) if (meter.get("value") instanceof Number value) {
-            String floor = String.valueOf(meter.get("floor"));
-            sums.merge(floor, value.doubleValue(), Double::sum);
-        }
-        List<Map<String, Object>> rows = sums.entrySet().stream().sorted(Map.Entry.<String, Double>comparingByValue().reversed())
-                .map(entry -> Map.<String, Object>of("label", entry.getKey(), "value", round(entry.getValue()), "meterIds", List.of()))
-                .toList();
-        Map<String, Object> excluded = new LinkedHashMap<>();
-        excluded.put("noData", 0); excluded.put("partial", 0); excluded.put("through", null);
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("kind", "ranking"); result.put("rows", rows); result.put("rest", null); result.put("excluded", excluded);
-        return result;
-    }
-
-    private Map<String, Object> side(Double totalValue, List<Map<String, Object>> rows, List<Map<String, Object>> buckets) {
-        Map<String, Object> total = new LinkedHashMap<>();
-        total.put("value", totalValue); total.put("unit", "度"); total.put("yuan", null);
-        Map<String, Object> shape = new LinkedHashMap<>(); shape.put("rates", null); shape.put("coveredFraction", 0);
-        return Map.of("total", total, "dataMeters",
-                (int) rows.stream().filter(row -> "ok".equals(row.get("status"))).count(), "effectiveDays", buckets.size(),
-                "shape24", shape, "buckets", Map.of("grain", "day", "items", buckets));
-    }
 
     private Map<String, Object> comparisonSlices(List<MeterRead> reads, List<AuthorizedDevice> meters, LocalDate end) {
         Map<String, Object> result = new LinkedHashMap<>();
@@ -1901,7 +1861,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
             if (rawValue == null && row.get("values") instanceof Map<?, ?> values) rawValue = values.get("epf");
             if (rawValue == null) continue;
             double value = number(rawValue);
-            result.add(new Sample(text(row.get("id")), instant(readTime), value));
+            result.add(new Sample(text(row.get("id")), instant(readTime), value, numberOrNull(row.get("totalPowerFactor"))));
         }
         return result;
     }
@@ -1942,15 +1902,6 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         return value >= 0 && Double.isFinite(value) ? value : null;
     }
 
-    private static Window window(List<Sample> samples, Instant from, Instant to) {
-        Sample start = null, end = null;
-        for (Sample sample : samples) {
-            if (!sample.readTime.isAfter(from)) start = sample;
-            if (!sample.readTime.isAfter(to)) end = sample;
-        }
-        Double value = usage(samples, from, to);
-        return new Window(start, end, value, from, to);
-    }
 
     private static Map<String, Object> sampleMap(Sample sample) {
         if (sample == null) return null;
@@ -1967,7 +1918,11 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         if ("location".equals(level)) return meters.stream().filter(m -> m.id().equals(p.get("meterId"))).toList();
         if ("selection".equals(level)) {
             Set<String> ids = splitIds(p.get("meterIds"));
-            return meters.stream().filter(m -> ids.contains(m.id())).toList();
+            List<AuthorizedDevice> selected = meters.stream().filter(m -> ids.contains(m.id())).toList();
+            if (ids.isEmpty() || selected.size() != ids.size()) {
+                throw new BusinessException("FORBIDDEN", "所选计量范围不在当前授权范围内", 403);
+            }
+            return selected;
         }
         if ("floor".equals(level)) return meters.stream().filter(m -> Objects.equals(floor(m.installAddress()), p.get("floor"))).toList();
         if ("nameMatch".equals(level)) {
@@ -1987,13 +1942,13 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
     }
 
     private static void validateScope(RequestIdentity identity, AuthorizedDeviceScope scope) {
-        if (!identity.equals(scope.identity()) || scope.source() != IotSource.COMPANY) {
+        if (!identity.equals(scope.identity()) || scope.source() != IotSourceEnum.COMPANY) {
             throw new ObservationUnavailableException("公司电表授权范围与当前请求不匹配");
         }
     }
 
     private static void requireCompany(RequestIdentity identity) {
-        if (identity.source() != IotSource.COMPANY) throw new ObservationUnavailableException("公司能耗仅支持公司来源");
+        if (identity.source() != IotSourceEnum.COMPANY) throw new ObservationUnavailableException("公司能耗仅支持公司来源");
     }
 
     private static LocalDate date(String value) {
@@ -2021,11 +1976,6 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         return value.atTime(8, 0).atZone(SHANGHAI).toInstant();
     }
 
-    private static Instant nextShanghaiEight(Instant value) {
-        var local = value.atZone(SHANGHAI).toLocalDate().atTime(java.time.LocalTime.of(8, 0));
-        Instant candidate = local.atZone(SHANGHAI).toInstant();
-        return candidate.isAfter(value) ? candidate : candidate.plusSeconds(DAY_SECONDS);
-    }
 
     private static String floor(String address) {
         if (address == null) return null;
@@ -2063,31 +2013,14 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
     private static Instant earliest(List<MeterRead> reads) { return reads.stream().map(read -> read.samples.isEmpty() ? null : read.samples.get(0).readTime).filter(Objects::nonNull).min(Comparator.naturalOrder()).orElse(null); }
     private static Instant latestSample(List<Sample> samples) { return samples.isEmpty() ? null : samples.get(samples.size() - 1).readTime; }
     private static int dayCount(Instant from, Instant to) { return Math.max(1, (int) Math.ceil((to.toEpochMilli() - from.toEpochMilli()) / 86_400_000d)); }
-    private static Double sumValues(List<Map<String, Object>> rows) { double sum = 0; int count = 0; for (Map<String, Object> row : rows) if (row.get("value") instanceof Number value) { sum += value.doubleValue(); count++; } return count == 0 ? null : round(sum); }
-    private static Map<String, Map<String, Object>> index(List<Map<String, Object>> rows) { Map<String, Map<String, Object>> out = new HashMap<>(); for (Map<String, Object> row : rows) out.put(String.valueOf(row.get("id")), row); return out; }
-    private static Map<String, Object> metric(String key, Double value, String unit) {
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("key", key); result.put("value", value); result.put("unit", unit);
-        return result;
-    }
     private static double round(double value) { return BigDecimal.valueOf(value).setScale(2, RoundingMode.HALF_UP).doubleValue(); }
 
     private record ReportWindow(Instant from, Instant to, String label) { }
     private record MonthWindow(YearMonth month, Instant from, Instant to, boolean current) { }
 
-    private record Sample(String id, Instant readTime, double value) { }
-    private record MeterRead(AuthorizedDevice device, List<Sample> samples, boolean truncated) { }
+    record Sample(String id, Instant readTime, double value, Double powerFactor) { }
+    record MeterRead(AuthorizedDevice device, List<Sample> samples, boolean truncated) { }
     private record PageRead(List<Sample> rows, boolean truncated) { }
-    private record Window(Sample from, Sample to, Double value, Instant requestedFrom, Instant requestedTo) {
-        static Window empty() { return new Window(null, null, null, null, null); }
-        String status(boolean truncated) {
-            if (value == null) return from == null && to == null ? "noData" : "partial";
-            if (truncated || requestedFrom == null || requestedTo == null
-                    || from == null || to == null
-                    || !from.readTime.equals(requestedFrom) || !to.readTime.equals(requestedTo)) return "partial";
-            return "ok";
-        }
-    }
     private record Zoned(java.time.ZonedDateTime value) {
         Instant toInstant() { return value.toInstant(); }
     }

@@ -15,7 +15,7 @@ public interface AuthorizedDeviceScope {
 
     RequestIdentity identity();
 
-    IotSource source();
+    IotSourceEnum source();
 
     List<AuthorizedDevice> devices();
 
@@ -56,12 +56,12 @@ public interface AuthorizedDeviceScope {
         return of(identity(), source(), devices().stream().filter(predicate).toList());
     }
 
-    static AuthorizedDeviceScope of(RequestIdentity identity, IotSource source, List<AuthorizedDevice> devices) {
+    static AuthorizedDeviceScope of(RequestIdentity identity, IotSourceEnum source, List<AuthorizedDevice> devices) {
         return new ScopedAuthorizedDevices(identity, source, devices);
     }
 }
 
-record ScopedAuthorizedDevices(RequestIdentity identity, IotSource source, List<AuthorizedDevice> devices)
+record ScopedAuthorizedDevices(RequestIdentity identity, IotSourceEnum source, List<AuthorizedDevice> devices)
         implements AuthorizedDeviceScope {
     ScopedAuthorizedDevices {
         java.util.Objects.requireNonNull(identity, "identity");

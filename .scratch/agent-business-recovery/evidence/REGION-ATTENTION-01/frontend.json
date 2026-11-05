@@ -1,0 +1,102 @@
+{
+  "page": "pages/agent/index",
+  "headerAttention": false,
+  "authorizedRegionCount": 2,
+  "attentionValues": [
+    false,
+    false
+  ],
+  "pickerOpen": true,
+  "pickerTransform": "transform:translateY(0px);transition:none;",
+  "requests": [
+    {
+      "path": "/api/agent/regions",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 19,
+      "preparing": true,
+      "code": null
+    },
+    {
+      "path": "/api/agent/regions",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 39,
+      "preparing": false,
+      "code": null,
+      "attentionValues": [
+        false,
+        false
+      ]
+    },
+    {
+      "path": "/api/agent/regions",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 19,
+      "preparing": false,
+      "code": null,
+      "attentionValues": [
+        false,
+        false
+      ]
+    },
+    {
+      "path": "/api/agent/regions",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 180,
+      "preparing": false,
+      "code": null,
+      "attentionValues": [
+        false,
+        false
+      ]
+    },
+    {
+      "path": "/api/agent/regions",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 75,
+      "preparing": false,
+      "code": null,
+      "attentionValues": [
+        false,
+        false
+      ]
+    },
+    {
+      "path": "/api/agent/regions",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 29,
+      "preparing": false,
+      "code": null,
+      "attentionValues": [
+        false,
+        false
+      ]
+    },
+    {
+      "path": "/api/agent/regions",
+      "method": "GET",
+      "status": 200,
+      "elapsedMs": 99,
+      "preparing": false,
+      "code": null,
+      "attentionValues": [
+        false,
+        false
+      ]
+    }
+  ],
+  "screenshot": "office-entry.png",
+  "pickerScreenshotCaptured": false,
+  "screenshotFailure": "Developer tool screenshot request timed out; no picker image claimed",
+  "cleanup": {
+    "probeGlobalRemoved": true,
+    "ownedWrapperCodeDetected": false,
+    "foreignRequestWrapperNotOverwritten": true,
+    "automationDisconnected": true
+  }
+}

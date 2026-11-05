@@ -17,9 +17,9 @@ import ltd.qianc.iotagent.error.BusinessException;
 import ltd.qianc.iotagent.iot.AuthorizedDevice;
 import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
 import ltd.qianc.iotagent.iot.IotAdapter;
-import ltd.qianc.iotagent.iot.IotSource;
+import ltd.qianc.iotagent.iot.IotSourceEnum;
 import ltd.qianc.iotagent.iot.ObservationAdapter;
-import ltd.qianc.iotagent.iot.ObservationOperation;
+import ltd.qianc.iotagent.iot.ObservationOperationEnum;
 import ltd.qianc.iotagent.iot.ObservationRequest;
 import ltd.qianc.iotagent.iot.ObservationResponse;
 import ltd.qianc.iotagent.iot.RequestIdentity;
@@ -29,7 +29,24 @@ import reactor.core.publisher.Mono;
 class ReportGenerationContractTest {
     private static final Clock CLOCK = Clock.fixed(Instant.parse("2026-11-02T04:00:00Z"), ZoneId.of("Asia/Shanghai"));
     private final ObjectMapper mapper = new ObjectMapper();
-    private final RequestIdentity identity = new RequestIdentity("Bearer test", "TENANT", IotSource.COMPANY, "owner-1");
+    private final RequestIdentity identity = new RequestIdentity("Bearer test", "TENANT", IotSourceEnum.COMPANY, "owner-1");
+
+    @Test
+    void noEffectiveCurrentDataDoesNotCreateAnEmptyReportArtifact() {
+        MemoryStore store = new MemoryStore();
+        ObservationAdapter empty = request -> new Evidence().read(request).map(response -> {
+            Map<String, Object> payload = new LinkedHashMap<>(response.payload());
+            payload.put("coverage", Map.of("meters", 1, "dataMeters", 0,
+                    "noData", List.of("meter-1"), "partial", List.of(), "truncated", false));
+            return ObservationResponse.available(payload);
+        });
+        ReportGenerationService service = ReportGenerationServiceFactory.local(store, mapper,
+                new MutableScopeAdapter(), empty, CLOCK);
+        assertThatThrownBy(() -> service.generate(identity, "conversation-1", "turn-empty", "empty",
+                energy("meter-1", false))).isInstanceOfSatisfying(BusinessException.class,
+                        error -> assertThat(error.code()).isEqualTo("REPORT_NO_DATA"));
+        assertThat(store.values).isEmpty();
+    }
 
     @Test
     void duplicateConversationRequestReturnsTheImmutableOriginalSnapshot() {
@@ -97,7 +114,7 @@ class ReportGenerationContractTest {
         MutableScopeAdapter iot = new MutableScopeAdapter();
         ReportGenerationPort.GeneratedReport saved = service(store, iot).generate(identity, "conversation-1", "turn-4", "request-4",
                 energy("meter-1", false));
-        RequestIdentity other = new RequestIdentity("Bearer other", "OTHER", IotSource.COMPANY, "owner-2");
+        RequestIdentity other = new RequestIdentity("Bearer other", "OTHER", IotSourceEnum.COMPANY, "owner-2");
         assertThatThrownBy(() -> ReportServiceFactory.local(store, mapper, iot).read(saved.reportId(), other))
                 .isInstanceOf(ReportNotFoundException.class);
     }
@@ -177,7 +194,7 @@ class ReportGenerationContractTest {
         MemoryStore store = new MemoryStore();
         MutableScopeAdapter iot = new MutableScopeAdapter();
         ReportGenerationService service = service(store, iot);
-        assertThatThrownBy(() -> service.generate(new RequestIdentity("Bearer office", "TENANT", IotSource.OFFICE, "owner-1"),
+        assertThatThrownBy(() -> service.generate(new RequestIdentity("Bearer office", "TENANT", IotSourceEnum.OFFICE, "owner-1"),
                 "conversation-1", "turn-office", "request-office", energy("meter-1", false)))
                 .isInstanceOf(BusinessException.class)
                 .extracting(error -> ((BusinessException) error).code())
@@ -208,7 +225,7 @@ class ReportGenerationContractTest {
     private static final class Evidence implements ObservationAdapter {
         @Override
         public Mono<ObservationResponse> read(ObservationRequest request) {
-            if (request.operation() == ObservationOperation.SAFETY_EVENTS) {
+            if (request.operation() == ObservationOperationEnum.SAFETY_EVENTS) {
                 Map<String, Object> payload = new LinkedHashMap<>();
                 payload.put("items", List.of(Map.of("eventId", "event-" + request.parameters().get("type"),
                         "ledger", request.parameters().get("type"), "deviceId", "sensor-1",
@@ -263,7 +280,7 @@ class ReportGenerationContractTest {
         @Override public Mono<AuthorizedDeviceScope> loadAuthorizedDeviceScope(RequestIdentity request) {
             return Mono.just(new AuthorizedDeviceScope() {
                 @Override public RequestIdentity identity() { return request; }
-                @Override public IotSource source() { return IotSource.COMPANY; }
+                @Override public IotSourceEnum source() { return IotSourceEnum.COMPANY; }
                 @Override public List<AuthorizedDevice> devices() { return List.copyOf(devices); }
             });
         }

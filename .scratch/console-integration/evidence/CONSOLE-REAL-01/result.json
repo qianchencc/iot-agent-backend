@@ -1,0 +1,140 @@
+{
+  "case": "CONSOLE-REAL-01",
+  "date": "2026-11-05",
+  "frontend": "http://127.0.0.1:5185",
+  "javaPort": 3381,
+  "nodePort": 3382,
+  "rootCauses": [
+    "stale_identity_tuple_allowlist_and_list_only_audit_runtime",
+    "environment_initialized_sdk_without_health_receipt_vs_disabled_saved_java_snapshot",
+    "global_effect_and_connection_probe_copy_overclaims"
+  ],
+  "realFrontend": {
+    "phoneWithNote": {
+      "added": true,
+      "reloadPersisted": true,
+      "removedWithConfirmation": true
+    },
+    "phoneWithoutNote": {
+      "added": true,
+      "storedName": null,
+      "renderedName": "—",
+      "reloadPersisted": true,
+      "removedWithConfirmation": true
+    },
+    "cleanup": {
+      "remainingTestPhones": 0,
+      "total": 0
+    },
+    "audit": {
+      "tenantsLoaded": true,
+      "realAdminAddEventsVisible": true,
+      "unresolvedMemberFilterExercised": true,
+      "detailDrawerExercised": true,
+      "inventedBusinessIdentity": false,
+      "syntheticAuditRowsInserted": false
+    },
+    "langfuse": {
+      "normalSaveFields": [
+        "langfuseEnabled",
+        "langfuseBaseUrl",
+        "langfusePublicKey",
+        "langfuseSecretKey"
+      ],
+      "savedEnabled": true,
+      "sdkCapturedEnabled": true,
+      "adopted": true,
+      "pendingRestart": false,
+      "sameExistingConnectionPrivatelyCompared": true,
+      "credentialsReturned": false,
+      "instructionValuesChanged": false
+    },
+    "modelProbe": {
+      "status": 200,
+      "ok": true,
+      "message": "模型连接成功",
+      "visibleMessage": "模型连接成功（仅限连接测试；本测试不执行保存）",
+      "scope": "fixed_one_token_http_acceptance_only",
+      "configurationSaved": false
+    },
+    "deploymentReadonly": {
+      "labels": [
+        "动作草稿有效期",
+        "状态回读等待",
+        "控制调用超时"
+      ],
+      "editableControlCount": 0
+    }
+  },
+  "engineering": {
+    "java": {
+      "base": "fc7db0e2217e215ee4d8cb378ddcd7f5b201b470",
+      "scope": "isolated_committed_source_plus_owned_reachable_fix_and_regression",
+      "total": 609,
+      "passed": 584,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 25,
+      "regressionFailedBeforeFix": true
+    },
+    "node": {
+      "scope": "copy_of_current_full_release",
+      "typecheck": "passed",
+      "tests": 34,
+      "passed": 34,
+      "failed": 0,
+      "skipped": 0,
+      "build": "passed",
+      "fixture": "isolated_owned_mysql_8_4_and_java_session_server",
+      "missingFixtureInitialAttempt": "failed_not_counted_as_pass"
+    },
+    "frontendBuild": "passed_with_existing_chunk_size_warning",
+    "fixedSnapshotReview": {
+      "specificationFunctionalIssues": 0,
+      "standardsFunctionalIssues": 0,
+      "formattingFindingCorrected": true
+    }
+  },
+  "traceEvidence": {
+    "historicalObservationMetadataRead": true,
+    "httpStatus": 200,
+    "historicalMetadataCount": 3,
+    "types": [
+      "GENERATION",
+      "SPAN"
+    ],
+    "inputOutputRead": false,
+    "postRestartNewBusinessTraceIngestionVerified": false
+  },
+  "unverifiedBusinessEffects": [
+    "real_model_answer_after_this_restore",
+    "all_generation_compatibility_combinations",
+    "context_window_threshold_in_real_business",
+    "dynamic_heartbeat_stream_timing",
+    "real_task_scan_cycle_timing",
+    "all_checkpoint_finalization_compaction_real_business_paths",
+    "post_restart_new_business_trace_ingestion",
+    "physical_device_timeout_or_execution"
+  ],
+  "phoneAdmissionEffect": "none_management_only",
+  "safety": {
+    "businessDeviceCommandsSent": false,
+    "businessTasksCreatedOrConfirmed": false,
+    "productionNotificationsSent": false,
+    "productionBackendOrOriginalRuntimeSwitched": false,
+    "otherThreadFullReleasePreserved": true,
+    "businessSchemaMigrationOrRestoreByThisTask": false,
+    "isolatedJavaFixtureStopped": true,
+    "ownedMysqlContainerRemoved": true,
+    "fixtureCredentialsRemoved": true,
+    "businessReadConnectionClosed": true,
+    "newVersionPreviewPublishWorkflowAdded": false
+  },
+  "screenshots": [
+    "phones-added-real.webp",
+    "audit-real-event-detail.webp",
+    "langfuse-saved-and-adopted.webp",
+    "deployment-readonly.webp",
+    "model-connection-only.webp"
+  ]
+}

@@ -15,7 +15,7 @@ import ltd.qianc.iotagent.error.BusinessException;
 import ltd.qianc.iotagent.iot.AuthorizedDevice;
 import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
 import ltd.qianc.iotagent.iot.IotAdapter;
-import ltd.qianc.iotagent.iot.IotSource;
+import ltd.qianc.iotagent.iot.IotSourceEnum;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Mono;
@@ -24,7 +24,7 @@ class ReportFactProducerContractTest {
     private static final Instant CHECKPOINT = Instant.parse("2026-10-12T01:00:00Z");
     private static final Clock CLOCK = Clock.fixed(Instant.parse("2026-10-12T01:00:01Z"), ZoneOffset.UTC);
     private final ObjectMapper mapper = new ObjectMapper();
-    private final RequestIdentity identity = new RequestIdentity("Bearer test", "XSJ", IotSource.COMPANY, "owner-1");
+    private final RequestIdentity identity = new RequestIdentity("Bearer test", "XSJ", IotSourceEnum.COMPANY, "owner-1");
 
     @Test
     void reportRequestIsRecomputedFromServerEvidenceAndCallerBlocksAreIgnored() throws Exception {
@@ -118,7 +118,7 @@ class ReportFactProducerContractTest {
         String payload = "{\"reportRequest\":{\"kind\":\"energy\",\"period\":{\"kind\":\"previous\",\"unit\":\"day\"}}}";
 
         assertThatThrownBy(() -> producer.produce(checkpoint(payload, "COMPLETED"),
-                new RequestIdentity("Bearer other", "OTHER", IotSource.COMPANY, "owner-2")))
+                new RequestIdentity("Bearer other", "OTHER", IotSourceEnum.COMPANY, "owner-2")))
                 .isInstanceOf(BusinessException.class)
                 .extracting(error -> ((BusinessException) error).code())
                 .isEqualTo("REPORT_SCOPE_CHANGED");
@@ -206,7 +206,7 @@ class ReportFactProducerContractTest {
     private static AuthorizedDeviceScope scope(RequestIdentity request) {
         return new AuthorizedDeviceScope() {
             @Override public RequestIdentity identity() { return request; }
-            @Override public IotSource source() { return IotSource.COMPANY; }
+            @Override public IotSourceEnum source() { return IotSourceEnum.COMPANY; }
             @Override public java.util.List<AuthorizedDevice> devices() {
                 return java.util.List.of(new AuthorizedDevice("meter-1", "energy", "Meter 1", "Building", false));
             }

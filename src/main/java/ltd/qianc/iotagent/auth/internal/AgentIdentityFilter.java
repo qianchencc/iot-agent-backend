@@ -19,7 +19,8 @@ public final class AgentIdentityFilter extends OncePerRequestFilter {
     private final AccountPrincipalVerifier verifier;
     private final boolean verifyIdentity;
 
-    public AgentIdentityFilter(ObjectMapper objectMapper, AccountPrincipalVerifier verifier, boolean verifyIdentity) {
+    public AgentIdentityFilter(ObjectMapper objectMapper, AccountPrincipalVerifier verifier,
+            boolean verifyIdentity) {
         this.objectMapper = objectMapper;
         this.verifier = verifier;
         this.verifyIdentity = verifyIdentity;
@@ -57,7 +58,8 @@ public final class AgentIdentityFilter extends OncePerRequestFilter {
         }
         PrincipalInfo presented = new PrincipalInfo(authorization, tenantCode);
         try {
-            PrincipalContext.set(verifyIdentity ? verifier.verify(presented) : presented);
+            PrincipalInfo verified = verifyIdentity ? verifier.verify(presented) : presented;
+            PrincipalContext.set(verified);
             filterChain.doFilter(request, response);
         } catch (BusinessException error) {
             writeError(response, error.httpStatus(), error.code(), error.getMessage());

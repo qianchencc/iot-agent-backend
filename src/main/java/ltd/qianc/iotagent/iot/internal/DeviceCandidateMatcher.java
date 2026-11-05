@@ -71,7 +71,12 @@ final class DeviceCandidateMatcher {
         List<String> normalizedHints = nameHints.stream().map(DeviceCandidateMatcher::normalize).toList();
 
         boolean browse = normalizedTerms.isEmpty() && normalizedEffectiveScope.isEmpty();
-        boolean explicitAuthorizedScope = genericScope(scopeText)
+        // A server-bound regionId was membership-verified and scope-retained by the
+        // adapter before this search, so a region-bound query is a legitimate
+        // whole-scope browse; an arbitrary unbound empty query still rejects.
+        boolean regionBound = query.regionId() != null;
+        boolean explicitAuthorizedScope = regionBound
+                || genericScope(scopeText)
                 || submittedScopeTerms.stream().anyMatch(DeviceCandidateMatcher::genericScope);
         if (browse && !explicitAuthorizedScope && nameHints.isEmpty() && query.deviceIds().isEmpty()) {
             throw new UpstreamUnavailableException("至少需要设备范围或设备描述");

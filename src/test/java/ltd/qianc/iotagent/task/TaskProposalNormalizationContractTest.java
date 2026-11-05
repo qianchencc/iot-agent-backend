@@ -22,7 +22,7 @@ import ltd.qianc.iotagent.error.BusinessException;
 import ltd.qianc.iotagent.iot.AuthorizedDevice;
 import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
 import ltd.qianc.iotagent.iot.IotAdapter;
-import ltd.qianc.iotagent.iot.IotSource;
+import ltd.qianc.iotagent.iot.IotSourceEnum;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Mono;
@@ -31,6 +31,39 @@ class TaskProposalNormalizationContractTest {
     private static final Instant NOW = Instant.parse("2026-11-02T05:00:00Z");
     private static final PrincipalInfo PRINCIPAL = new PrincipalInfo("Bearer fixture", "LOCAL");
     private final ObjectMapper mapper = new ObjectMapper();
+
+    @Test
+    void relativeTaskNamesUseTheScheduledShanghaiDateWithoutMovingExecution() throws Exception {
+        String base = acPayload(30, "2026-11-02T17:00:00Z", "2026-11-02T18:00:00Z");
+        JsonNode original = mapper.readTree(propose(base).payloadJson());
+        var request = (com.fasterxml.jackson.databind.node.ObjectNode) mapper.readTree(base);
+        request.put("title", "明天空调调温检查");
+        request.put("label", "明天1–2点26楼办公区空调调温检查");
+
+        JsonNode saved = mapper.readTree(propose(request.toString()).payloadJson());
+
+        assertThat(saved.path("title").asText()).isEqualTo("2026-11-03 空调调温检查");
+        assertThat(saved.path("label").asText()).isEqualTo("2026-11-03 1–2点26楼办公区空调调温检查");
+        assertThat(saved.path("phases")).isEqualTo(original.path("phases"));
+        assertThat(saved.path("interval")).isEqualTo(original.path("interval"));
+        assertThat(mapper.readTree(propose(saved.toString()).payloadJson()).path("title"))
+                .isEqualTo(saved.path("title"));
+    }
+
+    @Test
+    void recurringTaskNamesDoNotKeepRelativeDaysOrFreezeTheFirstOccurrenceDate() throws Exception {
+        var request = (com.fasterxml.jackson.databind.node.ObjectNode) mapper.readTree(
+                acPayload(30, "2026-11-02T06:00:00Z", "2026-11-02T08:00:00Z"));
+        request.put("label", "明天空调巡检");
+        request.set("repeat", mapper.createObjectNode().put("frequency", "daily"));
+
+        JsonNode saved = mapper.readTree(propose(request.toString()).payloadJson());
+
+        assertThat(saved.path("title").asText()).isEqualTo("空调巡检");
+        assertThat(saved.path("label").asText()).isEqualTo("空调巡检");
+        assertThat(saved.path("repeat").path("frequency").asText()).isEqualTo("daily");
+        assertThat(saved.path("interval").path("startsAt").asText()).isEqualTo("2026-11-02T06:00:00Z");
+    }
 
     @Test
     void expandsAcWindowCheckpointsAndDerivesCondition() throws Exception {
@@ -66,6 +99,36 @@ class TaskProposalNormalizationContractTest {
         assertThatThrownBy(() -> propose(acPayloadFor("light-1", 30)))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("空调");
+    }
+
+    @Test
+    void rejectsOverflowFractionalAndTextualControlValuesInsteadOfTruncating() {
+        for (String payload : List.of(
+                "{\"label\":\"照明\",\"phases\":[{\"at\":\"2026-11-02T06:00:00Z\",\"actions\":"
+                        + "[{\"deviceId\":\"light-1\",\"closeOrOpen\":4294967297}]}]}",
+                "{\"label\":\"照明\",\"phases\":[{\"at\":\"2026-11-02T06:00:00Z\",\"actions\":"
+                        + "[{\"deviceId\":\"light-1\",\"closeOrOpen\":1.9}]}]}",
+                "{\"label\":\"照明\",\"phases\":[{\"at\":\"2026-11-02T06:00:00Z\",\"actions\":"
+                        + "[{\"deviceId\":\"light-1\",\"closeOrOpen\":\"1\"}]}]}",
+                "{\"label\":\"门禁\",\"phases\":[{\"at\":\"2026-11-02T06:00:00Z\",\"actions\":"
+                        + "[{\"deviceId\":\"door-1\",\"controlType\":4294967298}]}]}",
+                "{\"label\":\"门禁\",\"phases\":[{\"at\":\"2026-11-02T06:00:00Z\",\"actions\":"
+                        + "[{\"deviceId\":\"door-1\",\"controlType\":2.5}]}]}",
+                "{\"label\":\"空调\",\"phases\":[{\"at\":\"2026-11-02T06:00:00Z\",\"actions\":"
+                        + "[{\"deviceId\":\"ac-1\",\"command\":{\"temperature\":4294967322}}]}]}",
+                "{\"label\":\"空调\",\"phases\":[{\"at\":\"2026-11-02T06:00:00Z\",\"actions\":"
+                        + "[{\"deviceId\":\"ac-1\",\"command\":{\"temperature\":26.5}}]}]}",
+                "{\"label\":\"巡检\",\"phases\":[{\"at\":\"2026-11-02T06:00:00Z\",\"actions\":[],"
+                        + "\"read\":{\"deviceIds\":[\"ac-1\"],\"ac\":{\"mode\":\"inspect\","
+                        + "\"target\":4294967322}}}]}",
+                "{\"label\":\"巡检\",\"phases\":[{\"at\":\"2026-11-02T06:00:00Z\",\"actions\":[],"
+                        + "\"read\":{\"deviceIds\":[\"ac-1\"],\"ac\":{\"mode\":\"inspect\","
+                        + "\"target\":null}}}]}")) {
+            assertThatThrownBy(() -> propose(payload))
+                    .isInstanceOf(BusinessException.class)
+                    .satisfies(error -> assertThat(((BusinessException) error).code())
+                            .isEqualTo("INVALID_TASK_PAYLOAD"));
+        }
     }
 
     @Test
@@ -192,6 +255,28 @@ class TaskProposalNormalizationContractTest {
                 .isEqualTo("TASK_TIME_PASSED");
     }
 
+    @Test
+    void expiredFutureProposalRenewsItsTtlWithoutMovingTheOriginalScheduleOrCreatingATask() throws Exception {
+        TaskProposalStore proposals = mock(TaskProposalStore.class);
+        TaskProposalFact original = propose(acPayload(30, "2026-11-02T06:00:00Z", "2026-11-02T08:00:00Z"), proposals);
+        when(proposals.find(original.proposalId())).thenReturn(Optional.of(original));
+        java.util.concurrent.atomic.AtomicReference<TaskProposalFact> saved = new java.util.concurrent.atomic.AtomicReference<>();
+        when(proposals.updateIfVersion(any(), org.mockito.ArgumentMatchers.eq(original.version())))
+                .thenAnswer(invocation -> { saved.set(invocation.getArgument(0)); return Optional.of(saved.get()); });
+        TaskFactStore facts = mock(TaskFactStore.class);
+        TaskFacade facade = new TaskFacade(mapper, facts, proposals, mock(TaskPlanStore.class),
+                mock(TaskNotificationStore.class), mock(TaskScheduler.class), null, adapter(), null, null,
+                mock(ltd.qianc.iotagent.readmodel.ReadSnapshots.class),
+                Clock.fixed(NOW.plusSeconds(16 * 60), ZoneOffset.UTC));
+        assertThatThrownBy(() -> facade.confirmProposal(PRINCIPAL, original.proposalId(), original.version(), "office"))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        error -> assertThat(error.code()).isEqualTo("TASK_RECONFIRM_REQUIRED"));
+        assertThat(mapper.readTree(saved.get().payloadJson()).path("phases"))
+                .isEqualTo(mapper.readTree(original.payloadJson()).path("phases"));
+        assertThat(saved.get().version()).isGreaterThan(original.version());
+        org.mockito.Mockito.verifyNoInteractions(facts);
+    }
+
     private TaskProposalFact propose(String payload) {
         TaskProposalStore proposals = mock(TaskProposalStore.class);
         return propose(payload, proposals);
@@ -201,7 +286,7 @@ class TaskProposalNormalizationContractTest {
         when(proposals.findByIdempotencyKey(anyString())).thenReturn(Optional.empty());
         when(proposals.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
         TaskFacade facade = new TaskFacade(mapper, mock(TaskFactStore.class), proposals, mock(TaskPlanStore.class),
-                mock(TaskNotificationStore.class), mock(TaskScheduler.class), null, adapter(), null, null, null,
+                mock(TaskNotificationStore.class), mock(TaskScheduler.class), null, adapter(), null, null,
                 mock(ltd.qianc.iotagent.readmodel.ReadSnapshots.class), Clock.fixed(NOW, ZoneOffset.UTC));
         return facade.propose(PRINCIPAL, "office", "conversation", "turn", payload, "idem");
     }
@@ -229,9 +314,9 @@ class TaskProposalNormalizationContractTest {
                 List.of("region-1"), Map.of("sourceKeys", List.of("microbrain.lighting")));
         AuthorizedDeviceScope scope = new AuthorizedDeviceScope() {
             @Override public RequestIdentity identity() {
-                return new RequestIdentity("Bearer fixture", "LOCAL", IotSource.OFFICE);
+                return new RequestIdentity("Bearer fixture", "LOCAL", IotSourceEnum.OFFICE);
             }
-            @Override public IotSource source() { return IotSource.OFFICE; }
+            @Override public IotSourceEnum source() { return IotSourceEnum.OFFICE; }
             @Override public List<AuthorizedDevice> devices() { return List.of(ac, light); }
         };
         return new IotAdapter() {

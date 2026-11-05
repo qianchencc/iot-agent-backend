@@ -23,7 +23,7 @@ import ltd.qianc.iotagent.error.BusinessException;
 import ltd.qianc.iotagent.iot.AuthorizedDevice;
 import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
 import ltd.qianc.iotagent.iot.IotAdapter;
-import ltd.qianc.iotagent.iot.IotSource;
+import ltd.qianc.iotagent.iot.IotSourceEnum;
 import ltd.qianc.iotagent.iot.ObservationAdapter;
 import ltd.qianc.iotagent.iot.ObservationRequest;
 import ltd.qianc.iotagent.iot.RequestIdentity;
@@ -37,7 +37,7 @@ import reactor.core.publisher.Mono;
 
 class AgentCheckpointContractTest {
     private static final ObjectMapper MAPPER = new ObjectMapper();
-    private static final RequestIdentity IDENTITY = new RequestIdentity("Bearer fixture", "TENANT", IotSource.COMPANY, "owner");
+    private static final RequestIdentity IDENTITY = new RequestIdentity("Bearer fixture", "TENANT", IotSourceEnum.COMPANY, "owner");
     private static final Clock CLOCK = Clock.fixed(Instant.parse("2026-11-05T02:00:00Z"), ZoneOffset.UTC);
     private static final TaskExecutionRequest REQUEST = new TaskExecutionRequest("task", "phase", "company", "{}",
             Instant.parse("2026-11-02T01:00:00Z"), "{}");
@@ -124,7 +124,7 @@ class AgentCheckpointContractTest {
             server.start();
             IotAdapter iot = new IotAdapter() {
                 @Override public Mono<AuthorizedDeviceScope> loadAuthorizedDeviceScope(RequestIdentity identity) {
-                    return Mono.just(AuthorizedDeviceScope.of(identity, IotSource.COMPANY, List.of(
+                    return Mono.just(AuthorizedDeviceScope.of(identity, IotSourceEnum.COMPANY, List.of(
                             new AuthorizedDevice("meter-1", "energy", "电表1", "26楼", true),
                             new AuthorizedDevice("meter-2", "energy", "电表2", "27楼", true))));
                 }

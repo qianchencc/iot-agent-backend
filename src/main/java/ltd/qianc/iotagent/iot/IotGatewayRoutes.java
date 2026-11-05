@@ -56,9 +56,9 @@ public record IotGatewayRoutes(
         companyMonitorDownPath = optionalPath(companyMonitorDownPath, "companyMonitorDownPath");
     }
 
-    public String path(IotSource source) {
+    public String path(IotSourceEnum source) {
         Objects.requireNonNull(source, "source");
-        return source == IotSource.OFFICE ? officeScopePath : companyScopePath;
+        return source == IotSourceEnum.OFFICE ? officeScopePath : companyScopePath;
     }
     public boolean hasOfficeDirectoryRoutes() { return officeMembershipPath != null && !officeDeviceSources.isEmpty(); }
     public boolean hasCompanyCatalogRoutes() {

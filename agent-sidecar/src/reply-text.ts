@@ -1,3 +1,5 @@
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
+
 const tags = ["<think>", "</think>", "<thinking>", "</thinking>"];
 
 export interface ReplyTextFilter {
@@ -47,4 +49,15 @@ export function createReplyTextFilter(): ReplyTextFilter {
 
 export function publicReplyText(text: string): string {
   return createReplyTextFilter().push(text);
+}
+
+/** Runtime app.ts toDurableMessage, also applied when reading existing messages. */
+export function toDurableMessage(message: AgentMessage): AgentMessage {
+  const copy = JSON.parse(JSON.stringify(message)) as AgentMessage;
+  if (copy.role === "assistant") {
+    const filter = createReplyTextFilter();
+    copy.content = copy.content.map(block => block.type === "text"
+      ? { ...block, text: filter.push(block.text) } : block);
+  }
+  return copy;
 }

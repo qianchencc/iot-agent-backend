@@ -1,7 +1,8 @@
 package ltd.qianc.iotagent.region.internal;
 
 import java.time.Instant;
-import java.util.Optional;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import ltd.qianc.iotagent.region.RegionSeenStore;
 import org.springframework.jdbc.core.JdbcTemplate;
 
@@ -21,9 +22,11 @@ public final class JdbcRegionSeenStore implements RegionSeenStore {
     }
 
     @Override
-    public Optional<Instant> seenAt(String tenantCode, String ownerKey, String regionId) {
-        return jdbc.query("SELECT seen_at FROM region_seen WHERE tenant_code=? AND owner_key=? AND region_id=?",
-                        (rs, row) -> rs.getTimestamp(1).toInstant(), tenantCode, ownerKey, regionId)
-                .stream().findFirst();
+    public Map<String, Instant> seenAtByRegion(String tenantCode, String ownerKey) {
+        Map<String, Instant> watermarks = new LinkedHashMap<>();
+        jdbc.query("SELECT region_id,seen_at FROM region_seen WHERE tenant_code=? AND owner_key=?",
+                (org.springframework.jdbc.core.RowCallbackHandler) rs ->
+                        watermarks.put(rs.getString(1), rs.getTimestamp(2).toInstant()), tenantCode, ownerKey);
+        return Map.copyOf(watermarks);
     }
 }

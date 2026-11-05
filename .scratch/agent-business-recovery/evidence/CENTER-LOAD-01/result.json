@@ -1,0 +1,121 @@
+{
+  "caseId": "CENTER-LOAD-01",
+  "date": "2026-11-04",
+  "status": "passed in WeChat developer tools for existing account; physical phone not accepted",
+  "request": "Fix slow task-center and notification-center loading, without changing another thread lifecycle behavior",
+  "rootCauses": [
+    {
+      "type": "synchronous upstream authorization catalog",
+      "observedUiNotificationMs": 7033,
+      "actualStack": [
+        "TaskController.notifications",
+        "TaskFacade.notificationsView",
+        "TaskFacade.scope",
+        "IotAdapter.loadAuthorizedDeviceScope",
+        "Mono.block"
+      ],
+      "companyScopeReuseBefore": "concurrent callers only; every later request reloads all device families before local SQL"
+    },
+    {
+      "type": "unbounded summary SQL date sentinel overflow",
+      "actualMysqlError": "Incorrect DATETIME value: '10000-01-01 07:59:59'",
+      "evidence": "Actual JFR and isolated MySQL regression red before fix"
+    },
+    {
+      "type": "blocking summary composition on nonblocking reactive subscriber",
+      "evidence": "Public AutomationSummaryReader Spring regression red before boundedElastic offload"
+    }
+  ],
+  "beforeAuthenticatedReads": [
+    {
+      "route": "notifications",
+      "status": 200,
+      "elapsedMs": 5332,
+      "items": 2,
+      "source": "company",
+      "limit": 30
+    },
+    {
+      "route": "tasks",
+      "status": 200,
+      "elapsedMs": 5355,
+      "items": 2,
+      "source": "company"
+    }
+  ],
+  "afterAuthenticatedReads": [
+    {
+      "route": "notifications",
+      "status": 200,
+      "elapsedMs": 80,
+      "items": 2
+    },
+    {
+      "route": "tasks",
+      "status": 200,
+      "elapsedMs": 26,
+      "items": 2
+    }
+  ],
+  "measurementCaveat": "Representative single requests, not percentiles. Held backend authorization was ready; initial identity/catalog preparation remains explicit and is not an empty business result. No task/notification payload cache added.",
+  "fixContract": {
+    "ordinaryRead": "ReadSnapshots.read authorization metadata; no synchronous upstream crawl on HTTP thread",
+    "refresh": "existing CURRENT policy and background refresh; local facts queried on each GET",
+    "scopeData": "read-only device metadata and region ids, no control bindings",
+    "failedRenewal": "fail closed; never substitute a tenant-wide/empty scope",
+    "credentialDenial": "fresh 401/403 published to existing shared snapshot barrier",
+    "controlsAndTaskMutations": "still fresh catalog and binding validation",
+    "seenReceipts": "same read authorization as list, per approved original Runtime handoff",
+    "backgroundComposition": "ReadSnapshots.load only at background composition seam; Reactor offloads blocking work",
+    "nullableSqlBounds": "omit absent predicates rather than sending year9999 to MySQL"
+  },
+  "verification": {
+    "fullIntegratedSuite": {
+      "tests": 464,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "forcedForkShutdown": false,
+    "isolatedMySqlAndRedis": true,
+    "newRegressionCount": 8,
+    "frontend": "frontend.json",
+    "screenshots": [
+      "task-center.png",
+      "notification-center.png"
+    ],
+    "realRowsVisible": {
+      "taskCenter": 2,
+      "notificationCenter": 2
+    },
+    "automationSummary": {
+      "status": "fresh",
+      "errors": 0
+    },
+    "realPhone": "not accepted"
+  },
+  "deployment": {
+    "javaPort": 3381,
+    "nodePort": 3382,
+    "artifact": "/Users/qianchen/works/新发展/iot-agent-backend/var/center-read-latency-20261104-160625/backend-read-centers-integrated.jar",
+    "sha256": "d060f4f0e7e40284f64f60e037997eb5ad14945ce6318d0e47eb3dcc93c0a219",
+    "basis": "/Users/qianchen/works/新发展/iot-agent-backend/var/task-lifecycle-20261104-164210/backend-complete.jar",
+    "lifecycleBytecodePreserved": {
+      "task/TaskScanner": true,
+      "task/internal/TaskConfiguration": true
+    },
+    "changedRuntimeClasses": [
+      "BOOT-INF/classes/ltd/qianc/iotagent/storage/TaskFactStoresFactory.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/storage/internal/JdbcTaskProjectionStore.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/storage/internal/StorageConfiguration$1.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/storage/internal/StorageConfiguration.class"
+    ],
+    "modelAndOtherEnvironmentSettingsChanged": false,
+    "privateConfigMode": "0600",
+    "rollbackConfigPrivate": "/Users/qianchen/works/新发展/iot-agent-backend/var/center-read-latency-20261104-160625/launch-before-integration.yaml"
+  },
+  "ownership": "Other thread task lifecycle source and bytecode retained; only loading/auth-read/summary-boundary fixes integrated",
+  "productionRuntimeTouched": false,
+  "deviceControlTaskCreationOrNotificationSendRequestedByProbe": false,
+  "credentialsOrStreamUrlsStored": false
+}

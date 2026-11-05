@@ -7,6 +7,11 @@ import reactor.core.publisher.Mono;
 public interface IotAdapter {
 
     Mono<AuthorizedDeviceScope> loadAuthorizedDeviceScope(RequestIdentity identity);
+
+    /** Optional display metadata only; callers must never use it for authorization. */
+    default Mono<String> readCreatorDisplayName(RequestIdentity identity) {
+        return Mono.error(new UpstreamUnavailableException("成员姓名读取适配器未接入"));
+    }
     /** Company safety metadata is a narrower read-only scope than the full catalog. */
     default Mono<AuthorizedDeviceScope> loadAuthorizedSafetyScope(RequestIdentity identity) {
         return loadAuthorizedDeviceScope(identity);

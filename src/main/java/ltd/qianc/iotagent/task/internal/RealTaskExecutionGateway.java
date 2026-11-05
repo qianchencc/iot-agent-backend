@@ -17,16 +17,23 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import ltd.qianc.iotagent.action.ActionCommandGateway;
 import ltd.qianc.iotagent.action.ActionDispatchException;
 import ltd.qianc.iotagent.action.ActionDispatchResult;
-import ltd.qianc.iotagent.action.ActionDraftStatus;
-import ltd.qianc.iotagent.action.ActionReceiptOutcome;
+import ltd.qianc.iotagent.action.ActionDraftStatusEnum;
+import ltd.qianc.iotagent.action.ActionReceiptOutcomeEnum;
 import ltd.qianc.iotagent.iot.AuthorizedDevice;
 import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
 import ltd.qianc.iotagent.iot.DeviceStateReadResult;
+import ltd.qianc.iotagent.iot.GatewayAuthorizationException;
 import ltd.qianc.iotagent.iot.IotAdapter;
-import ltd.qianc.iotagent.iot.IotSource;
+import ltd.qianc.iotagent.iot.IotSourceEnum;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.task.TaskExecutionGateway;
 import ltd.qianc.iotagent.task.TaskExecutionIdentityStore;
@@ -49,6 +56,8 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
     private static final double MIN_ESTIMATE_KWH = 0.1;
     private static final ZoneId SAFETY_ZONE = ZoneId.of("Asia/Shanghai");
     private static final int SAFETY_MAX_PAGES = 20;
+    /** Conservative migration cap for the Runtime's per-hub execution workers (originally 3). */
+    private static final int DISPATCH_CONCURRENCY = 6;
 
     private final ObjectMapper mapper;
     private final IotAdapter iot;
@@ -96,7 +105,7 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
         RequestIdentity gatewayIdentity;
         try {
             gatewayIdentity = new RequestIdentity(identity.authorization(), identity.tenantCode(),
-                    IotSource.parse(request.source()), identity.ownerKey());
+                    IotSourceEnum.parse(request.source()), identity.ownerKey());
         } catch (RuntimeException invalid) {
             throw new DispatchException("任务执行身份或来源无效", false);
         }
@@ -122,55 +131,169 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
         if (read.path("agent").isObject()) {
             var checkpoint = checkpoints.get();
             if (checkpoint == null) throw new DispatchException("只读检查点 Agent Engine 未配置", false);
-            List<String> meters = new ArrayList<>();
             for (JsonNode device : read.path("devices")) {
                 String id = device.path("id").asText();
-                AuthorizedDevice meter = scope.device(id).orElseThrow(() -> new DispatchException("电表授权已变化", false));
-                if (!"energy".equals(meter.kind())) throw new DispatchException("检查点只能读取已确认的电表", false);
-                meters.add(id);
+                AuthorizedDevice meter = scope.device(id).orElse(null);
+                if (meter == null || !"energy".equals(meter.kind())) {
+                    // Runtime failPhase(authorization_revoked): the fixed meter scope
+                    // left the catalog, so the phase fails before any dispatch and
+                    // the recurring plan is disabled.
+                    throw new DispatchException("固定计量范围已不在当前授权设备目录", false,
+                            DispatchException.AUTHORIZATION_REVOKED);
+                }
             }
+            List<String> meters = new ArrayList<>();
+            for (JsonNode device : read.path("devices")) meters.add(device.path("id").asText());
             try {
                 return checkpoint.execute(gatewayIdentity, request, meters, mapper.convertValue(read.path("agent"), Map.class),
                         () -> guard.dispatchable(request.taskId(), request.phaseId(), clock.instant(), null));
+            } catch (DispatchException failure) {
+                throw failure;
             } catch (RuntimeException failure) {
                 throw new DispatchException("只读检查点未完成；没有下发设备控制", failure, false);
             }
         }
         if (hasAc) return executeAcInspection(gatewayIdentity, scope, phase, task, request);
         if (hasActions) return executeActions(gatewayIdentity, scope, phase, task, request);
-        return executeRead(gatewayIdentity, scope, phase, request);
+        return executeRead(gatewayIdentity, scope, phase, task, request);
     }
 
+    /**
+     * Runtime executeDevices shape for general control: targets are grouped per
+     * hub so one physical chain keeps its parameter order, bounded workers
+     * consume the groups, and the durable cancel/window guard is re-checked
+     * immediately before each single dispatch. Dispatch is never retried and an
+     * accepted receipt only counts as success when the phase does not require
+     * platform readback (Office acceptance semantics).
+     */
     private TaskExecutionResult executeActions(RequestIdentity identity, AuthorizedDeviceScope scope,
                                                JsonNode phase, JsonNode task, TaskExecutionRequest request) {
+        boolean company = "company".equals(task.path("source").asText(""));
+        boolean requiresVerification = phase.path("requiresVerification").asBoolean(company);
         ArrayNode selected = mapper.createArrayNode();
         for (JsonNode action : phase.path("actions")) selected.add(action);
-        List<String> ids = new ArrayList<>();
-        for (JsonNode action : selected) ids.add(action.path("deviceId").asText());
-        DeviceStateReadResult before = readStates(identity, ids);
-        Map<String, Object> observed = before == null ? Map.of() : new LinkedHashMap<>(before.states());
+        Instant taskWindowEnd = windowEnd(task);
+        List<JsonNode> available = new ArrayList<>();
+        Set<String> missingDevices = new LinkedHashSet<>();
+        for (JsonNode action : selected) {
+            AuthorizedDevice device = scope.device(action.path("deviceId").asText()).orElse(null);
+            if (device != null && device.kind().equalsIgnoreCase(action.path("kind").asText())
+                    && !device.observationOnly()) {
+                available.add(action);
+            } else if (company) {
+                // Runtime failPhase(authorization_revoked) for company control:
+                // the fixed scope left the catalog, nothing is dispatched.
+                throw new DispatchException("固定控制范围已不在当前授权设备目录，本阶段未下发", false,
+                        DispatchException.AUTHORIZATION_REVOKED);
+            } else {
+                missingDevices.add(action.path("deviceId").asText());
+            }
+        }
+        if (requiresVerification) {
+            for (JsonNode action : available) {
+                if (!bindingMatches(action, scope.device(action.path("deviceId").asText()).orElseThrow())) {
+                    throw new DispatchException("固定范围或控制绑定已变化，本阶段未下发", false,
+                            DispatchException.BINDING_CHANGED);
+                }
+            }
+        }
+        DeviceStateReadResult before = readStates(identity,
+                available.stream().map(action -> action.path("deviceId").asText()).toList());
+        Map<String, Object> observed = new LinkedHashMap<>(before.states());
+        Map<String, ObjectNode> receiptsByDevice = new ConcurrentHashMap<>();
+        Map<String, JsonNode> readbackByDevice = new ConcurrentHashMap<>();
+        AtomicBoolean dispatchStarted = new AtomicBoolean();
+        Map<String, List<JsonNode>> hubGroups = new LinkedHashMap<>();
+        for (JsonNode action : available) {
+            AuthorizedDevice device = scope.device(action.path("deviceId").asText()).orElse(null);
+            String hub = device == null || device.hubDeviceId() == null || device.hubDeviceId().isBlank()
+                    ? action.path("deviceId").asText() : device.hubDeviceId();
+            hubGroups.computeIfAbsent(hub, ignored -> new ArrayList<>()).add(action);
+        }
+        List<List<JsonNode>> groups = new ArrayList<>(hubGroups.values());
+        int workerCount = Math.min(DISPATCH_CONCURRENCY, groups.size());
+        AtomicInteger nextGroup = new AtomicInteger();
+        AtomicBoolean draining = new AtomicBoolean();
+        AtomicReference<RuntimeException> failure = new AtomicReference<>();
+        List<Runnable> workers = new ArrayList<>(Math.max(1, workerCount));
+        for (int index = 0; index < workerCount; index++) {
+            workers.add(() -> {
+                try {
+                    while (failure.get() == null && !draining.get()) {
+                        int groupIndex = nextGroup.getAndIncrement();
+                        if (groupIndex >= groups.size()) return;
+                        for (JsonNode action : groups.get(groupIndex)) {
+                            if (failure.get() != null || draining.get()) return;
+                            dispatchOneAction(identity, scope, phase, request, action, observed,
+                                    taskWindowEnd, receiptsByDevice, readbackByDevice, dispatchStarted);
+                        }
+                    }
+                } catch (RuntimeException error) {
+                    failure.compareAndSet(null, error);
+                }
+            });
+        }
+        boolean interrupted = runAcWorkers(workers, draining);
+        if (interrupted) Thread.currentThread().interrupt();
+        RuntimeException dispatchFailure = failure.get();
+        if (dispatchFailure != null) {
+            boolean anyDispatch = dispatchStarted.get();
+            String code = null;
+            if (dispatchFailure instanceof DispatchException failed) {
+                anyDispatch |= failed.dispatchStarted();
+                code = failed.reasonCode();
+            }
+            throw new DispatchException("设备指令批次未完成，已下发指令不自动重试", dispatchFailure, anyDispatch, code);
+        }
+        if (interrupted) {
+            throw new DispatchException("设备指令执行被中断，部分结果未知", dispatchStarted.get());
+        }
         ObjectNode result = mapper.createObjectNode();
         ObjectNode devices = mapper.createObjectNode();
-        boolean dispatchStarted = false;
+        String outcome = actionsOutcome(selected, receiptsByDevice, readbackByDevice, before, devices,
+                requiresVerification, missingDevices);
+        result.put("outcome", outcome).put("executedAt", clock.instant().toString())
+                .put("dispatchStarted", dispatchStarted.get())
+                .put("requiresVerification", requiresVerification);
+        result.set("devices", mapper.valueToTree(devices));
+        return new TaskExecutionResult(outcome, result.toString(), dispatchStarted.get());
+    }
+
+    /** One guarded single-action dispatch: the durable guard runs right before it. */
+    private void dispatchOneAction(RequestIdentity identity, AuthorizedDeviceScope scope, JsonNode phase,
+                                   TaskExecutionRequest request, JsonNode action, Map<String, Object> observed,
+                                   Instant taskWindowEnd, Map<String, ObjectNode> receiptsByDevice,
+                                   Map<String, JsonNode> readbackByDevice, AtomicBoolean dispatchStarted) {
+        String deviceId = action.path("deviceId").asText();
+        if (!guard.dispatchable(request.taskId(), request.phaseId(), clock.instant(), taskWindowEnd)) {
+            ObjectNode receipt = mapper.createObjectNode();
+            receipt.put("actionId", action.path("id").asText(deviceId));
+            receipt.put("outcome", "NOT_DISPATCHED");
+            receiptsByDevice.put(deviceId, receipt);
+            return;
+        }
+        ArrayNode single = mapper.createArrayNode();
+        single.add(action.deepCopy());
         try {
             AuthorizedDeviceScope fresh = loadScope(identity);
-            validateTaskAuthorization(task, phase, fresh);
-            ActionDispatchResult dispatch = actions.dispatch(identity, fresh, selected.toString(), observed);
-            dispatchStarted = dispatch.dispatchStarted();
-            result.put("gateway", "customer").put("dispatchStarted", dispatchStarted);
+            ActionDispatchResult dispatch = actions.dispatch(identity, fresh, single.toString(), observed);
+            if (dispatch.dispatchStarted()) dispatchStarted.set(true);
             JsonNode gatewayResult = read(dispatch.resultJson());
-            result.set("receipts", gatewayResult.path("receipts").deepCopy());
-            result.set("readbacks", gatewayResult.path("readbacks").deepCopy());
-            result.set("readback", gatewayResult.path("readback").deepCopy());
-            result.set("observedStates", gatewayResult.path("observedStates").deepCopy());
-            result.put("receiptOutcome", dispatch.receiptOutcome().name());
-            result.put("gatewayStatus", dispatch.status().name());
-            String outcome = devicesOutcome(selected, gatewayResult, devices);
-            result.put("outcome", outcome).put("executedAt", clock.instant().toString());
-            result.set("devices", mapper.valueToTree(devices));
-            return new TaskExecutionResult(outcome, result.toString(), dispatchStarted);
+            for (JsonNode receipt : gatewayResult.path("receipts")) {
+                if (deviceId.equals(actionDeviceId(receipt.path("actionId").asText(""), action))) {
+                    receiptsByDevice.put(deviceId, (ObjectNode) receipt);
+                }
+            }
+            for (JsonNode readback : gatewayResult.path("readbacks")) {
+                if (deviceId.equals(actionDeviceId(readback.path("actionId").asText(""), action))) {
+                    readbackByDevice.put(deviceId, readback);
+                }
+            }
         } catch (ActionDispatchException interrupted) {
             throw new DispatchException("设备指令执行中断，部分结果未知", interrupted, interrupted.dispatchStarted());
+        } catch (GatewayAuthorizationException rejected) {
+            throw new DispatchException("创建者登录已失效", rejected, dispatchStarted.get(),
+                    DispatchException.IDENTITY_REJECTED);
         } catch (ltd.qianc.iotagent.error.BusinessException unavailable) {
             throw new DispatchException(unavailable.getMessage() == null ? "设备控制适配器不可用" : unavailable.getMessage(), false);
         } catch (IllegalArgumentException rejected) {
@@ -178,47 +301,62 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
         }
     }
 
-    private String devicesOutcome(ArrayNode actions, JsonNode gatewayResult, ObjectNode devices) {
-        Map<String, String> receiptByAction = new LinkedHashMap<>();
-        Map<String, String> readbackById = new LinkedHashMap<>();
-        Map<String, JsonNode> readbackNode = new LinkedHashMap<>();
-        for (JsonNode receipt : gatewayResult.path("receipts")) {
-            receiptByAction.put(receipt.path("actionId").asText(""), receipt.path("outcome").asText("UNKNOWN"));
-        }
-        for (JsonNode readback : gatewayResult.path("readbacks")) {
-            String id = readback.path("actionId").asText("");
-            readbackById.put(id, readback.path("outcome").asText("unconfirmed"));
-            readbackNode.put(id, readback);
-        }
-        JsonNode observedStates = gatewayResult.path("observedStates");
-        int verified = 0, uncertain = 0, failed = 0, satisfied = 0;
+    private String actionDeviceId(String actionId, JsonNode action) {
+        String expected = action.path("id").asText(action.path("deviceId").asText());
+        return expected.equals(actionId) ? action.path("deviceId").asText() : null;
+    }
+
+    /**
+     * Runtime finishPhase semantics: success is a verified or satisfied device,
+     * or an accepted receipt that was never timed out when the phase does not
+     * require verification (Office acceptance). A verified-only phase can never
+     * be COMPLETED on receipts alone.
+     */
+    private String actionsOutcome(ArrayNode actions, Map<String, ObjectNode> receiptsByDevice,
+                                  Map<String, JsonNode> readbackByDevice, DeviceStateReadResult before,
+                                  ObjectNode devices, boolean requiresVerification, Set<String> missingDevices) {
+        int total = 0, successes = 0, satisfied = 0;
+        boolean partiallyAccepted = false;
+        List<String> outcomes = new ArrayList<>();
         for (JsonNode action : actions) {
-            String actionId = action.path("id").asText(action.path("deviceId").asText());
+            total++;
             String deviceId = action.path("deviceId").asText();
-            String receipt = receiptByAction.getOrDefault(actionId, "UNKNOWN");
-            String readback = readbackById.getOrDefault(actionId,
-                    gatewayResult.path("readback").path(actionId).asText("unconfirmed"));
+            ObjectNode receipt = receiptsByDevice.get(deviceId);
+            String receiptOutcome = receipt == null ? "" : receipt.path("outcome").asText("");
+            JsonNode readbackNode = readbackByDevice.get(deviceId);
+            String readback = readbackNode == null ? "unconfirmed" : readbackNode.path("outcome").asText("unconfirmed");
             String outcome;
             String reason = null;
-            if ("ALREADY_SATISFIED".equals(receipt)) {
+            if (missingDevices.contains(deviceId)) {
+                outcome = "missing";
+                reason = "设备已不在当前授权目录";
+            } else if (receiptOutcome.isBlank() || "NOT_DISPATCHED".equals(receiptOutcome)) {
+                outcome = "not_dispatched";
+                reason = "任务已停止或有效时段已结束";
+            } else if ("ALREADY_SATISFIED".equals(receiptOutcome)) {
                 outcome = "satisfied";
                 satisfied++;
-            } else if ("REJECTED".equals(receipt)) {
+            } else if ("REJECTED".equals(receiptOutcome)) {
                 outcome = "rejected";
                 reason = "上游拒绝设备指令";
-                failed++;
-            } else if ("ACCEPTED".equals(receipt) && "confirmed".equals(readback)) {
+            } else if ("PARTIALLY_ACCEPTED".equals(receiptOutcome)) {
+                outcome = "unconfirmed";
+                reason = "部分参数已受理，未全部下发";
+                partiallyAccepted = true;
+            } else if ("ACCEPTED".equals(receiptOutcome) && "confirmed".equals(readback)) {
                 outcome = "verified";
-                verified++;
-            } else if ("ACCEPTED".equals(receipt)) {
+            } else if ("ACCEPTED".equals(receiptOutcome)) {
                 outcome = "unconfirmed";
                 reason = "指令已受理，尚未取得平台实测回读";
-                uncertain++;
             } else {
                 outcome = "unknown";
                 reason = "设备指令结果未知";
-                uncertain++;
             }
+            outcomes.add(outcome);
+            boolean success = "verified".equals(outcome) || "satisfied".equals(outcome)
+                    || ("unconfirmed".equals(outcome) && !requiresVerification
+                    && !"PARTIALLY_ACCEPTED".equals(receiptOutcome));
+            if (success) successes++;
             ObjectNode device = mapper.createObjectNode();
             device.put("deviceId", deviceId).put("kind", action.path("kind").asText())
                     .put("name", action.path("deviceName").asText(action.path("name").asText(deviceId)))
@@ -226,29 +364,46 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
                     .put("outcome", outcome);
             if (reason != null) device.put("reason", reason);
             device.set("target", action.path("command").deepCopy());
-            device.put("receipt", receipt);
+            device.put("receipt", receiptOutcome.isBlank() ? "UNKNOWN" : receiptOutcome);
             device.put("readback", readback);
-            JsonNode observed = observedStates.path(deviceId);
-            if (!observed.isMissingNode() && !observed.isNull()) device.set("observed", observed.deepCopy());
-            JsonNode readbackValue = readbackNode.get(actionId);
-            if (readbackValue != null && readbackValue.has("observedAt")) {
-                device.put("observedAt", readbackValue.path("observedAt").asText());
+            if (receipt != null && receipt.path("fields").isArray()) device.set("fields", receipt.get("fields"));
+            Object observedState = before.states().get(deviceId);
+            if (observedState != null) device.set("observed", mapper.valueToTree(observedState));
+            if (readbackNode != null && readbackNode.has("observedAt")) {
+                device.put("observedAt", readbackNode.path("observedAt").asText());
             }
+            if (requiresVerification) device.put("requiresVerification", true);
             devices.set(deviceId, device);
         }
-        if (failed > 0) return verified + satisfied > 0 ? "PARTIAL" : "FAILED";
-        if (uncertain > 0) return verified + satisfied > 0 ? "PARTIAL" : "UNCONFIRMED";
-        return "COMPLETED";
+        boolean uncertainOnly = outcomes.stream()
+                .allMatch(value -> Set.of("verified", "satisfied", "unconfirmed", "unknown").contains(value));
+        boolean anyUncertain = outcomes.stream().anyMatch(value -> "unconfirmed".equals(value) || "unknown".equals(value));
+        if (partiallyAccepted) return "PARTIAL";
+        if (successes == total) return satisfied == total ? "SATISFIED" : "COMPLETED";
+        if (requiresVerification && uncertainOnly) return "UNCONFIRMED";
+        if (successes > 0 || (requiresVerification && anyUncertain)) return "PARTIAL";
+        return "FAILED";
     }
 
     private TaskExecutionResult executeRead(RequestIdentity identity, AuthorizedDeviceScope scope,
-                                            JsonNode phase, TaskExecutionRequest request) {
+                                            JsonNode phase, JsonNode task, TaskExecutionRequest request) {
+        boolean company = "company".equals(task.path("source").asText(""));
         JsonNode devicesNode = phase.path("read").path("devices");
+        Set<String> missingDevices = new LinkedHashSet<>();
+        for (JsonNode device : devicesNode) {
+            String id = device.path("id").asText();
+            AuthorizedDevice authorized = scope.device(id).orElse(null);
+            if (authorized == null || !authorized.kind().equalsIgnoreCase(device.path("kind").asText(""))) {
+                missingDevices.add(id);
+            }
+        }
         List<String> stateIds = new ArrayList<>();
         List<JsonNode> safetyDevices = new ArrayList<>();
         for (JsonNode device : devicesNode) {
+            String id = device.path("id").asText();
+            if (missingDevices.contains(id)) continue;
             if ("safety".equalsIgnoreCase(device.path("kind").asText(""))) safetyDevices.add(device);
-            else stateIds.add(device.path("id").asText());
+            else stateIds.add(id);
         }
         DeviceStateReadResult states = stateIds.isEmpty()
                 ? new DeviceStateReadResult(Map.of(), clock.instant().toString())
@@ -258,9 +413,22 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
         ArrayNode observationBlocks = mapper.createArrayNode();
         int observed = 0, unavailable = 0, total = 0;
         for (JsonNode device : devicesNode) {
-            if (!"safety".equalsIgnoreCase(device.path("kind").asText(""))) continue;
-            total++;
             String id = device.path("id").asText();
+            if (missingDevices.contains(id)) {
+                total++;
+                ObjectNode view = mapper.createObjectNode();
+                view.put("deviceId", id).put("kind", device.path("kind").asText())
+                        .put("name", device.path("name").asText(id))
+                        .put("location", device.path("location").asText(""));
+                view.put("outcome", "missing").put("reason", "设备已不在当前授权目录");
+                devices.set(id, view);
+            }
+        }
+        for (JsonNode device : devicesNode) {
+            String id = device.path("id").asText();
+            if (missingDevices.contains(id)
+                    || !"safety".equalsIgnoreCase(device.path("kind").asText(""))) continue;
+            total++;
             ObjectNode view = mapper.createObjectNode();
             view.put("deviceId", id).put("kind", "safety")
                     .put("name", device.path("name").asText(id))
@@ -271,7 +439,7 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
         }
         for (String id : stateIds) {
             total++;
-            Object state = states == null ? null : states.states().get(id);
+            Object state = states.states().get(id);
             ObjectNode view = mapper.createObjectNode();
             JsonNode definition = readDevice(devicesNode, id);
             view.put("deviceId", id).put("kind", definition.path("kind").asText())
@@ -311,7 +479,14 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
         }
         String outcome = observed == total ? "COMPLETED" : observed > 0 ? "PARTIAL" : "FAILED";
         result.put("outcome", outcome).put("executedAt", clock.instant().toString())
-                .put("dispatchStarted", false).put("observedAt", states == null ? null : states.observedAt());
+                .put("dispatchStarted", false).put("observedAt", states.observedAt());
+        if (company && !missingDevices.isEmpty()) {
+            // Runtime disables the recurring plan after finishRead when the fixed
+            // read scope left the catalog; the phase itself still records every
+            // per-device outcome.
+            result.putObject("invalidation").put("kind", DispatchException.AUTHORIZATION_REVOKED)
+                    .put("reason", "固定读取范围已不在当前授权设备目录");
+        }
         result.set("devices", mapper.valueToTree(devices));
         result.set("observations", observationBlocks);
         return new TaskExecutionResult(outcome, result.toString(), false);
@@ -348,27 +523,59 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
                 : clock.instant();
         Instant from = to.minus(Duration.ofDays(days));
 
+        // Runtime reads the three alert categories concurrently (Promise.all over
+        // smoke/gas/water); pagination inside one category stays serial and
+        // ordered, and per-category failures stay isolated to their category.
+        String[] alertTypes = {"smoke", "gas", "water"};
+        record LedgerRead(String type, List<TaskSafetyLedgerReader.Alert> alerts, Boolean complete, String failure) { }
+        LedgerRead[] reads = new LedgerRead[alertTypes.length];
+        CountDownLatch ledgerDone = new CountDownLatch(alertTypes.length);
+        for (int index = 0; index < alertTypes.length; index++) {
+            int slot = index;
+            String type = alertTypes[index];
+            Thread.ofVirtual().name("safety-ledger-reader").unstarted(() -> {
+                try {
+                    List<TaskSafetyLedgerReader.Alert> alerts = new ArrayList<>();
+                    String cursor = null;
+                    boolean complete = false;
+                    for (int page = 0; page < SAFETY_MAX_PAGES; page++) {
+                        TaskSafetyLedgerReader.Page result = safetyLedger.read(identity, type, from, to, cursor);
+                        alerts.addAll(result.alerts());
+                        if (result.nextCursor() == null) {
+                            complete = result.coverageComplete();
+                            break;
+                        }
+                        cursor = result.nextCursor();
+                    }
+                    reads[slot] = new LedgerRead(type, alerts, complete, null);
+                } catch (RuntimeException failure) {
+                    reads[slot] = new LedgerRead(type, List.of(), null,
+                            failure.getMessage() == null ? "安全台账读取失败" : failure.getMessage());
+                } finally {
+                    ledgerDone.countDown();
+                }
+            }).start();
+        }
+        // Category reads always settle; an interrupted caller only restores its
+        // flag afterwards, it never abandons a read half-way.
+        boolean ledgerInterrupted = false;
+        while (true) {
+            try {
+                if (ledgerDone.await(200, TimeUnit.MILLISECONDS)) break;
+            } catch (InterruptedException error) {
+                ledgerInterrupted = true;
+            }
+        }
+        if (ledgerInterrupted) Thread.currentThread().interrupt();
         Map<String, List<TaskSafetyLedgerReader.Alert>> alertsByType = new LinkedHashMap<>();
         Map<String, String> typeFailures = new LinkedHashMap<>();
         Map<String, Boolean> typeComplete = new LinkedHashMap<>();
-        for (String type : new String[] {"smoke", "gas", "water"}) {
-            try {
-                List<TaskSafetyLedgerReader.Alert> alerts = new ArrayList<>();
-                String cursor = null;
-                boolean complete = false;
-                for (int page = 0; page < SAFETY_MAX_PAGES; page++) {
-                    TaskSafetyLedgerReader.Page result = safetyLedger.read(identity, type, from, to, cursor);
-                    alerts.addAll(result.alerts());
-                    if (result.nextCursor() == null) {
-                        complete = result.coverageComplete();
-                        break;
-                    }
-                    cursor = result.nextCursor();
-                }
-                alertsByType.put(type, alerts);
-                typeComplete.put(type, complete);
-            } catch (RuntimeException failure) {
-                typeFailures.put(type, failure.getMessage() == null ? "安全台账读取失败" : failure.getMessage());
+        for (LedgerRead read : reads) {
+            if (read == null) continue;
+            if (read.failure() != null) typeFailures.put(read.type(), read.failure());
+            else {
+                alertsByType.put(read.type(), read.alerts());
+                typeComplete.put(read.type(), read.complete());
             }
         }
         Set<String> deviceIds = new LinkedHashSet<>();
@@ -494,7 +701,19 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
         if (!devicesNode.isArray() || devicesNode.isEmpty()) {
             throw new DispatchException("空调巡检缺少目标设备", false);
         }
-        int target = ac.path("target").asInt(ac.path("action").path("setpoint").asInt(AC_DEFAULT_TARGET));
+        for (JsonNode device : devicesNode) {
+            AuthorizedDevice authorized = scope.device(device.path("id").asText()).orElse(null);
+            if (authorized == null || !"ac".equals(authorized.kind())) {
+                throw new DispatchException("固定空调范围未能完整核验，本阶段未下发", false,
+                        DispatchException.AUTHORIZATION_REVOKED);
+            }
+            if ("adjust_to_26".equals(ac.path("mode").asText("inspect"))
+                    && !bindingMatches(device, authorized)) {
+                throw new DispatchException("空调控制绑定已变化，本阶段未下发", false,
+                        DispatchException.BINDING_CHANGED);
+            }
+        }
+        int target = acInspectionTarget(ac);
         boolean adjusting = "adjust_to_26".equals(ac.path("mode").asText("inspect"));
         List<String> ids = new ArrayList<>();
         for (JsonNode device : devicesNode) ids.add(device.path("id").asText());
@@ -513,11 +732,19 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
                 .putObject("setpoint").put("operator", "lt").put("value", target);
         Map<String, Double> adjustedBaseline = new LinkedHashMap<>();
         Map<String, Double> potentialBaseline = new LinkedHashMap<>();
+        AtomicBoolean dispatchStartedFlag = new AtomicBoolean();
         boolean dispatchStarted = false;
         Instant taskWindowEnd = windowEnd(task);
 
         if (adjusting) {
             Set<String> reserved = durableReservations(request.taskId());
+            // Runtime executeDevices shape for the adjusting checkpoint: targets
+            // are grouped per hub so one physical chain keeps its parameter
+            // order, while independent devices are adjusted by bounded
+            // concurrent workers. Every per-device safety gate still runs
+            // immediately before that device's single dispatch, exactly where
+            // the Runtime beforeDispatch hook ran inside each worker.
+            Map<String, List<JsonNode>> hubGroups = new LinkedHashMap<>();
             for (JsonNode device : devicesNode) {
                 String id = device.path("id").asText();
                 if (!"adjustable".equals(decisions.get(id).disposition())) continue;
@@ -525,63 +752,56 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
                     decisions.put(id, new Decision("not_dispatched", "本任务此前已尝试或已让行该设备，不自动重复调温", "not_dispatched"));
                     continue;
                 }
-                // Task dispatchability, the device's live condition and the
-                // authorization are rechecked immediately before this single
-                // dispatch; the durable reservation is taken first so no later
-                // checkpoint, concurrent scanner or restart can repeat it.
-                if (!guard.dispatchable(request.taskId(), request.phaseId(), clock.instant(), taskWindowEnd)) {
-                    decisions.put(id, new Decision("not_dispatched", "任务已停止或有效时段已结束", "not_dispatched"));
-                    guard.yield(request.taskId(), request.phaseId(), id, clock.instant());
-                    continue;
+                AuthorizedDevice authorized = scope.device(id).orElse(null);
+                String hub = authorized == null || authorized.hubDeviceId() == null || authorized.hubDeviceId().isBlank()
+                        ? id : authorized.hubDeviceId();
+                hubGroups.computeIfAbsent(hub, ignored -> new ArrayList<>()).add(device);
+            }
+            Map<String, Decision> concurrentDecisions = new ConcurrentHashMap<>(decisions);
+            Map<String, Double> concurrentBaseline = new ConcurrentHashMap<>();
+            List<List<JsonNode>> groups = new ArrayList<>(hubGroups.values());
+            int workerCount = Math.min(DISPATCH_CONCURRENCY, groups.size());
+            AtomicInteger nextGroup = new AtomicInteger();
+            AtomicBoolean draining = new AtomicBoolean();
+            AtomicReference<RuntimeException> failure = new AtomicReference<>();
+            List<Runnable> workers = new ArrayList<>(workerCount);
+            for (int index = 0; index < workerCount; index++) {
+                workers.add(() -> {
+                    try {
+                        while (failure.get() == null && !draining.get()) {
+                            int groupIndex = nextGroup.getAndIncrement();
+                            if (groupIndex >= groups.size()) return;
+                            for (JsonNode device : groups.get(groupIndex)) {
+                                if (failure.get() != null || draining.get()) return;
+                                adjustOneDevice(identity, scope, phase, task, request, device, target,
+                                        initial, taskWindowEnd, concurrentDecisions, concurrentBaseline,
+                                        dispatchStartedFlag);
+                            }
+                        }
+                    } catch (RuntimeException error) {
+                        failure.compareAndSet(null, error);
+                    }
+                });
+            }
+            boolean interrupted = runAcWorkers(workers, draining);
+            decisions = concurrentDecisions;
+            adjustedBaseline = concurrentBaseline;
+            dispatchStarted = dispatchStartedFlag.get();
+            if (interrupted) Thread.currentThread().interrupt();
+            RuntimeException dispatchFailure = failure.get();
+            if (dispatchFailure != null) {
+                boolean anyDispatch = dispatchStarted;
+                String code = null;
+                if (dispatchFailure instanceof DispatchException failed) {
+                    anyDispatch |= failed.dispatchStarted();
+                    code = failed.reasonCode();
                 }
-                DeviceStateReadResult latest = readStates(identity, List.of(id));
-                Decision current = classify(latest.states().get(id), target);
-                if ("unknown".equals(current.disposition())) {
-                    decisions.put(id, new Decision("not_dispatched", "下发前状态无法判断，本区间让行", "not_dispatched"));
-                    guard.yield(request.taskId(), request.phaseId(), id, clock.instant());
-                    continue;
-                }
-                if (!sameCondition(initial.states().get(id), latest.states().get(id))) {
-                    decisions.put(id, new Decision("not_dispatched", "设备参数已变化，本区间让行其它操作", "not_dispatched"));
-                    guard.yield(request.taskId(), request.phaseId(), id, clock.instant());
-                    continue;
-                }
-                if (!"adjustable".equals(current.disposition())) {
-                    decisions.put(id, new Decision("satisfied", "当前无需调整", "satisfied"));
-                    guard.yield(request.taskId(), request.phaseId(), id, clock.instant());
-                    continue;
-                }
-                if (!guard.reserve(request.taskId(), request.phaseId(), id, clock.instant(), taskWindowEnd)) {
-                    decisions.put(id, new Decision("not_dispatched", "任务已停止或有效时段已结束", "not_dispatched"));
-                    continue;
-                }
-                ArrayNode single = mapper.createArrayNode();
-                ObjectNode action = mapper.createObjectNode();
-                action.put("id", request.phaseId() + ":" + id);
-                action.put("deviceId", id);
-                action.put("kind", "ac");
-                action.put("deviceName", device.path("name").asText(id));
-                action.put("location", device.path("location").asText(""));
-                action.putObject("command").put("temperature", target);
-                single.add(action);
-                try {
-                    AuthorizedDeviceScope fresh = loadScope(identity);
-                    validateTaskAuthorization(task, phase, fresh);
-                    Map<String, Object> observed = new LinkedHashMap<>();
-                    observed.put(id, latest.states().get(id));
-                    ActionDispatchResult dispatch = actions.dispatch(identity, fresh, single.toString(), observed);
-                    dispatchStarted |= dispatch.dispatchStarted();
-                    applyAcDispatch(decisions, single, read(dispatch.resultJson()), adjustedBaseline);
-                } catch (ActionDispatchException interrupted) {
-                    throw new DispatchException("空调调温执行中断，部分指令结果未知", interrupted, interrupted.dispatchStarted());
-                } catch (ltd.qianc.iotagent.error.BusinessException unavailable) {
-                    throw new DispatchException(unavailable.getMessage() == null ? "设备控制适配器不可用" : unavailable.getMessage(), false);
-                } catch (IllegalArgumentException rejected) {
-                    throw new DispatchException(rejected.getMessage() == null ? "空调调温校验失败" : rejected.getMessage(), false);
-                }
+                throw new DispatchException("空调调温批次未完成，已下发指令不自动重试", dispatchFailure, anyDispatch, code);
+            }
+            if (interrupted) {
+                throw new DispatchException("空调调温执行被中断，部分结果未知", dispatchStarted);
             }
         }
-
         ArrayNode deviceArray = mapper.createArrayNode();
         int adjusted = 0, success = 0, unconfirmed = 0, total = 0;
         for (JsonNode device : devicesNode) {
@@ -643,12 +863,127 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
         return new TaskExecutionResult(outcome, result.toString(), dispatchStarted);
     }
 
+    /**
+     * One device's guarded adjustment: dispatchability, the live re-read, the
+     * unchanged-condition check, the fresh authorization and the durable
+     * reservation all run immediately before this single dispatch.
+     */
+    private void adjustOneDevice(RequestIdentity identity, AuthorizedDeviceScope scope, JsonNode phase,
+                                 JsonNode task, TaskExecutionRequest request, JsonNode device, int target,
+                                 DeviceStateReadResult initial, Instant taskWindowEnd,
+                                 Map<String, Decision> decisions, Map<String, Double> adjustedBaseline,
+                                 AtomicBoolean dispatchStarted) {
+        String id = device.path("id").asText();
+        // The durable reservation is taken first so no later checkpoint,
+        // concurrent scanner or restart can repeat this device.
+        if (!guard.dispatchable(request.taskId(), request.phaseId(), clock.instant(), taskWindowEnd)) {
+            decisions.put(id, new Decision("not_dispatched", "任务已停止或有效时段已结束", "not_dispatched"));
+            guard.yield(request.taskId(), request.phaseId(), id, clock.instant());
+            return;
+        }
+        DeviceStateReadResult latest = readStates(identity, List.of(id));
+        Decision current = classify(latest.states().get(id), target);
+        if ("unknown".equals(current.disposition())) {
+            decisions.put(id, new Decision("not_dispatched", "下发前状态无法判断，本区间让行", "not_dispatched"));
+            guard.yield(request.taskId(), request.phaseId(), id, clock.instant());
+            return;
+        }
+        if (!sameCondition(initial.states().get(id), latest.states().get(id))) {
+            decisions.put(id, new Decision("not_dispatched", "设备参数已变化，本区间让行其它操作", "not_dispatched"));
+            guard.yield(request.taskId(), request.phaseId(), id, clock.instant());
+            return;
+        }
+        if (!"adjustable".equals(current.disposition())) {
+            decisions.put(id, new Decision("satisfied", "当前无需调整", "satisfied"));
+            guard.yield(request.taskId(), request.phaseId(), id, clock.instant());
+            return;
+        }
+        if (!guard.reserve(request.taskId(), request.phaseId(), id, clock.instant(), taskWindowEnd)) {
+            decisions.put(id, new Decision("not_dispatched", "任务已停止或有效时段已结束", "not_dispatched"));
+            return;
+        }
+        ArrayNode single = mapper.createArrayNode();
+        ObjectNode action = mapper.createObjectNode();
+        action.put("id", request.phaseId() + ":" + id);
+        action.put("deviceId", id);
+        action.put("kind", "ac");
+        action.put("deviceName", device.path("name").asText(id));
+        action.put("location", device.path("location").asText(""));
+        action.putObject("command").put("temperature", target);
+        single.add(action);
+        try {
+            AuthorizedDeviceScope fresh = loadScope(identity);
+            validateTaskAuthorization(task, phase, fresh);
+            Map<String, Object> observed = new LinkedHashMap<>();
+            observed.put(id, latest.states().get(id));
+            ActionDispatchResult dispatch = actions.dispatch(identity, fresh, single.toString(), observed);
+            if (dispatch.dispatchStarted()) dispatchStarted.set(true);
+            applyAcDispatch(decisions, single, read(dispatch.resultJson()), adjustedBaseline);
+        } catch (ActionDispatchException interrupted) {
+            throw new DispatchException("空调调温执行中断，部分指令结果未知", interrupted, interrupted.dispatchStarted());
+        } catch (GatewayAuthorizationException rejected) {
+            throw new DispatchException("创建者登录已失效", rejected, dispatchStarted.get(),
+                    DispatchException.IDENTITY_REJECTED);
+        } catch (ltd.qianc.iotagent.error.BusinessException unavailable) {
+            throw new DispatchException(unavailable.getMessage() == null ? "设备控制适配器不可用" : unavailable.getMessage(), false);
+        } catch (IllegalArgumentException rejected) {
+            throw new DispatchException(rejected.getMessage() == null ? "空调调温校验失败" : rejected.getMessage(), false);
+        }
+    }
+
+    /**
+     * Bounded AC workers stop claiming further devices on a typed failure or a
+     * stop request, while an adjustment already sent upstream always runs to
+     * its real receipt before this returns; an interrupted caller only drains,
+     * it never cancels an in-flight command.
+     */
+    private static boolean runAcWorkers(List<Runnable> workers, AtomicBoolean draining) {
+        if (Thread.currentThread().isInterrupted()) {
+            draining.set(true);
+            return true;
+        }
+        CountDownLatch done = new CountDownLatch(workers.size());
+        for (Runnable worker : workers) {
+            Thread.ofVirtual().name("ac-adjust-worker").unstarted(() -> {
+                try {
+                    worker.run();
+                } finally {
+                    done.countDown();
+                }
+            }).start();
+        }
+        boolean interrupted = false;
+        while (true) {
+            try {
+                if (done.await(200, TimeUnit.MILLISECONDS)) return interrupted;
+            } catch (InterruptedException caller) {
+                interrupted = true;
+                draining.set(true);
+            }
+        }
+    }
+
+
     private Set<String> durableReservations(String taskId) {
         try {
             return guard.reservedDevices(taskId);
         } catch (RuntimeException unavailable) {
             throw new DispatchException("任务调温预约事实暂不可读", unavailable, false);
         }
+    }
+
+    /**
+     * The single source of truth for the AC target (Runtime acInspectionTarget):
+     * the normalized condition.setpoint.value wins, then the action setpoint,
+     * then a plain target, then 26.
+     */
+    private static int acInspectionTarget(JsonNode ac) {
+        JsonNode condition = ac.path("condition").path("setpoint").path("value");
+        if (condition.isNumber()) return condition.asInt();
+        JsonNode action = ac.path("action").path("setpoint");
+        if (action.isNumber()) return action.asInt();
+        JsonNode target = ac.path("target");
+        return target.isNumber() ? target.asInt() : AC_DEFAULT_TARGET;
     }
 
     private Instant windowEnd(JsonNode task) {
@@ -706,6 +1041,8 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
                 decisions.put(deviceId, new Decision("satisfied", "当前无需调整", "satisfied"));
             } else if ("REJECTED".equals(receipt)) {
                 decisions.put(deviceId, new Decision("not_dispatched", "上游拒绝调温指令", "rejected"));
+            } else if ("PARTIALLY_ACCEPTED".equals(receipt)) {
+                decisions.put(deviceId, new Decision("unconfirmed", "部分参数已受理，未全部下发", "unconfirmed"));
             } else if ("ACCEPTED".equals(receipt) && "confirmed".equals(readback)) {
                 decisions.put(deviceId, new Decision("adjusted", null, "verified", after));
                 if (previous.initialSetpoint() != null) baseline.put(deviceId, previous.initialSetpoint());
@@ -813,6 +1150,8 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
             return scope;
         } catch (DispatchException failure) {
             throw failure;
+        } catch (GatewayAuthorizationException rejected) {
+            throw new DispatchException("创建者登录已失效", rejected, false, DispatchException.IDENTITY_REJECTED);
         } catch (RuntimeException failure) {
             throw new DispatchException("读取任务设备授权范围失败", failure, false);
         }
@@ -826,6 +1165,8 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
             return result;
         } catch (DispatchException failure) {
             throw failure;
+        } catch (GatewayAuthorizationException rejected) {
+            throw new DispatchException("创建者登录已失效", rejected, false, DispatchException.IDENTITY_REJECTED);
         } catch (RuntimeException failure) {
             throw new DispatchException("读取设备状态失败", failure, false);
         }
@@ -835,54 +1176,14 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
         String catalog = task.path("catalogFingerprint").asText("");
         String binding = task.path("bindingFingerprint").asText("");
         if (!catalog.isBlank() && !catalog.equals(scope.catalogFingerprint())) {
-            throw new DispatchException("任务设备授权目录已变化，本阶段未执行", false);
+            throw new DispatchException("任务设备授权目录已变化，本阶段未执行", false,
+                    DispatchException.AUTHORIZATION_REVOKED);
         }
         if (!binding.isBlank() && !binding.equals(scope.bindingFingerprint())) {
-            throw new DispatchException("任务控制绑定已变化，本阶段未执行", false);
-        }
-        LinkedHashSet<String> ids = new LinkedHashSet<>();
-        for (JsonNode action : phase.path("actions")) ids.add(action.path("deviceId").asText());
-        for (JsonNode device : phase.path("read").path("devices")) ids.add(device.path("id").asText());
-        for (String id : ids) {
-            AuthorizedDevice device = scope.device(id).orElseThrow(() ->
-                    new DispatchException("任务目标已不在当前授权范围", false));
-            if (device.observationOnly() && hasAction(phase, id)) {
-                throw new DispatchException("任务目标已变为只读设备", false);
-            }
-            JsonNode action = actionFor(phase, id);
-            if (action != null) {
-                if (!device.kind().equalsIgnoreCase(action.path("kind").asText())) {
-                    throw new DispatchException("任务动作与当前设备类型不一致", false);
-                }
-                if (!bindingMatches(action, device)) {
-                    throw new DispatchException("任务控制绑定已变化，本阶段未执行", false);
-                }
-            }
-            JsonNode read = readFor(phase, id);
-            if (read != null && read.has("kind") && !device.kind().equalsIgnoreCase(read.path("kind").asText())) {
-                throw new DispatchException("任务只读设备类型已变化", false);
-            }
+            throw new DispatchException("任务控制绑定已变化，本阶段未执行", false,
+                    DispatchException.BINDING_CHANGED);
         }
     }
-
-    private static boolean hasAction(JsonNode phase, String deviceId) {
-        return actionFor(phase, deviceId) != null;
-    }
-
-    private static JsonNode actionFor(JsonNode phase, String deviceId) {
-        for (JsonNode action : phase.path("actions")) {
-            if (deviceId.equals(action.path("deviceId").asText())) return action;
-        }
-        return null;
-    }
-
-    private static JsonNode readFor(JsonNode phase, String deviceId) {
-        for (JsonNode device : phase.path("read").path("devices")) {
-            if (deviceId.equals(device.path("id").asText())) return device;
-        }
-        return null;
-    }
-
     private static boolean bindingMatches(JsonNode value, AuthorizedDevice device) {
         String expected = text(value, "bindingFingerprint", "binding_fingerprint", "deviceBindingFingerprint");
         if (expected != null && !expected.equals(device.bindingFingerprint())) return false;

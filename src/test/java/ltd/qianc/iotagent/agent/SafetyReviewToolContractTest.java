@@ -26,7 +26,7 @@ import ltd.qianc.iotagent.conversation.ConversationFacade;
 import ltd.qianc.iotagent.error.BusinessException;
 import ltd.qianc.iotagent.iot.IotAdapter;
 import ltd.qianc.iotagent.iot.ObservationAdapter;
-import ltd.qianc.iotagent.iot.ObservationOperation;
+import ltd.qianc.iotagent.iot.ObservationOperationEnum;
 import ltd.qianc.iotagent.iot.ObservationRequest;
 import ltd.qianc.iotagent.iot.ObservationResponse;
 import ltd.qianc.iotagent.iot.VideoPlaybackPreparation;
@@ -46,6 +46,11 @@ class SafetyReviewToolContractTest {
         ConversationFacade conversations = companyConversations();
         ObservationAdapter observations = mock(ObservationAdapter.class);
         IotAdapter iot = mock(IotAdapter.class);
+        when(iot.loadAuthorizedDeviceScope(any())).thenAnswer(invocation -> Mono.just(
+                ltd.qianc.iotagent.iot.AuthorizedDeviceScope.of(invocation.getArgument(0),
+                        ltd.qianc.iotagent.iot.IotSourceEnum.COMPANY, List.of(
+                                new ltd.qianc.iotagent.iot.AuthorizedDevice("gas-1", "safety", "燃气一号", "26楼茶水间", true),
+                                new ltd.qianc.iotagent.iot.AuthorizedDevice("cam-1", "video", "大堂监控", "一层大堂", true)))));
         AtomicReference<ObservationRequest> observed = new AtomicReference<>();
         when(observations.read(any(ObservationRequest.class))).thenAnswer(invocation -> {
             observed.set(invocation.getArgument(0));
@@ -63,7 +68,7 @@ class SafetyReviewToolContractTest {
         Map<String, Object> result = bridge.execute(request("review_safety_event",
                 Map.of("eventId", "alarm-1", "deviceId", "gas-1", "ledger", "gas")));
 
-        assertThat(observed.get().operation()).isEqualTo(ObservationOperation.SAFETY_EVENT_CAMERAS);
+        assertThat(observed.get().operation()).isEqualTo(ObservationOperationEnum.SAFETY_EVENT_CAMERAS);
         assertThat(observed.get().parameters()).containsEntry("id", "alarm-1")
                 .containsEntry("deviceId", "gas-1").containsEntry("ledger", "gas");
         assertThat(preparedWindow.get().beginTime()).isEqualTo(BEGIN);

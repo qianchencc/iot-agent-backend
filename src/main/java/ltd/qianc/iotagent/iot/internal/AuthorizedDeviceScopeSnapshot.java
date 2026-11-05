@@ -4,7 +4,7 @@ import java.util.List;
 import java.util.Objects;
 import ltd.qianc.iotagent.iot.AuthorizedDevice;
 import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
-import ltd.qianc.iotagent.iot.IotSource;
+import ltd.qianc.iotagent.iot.IotSourceEnum;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 
 public final class AuthorizedDeviceScopeSnapshot implements AuthorizedDeviceScope {
@@ -23,7 +23,7 @@ public final class AuthorizedDeviceScopeSnapshot implements AuthorizedDeviceScop
     }
 
     @Override
-    public IotSource source() {
+    public IotSourceEnum source() {
         return identity.source();
     }
 

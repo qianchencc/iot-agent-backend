@@ -9,9 +9,9 @@ import ltd.qianc.iotagent.auth.PrincipalInfo;
  * Identity captured for one gateway call. It is deliberately explicit so a device
  * scope cannot be loaded without selecting its Office or Company authorization domain.
  */
-public record RequestIdentity(String authorization, String tenantCode, IotSource source, String ownerKey) {
+public record RequestIdentity(String authorization, String tenantCode, IotSourceEnum source, String ownerKey) {
 
-    public RequestIdentity(String authorization, String tenantCode, IotSource source) {
+    public RequestIdentity(String authorization, String tenantCode, IotSourceEnum source) {
         this(authorization, tenantCode, source, ownerHash(authorization, tenantCode));
     }
 
@@ -38,7 +38,7 @@ public record RequestIdentity(String authorization, String tenantCode, IotSource
         }
     }
 
-    public static RequestIdentity fromPrincipal(IotSource source) {
+    public static RequestIdentity fromPrincipal(IotSourceEnum source) {
         PrincipalInfo principal = PrincipalContext.getPrincipalInfo();
         return new RequestIdentity(principal.authorization(), principal.tenantCode(), source, principal.ownerKey());
     }

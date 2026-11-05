@@ -1,0 +1,72 @@
+{
+  "case": "OFFICE-TASK-SCOPE-01",
+  "date": "2026-11-05",
+  "boundary": "Engineering evidence only; frontend proposal acceptance is recorded separately. No task confirmation or device dispatch.",
+  "java": {
+    "ports": [3381],
+    "sourceCheckpoint": "fda45b1c6bd495bec0dc722bb40d623728d4112e",
+    "releaseArtifact": "var/office-scope-task-parity-20261105-111515/backend-office-task-scope-card-release.jar",
+    "sha256": "5f12f5de2d943227b06864adccd629916d14d9cc88d88a6112f495ed4b728abf",
+    "ownedArtifactEntries": 24,
+    "unrelatedLiveArtifactEntriesPreserved": true,
+    "releaseBuild": { "tests": 584, "passed": 559, "failures": 0, "errors": 0, "skipped": 25 },
+    "focusedOfficeScope": { "tests": 8, "failures": 0, "errors": 0 },
+    "redBeforeRepair": {
+      "originalOfficeMigration": { "tests": 7, "failures": 5, "errors": 2 },
+      "missingConfirmationScopeFields": { "tests": 8, "failures": 3, "errors": 0 },
+      "additionalObservedRegressions": ["cross-turn candidate aliases", "changed capability evidence reopens preparation", "expired reference failure counting and idempotency"]
+    }
+  },
+  "node": {
+    "port": 3382,
+    "deployedArtifact": "var/office-scope-task-parity-20261105-111515/node-source/dist/server.js",
+    "baseline": "Previously active frozen Node source plus generic opaque recovery propagation only",
+    "typecheckAndBuild": "passed",
+    "tests": 29,
+    "nativeMysqlSessionConformance": { "passed": 30, "total": 30 },
+    "processContract": "passed on deployed baseline",
+    "publicModelLoopRecoverySmoke": "passed",
+    "currentWorktreeSource": {
+      "typecheck": "passed",
+      "tests": 34,
+      "processContract": "not passed: startup requires /internal/agent/observability, which the active Java baseline does not provide (404)",
+      "deployed": false
+    }
+  },
+  "launcher": {
+    "frozenComponentLauncherSmoke": "passed",
+    "explicitNodeEnvironmentOnly": true,
+    "fakeJavaOnlyDatabaseSecretNotForwardedToNode": true,
+    "modelConfigurationUnchanged": true,
+    "privateConfigMode": "0600"
+  },
+  "review": {
+    "standards": [
+      "Invalid device-handle aliases are not retained.",
+      "Cheap finalized/camera guards run before local record hydration.",
+      "Stable machine recovery reason is separate from candidate precision.",
+      "Local reference hydration retains the existing per-run serialization boundary."
+    ],
+    "spec": [
+      "Changed real capability/state evidence can reopen a failed preparation; renewed candidate aliases cannot.",
+      "Expired reference failures are counted and replayed idempotently.",
+      "Full member/control-binding changes count as progress; observation time alone does not.",
+      "The real frontend exposed missing preflight scope fields; backend scope provenance and explicit-selection fields were repaired, with red-before/green-after regressions."
+    ],
+    "acceptedLimits": [
+      "Unknown, incomplete or over-limit aliases remain literal rather than being falsely collapsed.",
+      "Two small domain-local recovery builders remain separate; no new cross-domain abstraction or retry framework."
+    ]
+  },
+  "frontendBuild": {
+    "officialDevelopmentCompiler": "Build complete; real Office composer enabled",
+    "isolatedProductionModeAttempt": "Build completed but actual conversation restore failed: waitForAgentSession was undefined. Not accepted and not treated as successful frontend proof.",
+    "frontendProgramSourceChangedByThisTask": false
+  },
+  "cleanup": {
+    "ownedContractDatabaseDropped": true,
+    "temporaryDatabaseGrantRevoked": true,
+    "ownedSessionFixtureStopped": true,
+    "ownedLauncherSmokeStopped": true
+  }
+}

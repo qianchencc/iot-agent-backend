@@ -6,9 +6,9 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.util.Locale;
 import ltd.qianc.iotagent.action.ActionCommandGateway;
-import ltd.qianc.iotagent.action.ActionDraftStatus;
+import ltd.qianc.iotagent.action.ActionDraftStatusEnum;
 import ltd.qianc.iotagent.action.ActionDispatchResult;
-import ltd.qianc.iotagent.action.ActionReceiptOutcome;
+import ltd.qianc.iotagent.action.ActionReceiptOutcomeEnum;
 import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 
@@ -45,12 +45,12 @@ public final class FixtureActionCommandGateway implements ActionCommandGateway {
             String kind = action.path("kind").asText("");
             ObjectNode receipt = mapper.createObjectNode();
             receipt.put("actionId", actionId);
-            ActionReceiptOutcome receiptOutcome = receiptOutcome(configuredOutcome);
+            ActionReceiptOutcomeEnum receiptOutcome = receiptOutcome(configuredOutcome);
             receipt.put("outcome", receiptOutcome.name());
             receipt.set("protocol", protocol(kind, action));
             receipts.add(receipt);
-            if (receiptOutcome == ActionReceiptOutcome.REJECTED) rejected++; else accepted++;
-            if (receiptOutcome == ActionReceiptOutcome.ACCEPTED) {
+            if (receiptOutcome == ActionReceiptOutcomeEnum.REJECTED) rejected++; else accepted++;
+            if (receiptOutcome == ActionReceiptOutcomeEnum.ACCEPTED) {
                 ObjectNode readback = mapper.createObjectNode();
                 readback.put("actionId", actionId);
                 readback.put("outcome", "confirmed".equals(configuredReadback) ? "confirmed" : "unconfirmed");
@@ -65,9 +65,9 @@ public final class FixtureActionCommandGateway implements ActionCommandGateway {
         result.put("outcome", configuredOutcome.toUpperCase(Locale.ROOT));
         result.set("receipts", receipts);
         result.set("readbacks", readbacks);
-        ActionDraftStatus status = rejected == raw.size() ? ActionDraftStatus.REJECTED
-                : rejected > 0 ? ActionDraftStatus.PARTIALLY_ACCEPTED : ActionDraftStatus.ACCEPTED;
-        ActionReceiptOutcome overall = configuredOutcome.equals("rejected") ? ActionReceiptOutcome.REJECTED
+        ActionDraftStatusEnum status = rejected == raw.size() ? ActionDraftStatusEnum.REJECTED
+                : rejected > 0 ? ActionDraftStatusEnum.PARTIALLY_ACCEPTED : ActionDraftStatusEnum.ACCEPTED;
+        ActionReceiptOutcomeEnum overall = configuredOutcome.equals("rejected") ? ActionReceiptOutcomeEnum.REJECTED
                 : receiptOutcome(configuredOutcome);
         return new ActionDispatchResult(status, result.toString(), true, overall);
     }
@@ -80,11 +80,13 @@ public final class FixtureActionCommandGateway implements ActionCommandGateway {
         if ("lighting".equals(kind)) {
             request.put("path", "/micro-api/api/office/app/device/lighting/down");
             body.put("lightingAreaDeviceId", deviceId);
-            body.put("closeOrOpen", command.path("closeOrOpen").asInt(command.path("power").asText("on").equals("on") ? 1 : 0));
+            body.put("closeOrOpen", command.has("closeOrOpen")
+                    ? ltd.qianc.iotagent.iot.DeviceCommands.lightingCloseOrOpen(command.path("closeOrOpen"))
+                    : ltd.qianc.iotagent.iot.DeviceCommands.closeOrOpenFromPower(command.path("power")));
         } else if ("access".equals(kind)) {
             request.put("path", "/micro-api/api/office/app/device/access/down");
             body.put("accessAreaDeviceId", deviceId);
-            body.put("controlType", command.path("controlType").asInt(2));
+            body.put("controlType", ltd.qianc.iotagent.iot.DeviceCommands.accessControlType(command.path("controlType")));
         } else if ("ac".equals(kind)) {
             request.put("path", "/micro-api/api/office/app/device/ac/down");
             body.put("acAreaDeviceId", deviceId);
@@ -97,18 +99,19 @@ public final class FixtureActionCommandGateway implements ActionCommandGateway {
                 default -> "AC_" + ("on".equals(value) ? "OPEN" : "CLOSE");
             };
             body.put("acDeviceParamTemplate", template);
-            if ("temperature".equals(field)) body.put("temperature", Math.round(command.path(field).asDouble() * 10));
+            if ("temperature".equals(field)) body.put("temperature",
+                    ltd.qianc.iotagent.iot.DeviceCommands.acTemperature(command.path(field)) * 10);
         }
         request.set("body", body);
         return request;
     }
 
-    private static ActionReceiptOutcome receiptOutcome(String value) {
+    private static ActionReceiptOutcomeEnum receiptOutcome(String value) {
         return switch (value) {
-            case "rejected" -> ActionReceiptOutcome.REJECTED;
-            case "timeout" -> ActionReceiptOutcome.TIMEOUT;
-            case "unknown" -> ActionReceiptOutcome.UNKNOWN;
-            default -> ActionReceiptOutcome.ACCEPTED;
+            case "rejected" -> ActionReceiptOutcomeEnum.REJECTED;
+            case "timeout" -> ActionReceiptOutcomeEnum.TIMEOUT;
+            case "unknown" -> ActionReceiptOutcomeEnum.UNKNOWN;
+            default -> ActionReceiptOutcomeEnum.ACCEPTED;
         };
     }
 

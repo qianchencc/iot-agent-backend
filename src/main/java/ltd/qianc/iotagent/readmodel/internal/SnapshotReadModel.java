@@ -57,7 +57,7 @@ public final class SnapshotReadModel implements ReadSnapshots {
     }
 
     @Override public Map<String, Object> read(Identity identity, String realm, Map<String, ?> query,
-            Policy policy, Supplier<Map<String, Object>> loader) {
+            PolicyEnum policy, Supplier<Map<String, Object>> loader) {
         String credential = credential(identity);
         String key = key(identity, realm, query);
         Entry entry;
@@ -106,7 +106,7 @@ public final class SnapshotReadModel implements ReadSnapshots {
 
     @Override
     public Map<String, Object> load(Identity identity, String realm, Map<String, ?> query,
-            Policy policy, Supplier<Map<String, Object>> loader) {
+            PolicyEnum policy, Supplier<Map<String, Object>> loader) {
         java.util.Objects.requireNonNull(identity, "identity");
         java.util.Objects.requireNonNull(policy, "policy");
         java.util.Objects.requireNonNull(loader, "loader");
@@ -861,7 +861,7 @@ public final class SnapshotReadModel implements ReadSnapshots {
         final String key;
         final String credential;
         final String tenantCode;
-        Policy policy;
+        PolicyEnum policy;
         Supplier<Map<String, Object>> loader;
         Instant lastAccess;
         Instant updated;
@@ -876,7 +876,7 @@ public final class SnapshotReadModel implements ReadSnapshots {
         boolean valid = true;
         int activeLoads;
         final Object loadLock = new Object();
-        Entry(String key, String credential, String tenantCode, Policy policy,
+        Entry(String key, String credential, String tenantCode, PolicyEnum policy,
                 Supplier<Map<String, Object>> loader, Instant now) {
             this.key = key; this.credential = credential; this.tenantCode = tenantCode;
             this.policy = policy; this.loader = loader; this.lastAccess = now;

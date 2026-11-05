@@ -13,7 +13,7 @@ import ltd.qianc.iotagent.iot.DeviceCapabilityInspection;
 import ltd.qianc.iotagent.iot.DeviceCapabilityRequest;
 import ltd.qianc.iotagent.iot.DeviceStateReadResult;
 import ltd.qianc.iotagent.iot.IotAdapter;
-import ltd.qianc.iotagent.iot.IotSource;
+import ltd.qianc.iotagent.iot.IotSourceEnum;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import reactor.core.publisher.Mono;
 
@@ -87,7 +87,7 @@ public final class FixtureIotAdapter implements IotAdapter {
 
     private record FixtureScope(RequestIdentity identity, List<AuthorizedDevice> devices) implements AuthorizedDeviceScope {
         @Override
-        public IotSource source() {
+        public IotSourceEnum source() {
             return identity.source();
         }
     }

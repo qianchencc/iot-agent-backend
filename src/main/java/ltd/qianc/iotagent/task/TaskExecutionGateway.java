@@ -40,18 +40,41 @@ public interface TaskExecutionGateway {
      * instead of an unknown result.
      */
     final class DispatchException extends RuntimeException {
+        /** The task's fixed device catalog left the authorized scope (Runtime authorization_revoked). */
+        public static final String AUTHORIZATION_REVOKED = "authorization_revoked";
+        /** A control binding fingerprint changed (Runtime binding_changed). */
+        public static final String BINDING_CHANGED = "binding_changed";
+        /** Upstream rejected the stored creator identity (Runtime identity_rejected). */
+        public static final String IDENTITY_REJECTED = "identity_rejected";
+
         private final boolean dispatchStarted;
+        private final String reasonCode;
 
         public DispatchException(String message, boolean dispatchStarted) {
-            super(message);
-            this.dispatchStarted = dispatchStarted;
+            this(message, null, dispatchStarted, null);
         }
 
         public DispatchException(String message, Throwable cause, boolean dispatchStarted) {
+            this(message, cause, dispatchStarted, null);
+        }
+
+        public DispatchException(String message, boolean dispatchStarted, String reasonCode) {
+            this(message, null, dispatchStarted, reasonCode);
+        }
+
+        public DispatchException(String message, Throwable cause, boolean dispatchStarted, String reasonCode) {
             super(message, cause);
             this.dispatchStarted = dispatchStarted;
+            this.reasonCode = reasonCode;
         }
 
         public boolean dispatchStarted() { return dispatchStarted; }
+
+        /**
+         * Deterministic invalidation cause for recurring plans, or null for
+         * ordinary transient failures. The scanner disables the source plan
+         * only for these codes, exactly like the Runtime's disablePlan kinds.
+         */
+        public String reasonCode() { return reasonCode; }
     }
 }

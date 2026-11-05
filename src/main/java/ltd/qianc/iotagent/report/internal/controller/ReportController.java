@@ -6,7 +6,7 @@ import java.util.Map;
 import jakarta.servlet.http.HttpServletRequest;
 import ltd.qianc.iotagent.error.BusinessException;
 import ltd.qianc.iotagent.error.ErrorResponse;
-import ltd.qianc.iotagent.iot.IotSource;
+import ltd.qianc.iotagent.iot.IotSourceEnum;
 import ltd.qianc.iotagent.iot.ReportDownload;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.report.ReportService;
@@ -34,7 +34,7 @@ public final class ReportController {
     public ResponseEntity<?> read(HttpServletRequest request, @PathVariable String id) {
         if (!companySource(request)) return notFound();
         try {
-            Map<String, Object> report = reports.read(id, RequestIdentity.fromPrincipal(IotSource.COMPANY));
+            Map<String, Object> report = reports.read(id, RequestIdentity.fromPrincipal(IotSourceEnum.COMPANY));
             ResponseEntity.BodyBuilder response = ResponseEntity.ok().header(HttpHeaders.CACHE_CONTROL, "no-store");
             if (report.get("contentHash") != null) {
                 response.header("X-Report-Content-Hash", String.valueOf(report.get("contentHash")));
@@ -50,7 +50,7 @@ public final class ReportController {
             @RequestParam(defaultValue = "pdf") String format) {
         if (!companySource(request)) return notFound();
         try {
-            RequestIdentity identity = RequestIdentity.fromPrincipal(IotSource.COMPANY);
+            RequestIdentity identity = RequestIdentity.fromPrincipal(IotSourceEnum.COMPANY);
             Map<String, Object> report = reports.read(id, identity);
             ReportDownload result = reports.download(id, format, identity);
             String encoded = URLEncoder.encode(result.filename(), StandardCharsets.UTF_8).replace("+", "%20");

@@ -6,7 +6,7 @@ import java.util.Objects;
 /** Server-built request; query strings are validated by the HTTP controller first. */
 public record ObservationRequest(
         RequestIdentity identity,
-        ObservationOperation operation,
+        ObservationOperationEnum operation,
         Map<String, String> parameters) {
     public ObservationRequest {
         Objects.requireNonNull(identity, "identity");

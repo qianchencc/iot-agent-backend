@@ -65,6 +65,8 @@ class BusinessFactRepositoryContractTest {
         assertThat(reports.find("report-1")).contains(new ReportFact("report-1", "company", "{}"));
         assertThat(audit.readByTenant("XSJ")).extracting(AuditEventFact::eventId)
                 .containsExactly("audit-1");
+        assertThat(audit.findByEventId("audit-1")).isPresent();
+        assertThat(audit.findByEventId("missing")).isEmpty();
     }
 
     @Test
@@ -185,5 +187,15 @@ class BusinessFactRepositoryContractTest {
         public List<AuditEventFact> readByTenant(String tenantCode) {
             return events.stream().filter(event -> event.tenantCode().equals(tenantCode)).toList();
         }
+
+        @Override
+        public List<String> tenants() {
+            return events.stream().map(AuditEventFact::tenantCode).distinct().sorted().toList();
+        }
+        @Override
+        public Optional<AuditEventFact> findByEventId(String eventId) {
+            return events.stream().filter(event -> event.eventId().equals(eventId)).findFirst();
+        }
+
     }
 }

@@ -9,7 +9,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-public final class JdbcActionReadbackStore extends JdbcFactSupport implements ActionReadbackStore {
+public final class JdbcActionReadbackStore extends AbstractJdbcFactSupport implements ActionReadbackStore {
     public JdbcActionReadbackStore(JdbcTemplate jdbc, TransactionTemplate transactions, ObjectMapper mapper) {
         super(jdbc, transactions, mapper);
     }

@@ -25,6 +25,7 @@ final class AgentBusinessEventProjection {
     private final Map<String, Map<String, Object>> devicesById = new LinkedHashMap<>();
     private boolean pendingConfirmation;
     private Map<String, Object> pendingFields = Map.of();
+    private final AgentEnergyRunFacts energy = new AgentEnergyRunFacts();
 
     AgentBusinessEventProjection(Map<String, Object> focusRegion, Map<String, Object> reference, Clock clock) {
         this.focusRegion = focusRegion == null ? Map.of() : focusRegion;
@@ -39,8 +40,19 @@ final class AgentBusinessEventProjection {
             case "run.completed" -> List.of(pendingConfirmation
                     ? withFields(event, "run.awaiting_confirmation", completedFields(event))
                     : event);
-            case "heartbeat", "run.progress", "run.failed", "run.aborted",
-                    "message.delta", "message.completed", "message.reclassified" -> List.of(event);
+            case "message.completed" -> {
+                String receipt = energy.receipt(false, textOr(event.fields(), "content", "").isBlank());
+                yield receipt == null ? List.of(event) : List.of(withFields(event, "message.completed",
+                        Map.of("content", receipt, "phase", "final")));
+            }
+            case "run.failed" -> {
+                String receipt = energy.receipt(true, true);
+                yield receipt == null ? List.of(event) : List.of(
+                        withFields(event, "message.completed", Map.of("content", receipt, "phase", "final")),
+                        withFields(event, "run.completed", Map.of("interpretationStatus", "failed")));
+            }
+            case "heartbeat", "run.progress", "run.aborted",
+                    "message.delta", "message.reclassified" -> List.of(event);
             case "tool.started" -> List.of(toolStarted(event));
             case "tool.progress" -> List.of(toolProgress(event));
             case "tool.completed" -> List.of(toolCompleted(event));
@@ -65,6 +77,7 @@ final class AgentBusinessEventProjection {
 
     private AgentEngineEvent toolStarted(AgentEngineEvent event) {
         String tool = text(event.fields(), "tool");
+        energy.started(text(event.fields(), "toolCallId"), tool, map(event.fields().get("arguments")));
         Map<String, Object> fields = new LinkedHashMap<>(event.fields());
         addLabel(tool, fields);
         return withFields(event, "tool.started", fields);
@@ -81,9 +94,28 @@ final class AgentBusinessEventProjection {
         String tool = text(fields, "tool");
         addLabel(tool, fields);
         fields.putIfAbsent("status", "completed");
-        if ("failed".equals(fields.get("status"))) fields.putIfAbsent("summary", "本步骤未完成");
+        // Runtime pi-runner.ts:1616-1637 parity — a call refused because the tool
+        // phase closed (budget or no-tool finalization) is a skip with a stop
+        // receipt, never a failed business step; real failures carry bounded text.
+        String code = text(fields, "code");
+        if ("AGENT_TOOL_PHASE_CLOSED".equals(code) || "AGENT_TOOL_BUDGET_EXHAUSTED".equals(code)) {
+            fields.put("status", "skipped");
+            fields.put("label", "停止继续处理");
+            fields.put("summary", "已改用现有结果收尾");
+        } else if ("failed".equals(fields.get("status"))) {
+            fields.putIfAbsent("summary", "本步骤未完成");
+            String error = text(fields, "error");
+            if (error != null) {
+                fields.putIfAbsent("details", Map.of("error",
+                        error.length() > 200 ? error.substring(0, 200) : error));
+            }
+        }
+        fields.remove("code");
+        fields.remove("error");
         String callId = text(fields, "toolCallId");
-        Map<String, Object> result = callId == null ? Map.of() : resultsByCall.remove(callId);
+        Map<String, Object> result = callId == null ? null : resultsByCall.remove(callId);
+        if (result == null) result = Map.of();
+        fields.putAll(energy.timeline(callId));
         if ("find_device_candidates".equals(tool) && !result.isEmpty() && "completed".equals(fields.get("status"))) {
             int count = count(result);
             fields.putIfAbsent("summary", "找到 " + count + " 个设备候选");
@@ -95,7 +127,11 @@ final class AgentBusinessEventProjection {
                 candidate.put("location", textOr(device, "location", ""));
                 candidates.add(candidate);
             }
-            if (!candidates.isEmpty()) fields.putIfAbsent("details", Map.of("candidates", candidates));
+            Map<String, Object> details = new LinkedHashMap<>();
+            details.put("count", count);
+            copy(result, details, "complete", "totalMatches");
+            details.put("candidates", candidates);
+            fields.putIfAbsent("details", details);
         }
         return withFields(event, "tool.completed", fields);
     }
@@ -108,6 +144,7 @@ final class AgentBusinessEventProjection {
         if (!(raw instanceof Map<?, ?> rawMap)) return List.of();
         Map<String, Object> result = stringMap(rawMap);
         if (callId != null) resultsByCall.put(callId, result);
+        energy.completed(callId, tool, result);
         if (isError(result)) return List.of();
         rememberDevices(tool, result);
         AgentToolCatalog.Definition definition = AgentToolCatalog.definition(tool);
@@ -121,7 +158,7 @@ final class AgentBusinessEventProjection {
 
     private void markPending(String tool, Map<String, Object> result) {
         AgentToolCatalog.Definition definition = AgentToolCatalog.definition(tool);
-        if (definition == null || definition.confirmation() == AgentToolCatalog.Confirmation.NONE) return;
+        if (definition == null || definition.confirmation() == AgentToolCatalog.ConfirmationEnum.NONE) return;
         String status = text(result, "status");
         if (status != null && !"PENDING_CONFIRMATION".equalsIgnoreCase(status)) return;
         Map<String, Object> identity = new LinkedHashMap<>();
@@ -167,8 +204,8 @@ final class AgentBusinessEventProjection {
                     text(result, "observedAt")));
             case "query_energy_history" -> List.of(observation("energy_history", result,
                     text(result, "observedAt")));
-            case "summarize_energy", "compare_energy" -> List.of(observation("meter_report", result,
-                    text(result, "observedAt")));
+            case "summarize_energy", "compare_energy" -> "meter-report".equals(result.get("type")) && AgentEnergyRunFacts.hasData(result)
+                    ? List.of(observation("meter_report", result, text(result, "observedAt"))) : List.of();
             case "create_energy_report" -> reportArtifact(result);
             case "prepare_video_playback" -> videoPlayback(result);
             case "review_safety_event" -> safetyVideo(result);
@@ -394,6 +431,7 @@ final class AgentBusinessEventProjection {
     }
 
     private static int count(Map<String, Object> result) {
+        if (result.get("totalMatches") instanceof Number number) return number.intValue();
         if (result.get("count") instanceof Number number) return number.intValue();
         return list(result.get("devices")).size();
     }

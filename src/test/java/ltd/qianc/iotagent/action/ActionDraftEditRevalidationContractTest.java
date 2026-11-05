@@ -93,6 +93,58 @@ class ActionDraftEditRevalidationContractTest {
     }
 
     @Test
+    void editPatchesRejectFractionalOverflowAndTextualValuesWithoutTruncating() throws Exception {
+        ActionDraftFact draft = acDraft();
+        InMemoryActionDraftStore store = new InMemoryActionDraftStore(draft);
+        ActionDraftFacade facade = facade(store, new TestIotAdapter(List.of(), identity -> Map.of()));
+
+        for (Map<String, Object> patch : List.<Map<String, Object>>of(
+                Map.<String, Object>of("temperature", 26.5d),
+                Map.<String, Object>of("temperature", 4294967322L),
+                Map.<String, Object>of("temperature", "26"))) {
+            assertThatThrownBy(() -> facade.parameters(PRINCIPAL, draft.draftId(), 1,
+                    List.of(Map.of("actionId", "ac-1", "patch", patch))))
+                    .isInstanceOf(BusinessException.class)
+                    .satisfies(error -> assertThat(((BusinessException) error).code())
+                            .isEqualTo("UNSUPPORTED_ACTION_DRAFT"));
+        }
+
+        ObjectNode payload = basePayload("PENDING_CONFIRMATION");
+        ArrayNode lightActions = payload.putArray("actions");
+        lightActions.add(action("light-action", "light-1", "灯", 0));
+        payload.putArray("selectedActionIds").add("light-action");
+
+        // 显式 off 只能单独出现：off 混排非法/合法字段都不再被静默丢弃成纯关机。
+        for (Map<String, Object> patch : List.<Map<String, Object>>of(
+                Map.<String, Object>of("power", "off", "temperature", 999),
+                Map.<String, Object>of("power", "off", "humidity", 40))) {
+            assertThatThrownBy(() -> facade.parameters(PRINCIPAL, draft.draftId(), 1,
+                    List.of(Map.of("actionId", "ac-1", "patch", patch))))
+                    .isInstanceOf(BusinessException.class)
+                    .satisfies(error -> assertThat(((BusinessException) error).code())
+                            .isEqualTo("INVALID_PARAMETERS"));
+        }
+        assertThat(commandOf(facade.parameters(PRINCIPAL, draft.draftId(), 1,
+                List.of(Map.of("actionId", "ac-1", "patch", Map.of("power", "off")))), "ac-1"))
+                .isEqualTo(Map.of("power", "off"));
+
+        ActionDraftFact lightDraft = fact("draft-strict-light", 1, payload);
+        InMemoryActionDraftStore lightStore = new InMemoryActionDraftStore(lightDraft);
+        ActionDraftFacade lightFacade = facade(lightStore, new TestIotAdapter(List.of(), identity -> Map.of()));
+        for (Object value : List.of(1.9d, 4294967297L, "1")) {
+            assertThatThrownBy(() -> lightFacade.parameters(PRINCIPAL, lightDraft.draftId(), 1,
+                    List.of(Map.of("actionId", "light-action", "patch", Map.of("closeOrOpen", value)))))
+                    .isInstanceOf(BusinessException.class)
+                    .satisfies(error -> assertThat(((BusinessException) error).code())
+                            .isEqualTo("INVALID_PARAMETERS"));
+        }
+        assertThat(commandOf(lightStore.find(lightDraft.draftId()).orElseThrow(), "light-1"))
+                .isEqualTo(Map.of("closeOrOpen", 0));
+        assertThat(store.find(draft.draftId()).orElseThrow().revision())
+                .as("失败编辑不落库；ac 草案仅在显式 off 成功编辑后前移一次").isEqualTo(2);
+    }
+
+    @Test
     void replayedExpiryKeepsRevisionUsableAfterStateReadAndRevalidatesIntoANewDraft() throws Exception {
         ObjectNode payload = basePayload("PENDING_CONFIRMATION", "2026-10-30T08:00:00Z");
         ArrayNode actions = payload.putArray("actions");
@@ -149,7 +201,7 @@ class ActionDraftEditRevalidationContractTest {
         };
         return new ActionDraftFacade(MAPPER, store, iot, null, gateway, null, null, null, null,
                 org.mockito.Mockito.mock(ltd.qianc.iotagent.readmodel.ReadSnapshots.class),
-                CLOCK, Duration.ofSeconds(2), Duration.ofMinutes(10));
+                CLOCK, Duration.ofSeconds(2), Duration.ofMinutes(10), null);
     }
 
     private static ActionDraftFact acDraft() throws Exception {

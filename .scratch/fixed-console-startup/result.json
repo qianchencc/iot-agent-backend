@@ -1,0 +1,59 @@
+{
+  "date": "2026-11-05",
+  "scope": "Fixed-development console automatic startup and IPv4 wildcard listener",
+  "entrypoint": "tools/start-fixed-backend.py",
+  "listen": "0.0.0.0:5185",
+  "localhost": "http://127.0.0.1:5185/login",
+  "lanAddressObserved": "http://192.168.102.14:5185/login",
+  "realStartup": {
+    "consolePidObserved": 93176,
+    "backendPidsPreservedDuringInvocation": true,
+    "repeatKeptAllThreePids": true,
+    "frontendSecretEnvironmentKeys": [],
+    "privateConfigMode": "0600"
+  },
+  "isolatedLifecycleSmoke": {
+    "coldStart": true,
+    "addsMissingConsole": true,
+    "repeatPreservesPids": true,
+    "recoversDeadConsoleOnly": true,
+    "refusesForeignOccupiedPort": true,
+    "componentEnvironmentIsolation": true
+  },
+  "browser": {
+    "backend": "User Chrome relay",
+    "localhostLoginFormVisible": true,
+    "lanLoginAndActualConfigPage": true,
+    "savedBusinessConfiguration": false,
+    "createdTask": false,
+    "deviceDispatch": false,
+    "screenshot": "lan-config.webp"
+  },
+  "boundaries": {
+    "anonymousSession": 401,
+    "foreignOriginLogout": 403,
+    "authenticatedInvalidCsrfLogout": {
+      "status": 403,
+      "code": "ADMIN_CSRF_REJECTED"
+    },
+    "authenticatedSessionAfterInvalidCsrf": 200,
+    "privateDeploymentYamlViaVite": 403
+  },
+  "frontendBuild": "npm run build passed; existing large-bundle warning remains",
+  "review": {
+    "base": "bc2ded8",
+    "snapshot": "05ee3f172ca81e788fb0b7e63a0ae3ef5367d17d",
+    "standards": "One configuration-documentation gap found; new origin key, authority, default, pairing, loading and failure semantics registered in maintenance documentation. No authentication defect found.",
+    "spec": "No missing required behavior found.",
+    "acceptedLimits": [
+      "Frontend development proxy is HTTP on a trusted network; not production TLS deployment.",
+      "Port preflight probes loopback IPv4; Vite strictPort still refuses address-specific collisions instead of selecting another port.",
+      "Managed component uses pane0 and exact window name. Concurrent/manual tmux restructuring is not a new supervision feature."
+    ]
+  },
+  "limits": [
+    "LAN-address browser test ran on this Mac, not another physical device.",
+    "No system boot daemon or unattended crash restart introduced.",
+    "Backend business suite not rerun: no Java/Node business implementation changed."
+  ]
+}

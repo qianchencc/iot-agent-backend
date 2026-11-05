@@ -3,7 +3,7 @@ package ltd.qianc.iotagent.iot;
 import java.util.List;
 import java.util.UUID;
 
-/** Public candidate projection. It intentionally has no provider/control references. */
+/** Candidate snapshot: display window plus server-only full members, as in Runtime. */
 public record DeviceCandidateSet(
         String candidateSetId,
         DeviceCandidateQuery query,
@@ -13,13 +13,24 @@ public record DeviceCandidateSet(
         Groups groups,
         List<NameHintMatch> nameHintMatches,
         List<String> unmatchedNameHints,
-        Resolution resolution) {
+        Resolution resolution,
+        String handle,
+        List<String> deviceHandles,
+        @com.fasterxml.jackson.annotation.JsonIgnore List<AuthorizedDevice> allDevices) {
 
     public DeviceCandidateSet(String candidateSetId, DeviceCandidateQuery query, List<AuthorizedDevice> devices,
                               boolean complete, int totalMatches) {
         this(candidateSetId, query, devices, complete, totalMatches,
                 new Groups(true, List.of(), List.of()), List.of(), List.of(),
-                new Resolution("exact", query == null ? null : query.scopeText(), List.of(), List.of()));
+                new Resolution("exact", query == null ? null : query.scopeText(), List.of(), List.of()), null);
+    }
+
+    public DeviceCandidateSet(String candidateSetId, DeviceCandidateQuery query, List<AuthorizedDevice> devices,
+                              boolean complete, int totalMatches, Groups groups,
+                              List<NameHintMatch> nameHintMatches, List<String> unmatchedNameHints,
+                              Resolution resolution, List<AuthorizedDevice> allDevices) {
+        this(candidateSetId, query, devices, complete, totalMatches, groups, nameHintMatches,
+                unmatchedNameHints, resolution, null, List.of(), allDevices);
     }
 
     public DeviceCandidateSet {
@@ -31,6 +42,8 @@ public record DeviceCandidateSet(
         nameHintMatches = List.copyOf(nameHintMatches == null ? List.of() : nameHintMatches);
         unmatchedNameHints = List.copyOf(unmatchedNameHints == null ? List.of() : unmatchedNameHints);
         resolution = resolution == null ? new Resolution("exact", query.scopeText(), List.of(), List.of()) : resolution;
+        deviceHandles = List.copyOf(deviceHandles == null ? List.of() : deviceHandles);
+        allDevices = allDevices == null ? null : List.copyOf(allDevices);
     }
 
     /** HTTP read projection: control/provider bindings and adapter metadata never cross this seam. */
@@ -48,6 +61,8 @@ public record DeviceCandidateSet(
         body.put("nameHintMatches", nameHintMatches);
         body.put("unmatchedNameHints", unmatchedNameHints);
         body.put("resolution", resolution);
+        if (handle != null && !handle.isBlank()) body.put("handle", handle);
+        if (!deviceHandles.isEmpty()) body.put("deviceHandles", deviceHandles);
         return java.util.Collections.unmodifiableMap(body);
     }
 

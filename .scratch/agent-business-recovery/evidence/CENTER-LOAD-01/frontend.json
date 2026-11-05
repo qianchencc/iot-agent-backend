@@ -1,0 +1,79 @@
+{
+  "caseId": "CENTER-LOAD-01",
+  "surface": "WeChat developer tools, existing account, pages/agent/dashboard",
+  "artifact": "/Users/qianchen/works/新发展/iot-agent-backend/var/center-read-latency-20261104-160625/backend-read-centers-integrated.jar",
+  "task": {
+    "requests": [
+      {
+        "path": "http://127.0.0.1:3381/api/agent/task-plans",
+        "start": 1793786709391,
+        "done": true,
+        "elapsedMs": 17,
+        "status": 200
+      },
+      {
+        "path": "http://127.0.0.1:3381/api/agent/tasks",
+        "start": 1793786709394,
+        "done": true,
+        "elapsedMs": 25,
+        "status": 200
+      }
+    ],
+    "text": "任务管理任务安排日历重复安排0 项 · 已开启 0任务安排4今天11:1826楼运营部照明定时打开未完成15:3026楼运营部照明关闭后1分钟开启已下发5明天暂无任务6周五暂无任务7周六暂无任务8周日暂无任务9周一暂无任务10周二暂无任务11周三暂无任务12周四暂无任务13周五暂无任务加载更晚任务让 Agent 安排任务 ",
+    "nativeSheetOpen": true
+  },
+  "inbox": {
+    "requests": [
+      {
+        "path": "http://127.0.0.1:3381/api/agent/notifications",
+        "start": 1793786707209,
+        "done": true,
+        "elapsedMs": 80,
+        "status": 200
+      }
+    ],
+    "rows": 2,
+    "nativeSheetOpen": true
+  },
+  "automationSummary": {
+    "attempts": [
+      {
+        "http": 200,
+        "status": "preparing",
+        "cache": "preparing"
+      },
+      {
+        "http": 200,
+        "status": "preparing",
+        "cache": "preparing"
+      },
+      {
+        "http": 200,
+        "status": "preparing",
+        "cache": "preparing"
+      },
+      {
+        "http": 200,
+        "status": "preparing",
+        "cache": "preparing"
+      },
+      {
+        "http": 200,
+        "status": "preparing",
+        "cache": "preparing"
+      },
+      {
+        "http": 200,
+        "cache": "fresh"
+      }
+    ],
+    "automationPresent": true,
+    "errors": 0
+  },
+  "screenshots": [
+    "task-center.png",
+    "notification-center.png"
+  ],
+  "physicalDeviceAcceptance": false,
+  "credentialsOrStreamUrlsStored": false
+}

@@ -23,12 +23,12 @@ import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
 import ltd.qianc.iotagent.iot.DeviceStateReadResult;
 import ltd.qianc.iotagent.iot.GatewayAuthorizationException;
 import ltd.qianc.iotagent.iot.IotAdapter;
-import ltd.qianc.iotagent.iot.IotSource;
+import ltd.qianc.iotagent.iot.IotSourceEnum;
 import ltd.qianc.iotagent.iot.ObservationAdapter;
-import ltd.qianc.iotagent.iot.ObservationOperation;
+import ltd.qianc.iotagent.iot.ObservationOperationEnum;
 import ltd.qianc.iotagent.iot.ObservationRequest;
 import ltd.qianc.iotagent.iot.ObservationResponse;
-import ltd.qianc.iotagent.iot.ObservationStatus;
+import ltd.qianc.iotagent.iot.ObservationStatusEnum;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.region.RegionSeenStore;
 import ltd.qianc.iotagent.readmodel.ReadSnapshots;
@@ -114,13 +114,13 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
 
     private Mono<ObservationResponse> composeEnergy(ObservationRequest request) {
         if (energyComposer == null) return upstream.read(request);
-        return request.operation() == ObservationOperation.ENERGY_REPORT
+        return request.operation() == ObservationOperationEnum.ENERGY_REPORT
                 ? energyComposer.readEnergyReport(request)
                 : energyComposer.read(request);
     }
 
     private Mono<ObservationResponse> safetyEventCameras(ObservationRequest request) {
-        requireSource(request.identity(), IotSource.COMPANY, "SAFETY_SOURCE_UNAVAILABLE",
+        requireSource(request.identity(), IotSourceEnum.COMPANY, "SAFETY_SOURCE_UNAVAILABLE",
                 "安全记录监控复盘仅支持公司来源");
         String eventId = request.parameters().get("id");
         String ledger = request.parameters().get("ledger");
@@ -134,9 +134,9 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
         eventParameters.put("ledger", ledger);
         eventParameters.put("deviceId", deviceId);
         return safetyLedger.read(new ObservationRequest(
-                request.identity(), ObservationOperation.SAFETY_EVENT, eventParameters))
+                request.identity(), ObservationOperationEnum.SAFETY_EVENT, eventParameters))
                 .flatMap(response -> {
-                    if (response.status() == ObservationStatus.UNAVAILABLE) {
+                    if (response.status() == ObservationStatusEnum.UNAVAILABLE) {
                         return Mono.error(new ltd.qianc.iotagent.iot.ObservationUnavailableException("安全台账读取失败"));
                     }
                     Object raw = response.payload().get("record");
@@ -165,7 +165,7 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
 
     private static AuthorizedDeviceScope checkedCompanyScope(
             AuthorizedDeviceScope scope, RequestIdentity identity, String message) {
-        if (scope == null || scope.source() != IotSource.COMPANY || !identity.equals(scope.identity())) {
+        if (scope == null || scope.source() != IotSourceEnum.COMPANY || !identity.equals(scope.identity())) {
             throw new BusinessException("SAFETY_EVENT_READ_FAILED", message, 503);
         }
         return scope;
@@ -303,7 +303,7 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
     }
 
     private Mono<ObservationResponse> dashboard(ObservationRequest request) {
-        requireSource(request.identity(), IotSource.COMPANY, "DASHBOARD_SOURCE_UNAVAILABLE", "仪表盘仅支持公司来源");
+        requireSource(request.identity(), IotSourceEnum.COMPANY, "DASHBOARD_SOURCE_UNAVAILABLE", "仪表盘仅支持公司来源");
         return iot.loadAuthorizedDeviceScope(request.identity()).flatMap(scope -> loadDashboard(request, scope));
     }
 
@@ -403,13 +403,13 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
 
     private Mono<AlertRead> readAlerts(RequestIdentity identity, List<AuthorizedDevice> safety) {
         if (safety.isEmpty()) return Mono.just(AlertRead.empty());
-        return upstream.read(new ObservationRequest(identity, ObservationOperation.SAFETY_EVENTS, Map.of()))
+        return upstream.read(new ObservationRequest(identity, ObservationOperationEnum.SAFETY_EVENTS, Map.of()))
                 .map(response -> alertResponse(response, safety))
                 .onErrorResume(error -> Mono.just(AlertRead.failed("消防告警台账读取失败")));
     }
 
     private AlertRead alertResponse(ObservationResponse response, List<AuthorizedDevice> safety) {
-        List<Map<String, Object>> errors = response.status() == ObservationStatus.AVAILABLE
+        List<Map<String, Object>> errors = response.status() == ObservationStatusEnum.AVAILABLE
                 ? List.of() : List.of(error("alerts", "消防告警台账读取失败"));
         Map<String, AuthorizedDevice> devices = new LinkedHashMap<>();
         safety.forEach(device -> devices.put(device.id(), device));
@@ -441,28 +441,15 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
     }
 
     private Mono<ObservationResponse> regionList(ObservationRequest request) {
-        requireSource(request.identity(), IotSource.OFFICE, "SOURCE_UNAVAILABLE", "区域仅支持办公室来源");
-        boolean directory = "directory".equals(request.parameters().get("section"));
-        return regionCatalog(request.identity()).map(catalog -> {
-            List<Map<String, Object>> regions = new ArrayList<>();
-            for (Map<String, Object> region : catalog) {
-                Map<String, Object> view = new LinkedHashMap<>();
-                String regionId = (String) region.get("id");
-                view.put("id", regionId);
-                view.put("name", region.get("name"));
-                if (!directory && regionSeen != null) {
-                    boolean seen = regionSeen.seenAt(
-                            request.identity().tenantCode(), request.identity().ownerKey(), regionId).isPresent();
-                    view.put("attention", !seen);
-                }
-                regions.add(view);
-            }
-            return ObservationResponse.available(Map.of("regions", regions));
-        });
+        requireSource(request.identity(), IotSourceEnum.OFFICE, "SOURCE_UNAVAILABLE", "区域仅支持办公室来源");
+        // Cacheable office names and live local task attention have separate lifetimes.
+        // The HTTP composition adds attention after resolving this directory snapshot.
+        return regionCatalog(request.identity())
+                .map(catalog -> ObservationResponse.available(Map.of("regions", catalog)));
     }
 
     private Mono<ObservationResponse> regionDevices(ObservationRequest request) {
-        requireSource(request.identity(), IotSource.OFFICE, "SOURCE_UNAVAILABLE", "区域仅支持办公室来源");
+        requireSource(request.identity(), IotSourceEnum.OFFICE, "SOURCE_UNAVAILABLE", "区域仅支持办公室来源");
         String regionId = requiredRegionId(request);
         return officeContext(request.identity()).map(context -> {
             Map<String, Object> region = findRegion(context.regions, regionId)
@@ -472,7 +459,7 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
     }
 
     private Mono<ObservationResponse> regionStates(ObservationRequest request) {
-        requireSource(request.identity(), IotSource.OFFICE, "SOURCE_UNAVAILABLE", "区域仅支持办公室来源");
+        requireSource(request.identity(), IotSourceEnum.OFFICE, "SOURCE_UNAVAILABLE", "区域仅支持办公室来源");
         String regionId = requiredRegionId(request);
         return officeContext(request.identity()).flatMap(context -> {
             Map<String, Object> region = findRegion(context.regions, regionId)
@@ -485,11 +472,12 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
     }
 
     private Mono<ObservationResponse> regionSeen(ObservationRequest request) {
-        requireSource(request.identity(), IotSource.OFFICE, "SOURCE_UNAVAILABLE", "区域仅支持办公室来源");
+        requireSource(request.identity(), IotSourceEnum.OFFICE, "SOURCE_UNAVAILABLE", "区域仅支持办公室来源");
         if (regionSeen == null) return Mono.error(new BusinessException("REGION_SEEN_UNAVAILABLE", "区域已读存储暂不可用", 503));
         String regionId = requiredRegionId(request);
-        return officeContext(request.identity()).flatMap(context -> {
-            findRegion(context.regions, regionId).orElseThrow(() -> new BusinessException("REGION_NOT_FOUND", "区域不存在", 404));
+        return iot.loadAuthorizedDeviceScope(request.identity())
+                .flatMap(scope -> readRegionCatalog(request.identity())).flatMap(regions -> {
+            findRegion(regions, regionId).orElseThrow(() -> new BusinessException("REGION_NOT_FOUND", "区域不存在", 404));
             Instant at = clock.instant();
             return Mono.fromRunnable(() -> regionSeen.markSeen(request.identity().tenantCode(), request.identity().ownerKey(), regionId, at))
                     .thenReturn(ObservationResponse.available(Map.of("regionId", regionId, "seenAt", at.toString())));
@@ -507,7 +495,7 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
         ReadSnapshots.Identity scope = new ReadSnapshots.Identity(identity.tenantCode(),
                 identity.authorization(), identity.source().name(), identity.ownerKey());
         return Mono.fromCallable(() -> parseRegions(regionSnapshots.load(scope, "OFFICE_REGION_CATALOG",
-                Map.of(), ReadSnapshots.Policy.HISTORICAL, () -> {
+                Map.of(), ReadSnapshots.PolicyEnum.HISTORICAL, () -> {
                     List<Map<String, Object>> rows = readRegionCatalog(identity).block();
                     if (rows == null) throw new BusinessException("AUTHORIZED_SCOPE_UNAVAILABLE", REGION_UNAVAILABLE, 503);
                     return Map.of("regions", rows);
@@ -516,9 +504,9 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
 
     private Mono<List<Map<String, Object>>> readRegionCatalog(RequestIdentity identity) {
         return upstream.read(new ObservationRequest(
-                        identity, ObservationOperation.REGION_LIST, Map.of()))
+                        identity, ObservationOperationEnum.REGION_LIST, Map.of()))
                 .flatMap(response -> {
-                    if (response.status() != ObservationStatus.AVAILABLE) {
+                    if (response.status() != ObservationStatusEnum.AVAILABLE) {
                         return Mono.error(new BusinessException(
                                 "AUTHORIZED_SCOPE_UNAVAILABLE", REGION_UNAVAILABLE, 503));
                     }
@@ -650,7 +638,7 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
         return regions.stream().filter(region -> id.equals(region.get("id"))).findFirst();
     }
 
-    private static void requireSource(RequestIdentity identity, IotSource expected, String code, String message) {
+    private static void requireSource(RequestIdentity identity, IotSourceEnum expected, String code, String message) {
         if (identity.source() != expected) throw new BusinessException(code, message, 404);
     }
 

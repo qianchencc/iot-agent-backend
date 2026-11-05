@@ -10,7 +10,6 @@ import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -18,7 +17,6 @@ import java.util.UUID;
 import ltd.qianc.iotagent.error.BusinessException;
 import ltd.qianc.iotagent.pisession.PiSessionService;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /** Append-only MySQL journal for Pi's native codec; no local files or executable operations. */
@@ -37,38 +35,7 @@ public final class JdbcPiSessionService implements PiSessionService {
         this.jdbc=Objects.requireNonNull(jdbc); this.transactions=Objects.requireNonNull(transactions);
         this.mapper=Objects.requireNonNull(mapper); this.resolver=Objects.requireNonNull(resolver);
         this.clock=Objects.requireNonNull(clock);
-        jdbc.execute("CREATE TABLE IF NOT EXISTS pi_session_scopes (id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT UNIQUE, scope_key VARCHAR(64) PRIMARY KEY, tenant_code VARCHAR(128) NOT NULL, owner_key VARCHAR(128) NOT NULL, source VARCHAR(16) NOT NULL, conversation_id VARCHAR(128) NOT NULL, writer_id VARCHAR(64), run_id VARCHAR(128), server_id VARCHAR(64), binding_json LONGTEXT, epoch BIGINT NOT NULL DEFAULT 0, version BIGINT NOT NULL DEFAULT 0, lease_until BIGINT NOT NULL DEFAULT 0, create_time TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3), update_time TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3))");
-        jdbc.execute("CREATE TABLE IF NOT EXISTS pi_session_documents (id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT UNIQUE, scope_key VARCHAR(64) NOT NULL, document_key VARCHAR(64) NOT NULL, parent_key VARCHAR(64), path_json LONGTEXT NOT NULL, kind VARCHAR(16) NOT NULL, next_chunk BIGINT NOT NULL DEFAULT 0, content_size BIGINT NOT NULL DEFAULT 0, modified_at BIGINT NOT NULL, create_time TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3), update_time TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3), PRIMARY KEY(scope_key,document_key))");
-        jdbc.execute("CREATE TABLE IF NOT EXISTS pi_session_chunks (id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT UNIQUE, scope_key VARCHAR(64) NOT NULL, document_key VARCHAR(64) NOT NULL, chunk_no BIGINT NOT NULL, content_json LONGTEXT NOT NULL, create_time TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3), update_time TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3), PRIMARY KEY(scope_key,document_key,chunk_no))");
-        jdbc.execute("CREATE TABLE IF NOT EXISTS pi_session_commits (id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT UNIQUE, scope_key VARCHAR(64) NOT NULL, commit_id VARCHAR(64) NOT NULL, request_hash VARCHAR(64) NOT NULL, response_json LONGTEXT NOT NULL, create_time TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3), update_time TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3), PRIMARY KEY(scope_key,commit_id))");
-        ensureAuditColumns();
-    }
-
-    private void ensureAuditColumns() {
-        ConnectionCallback<Void> upgrade = connection -> {
-            var metadata = connection.getMetaData();
-            boolean uppercase = metadata.storesUpperCaseIdentifiers();
-            for (String table : List.of("pi_session_scopes", "pi_session_documents", "pi_session_chunks", "pi_session_commits")) {
-                String storedName = uppercase ? table.toUpperCase(Locale.ROOT) : table;
-                boolean hasId = false, hasUpdateTime = false;
-                try (var rows = metadata.getColumns(connection.getCatalog(), null, storedName, null)) {
-                    while ((!hasId || !hasUpdateTime) && rows.next()) {
-                        String name = rows.getString("COLUMN_NAME");
-                        hasId |= "id".equalsIgnoreCase(name);
-                        hasUpdateTime |= "update_time".equalsIgnoreCase(name);
-                    }
-                }
-                if (hasId && hasUpdateTime) continue;
-                try (var statement = connection.createStatement()) {
-                    if (!hasId) statement.execute("ALTER TABLE " + table
-                            + " ADD COLUMN id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT UNIQUE");
-                    if (!hasUpdateTime) statement.execute("ALTER TABLE " + table
-                            + " ADD COLUMN update_time TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)");
-                }
-            }
-            return null;
-        };
-        jdbc.execute(upgrade);
+        new ltd.qianc.iotagent.schema.SchemaMigrations(jdbc.getDataSource()).ensurePiSessions();
     }
 
     @Override public Map<String,Object> execute(Map<String,Object> request) {

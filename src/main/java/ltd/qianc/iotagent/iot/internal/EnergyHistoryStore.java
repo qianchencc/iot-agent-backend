@@ -39,7 +39,7 @@ final class EnergyHistoryStore {
     }
 
     /** A reading already shaped by the composer's epf contract. */
-    record Reading(String meterId, String id, Instant readTime, double value) {
+    record Reading(String meterId, String id, Instant readTime, double value, Double powerFactor) {
         Reading {
             Objects.requireNonNull(meterId, "meterId");
             Objects.requireNonNull(id, "id");

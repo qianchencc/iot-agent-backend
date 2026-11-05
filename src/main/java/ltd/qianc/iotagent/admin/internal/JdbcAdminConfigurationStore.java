@@ -3,6 +3,7 @@ package ltd.qianc.iotagent.admin.internal;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ltd.qianc.iotagent.admin.AdminConfigurationStore;
+import ltd.qianc.iotagent.instructions.AgentInstructions;
 import ltd.qianc.iotagent.error.BusinessException;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -32,8 +33,10 @@ public final class JdbcAdminConfigurationStore implements AdminConfigurationStor
     private static final Set<String> KNOWN_KEYS = Set.of(
             "modelBaseUrl", "modelId", "modelApiKey", "contextWindow", "maxOutputTokens", "reasoning",
             "thinkingLevel", "supportsDeveloperRole", "supportsReasoningEffort", "supportsUsageInStreaming",
-            "maxTokensField", "maxAgentTurns", "maxToolCalls", "officeInstructions", "companyInstructions",
-            "replyInstructions", "runTimeoutMs", "draftTtlMs", "heartbeatMs", "readbackWaitMs", "controlTimeoutMs",
+            "maxTokensField", "maxAgentTurns", "maxToolCalls", "officeBaseInstructions", "companyBaseInstructions",
+            "sharedInstructions", "companyTaskInstructions", "checkpointInstructions", "finalizationInstructions",
+            "compactionInstructions", "officeInstructions", "companyInstructions", "replyInstructions",
+            "runTimeoutMs", "draftTtlMs", "heartbeatMs", "readbackWaitMs", "controlTimeoutMs",
             "scanIntervalMs", "catalogTtlMs", "authoritativeStateTtlMs", "actionIdTtlMs", "energyReadTtlMs",
             "langfuseEnabled", "langfuseBaseUrl", "langfusePublicKey", "langfuseSecretKey");
 
@@ -53,7 +56,8 @@ public final class JdbcAdminConfigurationStore implements AdminConfigurationStor
         this.key = Objects.requireNonNull(key).clone();
         if (this.key.length != 32) throw new IllegalArgumentException("CONFIG_SECRET_KEY must be 32 bytes");
         this.locked = Set.copyOf(locked);
-        ensureSchema();
+        new ltd.qianc.iotagent.schema.SchemaMigrations(
+                Objects.requireNonNull(jdbc.getDataSource(), "jdbc dataSource")).ensureAdminConfiguration();
         this.activeRevision = initialize(initial);
     }
 
@@ -78,6 +82,8 @@ public final class JdbcAdminConfigurationStore implements AdminConfigurationStor
         if (changes == null) return new SaveResult(400, "CONFIG_INVALID", List.of());
         List<String> unsupported = changes.keySet().stream().filter(RetiredCacheSettings.NAMES::contains).toList();
         if (!unsupported.isEmpty()) return new SaveResult(400, "CONFIG_UNSUPPORTED", unsupported);
+        List<String> deployment = changes.keySet().stream().filter(DeploymentReportedSettings.NAMES::contains).toList();
+        if (!deployment.isEmpty()) return new SaveResult(400, "CONFIG_READONLY_DEPLOYMENT", deployment);
         try {
             return transactions.execute(status -> {
                 Revision previous = latestForUpdate();
@@ -122,6 +128,7 @@ public final class JdbcAdminConfigurationStore implements AdminConfigurationStor
                 }
                 Map<String, Object> changes = new LinkedHashMap<>(target.settings);
                 RetiredCacheSettings.NAMES.forEach(changes::remove);
+                DeploymentReportedSettings.NAMES.forEach(changes::remove);
                 locked.forEach(changes::remove);
                 Map<String, Object> next = new LinkedHashMap<>(previous.settings);
                 next.putAll(changes);
@@ -166,33 +173,33 @@ public final class JdbcAdminConfigurationStore implements AdminConfigurationStor
         return !changedFields(saved.settings, LiveAgentSettings.effective(revision(activeRevision).settings, saved.settings)).isEmpty();
     }
 
-    private void ensureSchema() {
-        jdbc.execute("CREATE TABLE IF NOT EXISTS admin_configuration_revisions ("
-                + "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,"
-                + "revision BIGINT UNSIGNED NOT NULL,"
-                + "settings_ciphertext MEDIUMBLOB NOT NULL,"
-                + "changed_fields_json JSON NOT NULL,"
-                + "actor VARCHAR(128) NOT NULL,"
-                + "changed_at DATETIME(6) NOT NULL,"
-                + "create_time DATETIME(6) NOT NULL,"
-                + "update_time DATETIME(6) NOT NULL,"
-                + "PRIMARY KEY (id), UNIQUE KEY uk_admin_configuration_revision (revision)"
-                + ") ENGINE=InnoDB");
-    }
 
     private long initialize(Map<String, Object> initial) {
         try {
             Revision existing = latest();
             return existing.revision;
         } catch (BusinessException missing) {
-            if (initial == null || !validate(initial).isEmpty()) throw unavailable();
+            if (initial == null || !seedIssues(initial).isEmpty()) throw unavailable();
             try {
-                transactions.executeWithoutResult(status -> insert(1, new LinkedHashMap<>(initial), List.of(), "bootstrap"));
+                transactions.executeWithoutResult(status -> insert(1,
+                        AgentInstructions.withDefaults(initial), List.of(), "bootstrap"));
                 return 1;
             } catch (RuntimeException e) {
                 throw unavailable();
             }
         }
+    }
+
+    /**
+     * First-boot seeding may leave the model connection blank so an operator can
+     * log in and complete it in the console; every other rule still applies.
+     */
+    private static List<String> seedIssues(Map<String, Object> initial) {
+        List<String> issues = new ArrayList<>(validate(initial));
+        for (String completable : List.of("modelBaseUrl", "modelId", "modelApiKey")) {
+            if (!(initial.get(completable) instanceof String text) || text.isBlank()) issues.remove(completable);
+        }
+        return issues;
     }
 
     private Revision latestForUpdate() {
@@ -221,7 +228,8 @@ public final class JdbcAdminConfigurationStore implements AdminConfigurationStor
 
     private Revision mapRevision(java.sql.ResultSet rs, int row) throws java.sql.SQLException {
         try {
-            Map<String, Object> settings = mapper.readValue(decrypt(rs.getBytes(2)), new TypeReference<>() { });
+            Map<String, Object> settings = AgentInstructions.withDefaults(
+                    mapper.readValue(decrypt(rs.getBytes(2)), new TypeReference<>() { }));
             return new Revision(rs.getLong(1), settings, readStringList(rs.getString(3)), rs.getString(4), rs.getTimestamp(5).toInstant());
         } catch (Exception e) {
             throw new java.sql.SQLException("invalid encrypted admin configuration", e);
@@ -267,24 +275,26 @@ public final class JdbcAdminConfigurationStore implements AdminConfigurationStor
             throw new IllegalStateException("invalid configuration change history", e);
         }
     }
-
     private static Map<String, Object> publicSettings(Map<String, Object> value) {
         Map<String, Object> result = new LinkedHashMap<>(value);
         SECRET_KEYS.forEach(result::remove);
         RetiredCacheSettings.NAMES.forEach(result::remove);
+        DeploymentReportedSettings.NAMES.forEach(result::remove);
         return result;
     }
 
-    private static boolean hasValue(Object value) { return value instanceof String text && !text.isBlank(); }
-
     private static List<String> changedFields(Map<String, Object> before, Map<String, Object> after) {
         LinkedHashSet<String> fields = new LinkedHashSet<>();
-        KNOWN_KEYS.forEach(key -> { if (!Objects.equals(before.get(key), after.get(key))) fields.add(key); });
+        KNOWN_KEYS.forEach(key -> {
+            if (DeploymentReportedSettings.NAMES.contains(key)) return;
+            if (!Objects.equals(before.get(key), after.get(key))) fields.add(key);
+        });
         return List.copyOf(fields);
     }
 
     private static List<String> validate(Map<String, Object> settings) {
         List<String> issues = new ArrayList<>();
+        issues.addAll(AgentInstructions.validate(settings));
         for (String key : settings.keySet()) if (!KNOWN_KEYS.contains(key)) issues.add(key);
         requireString(settings, issues, "modelBaseUrl", 1, 4096);
         requireString(settings, issues, "modelId", 1, 200);
@@ -332,6 +342,7 @@ public final class JdbcAdminConfigurationStore implements AdminConfigurationStor
     }
 
     private static String string(Object value) { return value instanceof String text ? text : null; }
+    private static boolean hasValue(Object value) { return value instanceof String text && !text.isBlank(); }
     private static boolean blank(Object value) { return !(value instanceof String text) || text.isBlank(); }
     private static BusinessException unavailable() { return new BusinessException("ADMIN_CONFIG_UNAVAILABLE", "管理配置存储暂不可用，请稍后重试", 503); }
 

@@ -16,10 +16,10 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * can never let the same task adjust the same device twice.
  */
 public final class JdbcTaskDispatchGuard implements TaskDispatchGuard {
-    /** Phase executing, task dispatchable, and the window (if any) not ended; the boundary checkpoint stays dispatchable. */
+    /** Phase executing, task dispatchable (scheduled or interval-executing), and the window (if any) not ended; the boundary checkpoint stays dispatchable. */
     private static final String DISPATCHABLE =
             "SELECT 1 FROM task_phases p JOIN task_facts t ON t.task_id=p.task_id "
-            + "WHERE p.phase_id=? AND p.task_id=? AND p.status='EXECUTING' AND t.status='SCHEDULED' "
+            + "WHERE p.phase_id=? AND p.task_id=? AND p.status='EXECUTING' AND t.status IN ('SCHEDULED','EXECUTING') "
             + "AND (? IS NULL OR ? >= ? OR p.due_at = ?)";
 
     private final JdbcTemplate jdbc;

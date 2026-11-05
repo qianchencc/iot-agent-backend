@@ -92,7 +92,7 @@ class ConversationReplayDraftContractTest {
                 mock(ActionCommandGateway.class), null, null, null, null,
                 org.mockito.Mockito.mock(ltd.qianc.iotagent.readmodel.ReadSnapshots.class),
                 java.time.Clock.fixed(Instant.parse("2026-11-01T00:00:00Z"), java.time.ZoneOffset.UTC),
-                java.time.Duration.ofSeconds(1), java.time.Duration.ofMinutes(10));
+                java.time.Duration.ofSeconds(1), java.time.Duration.ofMinutes(10), null);
         assertThat(drafts.conversationDrafts(PRINCIPAL, conversationId, "office")).containsOnlyKeys("draft-1");
         ConversationFacade restarted = new ConversationFacade(MAPPER, store, store,
                 new NoopBridge(), Runnable::run, drafts, mock(ltd.qianc.iotagent.conversation.ConversationTaskCards.class));

@@ -19,7 +19,7 @@ import ltd.qianc.iotagent.error.BusinessException;
 import ltd.qianc.iotagent.iot.AuthorizedDevice;
 import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
 import ltd.qianc.iotagent.iot.IotAdapter;
-import ltd.qianc.iotagent.iot.IotSource;
+import ltd.qianc.iotagent.iot.IotSourceEnum;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Mono;
@@ -50,7 +50,7 @@ class TaskAuthorizationFingerprintContractTest {
                 plans, mock(TaskNotificationStore.class), mock(TaskScheduler.class), null, iot,
                 mock(ltd.qianc.iotagent.readmodel.ReadSnapshots.class), Clock.fixed(NOW, ZoneOffset.UTC));
 
-        assertThatThrownBy(() -> facade.updatePlan(PRINCIPAL, "plan-1", 1, "resume", null, true))
+        assertThatThrownBy(() -> facade.updatePlan(PRINCIPAL, "plan-1", 1, "resume", true, "office"))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("授权目录已变化");
     }
@@ -67,12 +67,12 @@ class TaskAuthorizationFingerprintContractTest {
                 plans, mock(TaskNotificationStore.class), mock(TaskScheduler.class), null, adapter(scope(current)),
                 mock(ltd.qianc.iotagent.readmodel.ReadSnapshots.class), Clock.fixed(NOW, ZoneOffset.UTC));
 
-        TaskPlanFact resumed = facade.updatePlan(PRINCIPAL, "plan-1", 1, "resume", null, true);
+        Map<String, Object> resumed = facade.updatePlan(PRINCIPAL, "plan-1", 1, "resume", true, "office");
 
-        assertThat(resumed.status()).isEqualTo("ENABLED");
-        assertThat(resumed.version()).isEqualTo(2);
+        assertThat(resumed).containsKey("plan");
+        org.mockito.Mockito.verify(plans).updateIfVersion(org.mockito.ArgumentMatchers.argThat(
+                plan -> "ENABLED".equals(plan.status()) && plan.version() == 2), org.mockito.ArgumentMatchers.eq(1L));
     }
-
     private static IotAdapter adapter(AuthorizedDeviceScope scope) {
         return new IotAdapter() {
             @Override
@@ -84,8 +84,8 @@ class TaskAuthorizationFingerprintContractTest {
 
     private static AuthorizedDeviceScope scope(AuthorizedDevice device) {
         return new AuthorizedDeviceScope() {
-            @Override public RequestIdentity identity() { return new RequestIdentity("Bearer fixture", "LOCAL", IotSource.OFFICE); }
-            @Override public IotSource source() { return IotSource.OFFICE; }
+            @Override public RequestIdentity identity() { return new RequestIdentity("Bearer fixture", "LOCAL", IotSourceEnum.OFFICE); }
+            @Override public IotSourceEnum source() { return IotSourceEnum.OFFICE; }
             @Override public List<AuthorizedDevice> devices() { return List.of(device); }
         };
     }

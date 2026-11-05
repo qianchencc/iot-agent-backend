@@ -1,0 +1,89 @@
+{
+  "observedAt": "2026-11-03T10:12:39.494604+00:00",
+  "scope": "Local read-only aggregate counts; JSON path existence only, no payload or identity values. Field coverage is not semantic attribution proof.",
+  "columns": {
+    "audit_identity_coverage": [
+      "schema",
+      "kind",
+      "rows",
+      "has_ownerKey",
+      "has_source",
+      "has_principalId_or_actorId"
+    ],
+    "audit_event_types": [
+      "schema",
+      "kind",
+      "event_type",
+      "count"
+    ],
+    "config_revision_range": [
+      "schema",
+      "kind",
+      "count",
+      "minRevision",
+      "maxRevision"
+    ]
+  },
+  "rows": [
+    [
+      "iot_agent_business",
+      "audit_identity_coverage",
+      "8",
+      "8",
+      "8",
+      "0"
+    ],
+    [
+      "iot_agent_business",
+      "audit_event_types",
+      "ACTION_DRAFT_PROPOSED",
+      "5"
+    ],
+    [
+      "iot_agent_business",
+      "audit_event_types",
+      "ACTION_DRAFT_REVALIDATED",
+      "2"
+    ],
+    [
+      "iot_agent_business",
+      "audit_event_types",
+      "ACTION_DRAFT_CANCELLED",
+      "1"
+    ],
+    [
+      "iot_agent_business",
+      "config_revision_range",
+      "5",
+      "1",
+      "5"
+    ],
+    [
+      "iot_agent_mysql_final",
+      "audit_identity_coverage",
+      "6",
+      "6",
+      "6",
+      "0"
+    ],
+    [
+      "iot_agent_mysql_final",
+      "audit_event_types",
+      "ACTION_DRAFT_PROPOSED",
+      "3"
+    ],
+    [
+      "iot_agent_mysql_final",
+      "audit_event_types",
+      "ACTION_DRAFT_CANCELLED",
+      "3"
+    ],
+    [
+      "iot_agent_mysql_final",
+      "config_revision_range",
+      "1",
+      "1",
+      "1"
+    ]
+  ]
+}

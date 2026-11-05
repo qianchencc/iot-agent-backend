@@ -6,6 +6,7 @@ import java.util.Map;
 import ltd.qianc.iotagent.action.ActionDraftFacade;
 import ltd.qianc.iotagent.auth.PrincipalContext;
 import ltd.qianc.iotagent.error.BusinessException;
+import ltd.qianc.iotagent.error.RequestValues;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -33,19 +34,19 @@ public final class ActionToolController {
             String payloadJson = mapper.writeValueAsString(payload);
             var draft = facade.propose(
                     PrincipalContext.getPrincipalInfo(),
-                    text(body, "source", "office"),
-                    text(body, "conversationId", ""),
-                    text(body, "turnId", ""),
+                    RequestValues.optionalText(body, "source", "office",
+                            "INVALID_AGENT_SOURCE", "Agent 来源无效", 400),
+                    RequestValues.optionalText(body, "conversationId", "",
+                            "INVALID_PARAMETERS", "conversationId 无效", 400),
+                    RequestValues.optionalText(body, "turnId", "",
+                            "INVALID_PARAMETERS", "turnId 无效", 400),
                     payloadJson,
-                    text(body, "idempotencyKey", ""));
+                    RequestValues.optionalText(body, "idempotencyKey", "",
+                            "INVALID_PARAMETERS", "idempotencyKey 无效", 400));
             return ResponseEntity.status(202).body(facade.view(draft));
         } catch (JsonProcessingException error) {
             throw new BusinessException("INVALID_ACTION_DRAFT", "action draft payload is invalid");
         }
     }
 
-    private static String text(Map<String, Object> body, String key, String fallback) {
-        Object value = body.get(key);
-        return value instanceof String text ? text : fallback;
-    }
 }

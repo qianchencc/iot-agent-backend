@@ -1,0 +1,82 @@
+{
+  "scope": "Technical-spec non-deployment improvements and necessary local deep-module refactors",
+  "excluded": [
+    "production ports/HTTPS/logging/memory policies",
+    "existing service activation",
+    "production data migration",
+    "real device dispatch/production tasks/notifications"
+  ],
+  "build": {
+    "command": "mvn package -Dstyle.color=never",
+    "source": "clean temporary source snapshot; no existing target bytecode reused",
+    "java_release": 21,
+    "runtime_jdk": 25,
+    "exit_code": 0,
+    "tests": 635,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "mysql": "independent mysql:8.4 temporary container/schema",
+    "redis": "independent temporary container/database",
+    "environment_variable_names": [
+      "AGENT_MYSQL_URL",
+      "AGENT_MYSQL_USERNAME",
+      "AGENT_MYSQL_PASSWORD",
+      "AGENT_TASK_FIXTURE_MYSQL_URL",
+      "AGENT_TASK_FIXTURE_MYSQL_USERNAME",
+      "AGENT_TASK_FIXTURE_MYSQL_PASSWORD",
+      "AGENT_REDIS_URL"
+    ],
+    "architecture_rules": "existing module entry/internal/cycle rules passed unchanged"
+  },
+  "smoke": {
+    "exit_code": 0,
+    "new_schema_tables_verified": 33,
+    "legacy_schema_tables_verified": 33,
+    "schema_checks": [
+      "id BIGINT UNSIGNED primary key",
+      "create_time/update_time DATETIME",
+      "all column comments present",
+      "natural uniqueness retained",
+      "legacy facts and old candidate handles preserved",
+      "repeated initialization idempotent"
+    ],
+    "concurrency": "20 simultaneous candidate saves returned unique handles resolving to their own records; explicit s40 advanced next allocation to s41; other conversation began s1",
+    "commands": "lighting/access/ac overflow inputs rejected; legitimate 26-degree command preserved",
+    "report": "public detail projection preserves latest:null/windowLatest:null and reports one satisfied device",
+    "http": [
+      "400 INVALID_AGENT_SOURCE for non-string source",
+      "400 INVALID_PARAMETERS for non-object change item",
+      "400 INVALID_VERSION for fractional version",
+      "400 INVALID_REQUEST for malformed JSON body shape",
+      "400 CONFIG_INVALID for overflowing admin revision with real Cookie/CSRF session"
+    ]
+  },
+  "regressions": [
+    "strict command validation across action/edit/task/gateway",
+    "request missing-versus-explicit-invalid fields",
+    "null-preserving report aggregation",
+    "partial current device scope trims phases and reports; opaque aggregate facts withheld",
+    "old schema data/unique-key retention",
+    "nullable issued_at interrupted migration resumes",
+    "standalone administrator initialization does not retire business conversations",
+    "concurrent and explicit candidate handle allocation"
+  ],
+  "artifact": {
+    "path": "var/technical-spec-compliance/backend-verified.jar",
+    "sha256": "cff87ac2a7344d52dfa28c5f4570cebfacdbcaf61fae5eed7798352a8cbabebe",
+    "activated": false
+  },
+  "observed_nonblocking_logs": [
+    "JDK/Netty native-access and macOS DNS native-library notices",
+    "existing test-context shutdown TaskScanLoop rejected scheduling",
+    "Surefire fork shutdown timeout message; Maven still returned BUILD SUCCESS and all 635 tests passed"
+  ],
+  "limits": [
+    "engineering verification only, not real WeChat acceptance",
+    "no existing business schema or service switched",
+    "initial adoption can rebuild tables while changing primary keys; back up first",
+    "historical duplicate candidate handles fail explicitly instead of being silently rewritten"
+  ],
+  "temporary_runtime_cleanup": "removed the two owned temporary containers, their tmpfs databases, source snapshots and smoke program; retained verified jar and evidence only"
+}

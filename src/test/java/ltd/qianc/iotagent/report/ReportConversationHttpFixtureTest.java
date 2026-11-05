@@ -18,7 +18,7 @@ import ltd.qianc.iotagent.error.BusinessException;
 import ltd.qianc.iotagent.iot.AuthorizedDevice;
 import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
 import ltd.qianc.iotagent.iot.IotAdapter;
-import ltd.qianc.iotagent.iot.IotSource;
+import ltd.qianc.iotagent.iot.IotSourceEnum;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -32,7 +32,7 @@ class ReportConversationHttpFixtureTest {
     private final ObjectMapper mapper = new ObjectMapper();
     private final PrincipalInfo principal = new PrincipalInfo("Bearer fixture", "TENANT", "owner-1", "fixture");
     private final RequestIdentity identity = new RequestIdentity(principal.authorization(), principal.tenantCode(),
-            IotSource.COMPANY, principal.ownerKey());
+            IotSourceEnum.COMPANY, principal.ownerKey());
 
     @AfterEach
     void clearPrincipal() {
@@ -58,9 +58,9 @@ class ReportConversationHttpFixtureTest {
                 .isInstanceOf(BusinessException.class)
                 .extracting(error -> ((BusinessException) error).code())
                 .isEqualTo("REPORT_SCOPE_CHANGED");
-        RequestIdentity otherTenant = new RequestIdentity("Bearer other", "OTHER", IotSource.COMPANY, "owner-2");
+        RequestIdentity otherTenant = new RequestIdentity("Bearer other", "OTHER", IotSourceEnum.COMPANY, "owner-2");
         assertThatThrownBy(() -> generation.generate(
-                new RequestIdentity("Bearer office", "TENANT", IotSource.OFFICE, "owner-1"),
+                new RequestIdentity("Bearer office", "TENANT", IotSourceEnum.OFFICE, "owner-1"),
                 "conversation-1", "turn-office", "request-office", ReportEvidenceFixture.energy("meter-1", false)))
                 .isInstanceOf(BusinessException.class)
                 .extracting(error -> ((BusinessException) error).code())
@@ -200,7 +200,7 @@ class ReportConversationHttpFixtureTest {
                 public RequestIdentity identity() { return request; }
 
                 @Override
-                public IotSource source() { return IotSource.COMPANY; }
+                public IotSourceEnum source() { return IotSourceEnum.COMPANY; }
 
                 @Override
                 public List<AuthorizedDevice> devices() { return List.copyOf(devices); }

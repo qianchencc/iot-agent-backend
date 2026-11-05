@@ -3,9 +3,9 @@ package ltd.qianc.iotagent.admin.internal;
 import jakarta.servlet.http.HttpServletRequest;
 import ltd.qianc.iotagent.admin.AdminApplyCoordinator;
 import ltd.qianc.iotagent.admin.AdminConfigurationStore;
-import ltd.qianc.iotagent.admin.AdminPasswordPolicy;
 import ltd.qianc.iotagent.admin.PiSessionOperations;
 import ltd.qianc.iotagent.admin.PiSessionOperationsFactory;
+import ltd.qianc.iotagent.instructions.AgentInstructions;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
@@ -18,10 +18,16 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
+/**
+ * Independent administrator HTTP contract; business Bearer credentials do not grant access.
+ * Mutations require the configured Origin, the session Cookie and X-Admin-CSRF (except login).
+ * Configuration writes carry an expectedRevision and object changes; responses are secret-redacted
+ * ConfigurationViews. Restore creates a new revision and apply reports adoption separately.
+ * See docs/api/java-contract.md for request fields, response fields and failure codes.
+ */
 @RestController
 @RequestMapping("/api/admin")
 public final class AdminController {
@@ -29,9 +35,9 @@ public final class AdminController {
     private final AdminConfigurationStore store;
     private final AdminApplyCoordinator apply;
     private final AdminModelTester modelTester;
-    private final String configuredPassword;
-    private final Path passwordFile;
     private final boolean secureCookie;
+    private org.springframework.web.reactive.function.client.WebClient sidecar;
+    private String sidecarToken = "";
     private PiSessionOperations piSession = PiSessionOperationsFactory.unavailable();
     @Value("${server.address:127.0.0.1}")
     private String deploymentHost;
@@ -39,19 +45,21 @@ public final class AdminController {
     private int deploymentPort;
     @Value("${spring.profiles.active:local}")
     private String deploymentEnvironment;
+    @Value("${agent.action-draft-ttl-ms:600000}")
+    private long deploymentDraftTtlMs;
+    @Value("${iot.gateway.readback-wait-ms:6000}")
+    private long deploymentReadbackWaitMs;
+    @Value("${iot.gateway.call-timeout-ms:30000}")
+    private long deploymentControlTimeoutMs;
 
     public AdminController(AdminSessionManager sessions, AdminConfigurationStore store, AdminApplyCoordinator apply,
             AdminModelTester modelTester,
-            @Value("${admin.origin:${ADMIN_ORIGIN:http://127.0.0.1:3200}}") String origin,
-            @Value("${admin.password:${ADMIN_PASSWORD:}}") String configuredPassword,
-            @Value("${admin.password-file:${ADMIN_PASSWORD_FILE:var/admin-password}}") String passwordFile) {
+            @Value("${admin.origin:${ADMIN_ORIGIN:http://127.0.0.1:3200}}") String origin) {
         this.sessions = sessions;
         this.store = store;
         this.apply = apply;
         this.modelTester = modelTester;
         this.secureCookie = origin.startsWith("https:");
-        this.configuredPassword = configuredPassword;
-        this.passwordFile = Path.of(passwordFile);
     }
 
     @Autowired(required = false)
@@ -59,6 +67,20 @@ public final class AdminController {
         if (operations != null) this.piSession = operations;
     }
 
+    @Autowired(required = false)
+    void setSidecarHealth(org.springframework.beans.factory.ObjectProvider<
+            org.springframework.web.reactive.function.client.WebClient.Builder> builders,
+            @Value("${agent.bridge.base-url:}") String baseUrl,
+            @Value("${agent.bridge.token:}") String token) {
+        if (baseUrl == null || baseUrl.isBlank() || token == null || token.isBlank()) return;
+        org.springframework.web.reactive.function.client.WebClient.Builder builder =
+                builders.getIfAvailable(org.springframework.web.reactive.function.client.WebClient::builder);
+        if (builder == null) return;
+        this.sidecar = builder.baseUrl(baseUrl).build();
+        this.sidecarToken = token;
+    }
+
+    /** Accepts a password string; returns an HttpOnly session Cookie and csrfToken, or 401/429/503. */
     @PostMapping("/login")
     public ResponseEntity<?> login(@RequestBody(required = false) Map<String, Object> body, HttpServletRequest request) {
         Object value = body == null ? null : body.get("password");
@@ -78,34 +100,13 @@ public final class AdminController {
         return ResponseEntity.ok().header(HttpHeaders.SET_COOKIE, cookie("", 0)).body(Map.of("ok", true));
     }
 
-    @GetMapping("/password")
-    public Map<String, Object> password() {
-        return Map.of("editable", configuredPassword == null || configuredPassword.isBlank(), "minimumLength", sessions.minimum());
-    }
-
-    @PostMapping("/password")
-    public ResponseEntity<?> changePassword(@RequestBody(required = false) Map<String, Object> body, HttpServletRequest request) {
-        if (configuredPassword != null && !configuredPassword.isBlank()) return error(409, "ADMIN_PASSWORD_DEPLOYMENT_MANAGED", "密码由部署环境管理，请修改部署密码");
-        String current = text(body, "currentPassword");
-        String next = text(body, "newPassword");
-        String confirmation = text(body, "confirmPassword");
-        if (next == null || !next.equals(confirmation)) return error(400, "ADMIN_PASSWORD_MISMATCH", "两次新密码不一致");
-        try {
-            AdminPasswordPolicy.validate(next, sessions.minimum());
-        } catch (IllegalArgumentException e) {
-            return error(400, "ADMIN_PASSWORD_INVALID", e.getMessage());
-        }
-        if (!sessions.matchesCurrent(current)) return error(400, "ADMIN_PASSWORD_INVALID", "当前密码不正确");
-        AdminSessionManager.PasswordResult result = sessions.changePassword(current, next, confirmation, request.getRemoteAddr(), passwordFile);
-        if (result.status() != 200) return error(result.status(), result.code(), result.message());
-        return ResponseEntity.ok().header(HttpHeaders.SET_COOKIE, cookie("", 0)).body(Map.of("ok", true, "message", "密码已修改，请使用新密码重新登录"));
-    }
-
+    /** Returns saved/active revisions, redacted values, field metadata and actual runtime adoption. */
     @GetMapping("/config")
     public AdminConfigurationStore.ConfigurationView config() {
         return view();
     }
 
+    /** Saves object changes at expectedRevision; conflicts are 409 and invalid fields are 400. */
     @PatchMapping("/config")
     public ResponseEntity<?> save(@RequestBody(required = false) Map<String, Object> body) {
         Long expected = longValue(body, "expectedRevision");
@@ -136,10 +137,14 @@ public final class AdminController {
 
     @GetMapping("/prompts")
     public Map<String, Object> prompts() {
-        Map<String, Object> active = store.active();
-        return Map.of("revision", view().revision(), "office", active.getOrDefault("officeInstructions", ""), "company", active.getOrDefault("companyInstructions", ""));
+        AdminConfigurationStore.ConfigurationView current = view();
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("revision", current.revision());
+        AgentInstructions.preview(current.active()).forEach(result::put);
+        return result;
     }
 
+    /** Restores a selected historical revision as a new revision, guarded by expectedRevision. */
     @PostMapping("/restore")
     public ResponseEntity<?> restore(@RequestBody(required = false) Map<String, Object> body) {
         Long expected = longValue(body, "expectedRevision");
@@ -150,6 +155,7 @@ public final class AdminController {
         return ResponseEntity.ok(view());
     }
 
+    /** Tests candidate connection changes without saving them; connection failures return 502. */
     @PostMapping("/test-model")
     public ResponseEntity<?> testModel(@RequestBody(required = false) Map<String, Object> body) {
         Object raw = body == null ? null : body.get("changes");
@@ -174,10 +180,15 @@ public final class AdminController {
 
     private AdminConfigurationStore.ConfigurationView view() {
         AdminConfigurationStore.ConfigurationView current = store.view(deployment());
+        Map<String, Object> deploymentSettings = new LinkedHashMap<>();
+        deploymentSettings.put("draftTtlMs", deploymentDraftTtlMs);
+        deploymentSettings.put("readbackWaitMs", deploymentReadbackWaitMs);
+        deploymentSettings.put("controlTimeoutMs", deploymentControlTimeoutMs);
         return new AdminConfigurationStore.ConfigurationView(
                 current.revision(), current.activeRevision(), current.saved(), current.active(),
                 current.secrets(), current.locked(), current.pendingRestart(), current.changedFields(),
-                apply.enabled(), current.deployment());
+                apply.enabled(), current.deployment(), current.fields(), deploymentSettings,
+                Map.of("observability", observabilityRuntime()));
     }
 
     private ResponseEntity<Map<String, Object>> saveError(AdminConfigurationStore.SaveResult result) {
@@ -187,6 +198,7 @@ public final class AdminController {
             case "CONFIG_VERSION_CONFLICT" -> "配置已被其他操作修改，请刷新后重试";
             case "CONFIG_ENV_LOCKED" -> "环境锁定字段不能修改";
             case "CONFIG_REVISION_NOT_FOUND" -> "配置版本不存在";
+            case "CONFIG_READONLY_DEPLOYMENT" -> "部署参数只读，请在部署配置中修改后重启";
             default -> "配置无效，请检查修改字段";
         });
         if (!result.issues().isEmpty()) body.put("issues", result.issues());
@@ -195,6 +207,82 @@ public final class AdminController {
 
     private ResponseEntity<Map<String, Object>> error(int status, String code, String message) {
         return ResponseEntity.status(status).body(Map.of("code", code, "message", message));
+    }
+
+    /**
+     * Truthful observability adoption state: asks the sidecar what it actually
+     * runs and compares with the saved snapshot. A saved revision or a
+     * supervisor acknowledgement alone never counts as adopted.
+     */
+    private Map<String, Object> observabilityRuntime() {
+        Map<String, Object> status = new LinkedHashMap<>();
+        status.put("reachable", false);
+        status.put("enabled", null);
+        status.put("adopted", false);
+        status.put("detail", "未配置 sidecar 桥接地址，无法验证观测采用状态");
+        if (sidecar == null) return status;
+        Map<?, ?> health;
+        try {
+            health = sidecar.get().uri("/healthz")
+                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + sidecarToken)
+                    .retrieve().bodyToMono(Map.class)
+                    .block(java.time.Duration.ofMillis(1500));
+        } catch (RuntimeException error) {
+            status.put("detail", "无法连接 sidecar 读取观测采用状态");
+            return status;
+        }
+        status.put("reachable", true);
+        if (!(health != null && health.get("observability") instanceof Map<?, ?> reported)) {
+            status.put("detail", "sidecar 未上报观测状态");
+            return status;
+        }
+        boolean reportedEnabled = Boolean.TRUE.equals(reported.get("enabled"));
+        status.put("enabled", reportedEnabled);
+        Map<String, Object> saved;
+        try {
+            saved = store.saved();
+        } catch (RuntimeException error) {
+            status.put("detail", "管理配置存储暂不可用，无法比对观测配置");
+            return status;
+        }
+        boolean expectedEnabled = Boolean.TRUE.equals(saved.get("langfuseEnabled"))
+                && text(saved.get("langfuseBaseUrl")) != null
+                && text(saved.get("langfusePublicKey")) != null
+                && text(saved.get("langfuseSecretKey")) != null;
+        if (expectedEnabled != reportedEnabled) {
+            status.put("detail", "已保存观测配置与 sidecar 当前采用不一致，需重启应用");
+            return status;
+        }
+        if (!expectedEnabled) {
+            status.put("adopted", true);
+            status.put("detail", "观测已关闭，sidecar 确认未上报");
+            return status;
+        }
+        boolean matches = String.valueOf(saved.get("langfuseBaseUrl")).equals(reported.get("baseUrl"))
+                && credentialsDigest(saved.get("langfusePublicKey"), saved.get("langfuseSecretKey"))
+                        .equals(reported.get("credentialsDigest"));
+        status.put("adopted", matches);
+        status.put("detail", matches ? "sidecar 已采用当前观测配置"
+                : "观测地址或凭据已变化，需通过受监督重启后由 sidecar 采用");
+        return status;
+    }
+
+    private static String credentialsDigest(Object publicKey, Object secretKey) {
+        if (!(publicKey instanceof String pk) || !(secretKey instanceof String sk)) return "";
+        try {
+            java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
+            StringBuilder hex = new StringBuilder();
+            for (byte value : digest.digest((pk + ":" + sk).getBytes(java.nio.charset.StandardCharsets.UTF_8))) {
+                hex.append(String.format("%02x", value));
+            }
+            return hex.toString();
+        } catch (java.security.NoSuchAlgorithmException error) {
+            return "";
+        }
+    }
+
+    private static String text(Object value) {
+        return value instanceof String text && !text.isBlank() ? text : null;
     }
 
     private ResponseEntity<?> operation(PiSessionOperations.OperationResult result) {
@@ -210,7 +298,6 @@ public final class AdminController {
         return ResponseEntity.status(result.status()).body(body);
     }
 
-
     private String cookie(String token, int maxAge) {
         ResponseCookie.ResponseCookieBuilder builder = ResponseCookie.from(AdminSessionManager.COOKIE, token)
                 .path("/api/admin").httpOnly(true).sameSite("Strict").maxAge(maxAge);
@@ -218,22 +305,18 @@ public final class AdminController {
         return builder.build().toString();
     }
 
-    private static String text(Map<String, Object> body, String key) {
-        Object value = body == null ? null : body.get(key);
-        return value instanceof String text ? text : null;
-    }
 
     private static Long longValue(Map<String, Object> body, String key) {
-        Object value = body == null ? null : body.get(key);
-        if (value instanceof Number number && number.doubleValue() == number.longValue()) return number.longValue();
-        return null;
+        return ltd.qianc.iotagent.error.RequestValues.optionalLong(body, key, 0,
+                "CONFIG_INVALID", "配置版本无效", 400);
     }
 
     private static String loginMessage(String code) {
         return switch (code) {
             case "ADMIN_LOGIN_FAILED" -> "管理员密码不正确";
             case "ADMIN_RATE_LIMIT" -> "尝试次数过多，请稍后重试";
-            default -> "管理控制台暂不可用，请稍后重试";
+            case "ADMIN_UNAVAILABLE" -> "管理员凭据未配置或无效，请联系部署人员在部署配置中设置 admin.password 后重启";
+            default -> "管理控制台暂不可用，请联系部署人员检查后端配置";
         };
     }
 }

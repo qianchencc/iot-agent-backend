@@ -1,0 +1,87 @@
+{
+  "completedAt": "2026-11-05T01:02:46.431230+08:00",
+  "scope": "Standalone phone-list CRUD, deployment administrator login, Java-owned configuration, member-organized company/office public business audit. No Agent access control or task cancellation is connected to the phone list.",
+  "baseline": "e433811414d8a6291c1969ed50bdb0e8e0088de9",
+  "checkpoint": "802ab8f6bed2c73091ec412ef73768fdd7e1ff2e",
+  "preview": {
+    "web": "http://127.0.0.1:3490",
+    "java": 3491,
+    "node": 3492,
+    "upstream": 3495,
+    "databaseIsolated": true,
+    "main3381And3382Unchanged": true
+  },
+  "verification": {
+    "javaFocused": {
+      "tests": 62,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "javaFullSuite": {
+      "tests": 551,
+      "failures": 0,
+      "errors": 1,
+      "skipped": 1
+    },
+    "javaFullSuiteError": {
+      "test": "ActionDraftProposalContractTest.rootAndLightingExclusionsMergeByDeviceIdentityInsteadOfReferenceSpelling",
+      "message": "排除设备不属于已核验的候选范围",
+      "disposition": "Concurrent action-draft work left untouched; full suite is not green."
+    },
+    "node": {
+      "typecheck": "passed",
+      "tests": 34,
+      "build": "passed"
+    },
+    "frontend": {
+      "build": "passed",
+      "warning": "Vite chunk exceeds 500 kB; threshold not increased."
+    },
+    "actualFrontend": {
+      "login": "Independent deployment password login succeeded.",
+      "phoneList": "Added phone and remark, reloaded persisted row, cancelled removal then confirmed removal; no business authorization consumers.",
+      "configuration": "Saved revision; concurrent edit rejected with draft preserved; rebased and saved; restored prior revision as a new revision; route navigation retained draft. Actual model connection succeeded with current saved/draft parameters, did not save configuration.",
+      "adoption": "Node adopted enabled local observability revision 6 after owned Java/Node restart. Local receiver observed 3 real POST batches (80973 bytes at recorded observation). Disabled diagnostic observability in revision 7 and restarted; UI confirmed sidecar disabled.",
+      "office": "Real same-account developer-tools miniapp query returned 7 authorized lights, all off.",
+      "company": "Real same-account developer-tools miniapp query returned 334 devices by category. After Java/Node restart the same conversation answered the previous total as 334.",
+      "audit": "Management UI showed same verified member under XSJ, with Office and Company request/completion rows and public answer detail; after observability disabled, Company 4 and Office 2 rows remained visible.",
+      "responsive": "320px phone dialog and audit filters/drawer; 682x450 CSS viewport as 200%-equivalent, not native browser zoom.",
+      "errors": "Actual invalid audit type produced 400 UI error; clearing filter recovered. Empty result displayed honestly.",
+      "accessibility": "Named controls, dialog validation/focus restoration, no horizontal overflow on exercised narrow surfaces. Measured success text contrast 6.40 after correction."
+    }
+  },
+  "commands": {
+    "focused": "python var/admin-console-20261104-230158/checks.py -Dtest=AdminAuthenticationHttpTest,AdminObservabilityAdoptionHttpTest,PhoneAllowlistAdminApiTest,PhoneAllowlistContractTest,AuditAdminApiTest,ReportAuditStoreBehaviorTest,AdminConfigurationContractTest,TaskScanLoopTest,TaskScannerAuditContractTest,TaskPublicParityFacadeBehaviorTest test dependency:build-classpath -Dmdep.outputFile=var/admin-console-20261104-230158/test-classpath.txt",
+    "fullSuite": "python var/admin-console-20261104-230158/checks.py package dependency:build-classpath -Dmdep.outputFile=var/admin-console-20261104-230158/test-classpath.txt",
+    "sidecar": "env PATH=/opt/homebrew/opt/node@22/bin:/opt/homebrew/bin:/usr/bin:/bin JAVA_SESSION_TEST_URL=http://127.0.0.1:3493/internal/agent/sessions npm run typecheck; same environment: npm test; same environment: npm run build",
+    "frontend": "npm run build",
+    "note": "checks.py/fixture.py/receiver.mjs are temporary isolated verification helpers removed after verification; commands record what ran, not retained production entrypoints. Runtime preview uses tools/start-fixed-backend.py with the ignored 0600 launch.yaml."
+  },
+  "limits": [
+    "No production release, device command, production task creation or notification.",
+    "Automatic execution identity/receipt/readback/audit-failure recovery are local behavioral regression evidence, not real device execution acceptance.",
+    "Customer Langfuse deployment not exercised; local real OTLP receiving only.",
+    "Native browser 200% zoom, screen reader and RTL/multilingual workflows not exercised.",
+    "Shared deployment administrator password cannot identify the individual human using it. Historical unknown identities remain unknown."
+  ],
+  "screenshots": [
+    "01-config-initial.png",
+    "02-phone-persisted.png",
+    "03-config-conflict.png",
+    "05-phone-320px.png",
+    "06-phone-dialog-320px.png",
+    "07-office-initial.png",
+    "08-configuration-adopted.png",
+    "09-office-query-result.png",
+    "10-office-audit-detail.png",
+    "11-audit-drawer-320px.png",
+    "12-audit-320px.png",
+    "13-company-query-result.png",
+    "14-member-two-sources.png",
+    "15-audit-200percent-equivalent.png",
+    "16-audit-error-recovery.png",
+    "17-draft-model-probe.png",
+    "18-company-after-restart.png"
+  ]
+}

@@ -11,5 +11,6 @@ public interface DeviceCandidateSetStore {
 
     DeviceCandidateRecord save(DeviceCandidateRecord record);
 
-    Optional<DeviceCandidateRecord> find(String candidateSetId);
+    /** Resolve a full id or a conversation-local sN handle, never another conversation's set. */
+    Optional<DeviceCandidateRecord> find(String candidateSetId, String conversationId);
 }

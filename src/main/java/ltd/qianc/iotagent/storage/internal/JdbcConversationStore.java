@@ -13,7 +13,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-public final class JdbcConversationStore extends JdbcFactSupport implements ConversationStore, ConversationEventStore {
+public final class JdbcConversationStore extends AbstractJdbcFactSupport implements ConversationStore, ConversationEventStore {
     public JdbcConversationStore(JdbcTemplate jdbc, TransactionTemplate transactions, ObjectMapper mapper) {
         super(jdbc, transactions, mapper);
     }

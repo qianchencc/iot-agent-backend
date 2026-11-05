@@ -1,0 +1,51 @@
+{
+  "date": "2026-11-04",
+  "java": {
+    "port": 3381,
+    "pid": 27229,
+    "artifact": "var/task-main-20261104-143307/backend.jar",
+    "sha256": "10dcd6494318e4744364aa522facd1ac695acca09682cf9a3923e5f88c9b1536",
+    "mainSourceSnapshot": "var/task-main-20261104-143307/source",
+    "fullSuite": {
+      "tests": 444,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "includesUncommittedConcurrentAuditChanges": true,
+    "taskCredentialKeyConfigured": true
+  },
+  "node": {
+    "port": 3382,
+    "pid": 13258,
+    "sourceMatchesCurrentMain": true,
+    "restarted": false
+  },
+  "tmux": {
+    "socket": "iot-agent-backend",
+    "session": "fixed-backend",
+    "windows": [
+      "java",
+      "node"
+    ],
+    "attached": false
+  },
+  "frontend": {
+    "project": "mp main",
+    "compile": "HBuilderX development build succeeded",
+    "agentUrl": "http://127.0.0.1:3381/api",
+    "office": "actual UI ready; existing account conversation read completed",
+    "company": "403 existing allowlist admission denied; no new permission granted",
+    "screenshots": [
+      "20261104-06-main-office-ready.png",
+      "20261104-07-main-company-admission-denied.png"
+    ]
+  },
+  "retained": {
+    "gateway": "https://ncim.577119.com",
+    "controlMode": "real",
+    "frontendAddressUnchanged": true,
+    "unrelatedWorktreeChangesPreserved": true
+  },
+  "businessAcceptance": "Task creation, execution, management and notification are left for user testing; no production confirmation/task/control/notification performed by assistant"
+}

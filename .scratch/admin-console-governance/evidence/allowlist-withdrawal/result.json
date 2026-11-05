@@ -1,0 +1,46 @@
+{
+  "date": "2026-11-04",
+  "change": "Remove dormant draft allowlist from business admission; retain upstream verified identity and existing device authorization",
+  "javaPort": 3381,
+  "nodePort": 3382,
+  "artifactSha256": "45530bb8556ea3982f83649479454f53cebf392e004da26bf56e7a3bc5161325",
+  "regressions": {
+    "tests": 444,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "actualFrontend": {
+    "surface": "WeChat Developer Tools main miniapp",
+    "automationPort": 9451,
+    "companyConversationRead": "completed",
+    "companyDeviceDirectoryVisible": 334,
+    "screenshot": "company-restored.png",
+    "officeConversationRead": "completed"
+  },
+  "authentication": {
+    "unauthenticatedAgentReadStatus": 401,
+    "code": "UNAUTHORIZED"
+  },
+  "officialSelfProfile": {
+    "name": "刘志龙",
+    "mobileMasked": "172****1949",
+    "mobileMatchesUserSuppliedAccount": true,
+    "stableUserIdPresent": true,
+    "stableUserIdLength": 32,
+    "stableUserIdDifferentFromMobile": true,
+    "userPrincipalNamePresent": false,
+    "identityRealmFromOfficialProfile": false
+  },
+  "safety": {
+    "allowlistRecordsAdded": 0,
+    "productionTaskCreated": false,
+    "deviceControlExecuted": false,
+    "productionNotificationSent": false,
+    "nodeChanged": false,
+    "obsoleteAdmissionApiRemoved": true,
+    "nodeProcessUnchanged": true
+  },
+  "acceptanceScope": "Restored Company access only; not task execution, control or whitelist acceptance",
+  "artifact": "var/allowlist-withdraw-20261104-151828/backend-complete.jar"
+}

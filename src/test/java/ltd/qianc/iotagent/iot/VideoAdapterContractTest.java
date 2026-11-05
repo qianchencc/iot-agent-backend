@@ -18,7 +18,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /** In-process Runtime video protocol fixtures; no customer cloud is contacted. */
 class VideoAdapterContractTest {
 
-    private static final RequestIdentity COMPANY = new RequestIdentity("Bearer company-a", "TENANT-1", IotSource.COMPANY);
+    private static final RequestIdentity COMPANY = new RequestIdentity("Bearer company-a", "TENANT-1", IotSourceEnum.COMPANY);
 
     @Test
     void companyLiveUsesCurrentVideoOnlyScopeAndMonitorReference() {

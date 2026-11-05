@@ -21,7 +21,7 @@ import ltd.qianc.iotagent.error.BusinessException;
 import ltd.qianc.iotagent.iot.AuthorizedDevice;
 import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
 import ltd.qianc.iotagent.iot.IotAdapter;
-import ltd.qianc.iotagent.iot.IotSource;
+import ltd.qianc.iotagent.iot.IotSourceEnum;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Mono;
@@ -49,22 +49,6 @@ class TaskRangeTargetContractTest {
         assertThat(ids).doesNotHaveDuplicates().contains("light-1", "light-81", "light-82", "light-156")
                 .doesNotContain("ac-1");
         assertThat(proposal.status()).isEqualTo("PENDING_CONFIRMATION");
-    }
-
-    @Test
-    void companyCannotPersistAPresentationWindowAsAWholeScopeTask() {
-        var request = mapper.createObjectNode().put("label", "公司全部照明统一关闭");
-        var actions = request.putArray("phases").addObject().put("at", "2026-11-02T05:03:00Z")
-                .putArray("actions");
-        for (int light = 1; light <= 50; light++) {
-            actions.addObject().put("deviceId", "light-" + light).put("closeOrOpen", 0);
-        }
-        assertThatThrownBy(() -> facade().propose(PRINCIPAL, "company", "conversation", "turn",
-                request.toString(), "truncated-company-actions"))
-                .isInstanceOfSatisfying(BusinessException.class, error -> {
-                    assertThat(error.code()).isEqualTo("INVALID_TASK_PAYLOAD");
-                    assertThat(error.httpStatus()).isEqualTo(400);
-                });
     }
 
     @Test
@@ -100,9 +84,7 @@ class TaskRangeTargetContractTest {
         assertThatThrownBy(() -> facade().propose(PRINCIPAL, "company", "conversation", "turn",
                 """
                 {"label":"点选灯","candidateSetIds":["foreign-or-invented"],"phases":[
-                  {"at":"2026-11-02T05:03:00Z","targets":[{"kind":"lighting",
-                    "selection":{"candidateSetId":"foreign-or-invented","deviceIds":["light-1"]},
-                    "command":{"closeOrOpen":0}}]}
+                  {"at":"2026-11-02T05:03:00Z","actions":[{"deviceId":"light-1","closeOrOpen":0}]}
                 ]}
                 """, "forged-set")).isInstanceOf(BusinessException.class);
     }
@@ -144,54 +126,54 @@ class TaskRangeTargetContractTest {
         assertThatThrownBy(() -> facade().propose(PRINCIPAL, "company", "conversation", "turn",
                 """
                 {"label":"伪造范围证明","candidateSetIds":["foreign"],"phases":[{"at":"2026-11-02T05:03:00Z",
-                  "scopeFacts":{"allAuthorized":true},"read":{"deviceIds":["meter-1"]}}]}
+                  "scopeFacts":{"allAuthorized":true},"actions":[{"deviceId":"light-1","closeOrOpen":0}]}]}
                 """, "forged-scope-proof")).isInstanceOf(BusinessException.class);
     }
 
     @Test
-    void verifiedExclusionCandidateSetRemovesOnlyItsExactMembersFromTheIncludedScope() throws Exception {
+    void lightingCandidateRangeRemovesOnlyTheExactExcludedMembers() throws Exception {
         AuthorizedDevice corridor1 = new AuthorizedDevice("light-157", "lighting", "过道灯1", "26楼过道", false);
         AuthorizedDevice corridor2 = new AuthorizedDevice("light-158", "lighting", "过道灯2", "26楼过道", false);
         RangeAdapter adapter = new RangeAdapter(corridor1, corridor2);
         adapter.seed("exclude-corridor", "26楼过道", List.of(corridor1, corridor2), "exact", 2);
+        String includedId = discoverLighting(adapter, "26楼");
         TaskProposalFact proposal = facade(adapter).propose(PRINCIPAL, "company", "conversation", "turn",
                 """
-                {"label":"关26楼但保留过道","phases":[{"at":"2026-11-02T05:03:00Z","targets":[
-                  {"kind":"lighting","scopeTexts":["26楼"],"excludeCandidateSetIds":["exclude-corridor"],
-                   "command":{"closeOrOpen":0}}
-                ]}]}
-                """, "exclude-set");
+                {"label":"关26楼但保留过道","candidateSetIds":["%s"],
+                 "phases":[{"at":"2026-11-02T05:03:00Z","actions":[],
+                  "lighting":{"candidateSetId":"%s","excludeCandidateSetIds":["exclude-corridor"],"closeOrOpen":0}
+                }]}
+                """.formatted(includedId, includedId), "exclude-set");
         JsonNode phase = mapper.readTree(proposal.payloadJson()).path("phases").get(0);
         assertThat(phase.path("actions")).hasSize(81);
         for (JsonNode action : phase.path("actions")) {
             assertThat(action.path("deviceId").asText()).isNotIn("light-157", "light-158");
         }
-        assertThat(phase.path("scopeFacts").path("excludedScopes").toString()).contains("26楼过道");
-        assertThat(phase.path("scopeFacts").path("excludedCount").asInt()).isEqualTo(2);
     }
 
     @Test
-    void exclusionCandidateSetOutsideTheIncludedScopeOrNotExactlyResolvedIsRejected() {
+    void lightingCandidateExclusionsRejectForeignOrUnresolvedSubsets() {
         AuthorizedDevice corridor = new AuthorizedDevice("light-157", "lighting", "过道灯1", "26楼过道", false);
         AuthorizedDevice otherFloor = new AuthorizedDevice("light-82", "lighting", "灯82", "27楼会议室", false);
         RangeAdapter adapter = new RangeAdapter(corridor);
         adapter.seed("exclude-other-floor", "27楼会议室", List.of(otherFloor), "exact", 1);
         adapter.seed("exclude-fuzzy", "过道", List.of(corridor), "partial", 5);
+        String includedId = discoverLighting(adapter, "26楼");
         TaskFacade facade = facade(adapter);
         assertThatThrownBy(() -> facade.propose(PRINCIPAL, "company", "conversation", "turn",
                 """
-                {"label":"排除不属于包含范围","phases":[{"at":"2026-11-02T05:03:00Z","targets":[
-                  {"kind":"lighting","scopeTexts":["26楼办公室"],"excludeCandidateSetIds":["exclude-other-floor"],
-                   "command":{"closeOrOpen":0}}
-                ]}]}
-                """, "exclude-foreign")).isInstanceOf(BusinessException.class);
+                {"label":"排除不属于包含范围","candidateSetIds":["%s"],
+                 "phases":[{"at":"2026-11-02T05:03:00Z","actions":[],
+                  "lighting":{"candidateSetId":"%s","excludeCandidateSetIds":["exclude-other-floor"],"closeOrOpen":0}
+                }]}
+                """.formatted(includedId, includedId), "exclude-foreign")).isInstanceOf(BusinessException.class);
         assertThatThrownBy(() -> facade.propose(PRINCIPAL, "company", "conversation", "turn",
                 """
-                {"label":"排除集不精确","phases":[{"at":"2026-11-02T05:03:00Z","targets":[
-                  {"kind":"lighting","scopeTexts":["26楼"],"excludeCandidateSetIds":["exclude-fuzzy"],
-                   "command":{"closeOrOpen":0}}
-                ]}]}
-                """, "exclude-fuzzy")).isInstanceOf(BusinessException.class);
+                {"label":"排除集不精确","candidateSetIds":["%s"],
+                 "phases":[{"at":"2026-11-02T05:03:00Z","actions":[],
+                  "lighting":{"candidateSetId":"%s","excludeCandidateSetIds":["exclude-fuzzy"],"closeOrOpen":0}
+                }]}
+                """.formatted(includedId, includedId), "exclude-fuzzy")).isInstanceOf(BusinessException.class);
     }
 
     @Test
@@ -419,23 +401,41 @@ class TaskRangeTargetContractTest {
     void preciseActionMayReferenceACompletePersistedSetWhosePresentationIsBounded() throws Exception {
         var adapter = new RangeAdapter();
         var identity = new RequestIdentity(PRINCIPAL.authorization(), PRINCIPAL.tenantCode(),
-                IotSource.COMPANY, PRINCIPAL.ownerKey());
+                IotSourceEnum.COMPANY, PRINCIPAL.ownerKey());
         var found = adapter.findDeviceCandidates(identity,
                 new ltd.qianc.iotagent.iot.DeviceCandidateQuery("lighting", List.of(), "26楼", List.of(), List.of(), null, null),
                 new ltd.qianc.iotagent.iot.DeviceCandidateBinding("conversation")).block();
         assertThat(found.complete()).isFalse();
         var request = mapper.createObjectNode().put("label", "只选一台");
         request.putArray("candidateSetIds").add(found.candidateSetId());
-        var target = request.putArray("phases").addObject().put("at", "2026-11-02T05:03:00Z")
-                .putArray("targets").addObject().put("kind", "lighting");
-        target.putObject("selection").put("candidateSetId", found.candidateSetId())
-                .putArray("deviceIds").add("light-1");
-        target.putObject("command").put("closeOrOpen", 0);
+        request.putArray("phases").addObject().put("at", "2026-11-02T05:03:00Z")
+                .putArray("actions").addObject().put("deviceId", "light-1").put("closeOrOpen", 0);
         var saved = facade(adapter).propose(PRINCIPAL, "company", "conversation", "turn",
                 request.toString(), "precise-from-large-set");
         var actions = mapper.readTree(saved.payloadJson()).path("phases").get(0).path("actions");
         assertThat(actions).hasSize(1);
         assertThat(actions.get(0).path("deviceId").asText()).isEqualTo("light-1");
+    }
+
+    @Test
+    void canonicalCommandsStoreTheValidatedIntegralTargetWithoutPowerAliases() throws Exception {
+        var saved = facade(new RangeAdapter()).propose(PRINCIPAL, "company", "conversation", "turn",
+                """
+                {"label":"规范目标","phases":[{"at":"2026-11-02T05:03:00Z","actions":[
+                  {"deviceId":"light-1","command":{"power":"on"}}
+                ]}]}
+                """, "canonical-power-on");
+        var command = mapper.readTree(saved.payloadJson()).path("phases").get(0).path("actions").get(0).path("command");
+        assertThat(command.path("closeOrOpen").asInt(-1)).isEqualTo(1);
+        assertThat(command.has("power")).isFalse();
+    }
+
+    private String discoverLighting(RangeAdapter adapter, String location) {
+        var identity = new RequestIdentity(PRINCIPAL.authorization(), PRINCIPAL.tenantCode(),
+                IotSourceEnum.COMPANY, PRINCIPAL.ownerKey());
+        return adapter.findDeviceCandidates(identity,
+                new ltd.qianc.iotagent.iot.DeviceCandidateQuery("lighting", List.of(), location, List.of(), List.of(), null, null),
+                new ltd.qianc.iotagent.iot.DeviceCandidateBinding("conversation")).block().candidateSetId();
     }
 
     private TaskFacade facade() {
@@ -447,7 +447,7 @@ class TaskRangeTargetContractTest {
         when(store.findByIdempotencyKey(anyString())).thenReturn(Optional.empty());
         when(store.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
         return new TaskFacade(mapper, mock(TaskFactStore.class), store, mock(TaskPlanStore.class),
-                mock(TaskNotificationStore.class), mock(TaskScheduler.class), null, adapter, null, null, null,
+                mock(TaskNotificationStore.class), mock(TaskScheduler.class), null, adapter, null, null,
                 mock(ltd.qianc.iotagent.readmodel.ReadSnapshots.class), Clock.fixed(NOW, ZoneOffset.UTC));
     }
 
@@ -533,11 +533,10 @@ class TaskRangeTargetContractTest {
                     .filter(d -> query.deviceIds().isEmpty() || query.deviceIds().contains(d.id()))
                     .filter(d -> query.scopeText() == null || d.installAddress().contains(query.scopeText())).toList();
             String id = "scope-" + query.kind() + "-" + query.scopeText();
-            candidates.put(id, new ltd.qianc.iotagent.iot.DeviceCandidateRecord(id, binding.conversationId(),
-                    identity.tenantCode(), identity.ownerKey(), identity.source(), scope.catalogFingerprint(),
-                    query, members, members.size() <= 50, members.size(), NOW.toString(), "exact"));
+            candidates.put(id, new ltd.qianc.iotagent.iot.DeviceCandidateRecord(id, binding.conversationId(), identity.tenantCode(), identity.ownerKey(), identity.source(), scope.catalogFingerprint(), query, members, members.size() <= 50, members.size(), NOW.toString(), "exact", null));
             return Mono.just(new ltd.qianc.iotagent.iot.DeviceCandidateSet(id, query,
-                    members.stream().limit(50).toList(), members.size() <= 50, members.size()));
+                    members.stream().limit(50).toList(), members.size() <= 50, members.size(),
+                    null, List.of(), List.of(), null, members));
         }
 
         @Override public Mono<ltd.qianc.iotagent.iot.DeviceCandidateRecord> resolveDeviceCandidateSet(
@@ -546,12 +545,8 @@ class TaskRangeTargetContractTest {
             if (record == null) {
                 Seed seed = seeds.get(id);
                 if (seed != null) {
-                    record = new ltd.qianc.iotagent.iot.DeviceCandidateRecord(id, conversation,
-                            identity.tenantCode(), identity.ownerKey(), identity.source(), "seeded-catalog",
-                            new ltd.qianc.iotagent.iot.DeviceCandidateQuery("lighting", List.of(), seed.scopeText(),
-                                    List.of(), List.of(), null, null),
-                            seed.members(), seed.members().size() <= seed.totalMatches(), seed.totalMatches(),
-                            NOW.toString(), seed.resolutionMode());
+                    record = new ltd.qianc.iotagent.iot.DeviceCandidateRecord(id, conversation, identity.tenantCode(), identity.ownerKey(), identity.source(), "seeded-catalog", new ltd.qianc.iotagent.iot.DeviceCandidateQuery("lighting", List.of(), seed.scopeText(),
+                            List.of(), List.of(), null, null), seed.members(), seed.members().size() <= seed.totalMatches(), seed.totalMatches(), NOW.toString(), seed.resolutionMode(), null);
                 }
             }
             if (record == null || !record.conversationId().equals(conversation)) {
@@ -567,7 +562,7 @@ class TaskRangeTargetContractTest {
             devices.add(boundDevice("ac-1", "ac", "空调", "27楼会议室"));
             for (int n = 1; n <= 75; n++) devices.add(new AuthorizedDevice("meter-" + n, "energy", "电表" + n, "26楼", true));
             devices.addAll(extra);
-            return Mono.just(AuthorizedDeviceScope.of(identity, IotSource.COMPANY, devices));
+            return Mono.just(AuthorizedDeviceScope.of(identity, IotSourceEnum.COMPANY, devices));
         }
 
         private static AuthorizedDevice boundDevice(String id, String kind, String name, String location) {

@@ -4,7 +4,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import ltd.qianc.iotagent.iot.ObservationAdapter;
-import ltd.qianc.iotagent.iot.ObservationOperation;
+import ltd.qianc.iotagent.iot.ObservationOperationEnum;
 import ltd.qianc.iotagent.iot.ObservationRequest;
 import ltd.qianc.iotagent.iot.ObservationResponse;
 import reactor.core.publisher.Mono;
@@ -43,7 +43,7 @@ public final class ReportEvidenceFixture {
     private static final class Evidence implements ObservationAdapter {
         @Override
         public Mono<ObservationResponse> read(ObservationRequest request) {
-            if (request.operation() == ObservationOperation.SAFETY_EVENTS) {
+            if (request.operation() == ObservationOperationEnum.SAFETY_EVENTS) {
                 Map<String, Object> payload = new LinkedHashMap<>();
                 payload.put("items", List.of(Map.of("eventId", "event-" + request.parameters().get("type"),
                         "ledger", request.parameters().get("type"), "deviceId", "sensor-1",

@@ -1,0 +1,26 @@
+{
+  "runningArtifactSha256": "5e8927bbdc11794edd79526033bb436e2c604cbf9c6122b4577c5e6747903fb2",
+  "runningSourceAllClassHashesMatched": true,
+  "energyFiles": {
+    "src/main/java/ltd/qianc/iotagent/iot/internal/CompanyEnergyObservationComposerImpl.java": {
+      "worktreeCommittedBaseMatchesRunningSource": true,
+      "baselineSha256": "37e0f4facb85b7578e149f0e742343afc976884678afcfdde51bfa79931a526d"
+    },
+    "src/main/java/ltd/qianc/iotagent/observation/internal/controller/ObservationController.java": {
+      "worktreeCommittedBaseMatchesRunningSource": true,
+      "baselineSha256": "577f4136ead083ced49bb9698daea5e1a4190d107c7817f0d180b9f986af86b3"
+    },
+    "src/main/java/ltd/qianc/iotagent/observation/internal/controller/CompanyEnergyHistoryPreparation.java": {
+      "worktreeCommittedBaseMatchesRunningSource": true,
+      "baselineSha256": "506b822f18cee01d05fe8e211f6898060845bd716a6eaedde6fd032ff53fd9e1"
+    },
+    "src/test/java/ltd/qianc/iotagent/CompanyEnergyHistoryPreparationContractTest.java": {
+      "worktreeCommittedBaseMatchesRunningSource": true,
+      "baselineSha256": "ad378c39a4d82d3f10435223483cb359e381e773d6b47ffb2ddd77a72278b6f7"
+    },
+    "src/test/java/ltd/qianc/iotagent/iot/CompanyEnergyObservationComposerContractTest.java": {
+      "worktreeCommittedBaseMatchesRunningSource": true,
+      "baselineSha256": "1a63f7ff94f8f0e5017d9fe0c1579d2df4945bdfd79571abbf6667239b6f22ad"
+    }
+  }
+}

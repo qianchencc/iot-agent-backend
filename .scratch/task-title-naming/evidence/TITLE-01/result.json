@@ -1,0 +1,34 @@
+{
+  "scope": "new task/plan title and label prefixes; scheduling unchanged; no bulk history rewrite",
+  "red": {
+    "tests": 2,
+    "failures": 2
+  },
+  "focused": {
+    "tests": 22,
+    "failures": 0,
+    "errors": 0
+  },
+  "frozenReleaseSuite": {
+    "tests": 522,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "standaloneProgram": {
+    "proposalStatus": "PENDING_CONFIRMATION",
+    "taskCreated": false,
+    "executionAt": "2026-11-02T17:00:00Z",
+    "recurring": "26楼照明关闭",
+    "once": "2026-11-03 26楼照明关闭"
+  },
+  "standaloneLimits": "Fixture authorized device scope, real public TaskFacade and isolated MySQL stores. No real device control, task confirmation or notification. No new frontend task-creation acceptance claimed.",
+  "deployment": {
+    "javaPort": 3381,
+    "tmux": "fixed-backend:java",
+    "nodeUnchanged": true,
+    "onlyNormalizerAndSharedInstructionsChanged": true,
+    "sha256": "5dc0cbeec4b377d8567134758a769b544ca7088774217efe5219fea2ddc61481",
+    "sourcePath": "/Users/qianchen/works/新发展/iot-agent-backend/var/task-title-20261105-111230/source"
+  }
+}

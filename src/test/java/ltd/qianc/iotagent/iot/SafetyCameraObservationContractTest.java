@@ -14,7 +14,7 @@ import reactor.core.publisher.Mono;
 
 class SafetyCameraObservationContractTest {
     private static final RequestIdentity COMPANY =
-            new RequestIdentity("Bearer company", "TENANT-1", IotSource.COMPANY);
+            new RequestIdentity("Bearer company", "TENANT-1", IotSourceEnum.COMPANY);
     private static final Instant NOW = Instant.parse("2024-04-20T07:11:01Z");
 
     @Test
@@ -29,7 +29,7 @@ class SafetyCameraObservationContractTest {
         ObservationAdapter adapter = composed(upstream, scope(safety), scope(pantry, otherFloor, noHub));
 
         Map<?, ?> payload = adapter.read(new ObservationRequest(COMPANY,
-                        ObservationOperation.SAFETY_EVENT_CAMERAS,
+                        ObservationOperationEnum.SAFETY_EVENT_CAMERAS,
                         Map.of("id", "alarm-1", "ledger", "gas", "deviceId", "gas-1")))
                 .block().payload();
         List<?> candidates = (List<?>) payload.get("candidates");
@@ -51,7 +51,7 @@ class SafetyCameraObservationContractTest {
                 scope(device("cam-27", "video", "27楼监控", "27楼", "hub", List.of())));
 
         Map<?, ?> payload = adapter.read(new ObservationRequest(COMPANY,
-                        ObservationOperation.SAFETY_EVENT_CAMERAS,
+                        ObservationOperationEnum.SAFETY_EVENT_CAMERAS,
                         Map.of("id", "alarm-1", "ledger", "gas", "deviceId", "gas-1")))
                 .block().payload();
         assertThat((List<?>) payload.get("candidates")).isEmpty();
@@ -83,7 +83,7 @@ class SafetyCameraObservationContractTest {
         ObservationAdapter upstream = event(Map.of(
                 "eventId", "alarm-1", "ledger", "gas", "deviceId", "gas-1",
                 "deviceName", "recorded gas", "occurredAt", "2024-04-20T07:10:01Z"));
-        RequestIdentity other = new RequestIdentity("Bearer other", "TENANT-2", IotSource.COMPANY);
+        RequestIdentity other = new RequestIdentity("Bearer other", "TENANT-2", IotSourceEnum.COMPANY);
         ObservationAdapter adapter = composed(upstream, scope(other,
                 device("gas-1", "safety", "gas", "27楼", null, List.of())), scope());
         assertThatThrownBy(() -> adapter.read(request()).block())
@@ -92,13 +92,13 @@ class SafetyCameraObservationContractTest {
     }
 
     private static ObservationRequest request() {
-        return new ObservationRequest(COMPANY, ObservationOperation.SAFETY_EVENT_CAMERAS,
+        return new ObservationRequest(COMPANY, ObservationOperationEnum.SAFETY_EVENT_CAMERAS,
                 Map.of("id", "alarm-1", "ledger", "gas", "deviceId", "gas-1"));
     }
 
     private static ObservationAdapter event(Map<String, Object> record) {
         return request -> {
-            if (request.operation() != ObservationOperation.SAFETY_EVENTS) {
+            if (request.operation() != ObservationOperationEnum.SAFETY_EVENTS) {
                 return Mono.error(new AssertionError("unexpected operation: " + request.operation()));
             }
             if (request.parameters().containsKey("deviceId")
@@ -139,7 +139,7 @@ class SafetyCameraObservationContractTest {
     private static AuthorizedDeviceScope scope(RequestIdentity identity, AuthorizedDevice... devices) {
         return new AuthorizedDeviceScope() {
             @Override public RequestIdentity identity() { return identity; }
-            @Override public IotSource source() { return IotSource.COMPANY; }
+            @Override public IotSourceEnum source() { return IotSourceEnum.COMPANY; }
             @Override public List<AuthorizedDevice> devices() { return List.of(devices); }
         };
     }

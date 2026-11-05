@@ -13,6 +13,8 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import ltd.qianc.iotagent.audit.AuditEventFact;
+import ltd.qianc.iotagent.audit.AuditEventStore;
 import ltd.qianc.iotagent.auth.PrincipalInfo;
 import ltd.qianc.iotagent.error.BusinessException;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseBodyEmitter;
@@ -20,9 +22,11 @@ import org.springframework.web.servlet.mvc.method.annotation.ResponseBodyEmitter
 public final class ConversationFacade {
  // Business-owned Java projection converts private engine events before they reach this facade.
  private static final Set<String> TERMINALS=Set.of("run.completed","run.awaiting_confirmation","run.failed","run.aborted");
- private final ObjectMapper mapper; private final ConversationStore store; private final ConversationEventStore events; private final AgentEngineBridge bridge; private final Executor executor; private final ScheduledExecutorService scheduler; private final long heartbeatMs; private final ConversationDrafts drafts; private final ConversationTaskCards taskCards; private final Map<String,Run> active=new ConcurrentHashMap<>(); private final Map<String,Run> toolContextsById=new ConcurrentHashMap<>();
- public ConversationFacade(ObjectMapper m,ConversationStore s,ConversationEventStore e,AgentEngineBridge b,Executor x,ConversationDrafts d,ConversationTaskCards taskCards){this(m,s,e,b,x,null,0,d,taskCards);}
- public ConversationFacade(ObjectMapper m,ConversationStore s,ConversationEventStore e,AgentEngineBridge b,Executor x,ScheduledExecutorService scheduler,long heartbeatMs,ConversationDrafts d,ConversationTaskCards taskCards){mapper=m;store=s;events=e;bridge=b;executor=x;this.scheduler=scheduler;this.heartbeatMs=heartbeatMs;drafts=Objects.requireNonNull(d);this.taskCards=Objects.requireNonNull(taskCards);}
+ private final ObjectMapper mapper; private final ConversationStore store; private final ConversationEventStore events; private final AgentEngineBridge bridge; private final Executor executor; private final ScheduledExecutorService scheduler; private final java.util.function.LongSupplier heartbeatMs; private final ConversationDrafts drafts; private final ConversationTaskCards taskCards; private final AuditEventStore audit; private final Map<String,Run> active=new ConcurrentHashMap<>(); private final Map<String,Run> toolContextsById=new ConcurrentHashMap<>();
+ public ConversationFacade(ObjectMapper m,ConversationStore s,ConversationEventStore e,AgentEngineBridge b,Executor x,ConversationDrafts d,ConversationTaskCards taskCards){this(m,s,e,b,x,null,0,d,taskCards,null);}
+ public ConversationFacade(ObjectMapper m,ConversationStore s,ConversationEventStore e,AgentEngineBridge b,Executor x,ScheduledExecutorService scheduler,long heartbeatMs,ConversationDrafts d,ConversationTaskCards taskCards){this(m,s,e,b,x,scheduler,heartbeatMs,d,taskCards,null);}
+ public ConversationFacade(ObjectMapper m,ConversationStore s,ConversationEventStore e,AgentEngineBridge b,Executor x,ScheduledExecutorService scheduler,long heartbeatMs,ConversationDrafts d,ConversationTaskCards taskCards,AuditEventStore audit){this(m,s,e,b,x,scheduler,()->heartbeatMs,d,taskCards,audit);}
+ public ConversationFacade(ObjectMapper m,ConversationStore s,ConversationEventStore e,AgentEngineBridge b,Executor x,ScheduledExecutorService scheduler,java.util.function.LongSupplier heartbeatMs,ConversationDrafts d,ConversationTaskCards taskCards,AuditEventStore audit){mapper=m;store=s;events=e;bridge=b;executor=x;this.scheduler=scheduler;this.heartbeatMs=heartbeatMs;drafts=Objects.requireNonNull(d);this.taskCards=Objects.requireNonNull(taskCards);this.audit=audit;}
  public Map<String,Object> create(PrincipalInfo p,String source){String s=source==null?"office":source; validSource(s); ConversationRecord c=store.create(p.tenantCode(),owner(p),s,Instant.now());return Map.of("id",c.id(),"source",c.source(),"createdAt",c.createdAt().toString());}
  public Map<String,Object> current(PrincipalInfo p,String source) {
   String s=source==null?"office":source;
@@ -52,6 +56,7 @@ public final class ConversationFacade {
  public ResponseBodyEmitter message(PrincipalInfo p,String id,String content,String idem){return message(p,id,content,idem,null,null,null);}
  public ResponseBodyEmitter message(PrincipalInfo p,String id,String content,String idem,String source){return message(p,id,content,idem,source,null,null);}
  public ResponseBodyEmitter message(PrincipalInfo p,String id,String content,String idem,String source,String focusRegionId,Map<String,Object> reference){
+  long receivedAt=System.nanoTime();
   ConversationRecord conversation=verify(p,id,source);
   if(content==null||content.isBlank())throw new BusinessException("INVALID_MESSAGE","Message content is required");
   if(active.containsKey(id))throw new BusinessException("CONVERSATION_BUSY","当前会话正在处理请求，请等待完成或停止",409);
@@ -66,23 +71,153 @@ public final class ConversationFacade {
   ConversationTurn turn=store.startTurn(id,content,Instant.now(),key);
   String tid=turn.id(),rid=UUID.randomUUID().toString(),tcid=UUID.randomUUID().toString();
   Run r=new Run(id,tid,rid,tcid,p,conversation.source(),focusRegionId,reference,out);
+  r.receivedAt=receivedAt;
   toolContextsById.put(tcid,r);
   if(active.putIfAbsent(id,r)!=null){toolContextsById.remove(tcid,r);store.discardTurn(id,tid);throw new BusinessException("CONVERSATION_BUSY","当前会话正在处理请求，请等待完成或停止",409);}
-  try{scheduleHeartbeat(r);}
-  catch(RuntimeException error){active.remove(id,r);toolContextsById.remove(tcid,r);try{store.discardTurn(id,tid);}catch(RuntimeException ignored){}throw error;}
-  try {
-   executor.execute(()->{
-   try{
-    bridge.start(new AgentRunRequest(rid,id,tid,conversation.source(),content,p.tenantCode(),focusRegionId,reference,tcid),e->{if(!r.terminal.get())emit(r,e.type(),e.fields());}).whenComplete((v,x)->{
-     if(x!=null&&!r.terminal.get())fail(r,x);
-     else if(!r.terminal.get())fail(r,new BusinessException("AGENT_ENGINE_INCOMPLETE","运行未返回终态",502));
-    });
-   }catch(Exception e){fail(r,e);}
-  });
-  } catch (RejectedExecutionException e) {
-   fail(r,new BusinessException("AGENT_CAPACITY_EXCEEDED","当前运行数量已达上限，请稍后重试",429));
+  try{audit(r,"AGENT_REQUESTED",requested(content));}
+  catch(RuntimeException failure){
+   try{store.discardTurn(id,tid);}finally{active.remove(id,r);toolContextsById.remove(tcid,r);}
+   throw failure;
   }
+  AgentRunTiming.record(r.runId,"java.accept",receivedAt,"completed");
+  launch(r,content);
   return out;
+ }
+ private void launch(Run r,String content){
+  long queuedAt=System.nanoTime();
+  try{
+   scheduleHeartbeat(r);
+   executor.execute(()->{
+    AgentRunTiming.record(r.runId,"java.queue",queuedAt,"started");
+    try{
+     bridge.start(new AgentRunRequest(r.runId,r.conversationId,r.turnId,r.context.source(),content,
+       r.context.principal().tenantCode(),r.context.focusRegionId(),r.context.reference(),r.toolContextId),
+       e->{if(!r.terminal.get())emit(r,e.type(),e.fields());}).whenComplete((v,x)->{
+      if(x!=null&&!r.terminal.get())fail(r,x);
+      else if(!r.terminal.get())fail(r,new BusinessException("AGENT_ENGINE_INCOMPLETE","运行未返回终态",502));
+     });
+    }catch(Exception e){fail(r,e);}
+   });
+  }catch(RejectedExecutionException e){
+   fail(r,new BusinessException("AGENT_CAPACITY_EXCEEDED","当前运行数量已达上限，请稍后重试",429));
+  }catch(RuntimeException e){fail(r,e);}
+ }
+ /** System continuation reuses the original turn and does not grant confirmation authority. */
+ public boolean continueTaskConfirmation(PrincipalInfo principal,String id,String tid,String taskId,
+   String source,String code,String message){
+  verify(principal,id,source);
+  ConversationTurn turn=store.turns(id).stream().filter(t->t.id().equals(tid)).findFirst()
+    .orElseThrow(()->new BusinessException("TURN_NOT_FOUND","原任务请求不存在",404));
+  Run r;
+  synchronized(events){
+   List<ConversationEventFact> facts=events.read(id).stream().filter(f->f.turnId().equals(tid))
+     .sorted(Comparator.comparingLong(ConversationEventFact::sequence)).toList();
+   String focus=null;Map<String,Object> reference=null;
+   boolean sameDecision=false;
+   for(ConversationEventFact fact:facts){
+    try{
+     var body=mapper.readTree(fact.payloadJson());
+     if("task.confirmation".equals(fact.type())&&taskId.equals(body.path("taskId").asText())){
+      sameDecision="needs_decision".equals(body.path("confirmation").path("status").asText())
+        &&code.equals(body.path("confirmation").path("code").asText());
+     }
+     if("run.started".equals(fact.type())){
+      if(body.path("focusRegion").path("id").isTextual())focus=body.path("focusRegion").path("id").asText();
+      if(body.path("reference").isObject())reference=mapper.convertValue(body.path("reference"),Map.class);
+     }
+    }catch(com.fasterxml.jackson.core.JsonProcessingException invalid){
+     throw new BusinessException("CONVERSATION_EVENT_INVALID","会话记录不可读取",503);
+    }
+   }
+   if(sameDecision)return false;
+   r=new Run(id,tid,UUID.randomUUID().toString(),UUID.randomUUID().toString(),principal,source,
+     focus,reference,new ResponseBodyEmitter(0L));
+   r.continuation=true;
+   r.confirmationTaskId=taskId;
+   r.sequence=facts.stream().mapToLong(ConversationEventFact::sequence).max().orElse(0);
+   if(active.putIfAbsent(id,r)!=null)throw new BusinessException("CONVERSATION_BUSY","当前会话正在处理请求",409);
+   toolContextsById.put(r.toolContextId,r);
+   try{
+    ObjectNode decision=node(r,"task.confirmation",Map.of("taskId",taskId,"confirmation",
+      Map.of("status","needs_decision","code",code,"message",message)));
+    append(r,decision);
+   }catch(RuntimeException failure){
+    active.remove(id,r);toolContextsById.remove(r.toolContextId,r);throw failure;
+   }
+  }
+  launch(r,turn.content());
+  return true;
+ }
+ public Map<String,Object> observationReport(String contextId,String id,String tid,String rid,String reportId){
+  toolContext(contextId,id,tid,rid);
+  List<ConversationEventFact> facts=events.read(id);
+  for(int index=facts.size()-1;index>=0;index--){
+   ConversationEventFact fact=facts.get(index);
+   if(!"observation.reported".equals(fact.type()))continue;
+   try{
+    for(var block:mapper.readTree(fact.payloadJson()).path("blocks")){
+     var report=block.path("report");
+     if(reportId.equals(report.path("reportId").asText()))return mapper.convertValue(report,Map.class);
+    }
+   }catch(com.fasterxml.jackson.core.JsonProcessingException invalid){
+    throw new BusinessException("CONVERSATION_EVENT_INVALID","会话记录不可读取",503);
+   }
+  }
+  throw new BusinessException("ENERGY_REPORT_NOT_FOUND","原比较报告不存在",404);
+ }
+ public boolean isContinuation(String contextId,String conversationId,String turnId,String runId){
+  toolContext(contextId,conversationId,turnId,runId);
+  return toolContextsById.get(contextId).continuation;
+ }
+ public void requireIdle(PrincipalInfo principal,String id,String source){
+  verify(principal,id,source);
+  if(active.containsKey(id))throw new BusinessException("CONVERSATION_BUSY","当前会话正在处理请求",409);
+ }
+ public void recordTaskConfirmation(PrincipalInfo principal,String id,String tid,String taskId,String source,
+   String status,String message,String code){
+  verify(principal,id,source);
+  if(store.turns(id).stream().noneMatch(turn->tid.equals(turn.id())))
+   throw new BusinessException("TURN_NOT_FOUND","原任务请求不存在",404);
+  synchronized(events){
+   long sequence=events.read(id).stream().filter(f->tid.equals(f.turnId()))
+     .mapToLong(ConversationEventFact::sequence).max().orElse(0)+1;
+   Map<String,Object> confirmation=new LinkedHashMap<>();
+   confirmation.put("status",status);confirmation.put("message",message);
+   if(code!=null)confirmation.put("code",code);
+   ObjectNode body=mapper.valueToTree(Map.of("type","task.confirmation","conversationId",id,"turnId",tid,
+     "sequence",sequence,"timestamp",Instant.now().toString(),"taskId",taskId,"confirmation",confirmation));
+   events.append(new ConversationEventFact(id,tid,sequence,"task.confirmation",body.toString(),
+     "confirmation:"+taskId+":"+sequence));
+  }
+ }
+ public List<Map<String,Object>> taskConfirmationContext(String contextId,String id,String tid,String rid){
+  AgentToolContext context=toolContext(contextId,id,tid,rid);
+  Map<String,ConversationTurn> turns=new HashMap<>();
+  for(ConversationTurn turn:store.turns(id))turns.put(turn.id(),turn);
+  Map<String,Map<String,Object>> latest=new LinkedHashMap<>();
+  List<ConversationEventFact> facts=new ArrayList<>(events.read(id));
+  Collections.reverse(facts);
+  for(ConversationEventFact fact:facts){
+   if(!"task.confirmation".equals(fact.type()))continue;
+   try{
+    var body=mapper.readTree(fact.payloadJson());String taskId=body.path("taskId").asText();
+    ConversationTurn original=turns.get(fact.turnId());
+    if(taskId.isBlank()||latest.containsKey(taskId)||original==null)continue;
+    Map<String,Object> state=taskCards.conversationProposalState(context.principal(),taskId,context.source());
+    if(state==null)continue;
+    Map<String,Object> item=new LinkedHashMap<>();
+    item.put("taskId",taskId);item.put("originalGoal",original.content());
+    item.put("proposalStatus",state.get("status"));
+    item.put("plannedAt",state.getOrDefault("plannedAt",List.of()));
+    item.put("confirmation",mapper.convertValue(body.path("confirmation"),Map.class));
+    latest.put(taskId,item);
+    if(latest.size()==4)break;
+   }catch(BusinessException unavailable){if(unavailable.httpStatus()!=404)throw unavailable;}
+   catch(com.fasterxml.jackson.core.JsonProcessingException invalid){
+    throw new BusinessException("CONVERSATION_EVENT_INVALID","会话记录不可读取",503);
+   }
+  }
+  return List.copyOf(latest.values());
  }
  public Map<String,Object> cancel(PrincipalInfo p,String id){return cancel(p,id,null);}
  public Map<String,Object> cancel(PrincipalInfo p,String id,String source){verify(p,id,source);Run r=active.get(id);if(r==null)throw new BusinessException("NO_ACTIVE_RUN","当前没有正在处理的请求",409);finish(r,"run.aborted",Map.of("message","已停止"));bridge.cancel(r.runId);return Map.of("cancelled",true);}
@@ -95,6 +230,20 @@ public final class ConversationFacade {
  public List<String> retireDrafts(String toolContextId,String conversationId,String turnId,String runId){
   AgentToolContext context=toolContext(toolContextId,conversationId,turnId,runId);
   return drafts.retireForConversation(context.principal(),conversationId,context.source());
+ }
+ /** Runtime loadActionDraftContext parity: latest draft plus last execution outcome, post-retire truth. */
+ public Map<String,Object> draftContext(String toolContextId,String conversationId,String turnId,String runId){
+  AgentToolContext context=toolContext(toolContextId,conversationId,turnId,runId);
+  Map<String,Object> latest=null;Map<String,Object> lastExecution=null;
+  for(Map<String,Object> view:drafts.conversationDrafts(context.principal(),conversationId,context.source()).values()){
+   Map<String,Object> fact=new LinkedHashMap<>();
+   fact.put("draftId",view.get("draftId"));fact.put("status",view.get("status"));fact.put("summary",view.getOrDefault("summary",""));
+   latest=fact;
+   if(List.of("ACCEPTED","PARTIALLY_ACCEPTED","REJECTED","NO_CHANGE","INTERRUPTED").contains(String.valueOf(view.get("status"))))lastExecution=fact;
+  }
+  Map<String,Object> result=new LinkedHashMap<>();
+  result.put("latestDraft",latest);result.put("lastExecution",lastExecution);
+  return result;
  }
  public List<String> reportArtifactIds(String toolContextId,String conversationId,String turnId,String runId){
   toolContext(toolContextId,conversationId,turnId,runId);
@@ -125,18 +274,63 @@ public final class ConversationFacade {
  private void emit(Run r,String type,Map<String,Object> f){
   if("heartbeat".equals(type)){sendHeartbeat(r);return;}
   if(TERMINALS.contains(type)){finish(r,type,f);return;}
-  synchronized(r){if(r.terminal.get())return;synchronized(events){flushRecordedEvents(r);ObjectNode n=node(r,type,f);append(r,n);send(r,n);}}
+  long waitingAt=System.nanoTime();
+  synchronized(r){if(r.terminal.get())return;synchronized(events){
+   r.lockNanos+=System.nanoTime()-waitingAt;
+   flushRecordedEvents(r);ObjectNode n=node(r,type,f);append(r,n);send(r,n);
+   if("message.completed".equals(type)&&f!=null&&f.get("content") instanceof String content&&!content.isBlank())r.lastPublicReply=content;}}
  }
  private void finish(Run r,String type,Map<String,Object> f){
   synchronized(r){
    if(!r.terminal.compareAndSet(false,true))return;
-   try{synchronized(events){flushRecordedEvents(r);ObjectNode n=node(r,type,f);append(r,n);send(r,n);}}
+   try{synchronized(events){
+    flushRecordedEvents(r);
+    if(r.confirmationTaskId!=null&&("run.failed".equals(type)||"run.aborted".equals(type))){
+     ObjectNode decision=node(r,"task.confirmation",Map.of("taskId",r.confirmationTaskId,
+       "confirmation",Map.of("status","run.aborted".equals(type)?"stopped":"blocked",
+       "message","原任务核实已中断，目标与必要决定已保留")));append(r,decision);send(r,decision);
+    }
+    ObjectNode n=node(r,type,f);append(r,n);send(r,n);
+    Map<String,Object> audited=new LinkedHashMap<>();audited.put("action","message");audited.put("status",type);
+    if(r.lastPublicReply!=null)audited.put("reply",r.lastPublicReply);
+    audit(r,"AGENT_"+type.replace('.', '_').toUpperCase(Locale.ROOT),audited);
+   }}
    catch(RuntimeException error){send(r,node(r,"run.failed",Map.of("code","CONVERSATION_PERSISTENCE_UNAVAILABLE","message","会话记录未能保存，请稍后重试")));}
-   finally{if(r.heartbeat!=null)r.heartbeat.cancel(false);try{r.out.complete();}catch(Exception ignored){}active.remove(r.conversationId,r);toolContextsById.remove(r.toolContextId,r);}
+   finally{
+    AgentRunTiming.delivery(r.runId,Map.of("outcome",type,"totalMs",(System.nanoTime()-r.receivedAt)/1_000_000.0,
+      "lockWaitMs",r.lockNanos/1_000_000.0,"historyReadMs",r.historyReadNanos/1_000_000.0,
+      "appendMs",r.appendNanos/1_000_000.0,"sendMs",r.sendNanos/1_000_000.0,
+      "appendCount",r.appendCount,"sendCount",r.sendCount,"firstTextSentMs",r.firstTextSentMs));
+    if(r.heartbeat!=null)r.heartbeat.cancel(false);try{r.out.complete();}catch(Exception ignored){}active.remove(r.conversationId,r);toolContextsById.remove(r.toolContextId,r);
+   }
   }
+  }
+ private void audit(Run r,String type,Map<String,Object> fields){
+  if(audit==null)return;
+  Map<String,Object> payload=new LinkedHashMap<>(fields);
+  payload.put("source",r.context.source());
+  payload.put("principalId",r.context.principal().principalId());
+  payload.put("identityRealm",r.context.principal().identityRealm());
+  payload.put("conversationId",r.conversationId);
+  payload.put("turnId",r.turnId);
+  payload.put("runId",r.runId);
+  payload.put("at",Instant.now().toString());
+  try{audit.append(new AuditEventFact(UUID.randomUUID().toString(),r.context.principal().tenantCode(),type,mapper.writeValueAsString(payload)));}
+  catch(Exception failure){throw new BusinessException("AUDIT_UNAVAILABLE","审计记录未能保存，请稍后重试",503);}
  }
+ private Map<String,Object> requested(String content){
+  Map<String,Object> fields=new LinkedHashMap<>();fields.put("action","message");fields.put("status","started");
+  if(content!=null&&!content.isBlank())fields.put("request",bounded(content));
+  return fields;
+ }
+ /** The audit copy carries only the member's public request text and the run's public reply, never engine internals. */
+ private static String bounded(String text){return text.length()<=2000?text:text.substring(0,2000)+"…（已截断）";}
  private void flushRecordedEvents(Run r){
-  for(ConversationEventFact fact:events.read(r.conversationId).stream()
+  List<ConversationEventFact> recordedFacts;
+  long readingAt=System.nanoTime();
+  try{recordedFacts=events.read(r.conversationId);}
+  finally{r.historyReadNanos+=System.nanoTime()-readingAt;}
+  for(ConversationEventFact fact:recordedFacts.stream()
     .filter(event->r.turnId.equals(event.turnId())&&event.sequence()>r.sequence)
     .sorted(Comparator.comparingLong(ConversationEventFact::sequence)).toList()){
    try{
@@ -151,7 +345,8 @@ public final class ConversationFacade {
   }
  }
  private void scheduleHeartbeat(Run r){
-  if(scheduler!=null&&heartbeatMs>0)r.heartbeat=scheduler.scheduleAtFixedRate(()->sendHeartbeat(r),heartbeatMs,heartbeatMs,TimeUnit.MILLISECONDS);
+  long heartbeat=heartbeatMs.getAsLong();
+  if(scheduler!=null&&heartbeat>0)r.heartbeat=scheduler.scheduleAtFixedRate(()->sendHeartbeat(r),heartbeat,heartbeat,TimeUnit.MILLISECONDS);
  }
  private void sendHeartbeat(Run r){
   synchronized(r){if(!r.terminal.get()){ObjectNode n=mapper.createObjectNode();n.put("type","heartbeat");send(r,n);}}
@@ -161,8 +356,21 @@ public final class ConversationFacade {
   f.forEach((k,v)->{if(!Set.of("type","sequence","conversationId","turnId","timestamp").contains(k))n.set(k,mapper.valueToTree(v));});
   return n;
  }
- private void append(Run r,ObjectNode n){events.append(new ConversationEventFact(r.conversationId,r.turnId,r.sequence,n.get("type").asText(),n.toString(),r.runId+":"+r.sequence));}
- private void send(Run r,ObjectNode n){try{if(!r.disconnected.get())r.out.send(n.toString()+"\n");}catch(Exception e){r.disconnected.set(true);}}
+ private void append(Run r,ObjectNode n){
+  long started=System.nanoTime();
+  try{events.append(new ConversationEventFact(r.conversationId,r.turnId,r.sequence,n.get("type").asText(),n.toString(),r.runId+":"+r.sequence));}
+  finally{r.appendNanos+=System.nanoTime()-started;r.appendCount++;}
+ }
+ private void send(Run r,ObjectNode n){
+  if(r.disconnected.get())return;
+  long started=System.nanoTime();
+  try{
+   r.out.send(n.toString()+"\n");
+   if(r.firstTextSentMs<0&&"message.delta".equals(n.path("type").asText())&&!n.path("content").asText("").isBlank())
+    r.firstTextSentMs=(System.nanoTime()-r.receivedAt)/1_000_000.0;
+  }catch(Exception e){r.disconnected.set(true);}
+  finally{r.sendNanos+=System.nanoTime()-started;r.sendCount++;}
+ }
  private Map<String,Object> turn(ConversationTurn t,List<ConversationEventFact> facts,Map<String,Map<String,Object>> authoritative,PrincipalInfo principal,String source){
   List<Object> es=new ArrayList<>(facts.size());
   ObjectNode draft=null,result=null;
@@ -224,6 +432,9 @@ public final class ConversationFacade {
  private static String owner(PrincipalInfo p){return p.ownerKey();}
  private static final class Run{
   final String conversationId,turnId,runId,toolContextId;final AgentToolContext context;final ResponseBodyEmitter out;final AtomicBoolean terminal=new AtomicBoolean();final AtomicBoolean disconnected=new AtomicBoolean();long sequence;ScheduledFuture<?> heartbeat;
+  boolean continuation;String confirmationTaskId;String lastPublicReply;
+  long receivedAt=System.nanoTime(),lockNanos,historyReadNanos,appendNanos,sendNanos,appendCount,sendCount;
+  double firstTextSentMs=-1;
   Run(String c,String t,String r,String tc,PrincipalInfo p,String s,String focus,Map<String,Object> reference,ResponseBodyEmitter o){conversationId=c;turnId=t;runId=r;toolContextId=tc;context=new AgentToolContext(p,r,c,t,s,focus,reference);out=o;o.onError(x->disconnected.set(true));o.onCompletion(()->disconnected.set(true));}
  }
 }

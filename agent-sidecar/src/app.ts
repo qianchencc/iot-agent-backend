@@ -43,7 +43,8 @@ const PASSTHROUGH_FIELDS: Record<string, readonly string[]> = {
   "tool.result": ["result"],
 };
 
-export function buildApp(config: SidecarConfig, observability: Observability = createObservability()): FastifyInstance {
+export function buildApp(config: SidecarConfig, observability: Observability = createObservability(null),
+    observabilityStatus: () => Record<string, unknown> = () => ({})): FastifyInstance {
   const app = Fastify({ logger: false, bodyLimit: 1_048_576 });
   const sessions = new PiSessionStore(config);
   const runner = new AgentRunner(config, sessions, observability);
@@ -65,6 +66,7 @@ export function buildApp(config: SidecarConfig, observability: Observability = c
     service: "agent-sidecar",
     node: process.versions.node.split(".")[0],
     activeRuns: active.size,
+    observability: observabilityStatus(),
   }));
 
   app.post("/run", async (request, reply) => {
