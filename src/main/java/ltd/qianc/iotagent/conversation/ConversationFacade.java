@@ -311,6 +311,8 @@ public final class ConversationFacade {
   payload.put("source",r.context.source());
   payload.put("principalId",r.context.principal().principalId());
   payload.put("identityRealm",r.context.principal().identityRealm());
+  if(r.context.principal().displayName()!=null)payload.put("displayName",r.context.principal().displayName());
+  if(r.context.principal().mobileNumber()!=null)payload.put("mobileNumber",r.context.principal().mobileNumber());
   payload.put("conversationId",r.conversationId);
   payload.put("turnId",r.turnId);
   payload.put("runId",r.runId);

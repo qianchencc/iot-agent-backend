@@ -64,15 +64,20 @@ final class AuditQuerySupport {
             if (principalId != null && !principalId.equals(principal)) continue;
             boolean resolved = realm != null && principal != null;
             String key = resolved ? realm + "\u0000" + principal : "\u0000unresolved";
+            String displayName = text(payload.get("displayName"));
+            String eventDisplayName = displayName == null ? text(payload.get("creatorName")) : displayName;
+            String mobileNumber = text(payload.get("mobileNumber"));
             AuditMember member = members.computeIfAbsent(key, ignored -> new AuditMember(tenantCode,
-                    realm, principal, resolved, 0, new LinkedHashMap<>(),
+                    realm, principal, eventDisplayName, mobileNumber, resolved, 0, new LinkedHashMap<>(),
                     event.createdAt(), event.createdAt()));
             Map<String, Long> sources = new LinkedHashMap<>(member.sources());
             String source = text(payload.get("source"));
             sources.merge(source == null ? "unknown" : source, 1L, Long::sum);
             Instant at = event.createdAt();
-            members.put(key, new AuditMember(tenantCode, realm, principal, resolved,
-                    member.eventCount() + 1, sources,
+            members.put(key, new AuditMember(tenantCode, realm, principal,
+                    member.displayName() == null ? eventDisplayName : member.displayName(),
+                    member.mobileNumber() == null ? mobileNumber : member.mobileNumber(),
+                    resolved, member.eventCount() + 1, sources,
                     at != null && member.firstAt() != null && at.isBefore(member.firstAt()) ? at : member.firstAt(),
                     at != null && member.lastAt() != null && at.isAfter(member.lastAt()) ? at : member.lastAt()));
         }

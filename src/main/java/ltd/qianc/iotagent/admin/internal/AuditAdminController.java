@@ -44,16 +44,15 @@ public final class AuditAdminController {
     private static final int MAX_TEXT = 256;
     private static final int MAX_REQUEST_REPLY = 2000;
     private static final List<String> ROW_FIELDS = List.of(
-            "source", "principalId", "identityRealm", "actor", "action", "status",
+            "source", "principalId", "identityRealm", "displayName", "mobileNumber", "actor", "action", "status",
             "conversationId", "turnId", "runId", "revision", "summary");
     private static final List<String> DETAIL_SCALARS = List.of(
-            "at", "source", "principalId", "identityRealm", "actor", "action", "status",
+            "at", "source", "principalId", "identityRealm", "displayName", "mobileNumber", "actor", "action", "status",
             "conversationId", "turnId", "runId", "draftId", "taskId", "proposalId", "planId",
             "phaseId", "reportId", "cancellationId", "label", "kind", "operation", "revision",
             "summary", "question", "request", "reply", "expiresAt", "confirmedAt", "endedAt",
             "observedAt", "creatorName", "ownerKey", "dispatchStarted", "focusRegionId",
-            "revalidatedInto", "code", "message", "reason", "mobileNumber", "name",
-            "addedAt", "removedAt");
+            "revalidatedInto", "code", "message", "reason", "name", "addedAt", "removedAt");
     /**
      * Event vocabulary the system actually emits, past and present. The
      * console type chooser offers only these; the list endpoint still
@@ -144,7 +143,9 @@ public final class AuditAdminController {
             view.put("identityRealm", member.identityRealm());
             view.put("principalId", member.principalId());
             view.put("identityResolved", member.identityResolved());
-            view.put("displayName", member.identityResolved() ? null : "未识别主体");
+            view.put("displayName", member.displayName() == null
+                    ? (member.identityResolved() ? null : "未识别主体") : member.displayName());
+            view.put("mobileNumber", member.mobileNumber());
             view.put("eventCount", member.eventCount());
             view.put("sources", member.sources());
             view.put("firstAt", member.firstAt() == null ? null : member.firstAt().toString());

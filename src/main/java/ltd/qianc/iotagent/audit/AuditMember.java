@@ -14,6 +14,8 @@ public record AuditMember(
         String tenantCode,
         String identityRealm,
         String principalId,
+        String displayName,
+        String mobileNumber,
         boolean identityResolved,
         long eventCount,
         Map<String, Long> sources,

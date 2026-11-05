@@ -69,11 +69,18 @@ public final class WebClientAccountPrincipalVerifier implements AccountPrincipal
                                 new BusinessException("UNAUTHORIZED", "身份凭据无法核验", "请重新登录", 401));
                     }
                     if (code != 0 && code != 200) return reactor.core.publisher.Mono.error(unavailable());
-                    String principalId = body.path("content").path("id").asText("").trim();
+                    JsonNode content = body.path("content");
+                    String principalId = content.path("id").asText("").trim();
                     if (principalId.isEmpty()) return reactor.core.publisher.Mono.error(unavailable());
                     return reactor.core.publisher.Mono.just(new PrincipalInfo(
-                            presented.authorization(), presented.tenantCode(), principalId, identityRealm));
+                            presented.authorization(), presented.tenantCode(), principalId, identityRealm,
+                            text(content.path("personalName")), text(content.path("mobileNumber"))));
                 });
+    }
+
+    private static String text(JsonNode value) {
+        String text = value.asText("").trim();
+        return text.isEmpty() ? null : text;
     }
 
     private static BusinessException unavailable() {

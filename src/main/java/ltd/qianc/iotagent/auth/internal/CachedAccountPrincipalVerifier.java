@@ -76,7 +76,8 @@ public final class CachedAccountPrincipalVerifier implements AccountPrincipalVer
             Instant now = clock.instant();
             // Evaluate held state before dispatch: even an instantly completed cold check returns preparing.
             PrincipalInfo held = entry.principalId != null && now.isBefore(entry.validatedAt.plus(policy.maxValidationAge()))
-                    ? new PrincipalInfo(presented.authorization(), presented.tenantCode(), entry.principalId, entry.identityRealm)
+                    ? new PrincipalInfo(presented.authorization(), presented.tenantCode(), entry.principalId, entry.identityRealm,
+                            entry.displayName, entry.mobileNumber)
                     : null;
             boolean rejected = entry.denied;
             boolean failed = entry.failed || entry.validatedAt != null && held == null;
@@ -166,9 +167,10 @@ public final class CachedAccountPrincipalVerifier implements AccountPrincipalVer
                 catch (RuntimeException unavailable) { /* Genuine verification remains valid; restart will reverify. */ }
             }
             synchronized (entry) {
-                if (closed) return;
                 entry.principalId = verified.principalId();
                 entry.identityRealm = verified.identityRealm();
+                entry.displayName = verified.displayName();
+                entry.mobileNumber = verified.mobileNumber();
                 entry.validatedAt = validatedAt;
                 entry.retryAt = entry.validatedAt.plus(policy.refreshInterval());
                 entry.denied = false;
@@ -260,6 +262,8 @@ public final class CachedAccountPrincipalVerifier implements AccountPrincipalVer
     private static final class Entry {
         private String principalId;
         private String identityRealm;
+        private String displayName;
+        private String mobileNumber;
         private Instant validatedAt;
         private Instant retryAt;
         private boolean inFlight;

@@ -93,6 +93,8 @@ class AccountPrincipalVerifierTest {
             PrincipalInfo verified = awaitPrincipal(verifier, asserted);
             assertThat(verified.principalId()).isEqualTo("real-account");
             assertThat(verified.identityRealm()).isEqualTo("https://realm-a.test");
+            assertThat(verified.displayName()).isEqualTo("测试用户");
+            assertThat(verified.mobileNumber()).isEqualTo("13800000000");
             for (int index = 0; index < 20; index++) assertThat(verifier.verify(asserted)).isEqualTo(verified);
             assertThat(calls.get()).isEqualTo(1);
         }
@@ -449,7 +451,8 @@ class AccountPrincipalVerifierTest {
 
     private static ClientResponse success(String principalId) {
         return ClientResponse.create(HttpStatus.OK).header("Content-Type", "application/json")
-                .body("{\"code\":0,\"content\":{\"id\":\"" + principalId + "\"}}").build();
+                .body("{\"code\":0,\"content\":{\"id\":\"" + principalId
+                        + "\",\"personalName\":\"测试用户\",\"mobileNumber\":\"13800000000\"}}").build();
     }
 
     private static BusinessException failure(AccountPrincipalVerifier verifier, PrincipalInfo principal) {

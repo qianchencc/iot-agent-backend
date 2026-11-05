@@ -80,7 +80,8 @@ class AuditAdminApiTest {
                 .andExpect(jsonPath("$.total").value(2))
                 .andReturn();
         String body = result.getResponse().getContentAsString();
-        assertThat(body).contains(REALM_A).contains(REALM_B);
+        assertThat(body).contains(REALM_A).contains(REALM_B)
+                .contains("测试用户").contains("13800000000");
         com.fasterxml.jackson.databind.JsonNode members = mapper.readTree(body).path("members");
         assertThat(members).hasSize(2);
         com.fasterxml.jackson.databind.JsonNode memberA = members.get(0);
@@ -397,9 +398,9 @@ class AuditAdminApiTest {
 
     private void seed() {
         AUDIT.add(new AuditEventFact(UUID.randomUUID().toString(), TENANT, "AGENT_REQUESTED", json("""
-                {"source":"office","principalId":"p-1","identityRealm":"%s","conversationId":"c-1",
-                 "turnId":"t-1","runId":"r-1","action":"message","status":"started",
-                 "request":"帮我看下三楼灯","at":"2026-11-04T01:00:00Z"}
+                {"source":"office","principalId":"p-1","identityRealm":"%s","displayName":"测试用户",
+                 "mobileNumber":"13800000000","conversationId":"c-1","turnId":"t-1","runId":"r-1",
+                 "action":"message","status":"started","request":"帮我看下三楼灯","at":"2026-11-04T01:00:00Z"}
                 """.formatted(REALM_A)), Instant.parse("2026-11-04T01:00:00Z")));
         AUDIT.add(new AuditEventFact(UUID.randomUUID().toString(), TENANT, "AGENT_RUN_COMPLETED", json("""
                 {"source":"office","principalId":"p-1","identityRealm":"%s","conversationId":"c-1",

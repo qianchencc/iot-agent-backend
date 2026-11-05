@@ -119,6 +119,9 @@ public final class JdbcReportAuditStore extends AbstractJdbcFactSupport implemen
         args.add(limit); args.add(offset);
         List<AuditMember> members = jdbc.query(
                 "SELECT " + realmGroup + " realm," + principalGroup + " principal,"
+                + " MAX(COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.displayName')), ''),"
+                + " NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.creatorName')), ''))) display_name,"
+                + " MAX(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.mobileNumber')), '')) mobile_number,"
                 + " MIN(create_time) first_at, MAX(create_time) last_at, COUNT(*) cnt,"
                 + " SUM(CASE WHEN JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.source'))='company' THEN 1 ELSE 0 END) company_count,"
                 + " SUM(CASE WHEN JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.source'))='office' THEN 1 ELSE 0 END) office_count"
@@ -136,8 +139,8 @@ public final class JdbcReportAuditStore extends AbstractJdbcFactSupport implemen
                     if (office > 0) sources.put("office", office);
                     if (count - company - office > 0) sources.put("unknown", count - company - office);
                     return new AuditMember(tenantCode, resolved ? realm : null, resolved ? principal : null,
-                            resolved, count, sources, rs.getTimestamp("first_at").toInstant(),
-                            rs.getTimestamp("last_at").toInstant());
+                            rs.getString("display_name"), rs.getString("mobile_number"), resolved, count, sources,
+                            rs.getTimestamp("first_at").toInstant(), rs.getTimestamp("last_at").toInstant());
                 }, args.toArray());
         return new AuditMemberIndex(members, total);
     }

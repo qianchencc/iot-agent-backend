@@ -1739,6 +1739,8 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         body.put("source", source);
         if (principal.principalId() != null) body.put("principalId", principal.principalId());
         if (principal.identityRealm() != null) body.put("identityRealm", principal.identityRealm());
+        if (principal.displayName() != null) body.put("displayName", principal.displayName());
+        if (principal.mobileNumber() != null) body.put("mobileNumber", principal.mobileNumber());
         String conversationId = payload.path("conversationId").asText(null);
         if (conversationId != null) body.put("conversationId", conversationId);
         String turnId = payload.path("turnId").asText(null);

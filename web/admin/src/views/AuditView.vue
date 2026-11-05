@@ -55,7 +55,7 @@
             @click="selectMember(member)"
           >
             <span class="member-name">{{ memberName(member) }}</span>
-            <span class="member-sub" :title="member.identityRealm || ''">{{ member.identityRealm || "身份域未知" }}</span>
+            <span class="member-sub" :title="member.identityRealm || ''">{{ memberMeta(member) }}</span>
             <span class="member-meta">
               <span class="muted">{{ sourceSummary(member) }}</span>
               <span class="muted">最近 {{ formatTime(member.lastAt) }}</span>
@@ -133,7 +133,7 @@
             </template>
           </el-table-column>
           <el-table-column label="成员" min-width="150" show-overflow-tooltip>
-            <template #default="{ row }">{{ row.principalId || row.actor || "未识别主体" }}</template>
+            <template #default="{ row }">{{ row.displayName || row.mobileNumber || row.principalId || row.actor || "未识别主体" }}</template>
           </el-table-column>
           <el-table-column label="结果" width="120">
             <template #default="{ row }">
@@ -155,7 +155,7 @@
         <template v-if="detail">
           <el-descriptions :column="1" bordered>
             <el-descriptions-item label="时间">{{ formatTime(detail.createdAt ?? detail.payload?.at) }}</el-descriptions-item>
-            <el-descriptions-item label="成员">{{ detail.payload?.principalId || "未识别主体（历史归属不足）" }}</el-descriptions-item>
+            <el-descriptions-item label="成员">{{ detail.payload?.displayName || detail.payload?.mobileNumber || detail.payload?.principalId || "未识别主体（历史归属不足）" }}</el-descriptions-item>
             <el-descriptions-item label="操作者">{{ detail.payload?.actor || "成员本人（未另记操作者）" }}</el-descriptions-item>
             <el-descriptions-item label="身份域">{{ detail.payload?.identityRealm || "未知" }}</el-descriptions-item>
             <el-descriptions-item label="来源">{{ sourceLabel({ eventType: detail.eventType, source: detail.payload?.source }) }}</el-descriptions-item>
@@ -470,7 +470,11 @@ function countFacts(counts) {
 }
 
 function memberName(member) {
-  return member.identityResolved ? (member.principalId ?? "未知成员") : "未识别主体";
+  return member.displayName || member.mobileNumber || (member.identityResolved ? (member.principalId ?? "未知成员") : "未识别主体");
+}
+
+function memberMeta(member) {
+  return [member.mobileNumber, member.identityRealm].filter(Boolean).join(" · ") || (member.identityResolved ? "身份已核验" : "身份域未知");
 }
 
 function sourceSummary(member) {

@@ -7,10 +7,16 @@ public record PrincipalInfo(
         String authorization,
         String tenantCode,
         String principalId,
-        String identityRealm) {
+        String identityRealm,
+        String displayName,
+        String mobileNumber) {
 
     public PrincipalInfo(String authorization, String tenantCode) {
-        this(authorization, tenantCode, null, null);
+        this(authorization, tenantCode, null, null, null, null);
+    }
+
+    public PrincipalInfo(String authorization, String tenantCode, String principalId, String identityRealm) {
+        this(authorization, tenantCode, principalId, identityRealm, null, null);
     }
 
     public boolean verified() {
