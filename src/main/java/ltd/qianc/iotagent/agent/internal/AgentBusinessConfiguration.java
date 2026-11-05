@@ -11,7 +11,9 @@ import ltd.qianc.iotagent.conversation.AgentRunPolicyProvider;
 import ltd.qianc.iotagent.conversation.ConversationFacade;
 import ltd.qianc.iotagent.conversation.ReportGenerationPort;
 import ltd.qianc.iotagent.iot.IotAdapter;
+import ltd.qianc.iotagent.iot.IotAdapterFactory;
 import ltd.qianc.iotagent.iot.ObservationAdapter;
+import ltd.qianc.iotagent.readmodel.ReadSnapshots;
 import ltd.qianc.iotagent.report.ReportService;
 import ltd.qianc.iotagent.task.TaskFacade;
 import ltd.qianc.iotagent.task.TaskProjectionStore;
@@ -33,9 +35,12 @@ public class AgentBusinessConfiguration {
             ObjectProvider<TaskFacade> tasks,
             ObjectProvider<ReportService> reports,
             ObjectProvider<AdminConfigurationStore> adminConfigurations,
+            ReadSnapshots snapshots, ObjectMapper mapper,
             @Value("${agent.run.max-turns:6}") int maxTurns) {
+        IotAdapter iot = iotAdapters.getIfAvailable();
+        IotAdapter agentReads = iot == null ? null : IotAdapterFactory.agentReads(iot, snapshots, mapper);
         return AgentBusinessEngineFactory.policyProvider(() -> conversations.getObject(),
-                iotAdapters.getIfAvailable(), observations.getIfAvailable(), tasks.getIfAvailable(),
+                agentReads, observations.getIfAvailable(), tasks.getIfAvailable(),
                 reports.getIfAvailable(), adminConfigurations::getIfAvailable,
                 Clock.system(ZoneId.of("Asia/Shanghai")), maxTurns);
     }
@@ -48,10 +53,12 @@ public class AgentBusinessConfiguration {
             ActionDraftFacade actions, TaskFacade tasks, ObjectMapper mapper,
             ObjectProvider<ReportGenerationPort> reports,
             ObjectProvider<ReportService> savedReports,
-            ObjectProvider<ltd.qianc.iotagent.agent.AgentCheckpointBridge> checkpoints) {
-        AgentToolBridge interactive = AgentBusinessEngineFactory.toolBridge(conversations, iot, observations.getIfAvailable(),
-                projections.getIfAvailable(), actions, tasks, mapper, reports.getIfAvailable(), savedReports.getIfAvailable(),
-                Clock.system(ZoneId.of("Asia/Shanghai")));
+            ObjectProvider<ltd.qianc.iotagent.agent.AgentCheckpointBridge> checkpoints,
+            ReadSnapshots snapshots) {
+        IotAdapter agentReads = IotAdapterFactory.agentReads(iot, snapshots, mapper);
+        AgentToolBridge interactive = AgentBusinessEngineFactory.toolBridge(conversations, agentReads,
+                observations.getIfAvailable(), projections.getIfAvailable(), actions, tasks, mapper,
+                reports.getIfAvailable(), savedReports.getIfAvailable(), Clock.system(ZoneId.of("Asia/Shanghai")));
         return request -> {
             var checkpoint = checkpoints.getIfAvailable();
             var result = checkpoint == null ? java.util.Optional.<java.util.Map<String, Object>>empty() : checkpoint.executeTool(request);
