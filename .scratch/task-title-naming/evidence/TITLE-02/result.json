@@ -1,0 +1,927 @@
+{
+  "scope": "Source naming instructions only; no frontend, Java business logic, parameter structure, runtime configuration or deployment changes.",
+  "model": "glm-5.3-flash",
+  "thinkingLevel": "low",
+  "configRevisionReadOnly": 13,
+  "sourceHashes": {
+    "src/main/resources/agent/shared-instructions.txt": "9b866ea338b6fc8eaae4427886896aa7e17932bb7d85d51afcd52ce69b0d0960",
+    "src/main/resources/agent/tool-definitions.json": "e75807d14a8aa6ec0270246d78e2842040edd6d512509efcfd243be2a2d3967d"
+  },
+  "verification": "Isolated real-model calls with synthetic tool-read history. Generated tool calls captured only, never executed. Not miniapp acceptance or a claim of deterministic model behavior.",
+  "checks": [
+    {
+      "case": "CREATE-WEEKDAYS",
+      "name": "工作日上午26楼运营部过道开灯",
+      "checks": {
+        "schema": true,
+        "businessName": true,
+        "taskAction": true
+      },
+      "schemaErrors": []
+    },
+    {
+      "case": "CREATE-WEEKLY-OFFICE",
+      "name": "每周五早上办公室开灯",
+      "checks": {
+        "schema": true,
+        "businessName": true,
+        "taskAction": true
+      },
+      "schemaErrors": []
+    },
+    {
+      "case": "EDIT-OCCURRENCE",
+      "name": "11月9日下午26楼运营部过道开灯",
+      "checks": {
+        "schema": true,
+        "businessName": true,
+        "taskAction": true,
+        "target": true,
+        "time": true,
+        "noParentChange": true
+      },
+      "schemaErrors": []
+    },
+    {
+      "case": "EDIT-SERIES",
+      "name": "工作日下午26楼运营部过道开灯",
+      "checks": {
+        "schema": true,
+        "businessName": true,
+        "taskAction": true,
+        "target": true,
+        "time": true,
+        "retainRepeat": true
+      },
+      "schemaErrors": []
+    },
+    {
+      "case": "RENAME-ONLY",
+      "name": "工作日上午26楼运营部过道开灯",
+      "checks": {
+        "schema": true,
+        "businessName": true,
+        "taskAction": true,
+        "nameOnly": true
+      },
+      "schemaErrors": []
+    },
+    {
+      "case": "CREATE-REPORT",
+      "name": "11月7日上午公司用电报告推送",
+      "checks": {
+        "schema": true,
+        "businessName": true,
+        "taskAction": true,
+        "reportPeriod": true
+      },
+      "schemaErrors": []
+    },
+    {
+      "case": "EDIT-OTHER-REGION",
+      "name": "每周二晚上18楼行政部会议室开灯",
+      "checks": {
+        "schema": true,
+        "businessName": true,
+        "taskAction": true,
+        "time": true
+      },
+      "schemaErrors": []
+    }
+  ],
+  "results": [
+    {
+      "id": "CREATE-WEEKDAYS",
+      "calls": [
+        {
+          "name": "propose_task",
+          "arguments": {
+            "label": "工作日上午26楼运营部过道开灯",
+            "phases": [
+              {
+                "at": "2026-11-09T10:26:00+08:00",
+                "actions": [],
+                "targets": [
+                  {
+                    "kind": "lighting",
+                    "command": {
+                      "closeOrOpen": 1
+                    },
+                    "selection": {
+                      "candidateSetId": "fixture-candidates",
+                      "deviceIds": [
+                        "fixture-light-2"
+                      ]
+                    }
+                  }
+                ]
+              }
+            ],
+            "repeat": {
+              "frequency": "weekdays"
+            }
+          }
+        }
+      ],
+      "reply": ""
+    },
+    {
+      "id": "CREATE-WEEKLY-OFFICE",
+      "calls": [
+        {
+          "name": "propose_task",
+          "arguments": {
+            "candidateSetIds": [
+              "fixture-office-candidates"
+            ],
+            "label": "每周五早上办公室开灯",
+            "phases": [
+              {
+                "actions": [],
+                "at": "2026-11-06T08:30:00+08:00",
+                "lighting": {
+                  "candidateSetId": "fixture-office-candidates",
+                  "closeOrOpen": 1
+                }
+              }
+            ],
+            "repeat": {
+              "frequency": "weekly",
+              "weekdays": [
+                5
+              ]
+            }
+          }
+        }
+      ],
+      "reply": ""
+    },
+    {
+      "id": "EDIT-OCCURRENCE",
+      "calls": [
+        {
+          "name": "propose_task_change",
+          "arguments": {
+            "id": "occurrence:fixture-plan:2026-11-09",
+            "operation": "edit",
+            "type": "task",
+            "template": {
+              "label": "11月9日下午26楼运营部过道开灯",
+              "phases": [
+                {
+                  "at": "2026-11-09T13:30:00+08:00"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "reply": ""
+    },
+    {
+      "id": "EDIT-SERIES",
+      "calls": [
+        {
+          "name": "propose_task_change",
+          "arguments": {
+            "id": "fixture-plan",
+            "operation": "edit",
+            "template": {
+              "label": "工作日下午26楼运营部过道开灯",
+              "phases": [
+                {
+                  "at": "2026-11-09T13:30:00+08:00"
+                }
+              ]
+            },
+            "type": "task_plan"
+          }
+        }
+      ],
+      "reply": ""
+    },
+    {
+      "id": "RENAME-ONLY",
+      "calls": [
+        {
+          "name": "propose_task_change",
+          "arguments": {
+            "id": "fixture-plan",
+            "operation": "edit",
+            "template": {
+              "label": "工作日上午26楼运营部过道开灯"
+            },
+            "type": "task_plan"
+          }
+        }
+      ],
+      "reply": ""
+    },
+    {
+      "id": "CREATE-REPORT",
+      "calls": [
+        {
+          "name": "propose_task",
+          "arguments": {
+            "label": "11月7日上午公司用电报告推送",
+            "phases": [
+              {
+                "at": "2026-11-07T09:00:00+08:00",
+                "read": {
+                  "agent": {
+                    "objective": "生成并推送公司昨天的用电报告",
+                    "output": "report",
+                    "spec": {
+                      "comparisons": [],
+                      "period": {
+                        "kind": "previous",
+                        "unit": "day"
+                      }
+                    }
+                  },
+                  "all": true
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "reply": ""
+    },
+    {
+      "id": "EDIT-OTHER-REGION",
+      "calls": [
+        {
+          "name": "propose_task_change",
+          "arguments": {
+            "id": "fixture-meeting-plan",
+            "operation": "edit",
+            "template": {
+              "label": "每周二晚上18楼行政部会议室开灯",
+              "phases": [
+                {
+                  "at": "2026-11-10T19:00:00+08:00"
+                }
+              ]
+            },
+            "type": "task_plan"
+          }
+        }
+      ],
+      "reply": ""
+    }
+  ],
+  "earlierAttempts": [
+    [
+      {
+        "id": "CREATE-WEEKDAYS",
+        "calls": [
+          {
+            "name": "propose_task",
+            "arguments": {
+              "label": "工作日上午26楼运营部过道开灯",
+              "phases": [
+                {
+                  "at": "2026-11-09T10:26:00+08:00",
+                  "lighting": {
+                    "candidateSetId": "fixture-candidates",
+                    "closeOrOpen": 1
+                  }
+                }
+              ],
+              "repeat": {
+                "frequency": "weekdays"
+              }
+            }
+          }
+        ],
+        "reply": ""
+      },
+      {
+        "id": "CREATE-WEEKLY-OFFICE",
+        "calls": [
+          {
+            "name": "propose_task",
+            "arguments": {
+              "candidateSetIds": [
+                "fixture-office-candidates"
+              ],
+              "label": "每周五早上办公室开灯",
+              "phases": [
+                {
+                  "actions": [],
+                  "at": "2026-11-06T08:30:00+08:00",
+                  "lighting": {
+                    "candidateSetId": "fixture-office-candidates",
+                    "closeOrOpen": 1
+                  }
+                }
+              ],
+              "repeat": {
+                "frequency": "weekly",
+                "weekdays": [
+                  5
+                ]
+              }
+            }
+          }
+        ],
+        "reply": ""
+      },
+      {
+        "id": "EDIT-OCCURRENCE",
+        "calls": [
+          {
+            "name": "propose_task_change",
+            "arguments": {
+              "id": "occurrence:fixture-plan:2026-11-09",
+              "operation": "edit",
+              "template": {
+                "label": "11月9日下午26楼运营部过道开灯",
+                "phases": [
+                  {
+                    "at": "2026-11-09T13:30:00+08:00"
+                  }
+                ]
+              },
+              "type": "task"
+            }
+          }
+        ],
+        "reply": ""
+      },
+      {
+        "id": "EDIT-SERIES",
+        "calls": [
+          {
+            "name": "propose_task_change",
+            "arguments": {
+              "id": "fixture-plan",
+              "operation": "edit",
+              "template": {
+                "label": "工作日每天13:30开启26楼运营部过道格栅灯",
+                "phases": [
+                  {
+                    "at": "2026-11-09T05:30:00+08:00"
+                  }
+                ]
+              },
+              "type": "task_plan"
+            }
+          }
+        ],
+        "reply": ""
+      },
+      {
+        "id": "RENAME-ONLY",
+        "calls": [
+          {
+            "name": "propose_task_change",
+            "arguments": {
+              "id": "fixture-plan",
+              "operation": "edit",
+              "template": {
+                "label": "工作日上午26楼运营部过道开灯"
+              },
+              "type": "task_plan"
+            }
+          }
+        ],
+        "reply": ""
+      }
+    ],
+    [
+      {
+        "id": "CREATE-WEEKDAYS",
+        "calls": [
+          {
+            "name": "propose_task",
+            "arguments": {
+              "label": "工作日上午26楼运营部过道开灯",
+              "repeat": {
+                "frequency": "weekdays"
+              },
+              "phases": [
+                {
+                  "at": "2026-11-09T10:26:00+08:00",
+                  "lighting": {
+                    "candidateSetId": "fixture-candidates",
+                    "closeOrOpen": 1
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "reply": ""
+      },
+      {
+        "id": "CREATE-WEEKLY-OFFICE",
+        "calls": [
+          {
+            "name": "propose_task",
+            "arguments": {
+              "candidateSetIds": [
+                "fixture-office-candidates"
+              ],
+              "label": "每周五早上办公室开灯",
+              "phases": [
+                {
+                  "actions": [],
+                  "at": "2026-11-06T08:30:00+08:00",
+                  "lighting": {
+                    "candidateSetId": "fixture-office-candidates",
+                    "closeOrOpen": 1
+                  }
+                }
+              ],
+              "repeat": {
+                "frequency": "weekly",
+                "weekdays": [
+                  5
+                ]
+              }
+            }
+          }
+        ],
+        "reply": ""
+      },
+      {
+        "id": "EDIT-OCCURRENCE",
+        "calls": [
+          {
+            "name": "propose_task_change",
+            "arguments": {
+              "id": "occurrence:fixture-plan:2026-11-09",
+              "operation": "edit",
+              "template": {
+                "label": "11月9日下午26楼运营部过道开灯",
+                "phases": [
+                  {
+                    "at": "2026-11-09T13:30:00+08:00"
+                  }
+                ]
+              },
+              "type": "task"
+            }
+          }
+        ],
+        "reply": ""
+      },
+      {
+        "id": "EDIT-SERIES",
+        "calls": [
+          {
+            "name": "propose_task_change",
+            "arguments": {
+              "id": "fixture-plan",
+              "operation": "edit",
+              "template": {
+                "at": [
+                  "2026-11-09T05:30:00+08:00"
+                ],
+                "label": "工作日下午26楼运营部过道开灯"
+              },
+              "type": "task_plan"
+            }
+          }
+        ],
+        "reply": ""
+      },
+      {
+        "id": "RENAME-ONLY",
+        "calls": [
+          {
+            "name": "propose_task_change",
+            "arguments": {
+              "id": "fixture-plan",
+              "operation": "edit",
+              "template": {
+                "label": "工作日上午26楼运营部过道开灯"
+              },
+              "type": "task_plan"
+            }
+          }
+        ],
+        "reply": ""
+      },
+      {
+        "id": "CREATE-REPORT",
+        "calls": [
+          {
+            "name": "propose_task",
+            "arguments": {
+              "label": "11月7日上午公司昨日用电报告推送",
+              "phases": [
+                {
+                  "at": "2026-11-07T09:00:00+08:00",
+                  "read": {
+                    "all": true,
+                    "agent": {
+                      "objective": "生成公司昨日（11月6日）用电报告并推送",
+                      "output": "report",
+                      "spec": {
+                        "comparisons": [],
+                        "period": {
+                          "kind": "previous",
+                          "unit": "day"
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "reply": ""
+      },
+      {
+        "id": "EDIT-OTHER-REGION",
+        "calls": [
+          {
+            "name": "propose_task_change",
+            "arguments": {
+              "id": "fixture-meeting-plan",
+              "operation": "edit",
+              "template": {
+                "label": "每周二晚上19点18楼行政部会议室开灯",
+                "phases": [
+                  {
+                    "at": "2026-11-10T19:00:00+08:00"
+                  }
+                ]
+              },
+              "type": "task_plan"
+            }
+          }
+        ],
+        "reply": ""
+      }
+    ],
+    [
+      {
+        "id": "CREATE-WEEKDAYS",
+        "calls": [
+          {
+            "name": "propose_task",
+            "arguments": {
+              "label": "工作日上午26楼运营部过道开灯",
+              "phases": [
+                {
+                  "at": "2026-11-06T10:26:00+08:00",
+                  "lighting": {
+                    "candidateSetId": "fixture-candidates",
+                    "closeOrOpen": 1
+                  }
+                }
+              ],
+              "repeat": {
+                "frequency": "weekdays"
+              }
+            }
+          }
+        ],
+        "reply": ""
+      },
+      {
+        "id": "CREATE-WEEKLY-OFFICE",
+        "calls": [
+          {
+            "name": "propose_task",
+            "arguments": {
+              "candidateSetIds": [
+                "fixture-office-candidates"
+              ],
+              "label": "每周五早上办公室开灯",
+              "phases": [
+                {
+                  "actions": [],
+                  "at": "2026-11-13T08:30:00+08:00",
+                  "lighting": {
+                    "candidateSetId": "fixture-office-candidates",
+                    "closeOrOpen": 1
+                  }
+                }
+              ],
+              "repeat": {
+                "frequency": "weekly",
+                "weekdays": [
+                  5
+                ]
+              }
+            }
+          }
+        ],
+        "reply": ""
+      },
+      {
+        "id": "EDIT-OCCURRENCE",
+        "calls": [
+          {
+            "name": "propose_task_change",
+            "arguments": {
+              "id": "occurrence:fixture-plan:2026-11-09",
+              "operation": "edit",
+              "template": {
+                "label": "11月9日下午26楼运营部过道开灯",
+                "phases": [
+                  {
+                    "at": "2026-11-09T13:30:00+08:00"
+                  }
+                ]
+              },
+              "type": "task"
+            }
+          }
+        ],
+        "reply": ""
+      },
+      {
+        "id": "EDIT-SERIES",
+        "calls": [
+          {
+            "name": "propose_task_change",
+            "arguments": {
+              "id": "fixture-plan",
+              "operation": "edit",
+              "template": {
+                "label": "工作日下午26楼运营部过道格栅灯",
+                "phases": [
+                  {
+                    "at": "2026-11-09T13:30:00+08:00"
+                  }
+                ]
+              },
+              "type": "task_plan"
+            }
+          }
+        ],
+        "reply": ""
+      },
+      {
+        "id": "RENAME-ONLY",
+        "calls": [
+          {
+            "name": "propose_task_change",
+            "arguments": {
+              "id": "fixture-plan",
+              "operation": "edit",
+              "template": {
+                "label": "工作日上午26楼运营部过道开灯",
+                "phases": [
+                  {
+                    "at": "2026-11-09T10:26:00+08:00"
+                  }
+                ]
+              },
+              "type": "task_plan"
+            }
+          }
+        ],
+        "reply": ""
+      },
+      {
+        "id": "CREATE-REPORT",
+        "calls": [
+          {
+            "name": "propose_task",
+            "arguments": {
+              "label": "11月7日上午公司昨日用电报告推送",
+              "phases": [
+                {
+                  "at": "2026-11-07T09:00:00+08:00",
+                  "read": {
+                    "agent": {
+                      "objective": "生成本公司昨日（2026-11-06）用电报告，包含统计结果与必要说明",
+                      "output": "report",
+                      "spec": {
+                        "comparisons": [],
+                        "period": {
+                          "kind": "previous",
+                          "unit": "day"
+                        }
+                      }
+                    },
+                    "all": true
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "reply": ""
+      },
+      {
+        "id": "EDIT-OTHER-REGION",
+        "calls": [
+          {
+            "name": "propose_task_change",
+            "arguments": {
+              "id": "fixture-meeting-plan",
+              "operation": "edit",
+              "template": {
+                "label": "每周二晚上18楼行政部会议室3号灯开灯",
+                "phases": [
+                  {
+                    "at": "2026-11-10T19:00:00+08:00"
+                  }
+                ]
+              },
+              "type": "task_plan"
+            }
+          }
+        ],
+        "reply": ""
+      }
+    ],
+    [
+      {
+        "id": "CREATE-WEEKDAYS",
+        "calls": [
+          {
+            "name": "propose_task",
+            "arguments": {
+              "label": "工作日上午26楼运营部过道开灯",
+              "repeat": {
+                "frequency": "weekdays"
+              },
+              "phases": [
+                {
+                  "at": "2026-11-09T10:26:00+08:00",
+                  "lighting": {
+                    "candidateSetId": "fixture-candidates",
+                    "closeOrOpen": 1
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "reply": ""
+      },
+      {
+        "id": "CREATE-WEEKLY-OFFICE",
+        "calls": [
+          {
+            "name": "propose_task",
+            "arguments": {
+              "candidateSetIds": [
+                "fixture-office-candidates"
+              ],
+              "label": "每周五早上办公室开灯",
+              "phases": [
+                {
+                  "actions": [],
+                  "at": "2026-11-06T08:30:00+08:00",
+                  "lighting": {
+                    "candidateSetId": "fixture-office-candidates",
+                    "closeOrOpen": 1
+                  }
+                }
+              ],
+              "repeat": {
+                "frequency": "weekly",
+                "weekdays": [
+                  5
+                ]
+              }
+            }
+          }
+        ],
+        "reply": ""
+      },
+      {
+        "id": "EDIT-OCCURRENCE",
+        "calls": [
+          {
+            "name": "propose_task_change",
+            "arguments": {
+              "id": "occurrence:fixture-plan:2026-11-09",
+              "operation": "edit",
+              "template": {
+                "label": "11月9日下午26楼运营部过道开灯",
+                "phases": [
+                  {
+                    "at": "2026-11-09T13:30:00+08:00"
+                  }
+                ]
+              },
+              "type": "task"
+            }
+          }
+        ],
+        "reply": ""
+      },
+      {
+        "id": "EDIT-SERIES",
+        "calls": [
+          {
+            "name": "propose_task_change",
+            "arguments": {
+              "id": "fixture-plan",
+              "operation": "edit",
+              "template": {
+                "label": "工作日下午26楼运营部过道开灯",
+                "phases": [
+                  {
+                    "at": "2026-11-09T13:30:00+08:00"
+                  }
+                ]
+              },
+              "type": "task_plan"
+            }
+          }
+        ],
+        "reply": ""
+      },
+      {
+        "id": "RENAME-ONLY",
+        "calls": [
+          {
+            "name": "propose_task_change",
+            "arguments": {
+              "id": "fixture-plan",
+              "operation": "edit",
+              "template": {
+                "label": "工作日上午26楼运营部过道开灯"
+              },
+              "type": "task_plan"
+            }
+          }
+        ],
+        "reply": ""
+      },
+      {
+        "id": "CREATE-REPORT",
+        "calls": [
+          {
+            "name": "propose_task",
+            "arguments": {
+              "label": "11月7日上午公司用电报告推送",
+              "phases": [
+                {
+                  "at": "2026-11-07T09:00:00+08:00",
+                  "read": {
+                    "agent": {
+                      "objective": "生成并推送公司昨天的用电报告",
+                      "output": "report",
+                      "spec": {
+                        "comparisons": [],
+                        "period": {
+                          "kind": "previous",
+                          "unit": "day"
+                        }
+                      }
+                    },
+                    "all": true
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "reply": ""
+      },
+      {
+        "id": "EDIT-OTHER-REGION",
+        "calls": [
+          {
+            "name": "propose_task_change",
+            "arguments": {
+              "id": "fixture-meeting-plan",
+              "operation": "edit",
+              "template": {
+                "label": "每周二晚上19点18楼行政部会议室开灯",
+                "phases": [
+                  {
+                    "at": "2026-11-10T19:00:00+08:00"
+                  }
+                ]
+              },
+              "type": "task_plan"
+            }
+          }
+        ],
+        "reply": ""
+      }
+    ]
+  ],
+  "focusedTests": {
+    "tests": 60,
+    "failures": 0,
+    "errors": 0
+  },
+  "fullSuite": {
+    "tests": 693,
+    "failures": 3,
+    "errors": 0,
+    "skipped": 28,
+    "knownUnrelatedFailures": [
+      "AgentToolBridgeContractTest.aggregatesRequestedAlertTypesWithoutMaskingMissingTotals",
+      "AgentToolBridgeContractTest.prepareVideoPlaybackUsesBoundCompanySourceAndNormalizesWindow",
+      "SafetyReviewToolContractTest.singleCandidatePreparesRealPlaybackCardAndProjectsVideoPlaybackBlock"
+    ]
+  },
+  "frontendAcceptance": "not performed; no configuration adoption or deployment"
+}
