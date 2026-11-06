@@ -38,6 +38,11 @@ import ltd.qianc.iotagent.task.internal.TaskProposalNormalizer;
  * occurrence identities and authorized trimming instead of owner-only reads.
  */
 public final class TaskFacade implements ltd.qianc.iotagent.conversation.ConversationTaskCards, TaskReadScope.Provider {
+    private static final Set<String> EDIT_ROOT_SPECIAL_FIELDS = Set.of(
+            "label", "title", "repeat", "interval", "phases", "normalizedAt", "createdAt", "checkpointCount", "taskKind");
+    private static final Set<String> EDIT_INTERVAL_TIME_FIELDS = Set.of("startsAt", "endsAt");
+    private static final Set<String> EDIT_PHASE_SPECIAL_FIELDS = Set.of(
+            "at", "actions", "read", "phaseId", "status", "startedAt", "endedAt", "outcome", "failureReason");
     private static final String PENDING = "PENDING_CONFIRMATION";
     private static final String CONFIRMED = "CONFIRMED";
     private static final String CANCELLED = "CANCELLED";
@@ -280,6 +285,11 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         if (!Set.of("edit", "pause", "resume", "delete", "skip").contains(operation)) {
             throw new BusinessException("INVALID_CHANGE", "任务修改操作无效", 400);
         }
+        if ("edit".equals(operation)
+                && (!request.path("template").isObject() || request.path("template").isEmpty())) {
+            throw new BusinessException("INVALID_CHANGE",
+                    "修改内容为空，未生成提案；请补充实际要修改的名称、时间或执行要求后重新提案", 400);
+        }
         String id = targetId(target);
         TaskRecurrence.OccurrenceReference occurrence = occurrenceTarget(target);
         boolean plan = "task_plan".equals(target.path("type").asText()) || "plan".equals(target.path("type").asText())
@@ -314,6 +324,10 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         if (prior.isPresent()) {
             if (!proposalOwned(prior.get(), principal, normalizedSource)) throw notFound("TASK_CHANGE_NOT_FOUND", "任务修改提案不存在");
             return prior.get();
+        }
+        if ("edit".equals(operation) && sameEditDefinition(before, after)) {
+            throw new BusinessException("TASK_CHANGE_UNCHANGED",
+                    "修改后的安排与当前相同，未生成提案；请核对用户要求并补充实际变更", 400);
         }
         ((com.fasterxml.jackson.databind.node.ObjectNode) request).put("conversationId", conversationId).put("turnId", turnId);
         TaskProposalFact created = new TaskProposalFact(UUID.randomUUID().toString(), targetVersion, PENDING, request.toString(), key,
@@ -1926,6 +1940,48 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
             }
         }
         return TaskPayloadSafety.withoutCredentials(mapper, after);
+    }
+
+    /** Compare editable facts, not phase identities, execution state or equivalent timestamp notation. */
+    private boolean sameEditDefinition(JsonNode before, JsonNode after) {
+        if (!Objects.equals(text(before, "label", "title"), text(after, "label", "title"))
+                || !before.path("repeat").equals(after.path("repeat"))
+                || !sameAdditionalEditFields(before, after, EDIT_ROOT_SPECIAL_FIELDS)) return false;
+        JsonNode oldInterval = before.path("interval"), newInterval = after.path("interval");
+        if (!sameEditInstant(oldInterval.path("startsAt"), newInterval.path("startsAt"))
+                || !sameEditInstant(oldInterval.path("endsAt"), newInterval.path("endsAt"))
+                || !sameAdditionalEditFields(oldInterval, newInterval, EDIT_INTERVAL_TIME_FIELDS)) return false;
+        JsonNode oldPhases = before.path("phases"), newPhases = after.path("phases");
+        if (oldPhases.size() != newPhases.size()) return false;
+        for (int index = 0; index < oldPhases.size(); index++) {
+            JsonNode oldPhase = oldPhases.get(index), newPhase = newPhases.get(index);
+            if (!sameEditInstant(oldPhase.path("at"), newPhase.path("at"))
+                    || !oldPhase.path("actions").equals(newPhase.path("actions"))
+                    || !oldPhase.path("read").equals(newPhase.path("read"))
+                    || !sameAdditionalEditFields(oldPhase, newPhase, EDIT_PHASE_SPECIAL_FIELDS)) return false;
+        }
+        return true;
+    }
+
+    private boolean sameAdditionalEditFields(JsonNode before, JsonNode after, Set<String> excluded) {
+        int compared = 0;
+        var fields = before.fields();
+        while (fields.hasNext()) {
+            var field = fields.next();
+            if (excluded.contains(field.getKey())) continue;
+            if (!field.getValue().equals(after.get(field.getKey()))) return false;
+            compared++;
+        }
+        var names = after.fieldNames();
+        while (names.hasNext()) if (!excluded.contains(names.next())) compared--;
+        return compared == 0;
+    }
+
+    private boolean sameEditInstant(JsonNode before, JsonNode after) {
+        if (before.equals(after)) return true;
+        if (!before.isTextual() || !after.isTextual()) return false;
+        try { return Instant.parse(before.asText()).equals(Instant.parse(after.asText())); }
+        catch (RuntimeException invalid) { return false; }
     }
 
     private void validateDeviceReferences(JsonNode before, JsonNode after) {

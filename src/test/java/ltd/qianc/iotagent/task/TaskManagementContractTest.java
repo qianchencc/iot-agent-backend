@@ -51,6 +51,124 @@ class TaskManagementContractTest {
     }
 
     @Test
+    void editRequiresNonEmptyModificationBeforeSavingAProposal() {
+        TaskPlanStore plans = org.mockito.Mockito.mock(TaskPlanStore.class);
+        TaskProposalStore proposals = org.mockito.Mockito.mock(TaskProposalStore.class);
+        TaskFactStore tasks = org.mockito.Mockito.mock(TaskFactStore.class);
+        TaskFacade facade = facade(plans, proposals, tasks);
+        when(plans.find("edit-plan")).thenReturn(Optional.of(plan("edit-plan")));
+        for (String modification : List.of("", ",\"template\":null", ",\"template\":{}", ",\"template\":[]")) {
+            assertThatThrownBy(() -> facade.proposeChange(PRINCIPAL, "office", "conversation", "turn",
+                    "{\"target\":{\"type\":\"task_plan\",\"planId\":\"edit-plan\"},\"operation\":\"edit\""
+                            + modification + "}", "edit-missing"))
+                    .isInstanceOfSatisfying(BusinessException.class,
+                            error -> assertThat(error.httpStatus()).isEqualTo(400));
+        }
+        verify(proposals, never()).save(any());
+        verify(plans, never()).updateIfVersion(any(), anyLong());
+    }
+
+    @Test
+    void equivalentEditDoesNotCreateAProposalForAliasesMetadataOrTimeNotation() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        TaskPlanStore plans = org.mockito.Mockito.mock(TaskPlanStore.class);
+        TaskProposalStore proposals = org.mockito.Mockito.mock(TaskProposalStore.class);
+        TaskFactStore tasks = org.mockito.Mockito.mock(TaskFactStore.class);
+        TaskFacade facade = facade(plans, proposals, tasks);
+        var original = (com.fasterxml.jackson.databind.node.ObjectNode) mapper.readTree(plan("same-plan").payloadJson());
+        original.put("label", "过道灯开启");
+        ((com.fasterxml.jackson.databind.node.ObjectNode) original.path("phases").get(0)).put("phaseId", "original-phase");
+        when(plans.find("same-plan")).thenReturn(Optional.of(
+                new TaskPlanFact("same-plan", 1, "ENABLED", original.toString(), "same-plan-key")));
+        when(proposals.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+        assertThatThrownBy(() -> facade.proposeChange(PRINCIPAL, "office", "conversation", "turn",
+                """
+                {"target":{"type":"task_plan","planId":"same-plan"},"operation":"edit",
+                 "template":{"label":"过道灯开启","normalizedAt":"2026-10-09T12:00:00Z",
+                    "createdAt":"2026-10-09T12:00:00Z","checkpointCount":99,"taskKind":"recurring","phases":[
+                    {"phaseId":"replacement-metadata","at":"2026-10-09T18:00:00+08:00","actions":[]}]}}
+                """, "same-edit"))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        error -> assertThat(error.httpStatus()).isEqualTo(400));
+        verify(proposals, never()).save(any());
+        verify(plans, never()).updateIfVersion(any(), anyLong());
+    }
+
+    @Test
+    void renameOnlyEditPreservesScheduleAndDoesNotExecute() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        TaskPlanStore plans = org.mockito.Mockito.mock(TaskPlanStore.class);
+        TaskProposalStore proposals = org.mockito.Mockito.mock(TaskProposalStore.class);
+        TaskFactStore tasks = org.mockito.Mockito.mock(TaskFactStore.class);
+        TaskFacade facade = facade(plans, proposals, tasks);
+        var original = (com.fasterxml.jackson.databind.node.ObjectNode) mapper.readTree(plan("rename-only").payloadJson());
+        original.put("label", "原名称");
+        when(plans.find("rename-only")).thenReturn(Optional.of(
+                new TaskPlanFact("rename-only", 1, "ENABLED", original.toString(), "rename-only-key")));
+        when(proposals.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+        TaskProposalFact proposal = facade.proposeChange(PRINCIPAL, "office", "conversation", "turn",
+                """
+                {"target":{"type":"task_plan","planId":"rename-only"},"operation":"edit",
+                 "template":{"label":"新名称"}}
+                """, "rename-only-edit");
+        var after = mapper.readTree(proposal.afterJson());
+        assertThat(after.path("label").asText()).isEqualTo("新名称");
+        assertThat(mapper.readTree(proposal.beforeJson()).path("label").asText()).isEqualTo("原名称");
+        assertThat(after.path("phases")).isEqualTo(original.path("phases"));
+        assertThat(after.path("repeat")).isEqualTo(original.path("repeat"));
+        verify(plans, never()).updateIfVersion(any(), anyLong());
+        verify(tasks, never()).save(any());
+    }
+
+    @Test
+    void reportVerificationOrObjectiveChangesRemainEffectiveEdits() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        for (String change : List.of("report", "verification", "objective")) {
+            TaskPlanStore plans = org.mockito.Mockito.mock(TaskPlanStore.class);
+            TaskProposalStore proposals = org.mockito.Mockito.mock(TaskProposalStore.class);
+            TaskFactStore tasks = org.mockito.Mockito.mock(TaskFactStore.class);
+            TaskFacade facade = facade(plans, proposals, tasks);
+            var original = (com.fasterxml.jackson.databind.node.ObjectNode) mapper.readTree(plan("definition-plan").payloadJson());
+            original.put("label", "检查任务");
+            original.put("objective", "统计昨日");
+            original.set("reportRequest", mapper.readTree("{\"period\":{\"kind\":\"previous\",\"unit\":\"day\"}}"));
+            ((com.fasterxml.jackson.databind.node.ObjectNode) original.path("phases").get(0)).put("requiresVerification", false);
+            when(plans.find("definition-plan")).thenReturn(Optional.of(
+                    new TaskPlanFact("definition-plan", 1, "ENABLED", original.toString(), "definition-key")));
+            when(proposals.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+            var template = mapper.createObjectNode();
+            if ("report".equals(change)) {
+                template.set("reportRequest", mapper.readTree("{\"period\":{\"kind\":\"previous\",\"unit\":\"week\"}}"));
+            } else if ("verification".equals(change)) {
+                var phases = original.path("phases").deepCopy();
+                ((com.fasterxml.jackson.databind.node.ObjectNode) phases.get(0)).put("requiresVerification", true);
+                template.set("phases", phases);
+            } else {
+                template.put("objective", "统计上周");
+            }
+            var request = mapper.createObjectNode().put("operation", "edit");
+            request.set("target", mapper.readTree("{\"type\":\"task_plan\",\"planId\":\"definition-plan\"}"));
+            request.set("template", template);
+            TaskProposalFact proposal = facade.proposeChange(PRINCIPAL, "office", "conversation", "turn",
+                    request.toString(), change);
+            var after = mapper.readTree(proposal.afterJson());
+            assertThat(mapper.readTree(proposal.beforeJson())).isEqualTo(original);
+            if ("report".equals(change)) {
+                assertThat(after.path("reportRequest").path("period").path("unit").asText()).isEqualTo("week");
+                assertThat(after.path("phases").get(0).path("requiresVerification").asBoolean()).isFalse();
+            } else if ("verification".equals(change)) {
+                assertThat(after.path("phases").get(0).path("requiresVerification").asBoolean()).isTrue();
+                assertThat(after.path("reportRequest").path("period").path("unit").asText()).isEqualTo("day");
+            } else {
+                assertThat(after.path("objective").asText()).isEqualTo("统计上周");
+                assertThat(after.path("phases")).isEqualTo(original.path("phases"));
+            }
+            verify(plans, never()).updateIfVersion(any(), anyLong());
+            verify(tasks, never()).save(any());
+        }
+    }
+
+    @Test
     void rescheduledPlanKeepsOldNameForReviewAndPersistsConsistentNewNameOnlyOnConfirmation() throws Exception {
         ObjectMapper mapper = new ObjectMapper();
         TaskPlanStore plans = org.mockito.Mockito.mock(TaskPlanStore.class);
