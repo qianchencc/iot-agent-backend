@@ -51,6 +51,52 @@ class TaskManagementContractTest {
     }
 
     @Test
+    void rescheduledPlanKeepsOldNameForReviewAndPersistsConsistentNewNameOnlyOnConfirmation() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        TaskPlanStore plans = org.mockito.Mockito.mock(TaskPlanStore.class);
+        TaskProposalStore proposals = org.mockito.Mockito.mock(TaskProposalStore.class);
+        TaskFactStore tasks = org.mockito.Mockito.mock(TaskFactStore.class);
+        TaskFacade facade = facade(plans, proposals, tasks);
+        var payload = (com.fasterxml.jackson.databind.node.ObjectNode) mapper.readTree(plan("rename-plan").payloadJson());
+        payload.put("label", "每天18:00开启过道灯");
+        payload.put("title", "每天18:00开启过道灯");
+        TaskPlanFact current = new TaskPlanFact("rename-plan", 1, "ENABLED", payload.toString(), "rename-plan-key");
+        when(plans.find("rename-plan")).thenReturn(Optional.of(current));
+        when(proposals.findByIdempotencyKey(anyString())).thenReturn(Optional.empty());
+        AtomicReference<TaskProposalFact> saved = new AtomicReference<>();
+        when(proposals.save(any())).thenAnswer(invocation -> {
+            TaskProposalFact value = invocation.getArgument(0);
+            saved.set(value);
+            return value;
+        });
+        when(proposals.find(anyString())).thenAnswer(invocation -> Optional.ofNullable(saved.get()));
+        when(proposals.updateIfVersion(any(), anyLong())).thenAnswer(invocation -> Optional.of(invocation.getArgument(0)));
+        AtomicReference<TaskPlanFact> written = new AtomicReference<>();
+        when(plans.updateIfVersion(any(), anyLong())).thenAnswer(invocation -> {
+            TaskPlanFact value = invocation.getArgument(0);
+            written.set(value);
+            return Optional.of(value);
+        });
+
+        TaskProposalFact proposal = facade.proposeChange(PRINCIPAL, "office", "conversation-rename", "turn-rename",
+                """
+                {"target":{"type":"task_plan","planId":"rename-plan"},"operation":"edit",
+                 "template":{"label":"过道灯开启","phases":[{"at":"2026-10-10T01:30:00Z","actions":[]}]}}
+                """, "rename-proposal");
+        assertThat(mapper.readTree(proposal.beforeJson()).path("label").asText()).isEqualTo("每天18:00开启过道灯");
+        assertThat(mapper.readTree(proposal.afterJson()).path("label").asText()).isEqualTo("过道灯开启");
+        assertThat(mapper.readTree(proposal.afterJson()).path("title").asText()).isEqualTo("过道灯开启");
+        verify(plans, never()).updateIfVersion(any(), anyLong());
+
+        facade.confirmChange(PRINCIPAL, proposal.proposalId(), 1);
+        var persisted = mapper.readTree(written.get().payloadJson());
+        assertThat(persisted.path("label").asText()).isEqualTo("过道灯开启");
+        assertThat(persisted.path("title").asText()).isEqualTo("过道灯开启");
+        assertThat(persisted.path("phases").get(0).path("at").asText()).isEqualTo("2026-10-10T01:30:00Z");
+        assertThat(persisted.path("repeat")).isEqualTo(payload.path("repeat"));
+    }
+
+    @Test
     void occurrenceSkipUsesOccurrenceCasAndReturnsStableReference() {
         TaskPlanStore plans = org.mockito.Mockito.mock(TaskPlanStore.class);
         TaskProposalStore proposals = org.mockito.Mockito.mock(TaskProposalStore.class);

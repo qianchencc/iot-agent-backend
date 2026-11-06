@@ -1902,6 +1902,12 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         JsonNode after = before.deepCopy();
         if ("edit".equals(operation) && request.path("template").isObject() && after.isObject()) {
             ((com.fasterxml.jackson.databind.node.ObjectNode) after).setAll((com.fasterxml.jackson.databind.node.ObjectNode) request.path("template"));
+            // Both persisted name fields describe the reviewed replacement, never
+            // a new label paired with the previous schedule's title.
+            var template = request.path("template");
+            var replacement = (com.fasterxml.jackson.databind.node.ObjectNode) after;
+            if (template.hasNonNull("label")) replacement.set("title", template.get("label"));
+            else if (template.hasNonNull("title")) replacement.set("label", template.get("title"));
         } else if ("skip".equals(operation) && after.isObject() && after.path("phases").isArray()) {
             var phases = mapper.createArrayNode();
             for (JsonNode phase : after.path("phases")) {

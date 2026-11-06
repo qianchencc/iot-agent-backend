@@ -255,6 +255,13 @@ final class AgentBusinessEventProjection {
             Map<String, Object> target = map(result.get("target"));
             if (target.get("taskId") instanceof String taskId) task.put("taskId", taskId);
             if (target.get("planId") instanceof String planId) task.put("planId", planId);
+            // Runtime app.ts task.change.proposed parity: the event task carries the
+            // authoritative before/after/target snapshots. The flattened fields above
+            // stay for existing consumers; snapshots are the source the confirmation
+            // card renders, so they must never be dropped by this merge.
+            if (!before.isEmpty()) task.put("before", before);
+            if (!after.isEmpty()) task.put("after", after);
+            if (!target.isEmpty()) task.put("target", target);
         }
         copy(result, task, "status", "version", "expiresAt");
         if (result.get("operation") instanceof String operation) task.put("operation", operation);

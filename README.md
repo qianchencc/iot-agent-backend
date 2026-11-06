@@ -79,6 +79,7 @@ Java 构建、测试、启动和本地 healthz 验证命令见 [AGENTS.md](./AGE
 
 - `task/internal/TaskProposalNormalizer` owns one-time, interval, recurring and conditional task definitions; `TaskFacade` owns human confirmation and plan/task management. Model tool calls cannot grant confirmation authority.
 - 新建任务命名采用“区域／对象＋动作或检查目标”，日期、时段和重复规则独立展示，不把整句请求或“今天／明天／后天”等相对日期当名称。创建入口同时规范化`title`和`label`：已有相对日期前缀的一次性任务按结构化执行时间转为上海时区具体日期，周期任务去掉该前缀、不固定首日日期；不改变执行时刻，不批量改写历史任务。见[命名工程验证](.scratch/task-title-naming/evidence/TITLE-01/result.json)，无真实任务确认或设备下发，前端创建路径不据此记为已验收。
+- 修改提案也必须核对名称：Agent 的 `template.label` 为必填，旧名称包含已变更的时刻、周期或目标时改成与新安排一致的对象／动作名；`TaskFacade` 在合并新名称时同步 `label/title`，前快照仍保留原名称。名称和新安排一起待确认、一起保存，不先改现有任务或历史记录。`TaskManagementContractTest` 覆盖改时后的前后名称及确认持久化；真实小程序修改卡证据见 [MP交接](../mp/plan/2026-10-27-task-presentation-handoff.md#2026-11-06修改确认卡快照修复)。
 - `TaskScanner` and `task/internal/RealTaskExecutionGateway` own durable checkpoint execution, interruption/recovery, device reservations and terminal report/notification timing. A completed checkpoint does not end an open interval.
 - Java requires a stable `agent.task.credential-key` (64 hex characters) to encrypt task/plan execution credentials. Missing configuration fails confirmation closed; never rotate the key while encrypted identities exist or pass it to Node.
 - `TaskPhaseIds` assigns only missing durable phase identities, shared by normal confirmation and interrupted-confirmation recovery.

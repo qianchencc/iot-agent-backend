@@ -1081,11 +1081,12 @@
           },
           "template": {
             "type": "object",
+            "required": ["label"],
             "properties": {
               "label": {
                 "type": "string",
                 "minLength": 1,
-                "description": "用动作与范围命名，保留用户指定名称（最多80字）；重复规则和执行时间单独保存，勿为短标题截断对象或动作"
+                "description": "修改时必须核对并提交与新安排一致的名称，用对象与动作命名。旧名称含已变更的时间、周期或目标时重新命名，不能照搬。时间与周期单独展示，名称不重复写入；保留用户明确指定且仍适用的名称（最多80字）"
               },
               "interval": {
                 "type": "object",
@@ -3383,11 +3384,12 @@
           },
           "template": {
             "type": "object",
+            "required": ["label"],
             "properties": {
               "label": {
                 "type": "string",
                 "minLength": 1,
-                "description": "用动作与范围命名，保留用户指定名称（最多80字）；重复规则和执行时间单独保存，勿为短标题截断对象或动作"
+                "description": "修改时必须核对并提交与新安排一致的名称，用对象与动作命名。旧名称含已变更的时间、周期或目标时重新命名，不能照搬。时间与周期单独展示，名称不重复写入；保留用户明确指定且仍适用的名称（最多80字）"
               },
               "interval": {
                 "type": "object",

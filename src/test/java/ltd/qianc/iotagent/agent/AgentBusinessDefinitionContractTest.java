@@ -308,6 +308,97 @@ class AgentBusinessDefinitionContractTest {
     }
 
     @Test
+    void taskChangeAndCancellationEventsKeepAuthoritativeBeforeAfterAndTargetSnapshots() {
+        ConversationFacade conversations = mock(ConversationFacade.class);
+        when(conversations.toolContext("tool-1", "conversation-1", "turn-1", "run-1"))
+                .thenReturn(new AgentToolContext(PRINCIPAL, "run-1", "conversation-1", "turn-1",
+                        "office", null, Map.of()));
+        AgentRunPolicy policy = AgentBusinessEngineFactory.policyProvider(
+                () -> conversations, null, CLOCK, 8).prepare(request("office", null, Map.of()));
+
+        Map<String, Object> before = new LinkedHashMap<>(Map.of(
+                "label", "工作日巡检照明",
+                "repeat", Map.of("frequency", "weekdays"),
+                "phases", List.of(Map.of(
+                        "at", "2026-11-09T02:26:00Z",
+                        "actions", List.of(Map.of("deviceId", "light-1", "kind", "lighting",
+                                "command", Map.of("power", true)))))));
+        Map<String, Object> after = new LinkedHashMap<>(Map.of(
+                "label", "工作日巡检照明",
+                "repeat", Map.of("frequency", "weekdays"),
+                "phases", List.of(Map.of(
+                        "at", "2026-11-09T01:30:00Z",
+                        "actions", List.of(Map.of("deviceId", "light-2", "kind", "lighting",
+                                "command", Map.of("power", false)))))));
+
+        List<AgentEngineEvent> change = policy.projection().apply(event("tool.result", Map.of(
+                "tool", "propose_task_change", "toolCallId", "call-change",
+                "result", Map.of("proposalId", "proposal-1", "version", 3,
+                        "status", "PENDING_CONFIRMATION", "expiresAt", "2026-11-02T02:15:00Z",
+                        "kind", "CHANGE", "operation", "edit",
+                        "target", Map.of("type", "task_plan", "planId", "plan-1"),
+                        "before", before, "after", after,
+                        "payload", Map.of("target", Map.of("type", "task_plan", "planId", "plan-1"))))));
+        assertThat(change).singleElement().satisfies(projected -> {
+            assertThat(projected.type()).isEqualTo("task.change.proposed");
+            assertThat(projected.fields()).containsEntry("changeId", "proposal-1")
+                    .containsEntry("expiresAt", "2026-11-02T02:15:00Z");
+            Map<String, Object> task = map(projected.fields().get("task"));
+            // Flattened compatibility fields stay for existing consumers…
+            assertThat(task).containsEntry("kind", "change")
+                    .containsEntry("changeId", "proposal-1")
+                    .containsEntry("operation", "edit")
+                    .containsEntry("planId", "plan-1")
+                    .containsEntry("version", 3)
+                    .containsEntry("status", "PENDING_CONFIRMATION");
+            // …while the authoritative snapshots the confirmation card renders survive,
+            // including the edited 10:26 → 09:30 checkpoint, repeat rule and device actions.
+            Map<String, Object> beforeView = map(task.get("before"));
+            assertThat(beforeView).containsEntry("label", "工作日巡检照明")
+                    .containsEntry("repeat", Map.of("frequency", "weekdays"));
+            assertThat(listOfMaps(beforeView.get("phases"))).singleElement().satisfies(phase -> {
+                assertThat(phase).containsEntry("at", "2026-11-09T02:26:00Z");
+                assertThat(listOfMaps(phase.get("actions"))).singleElement()
+                        .satisfies(action -> assertThat(action).containsEntry("deviceId", "light-1"));
+            });
+            Map<String, Object> afterView = map(task.get("after"));
+            assertThat(afterView).containsEntry("label", "工作日巡检照明")
+                    .containsEntry("repeat", Map.of("frequency", "weekdays"));
+            assertThat(listOfMaps(afterView.get("phases"))).singleElement().satisfies(phase -> {
+                assertThat(phase).containsEntry("at", "2026-11-09T01:30:00Z");
+                assertThat(listOfMaps(phase.get("actions"))).singleElement()
+                        .satisfies(action -> assertThat(action).containsEntry("deviceId", "light-2"));
+            });
+            assertThat(map(task.get("target"))).containsEntry("type", "task_plan")
+                    .containsEntry("planId", "plan-1");
+        });
+
+        List<AgentEngineEvent> cancellation = policy.projection().apply(event("tool.result", Map.of(
+                "tool", "propose_task_cancellation", "toolCallId", "call-cancel",
+                "result", Map.of("proposalId", "proposal-2", "version", 5,
+                        "status", "PENDING_CONFIRMATION", "expiresAt", "2026-11-02T02:15:00Z",
+                        "kind", "CANCELLATION", "operation", "cancel",
+                        "target", Map.of("type", "task", "taskId", "task-9"),
+                        "before", before, "after", before,
+                        "payload", Map.of("target", Map.of("type", "task", "taskId", "task-9"))))));
+        assertThat(cancellation).singleElement().satisfies(projected -> {
+            assertThat(projected.type()).isEqualTo("task.cancellation.proposed");
+            assertThat(projected.fields()).containsEntry("cancellationId", "proposal-2");
+            Map<String, Object> task = map(projected.fields().get("task"));
+            assertThat(task).containsEntry("kind", "cancellation")
+                    .containsEntry("cancellationId", "proposal-2")
+                    .containsEntry("taskId", "task-9")
+                    .containsEntry("operation", "cancel");
+            assertThat(map(task.get("target"))).containsEntry("type", "task")
+                    .containsEntry("taskId", "task-9");
+            Map<String, Object> cancelledView = map(task.get("before"));
+            assertThat(cancelledView).containsEntry("label", "工作日巡检照明");
+            assertThat(listOfMaps(cancelledView.get("phases"))).singleElement()
+                    .satisfies(phase -> assertThat(phase).containsEntry("at", "2026-11-09T02:26:00Z"));
+        });
+    }
+
+    @Test
     void candidateProgressReportsTotalMatchesRatherThanTheDisplayWindow() {
         ConversationFacade conversations = mock(ConversationFacade.class);
         when(conversations.toolContext("tool-1", "conversation-1", "turn-1", "run-1"))
