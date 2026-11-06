@@ -1,0 +1,100 @@
+{
+  "caseId": "CHANGE-EMPTY-01",
+  "acceptance": "真实小程序修改提案已验收；未确认执行",
+  "source": "company",
+  "sameAccount": true,
+  "sourceCommits": [
+    "0c3b3e0",
+    "c0b2b53"
+  ],
+  "conversationId": "54352852-e05a-4e59-8816-e459c6cddf88",
+  "changeId": "ae79f354-969d-4dff-92df-09de4bc2a535",
+  "statusAtScreenshot": "PENDING_CONFIRMATION",
+  "expiresAt": "2026-11-06T07:45:57.029857Z",
+  "target": {
+    "type": "task",
+    "taskId": "occurrence:f1d8083e-ea8c-45a7-8ff6-4ee46ebf5109:2026-11-09"
+  },
+  "before": {
+    "label": "工作日每天10:26开启26楼运营部过道2回路格栅灯",
+    "at": [
+      "2026-11-09T02:26:00Z"
+    ]
+  },
+  "after": {
+    "label": "工作日每天10:26开启26楼运营部过道2回路格栅灯（11-09改13:30）",
+    "at": [
+      "2026-11-09T13:30:00+08:00"
+    ]
+  },
+  "actionsAndAllBindingFieldsPreserved": true,
+  "readPreserved": true,
+  "repeatPreserved": true,
+  "originalPlanAfterProposal": {
+    "version": 2,
+    "status": "enabled",
+    "at": [
+      "2026-11-09T02:26:00Z"
+    ]
+  },
+  "flow": [
+    {
+      "request": "我想把“工作日每天10:26开启26楼运营部过道2回路格栅灯”这个任务改到下午1:30，但还没决定只改下一次还是整个周期。先核对任务，暂不生成提案，不要确认或执行。",
+      "tools": [
+        {
+          "name": "list_tasks"
+        },
+        {
+          "name": "list_task_plans"
+        }
+      ],
+      "messages": [
+        "已核对到该任务，尚未生成提案：\n\n- 名称：工作日每天10:26开启26楼运营部过道2回路格栅灯\n- 周期：每个工作日 10:26，状态启用\n- 动作：开启「照明开关-26楼运营部公共办公区过道-2回路格栅灯」\n- 下一次执行：2026-11-09（下周一）10:26；今天 10:26 的时点已过\n\n请告诉我这次是只改下一次（11-09 改到 13:30，其余照旧 10:26），还是把整个周期都改成每天工作日 13:30，我再据此生成差异卡。"
+      ]
+    },
+    {
+      "request": "只改下一次，其他保持不变。生成待确认提案，不要确认或执行。",
+      "tools": [
+        {
+          "name": "propose_task_change",
+          "operation": "edit",
+          "type": "task",
+          "phaseKeys": [
+            [
+              "at"
+            ]
+          ]
+        }
+      ],
+      "messages": [
+        "已按你的选择生成仅下一次的修改卡：11月9日（下周一）由10:26改为13:30，原设备与开启动作不变，其余工作日仍为10:26。待确认卡已生成，请核对变更卡，确认后才会生效。"
+      ]
+    },
+    {
+      "request": "刚才提案已过期，按相同要求重新生成仅下一次的待确认提案，其他不变，不要确认或执行。",
+      "tools": [
+        {
+          "name": "propose_task_change",
+          "operation": "edit",
+          "type": "task",
+          "phaseKeys": [
+            [
+              "at"
+            ]
+          ]
+        }
+      ],
+      "messages": [
+        "已按原样重新生成仅下一次的修改卡：11月9日改为13:30，其余不变。请核对变更卡，确认后才会生效。"
+      ]
+    }
+  ],
+  "confirmationRequested": false,
+  "deviceExecutionRequested": false,
+  "notificationRequested": false,
+  "screenshots": {
+    "before": "before.png",
+    "after": "after.png"
+  },
+  "engineering": "engineering.json"
+}

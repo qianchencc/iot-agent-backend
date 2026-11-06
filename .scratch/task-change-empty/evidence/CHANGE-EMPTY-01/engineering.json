@@ -1,0 +1,51 @@
+{
+  "caseId": "CHANGE-EMPTY-01",
+  "sourceCommits": ["0c3b3e0", "c0b2b53"],
+  "sourceVerification": {
+    "base": "dabf10c",
+    "isolatedFromUnrelatedWorkspaceChanges": true,
+    "command": "mvn -q verify",
+    "tests": 663,
+    "passed": 635,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 28
+  },
+  "runtimeVerification": {
+    "base": "652aa17",
+    "command": "mvn -q -Dtest=TaskManagementContractTest test",
+    "tests": 18,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "constructorAbiMatchesOriginalRuntime": true,
+    "packagedSchemasValidated": ["company", "office"],
+    "schemaCasesPerSource": ["missing template rejected", "empty template rejected", "at-only phase accepted", "complete phase accepted", "rename-only accepted", "pause without template accepted"]
+  },
+  "deployment": {
+    "localOnly": true,
+    "javaPort": 3381,
+    "nodePortUnchanged": 3382,
+    "artifact": "var/task-change-empty-20261106-144714/backend.jar",
+    "sha256": "f8d291084fdc304a6b6223efb5b443510246362b9e1e2d3d4c716ba99e5afead",
+    "originalRollbackArtifact": "var/task-change-name-20261106-100241/backend.jar",
+    "onlyChangedEntries": ["BOOT-INF/classes/ltd/qianc/iotagent/task/TaskFacade.class", "BOOT-INF/classes/agent/tool-definitions.json", "BOOT-INF/classes/agent/shared-instructions.txt"],
+    "allOtherJarEntriesIdentical": true,
+    "configurationDatabaseAndNodeUnchanged": true,
+    "productionUnchanged": true
+  },
+  "observedFailuresAndCorrections": [
+    "Initial workspace compilation was blocked by unrelated JdbcCompanyDirectory and CompanyEnergyObservationComposerImpl changes; verification used isolated committed source plus only this repair delta.",
+    "A candidate built from the newer TaskFacade constructor ABI could not start with the frozen runtime configuration. The original artifact was restored; the final runtime class was built from matching 652aa17 source and its public constructors checked.",
+    "An intermediate packaging script used resource-list positions and swapped tool JSON with instructions. AgentToolCatalog JSON parsing failed; the stuck conversation run was stopped without a task operation. Final packaging uses explicit entry paths, byte equality and schema parsing from the actual jar.",
+    "Real model retries exposed the phase-actions contract mismatch and loss of control bindings when repeating unchanged commands. Both sparse-time and repeated-command forms now reuse the authoritative original phase; red regressions preceded the fixes.",
+    "Two intermediate proposals with incomplete bindings were discarded: a0eb6102-5765-4913-82e0-ae963f4473eb and 2a25a3fb-c972-44b6-b4bb-70e758c4f6ec.",
+    "A company conversation switch removed the earlier time context. Verification restarted as a fresh two-turn conversation under the same account; the original plan remained readable, version 2, enabled, 10:26.",
+    "The first binding-correct proposal 0c39fd07-24d8-46f2-8422-9868e3590d29 expired while inspecting the foreground UI. It was not confirmed; regeneration uses the normal frontend path without changing proposal TTL."
+  ],
+  "commitChecks": {
+    "stagedDiffCheck": "passed for both backend commits",
+    "wholeWorkspaceDiffCheck": "reported four trailing-whitespace lines in unrelated CompanyEnergyObservationComposerImpl changes; those changes were preserved and excluded"
+  },
+  "boundaries": ["No reevaluation of today or next-execution scheduling rules", "No frontend source change", "No task confirmation, device execution or notification by this repair", "Office real-frontend case not exercised; only its shared schema contract was validated"]
+}
