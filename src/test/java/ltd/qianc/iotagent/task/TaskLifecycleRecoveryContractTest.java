@@ -26,7 +26,6 @@ import ltd.qianc.iotagent.iot.GatewayAuthorizationException;
 import ltd.qianc.iotagent.iot.IotAdapter;
 import ltd.qianc.iotagent.iot.IotSourceEnum;
 import ltd.qianc.iotagent.iot.RequestIdentity;
-import ltd.qianc.iotagent.task.internal.RealTaskExecutionGateway;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Mono;
 

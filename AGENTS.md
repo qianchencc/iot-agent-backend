@@ -93,6 +93,8 @@ curl -s http://127.0.0.1:3381/healthz
 
 ## Agent skills
 
+Java／Spring 的实现与审查先读[仓库级技能适配契约](.agents/skills/PROJECT.md)，按其任务表加载对应技能。仅使用 Boot 3 分支；本地适配优先于上游示例，安装技能不授权升级框架、替换 HTTP 契约或引入新基础设施。
+
 ### Issue tracker
 
 Issues live as local markdown files under `.scratch/<feature>/`. See `docs/agents/issue-tracker.md`.

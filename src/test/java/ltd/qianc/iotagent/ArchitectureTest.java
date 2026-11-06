@@ -3,19 +3,20 @@ package ltd.qianc.iotagent;
 import java.util.regex.Pattern;
 
 import com.tngtech.archunit.base.DescribedPredicate;
-import com.tngtech.archunit.core.domain.JavaAccess;
+import com.tngtech.archunit.core.domain.JavaModifier;
+import com.tngtech.archunit.core.domain.JavaType;
 import com.tngtech.archunit.core.domain.JavaClass;
 import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.core.importer.ImportOption;
 import com.tngtech.archunit.lang.ArchCondition;
-import com.tngtech.archunit.lang.ArchRule;
 import com.tngtech.archunit.lang.ConditionEvents;
 import com.tngtech.archunit.lang.SimpleConditionEvent;
 import com.tngtech.archunit.library.dependencies.SlicesRuleDefinition;
 import org.junit.jupiter.api.Test;
 
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
+import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.classes;
 
 /**
  * deep module 纪律（对齐 setup-ts-deep-modules 的四条规则）：
@@ -45,16 +46,59 @@ class ArchitectureTest {
 
     @Test
     void moduleInternalsOnlyAccessedWithinOwnModule() {
-        noClasses().that(MODULE_INTERNALS)
+        classes().that(MODULE_INTERNALS)
                 .should(beAccessedOnlyWithinOwnModule())
                 .check(importAll());
     }
 
     @Test
     void testsDependOnlyOnEntryPoints() {
-        noClasses().that().haveSimpleNameEndingWith("Test")
+        var testOutput = java.nio.file.Path.of(java.net.URI.create(
+                ArchitectureTest.class.getProtectionDomain().getCodeSource().getLocation().toString()));
+        noClasses().that(new DescribedPredicate<>("所有测试产物（含辅助类、嵌套类）") {
+                    @Override public boolean test(JavaClass type) {
+                        return type.getSource().map(source -> java.nio.file.Path.of(source.getUri()).startsWith(testOutput)).orElse(false);
+                    }
+                })
                 .should().dependOnClassesThat(MODULE_INTERNALS)
                 .check(importAll());
+    }
+
+    @Test
+    void publicEntryPointSignaturesDoNotExposeModuleInternals() {
+        classes().that().resideInAPackage(BASE + ".*").and().arePublic()
+                .should(new ArchCondition<>("公开签名不泄漏 internal 类型") {
+                    @Override public void check(JavaClass entry, ConditionEvents events) {
+                        entry.getSuperclass().ifPresent(type -> checkExposed(entry.getName(), type, events));
+                        entry.getInterfaces().forEach(type -> checkExposed(entry.getName(), type, events));
+                        entry.getTypeParameters().forEach(type -> checkExposed(entry.getName(), type, events));
+                        var units = new java.util.HashSet<com.tngtech.archunit.core.domain.JavaCodeUnit>(entry.getAllMethods());
+                        units.addAll(entry.getConstructors());
+                        for (var unit : units) {
+                            if (!unit.getModifiers().contains(JavaModifier.PUBLIC)
+                                    && !unit.getModifiers().contains(JavaModifier.PROTECTED)) continue;
+                            unit.getAllInvolvedRawTypes().forEach(type -> checkExposed(unit.getFullName(), type, events));
+                            unit.getExceptionTypes().forEach(type -> checkExposed(unit.getFullName(), type, events));
+                            unit.getTypeParameters().forEach(type -> checkExposed(unit.getFullName(), type, events));
+                        }
+                        for (var field : entry.getAllFields()) {
+                            if (field.getModifiers().contains(JavaModifier.PUBLIC)
+                                    || field.getModifiers().contains(JavaModifier.PROTECTED)) {
+                                checkExposed(field.getFullName(), field.getType(), events);
+                            }
+                        }
+                    }
+                }).check(new ClassFileImporter().withImportOption(new ImportOption.DoNotIncludeTests())
+                        .importPackages(BASE));
+    }
+
+    private static void checkExposed(String member, JavaType type, ConditionEvents events) {
+        for (JavaClass raw : type.getAllInvolvedRawTypes()) {
+            JavaClass target = raw.isArray() ? raw.getBaseComponentType() : raw;
+            if (MODULE_INTERNALS.test(target)) {
+                events.add(SimpleConditionEvent.violated(type, member + " 暴露 " + target.getName()));
+            }
+        }
     }
 
     @Test
@@ -76,13 +120,13 @@ class ArchitectureTest {
             public void check(JavaClass internal, ConditionEvents events) {
                 String module = moduleOf(internal.getPackageName());
                 String modulePackage = BASE + "." + module;
-                for (JavaAccess<?> access : internal.getAccessesToSelf()) {
-                    String originPackage = access.getOriginOwner().getPackageName();
+                for (var dependency : internal.getDirectDependenciesToSelf()) {
+                    String originPackage = dependency.getOriginClass().getPackageName();
                     boolean sameModule = originPackage.equals(modulePackage)
                             || originPackage.startsWith(modulePackage + ".");
                     if (!sameModule) {
-                        events.add(SimpleConditionEvent.violated(access,
-                                access.getOriginOwner().getName() + " -> " + internal.getName()
+                        events.add(SimpleConditionEvent.violated(dependency,
+                                dependency.getOriginClass().getName() + " -> " + internal.getName()
                                         + " 越过模块 " + module + " 的入口边界"));
                     }
                 }

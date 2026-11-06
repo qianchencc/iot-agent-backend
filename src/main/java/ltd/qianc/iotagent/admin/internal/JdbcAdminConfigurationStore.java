@@ -48,7 +48,7 @@ public final class JdbcAdminConfigurationStore implements AdminConfigurationStor
     private long activeRevision;
 
     public JdbcAdminConfigurationStore(JdbcTemplate jdbc, TransactionTemplate transactions, ObjectMapper mapper,
-            byte[] key, Map<String, Object> initial) {
+            byte[] key, java.util.function.Supplier<Map<String, Object>> initial) {
         this.jdbc = Objects.requireNonNull(jdbc);
         this.transactions = Objects.requireNonNull(transactions);
         this.mapper = Objects.requireNonNull(mapper);
@@ -168,19 +168,19 @@ public final class JdbcAdminConfigurationStore implements AdminConfigurationStor
     }
 
 
-    private long initialize(Map<String, Object> initial) {
+    private long initialize(java.util.function.Supplier<Map<String, Object>> seed) {
         try {
-            Revision existing = latest();
-            return existing.revision;
-        } catch (BusinessException missing) {
+            var existing = jdbc.query(
+                    "SELECT revision,settings_ciphertext,changed_fields_json,actor,changed_at FROM admin_configuration_revisions ORDER BY revision DESC LIMIT 1",
+                    this::mapRevision);
+            if (!existing.isEmpty()) return existing.getFirst().revision;
+            Map<String, Object> initial = seed.get();
             if (initial == null || !seedIssues(initial).isEmpty()) throw unavailable();
-            try {
-                transactions.executeWithoutResult(status -> insert(1,
-                        AgentInstructions.withDefaults(initial), List.of(), "bootstrap"));
-                return 1;
-            } catch (RuntimeException e) {
-                throw unavailable();
-            }
+            transactions.executeWithoutResult(status -> insert(1,
+                    AgentInstructions.withDefaults(initial), List.of(), "bootstrap"));
+            return 1;
+        } catch (RuntimeException failure) {
+            throw unavailable();
         }
     }
 

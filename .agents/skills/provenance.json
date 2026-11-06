@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "upstream": {
+    "repository": "https://github.com/rrezartprebreza/spring-boot-skills",
+    "ref": "4bcf9a165e13e5cbbac3415851d9c449b13a4660",
+    "tree": "skills/spring-boot-3",
+    "skills": [
+      "configuration-properties",
+      "layered-architecture",
+      "transactional-patterns",
+      "testing-pyramid",
+      "rest-api-conventions",
+      "spring-modulith"
+    ],
+    "license": "LICENSE.spring-boot-skills"
+  },
+  "existingSkill": {
+    "name": "java-springboot",
+    "source": "github/awesome-copilot",
+    "originalComputedHash": "108cb49f1d7950889b6223e5810266f1ff38bf62a0d52d932f6edc607a0ddfbf",
+    "license": "LICENSE.awesome-copilot"
+  },
+  "adaptation": "Local project-specific rules are authoritative; preserve these edits during explicit upstream updates. skills-lock.json hashes describe imported upstream content, not these local adaptations.",
+  "sha256": {
+    "LICENSE.awesome-copilot": "2510b446bc1f0cf9702453075d20cd88631e20e5642658edb7325d9c1eb534f7",
+    "PROJECT.md": "9d562ca37278faf6a45a35257a02a0f7e457bda3190761b517aa5514f7515bd3",
+    "LICENSE.spring-boot-skills": "f2e39a8c0495e2852a52d4a0c5b0fd7fba9e655816fbb969b4d571ef0c175026",
+    "rest-api-conventions/agents/openai.yaml": "0c29c72113a64e43098d8ed07082180294d3f2fca45aed1175e8fb1b02455afb",
+    "rest-api-conventions/SKILL.md": "b8c2bc70e2c6f05cdf7eef341ec737b26e4980ccd1f3caabc9e66a887478cc8f",
+    "java-springboot/references/messaging-caching.md": "1e9749666a0eca155a47f7ad630838ace6ba9392c528da3cf80e91dbe76eea56",
+    "java-springboot/references/data.md": "c9852b164b2010f1dc1207b467fcb7399a13d2c313f23d29765145240ac071f4",
+    "java-springboot/references/configuration.md": "8947349c7837cc4db5d27240665baa697373188f111fc54b3a4760180314e18f",
+    "java-springboot/references/aot-and-startup.md": "76ee1cb3198168337740f97e5a99b71f9e3364318d86dfe7613e8ddeff82ea09",
+    "java-springboot/references/rest-api.md": "791827b2c6b3aef3a6b32f089a3b0523ce52f976071f5bd99370673526e7cb39",
+    "java-springboot/SKILL.md": "010e0a6168f1c42d2b284d7f15b026806ac444062a46419b91f8e8613392278a",
+    "layered-architecture/agents/openai.yaml": "69178867c3bea65fadef9e9f8d0fcb584a7a352198dc82bbe2c60d669c46cb4c",
+    "layered-architecture/SKILL.md": "5ea06c0169e62fc99f55725de4eafc1434c93ffbaf590f45ce20cf647af24949",
+    "configuration-properties/agents/openai.yaml": "f0ab20bd79f53d4a46a50a77baae863aec6f4567e13d4c00cc3ff7e77570f8f7",
+    "configuration-properties/examples/ClientProperties.java": "5308ac6a91ec82a9ae376555175dbeca48dbe6f8a347fd3c02e1dd481a93f9bd",
+    "configuration-properties/examples/bad-client.java": "00ccb282260a1c15d7a7910d7ecc95b5b4fef12f27051ba8b9934c6bffc4c633",
+    "configuration-properties/examples/good-client.yml": "6586a928fd644ab380a972ff0311ef115dfbeffe4b1759200dca370b7c6c4249",
+    "configuration-properties/SKILL.md": "f87ccbf1e354d8bb1a5b7802e3794b4c4015115d6d2daceb6135397530e70019",
+    "spring-modulith/agents/openai.yaml": "4881c2c04c378885efc32280a5a8c72dcaebcd52a9cdd5e8079e9e0c3a2b39de",
+    "spring-modulith/examples/bad-module-dependency.java": "c6cc836934dc328d8938e57bd77898a838952a0bf37dc0994a7b783c1a2498e1",
+    "spring-modulith/examples/good-module-test.java": "6568904479163e48d28a08d5f8544f6ec7188b59295a09633d69d14a98e0dd14",
+    "spring-modulith/SKILL.md": "b17170f557e7af9c05a5db4aed3a5d811cbab977f55076a838429c4d0490cd3c",
+    "testing-pyramid/agents/openai.yaml": "b6bebbc4773c723ca55b052801a9725013aec1b69c584741e837b947d28c93da",
+    "testing-pyramid/SKILL.md": "4e9fde032fa7ac71d80e01abef831a9fefb0fdc940c3362f5e3fd75e0ee16f67",
+    "transactional-patterns/agents/openai.yaml": "c07d9ccef700f5b0b4b448517f6db402c5cdde56b1a1ed0a89b224dc0c164622",
+    "transactional-patterns/examples/good-transactional-service.java": "076b09d6f4abf3dbb8c20f552410b31c1110dae8215e554539aa350e00432cfa",
+    "transactional-patterns/examples/bad-transactional-service.java": "8bc3de834fd61290f678b44cfc6b950e2e734bf84389af8a619075fd990b2ef5",
+    "transactional-patterns/SKILL.md": "18a993c74950b47822d2a20c040c2960e19836055a58241ed3fc2a8698357819",
+    "transactional-patterns/templates/TransactionalOrderService.java": "cdc1c8e77c85e58261603c56d6536f5ade631dd0cb33de8ed409abda8e0997bd"
+  }
+}

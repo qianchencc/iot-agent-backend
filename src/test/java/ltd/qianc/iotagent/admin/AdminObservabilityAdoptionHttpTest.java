@@ -7,9 +7,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.sun.net.httpserver.HttpServer;
-import java.net.InetSocketAddress;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashMap;
@@ -23,12 +20,11 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
 import org.springframework.http.MediaType;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 
 @SpringBootTest(properties = {
         "agent.storage.mysql.enabled=false", "agent.storage.redis.enabled=false",
+        "agent.bridge.base-url=http://sidecar.example.invalid",
         "admin.password=observability-contract-password", "admin.origin=http://127.0.0.1:5185",
         "agent.bridge.token=observability-contract-token"
 })
@@ -36,26 +32,13 @@ import org.springframework.test.web.servlet.MockMvc;
 class AdminObservabilityAdoptionHttpTest {
     private static final String ORIGIN = "http://127.0.0.1:5185";
     private static final Path DIRECTORY;
-    private static final HttpServer SIDECAR;
     private static volatile String healthBody = "{\"observability\":{\"enabled\":false}}";
     static {
         try {
             DIRECTORY = Files.createTempDirectory("admin-adoption-");
-            SIDECAR = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-            SIDECAR.createContext("/healthz", exchange -> {
-                byte[] bytes = healthBody.getBytes(StandardCharsets.UTF_8);
-                exchange.getResponseHeaders().set("Content-Type", "application/json");
-                exchange.sendResponseHeaders(200, bytes.length);
-                try (var output = exchange.getResponseBody()) { output.write(bytes); }
-            });
-            SIDECAR.start();
         } catch (Exception error) { throw new ExceptionInInitializerError(error); }
     }
 
-    @DynamicPropertySource
-    static void sidecarAddress(DynamicPropertyRegistry properties) {
-        properties.add("agent.bridge.base-url", () -> "http://127.0.0.1:" + SIDECAR.getAddress().getPort());
-    }
 
     @Autowired MockMvc http;
     @Autowired ObjectMapper mapper;
@@ -106,15 +89,45 @@ class AdminObservabilityAdoptionHttpTest {
         }
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+            "{\"observability\":{}}",
+            "{\"observability\":{\"enabled\":null}}",
+            "{\"observability\":{\"enabled\":\"false\"}}"
+    })
+    void incompleteOrMistypedReportDoesNotProveDisabledAdoption(String report) throws Exception {
+        healthBody = report;
+        try {
+            var login = http.perform(post("/api/admin/login").header("Origin", ORIGIN)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"password\":\"observability-contract-password\"}"))
+                    .andExpect(status().isOk()).andReturn();
+            String cookie = login.getResponse().getHeader("Set-Cookie").split(";", 2)[0];
+            http.perform(get("/api/admin/config").header("Cookie", cookie))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.runtime.observability.reachable").value(true))
+                    .andExpect(jsonPath("$.runtime.observability.adopted").value(false))
+                    .andExpect(jsonPath("$.runtime.observability.enabled").isEmpty());
+        } finally {
+            healthBody = "{\"observability\":{\"enabled\":false}}";
+        }
+    }
+
     @AfterAll
     static void cleanup() throws Exception {
-        SIDECAR.stop(0);
         Files.deleteIfExists(DIRECTORY.resolve("config.bin"));
         Files.deleteIfExists(DIRECTORY);
     }
 
     @TestConfiguration
     static class Settings {
+        @Bean @Primary
+        org.springframework.web.reactive.function.client.WebClient.Builder sidecarClient() {
+            return org.springframework.web.reactive.function.client.WebClient.builder().exchangeFunction(request ->
+                    reactor.core.publisher.Mono.just(org.springframework.web.reactive.function.client.ClientResponse
+                            .create(org.springframework.http.HttpStatus.OK)
+                            .header("Content-Type", "application/json").body(healthBody).build()));
+        }
         @Bean @Primary
         AdminConfigurationStore adoptionSettings() {
             Map<String, Object> initial = new LinkedHashMap<>();
@@ -127,8 +140,7 @@ class AdminObservabilityAdoptionHttpTest {
             initial.put("draftTtlMs", 600000);
             initial.put("readbackWaitMs", 6000);
             initial.put("controlTimeoutMs", 25000);
-            return AdminConfigurationFactory.encryptedFile(new ObjectMapper(), DIRECTORY.resolve("config.bin"),
-                    new byte[32], initial);
+            return AdminConfigurationFactory.encryptedFile(new ObjectMapper(), DIRECTORY.resolve("config.bin"), new byte[32], () -> initial);
         }
     }
 }

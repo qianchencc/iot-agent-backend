@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "skills": {
+    "configuration-properties": {
+      "source": "rrezartprebreza/spring-boot-skills",
+      "ref": "4bcf9a165e13e5cbbac3415851d9c449b13a4660",
+      "sourceType": "github",
+      "skillPath": "skills/spring-boot-3/configuration-properties/SKILL.md",
+      "computedHash": "dba3f6105d119dbd03b6ea8b2ecefe66669676e29b5d1971631cb324530879ca",
+      "installMode": "copy"
+    },
+    "java-springboot": {
+      "source": "github/awesome-copilot",
+      "sourceType": "github",
+      "skillPath": "skills/java-springboot/SKILL.md",
+      "computedHash": "108cb49f1d7950889b6223e5810266f1ff38bf62a0d52d932f6edc607a0ddfbf"
+    },
+    "layered-architecture": {
+      "source": "rrezartprebreza/spring-boot-skills",
+      "ref": "4bcf9a165e13e5cbbac3415851d9c449b13a4660",
+      "sourceType": "github",
+      "skillPath": "skills/spring-boot-3/layered-architecture/SKILL.md",
+      "computedHash": "25cd7c39f530e218f933424f23208a9e5d318331b144a9a01175619fb07e1dd2",
+      "installMode": "copy"
+    },
+    "rest-api-conventions": {
+      "source": "rrezartprebreza/spring-boot-skills",
+      "ref": "4bcf9a165e13e5cbbac3415851d9c449b13a4660",
+      "sourceType": "github",
+      "skillPath": "skills/spring-boot-3/rest-api-conventions/SKILL.md",
+      "computedHash": "b9228145d2fcf557939ca6332d32e57d175c047fe4f10a18523a4656bc704cee",
+      "installMode": "copy"
+    },
+    "spring-modulith": {
+      "source": "rrezartprebreza/spring-boot-skills",
+      "ref": "4bcf9a165e13e5cbbac3415851d9c449b13a4660",
+      "sourceType": "github",
+      "skillPath": "skills/spring-boot-3/spring-modulith/SKILL.md",
+      "computedHash": "66f7f77e43dff98d1d1c514548cf270f4cbf6412db9b99d1064e8cefc446549a",
+      "installMode": "copy"
+    },
+    "testing-pyramid": {
+      "source": "rrezartprebreza/spring-boot-skills",
+      "ref": "4bcf9a165e13e5cbbac3415851d9c449b13a4660",
+      "sourceType": "github",
+      "skillPath": "skills/spring-boot-3/testing-pyramid/SKILL.md",
+      "computedHash": "46421d442533fa0b38eeecee864c0fa5bb152536001ac575bcf7c7bd02df6a00",
+      "installMode": "copy"
+    },
+    "transactional-patterns": {
+      "source": "rrezartprebreza/spring-boot-skills",
+      "ref": "4bcf9a165e13e5cbbac3415851d9c449b13a4660",
+      "sourceType": "github",
+      "skillPath": "skills/spring-boot-3/transactional-patterns/SKILL.md",
+      "computedHash": "3e24642affec687d4ede4638858e16e8146e1a5e23dc692e2e1395dc32e52519",
+      "installMode": "copy"
+    }
+  }
+}

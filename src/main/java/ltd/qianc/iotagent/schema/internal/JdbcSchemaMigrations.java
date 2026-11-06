@@ -78,6 +78,7 @@ public final class JdbcSchemaMigrations {
         });
         upgradeTaskProposalColumns();
         upgradeTaskPlanPauseReason();
+        ensureTaskPhaseColumns();
         retireLegacyPiConversations();
         polish("shared-facts-column-comments-v1", "db/mysql/agent-facts.sql",
                 "db/mysql/agent-allowlist.sql",

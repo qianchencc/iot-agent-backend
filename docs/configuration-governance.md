@@ -18,6 +18,14 @@
 
 优先级按分类决定，而不是全局“环境变量永远覆盖”：部署参数允许显式平台覆盖；首次有效业务修订建立后，运行业务参数以 MySQL 为权威。启动文件中的模型等初始值不得永久锁死控制台。缺少关键安全根时 fail closed，不能以弱默认或旧快照掩盖。
 
+### Spring Boot 3 基础设施绑定与首次种子
+
+- 保留 `agent.storage.mysql.enabled`／`agent.storage.redis.enabled` 显式开关。MySQL 启用时 URL、用户名、密码仍必填；`DataSourceProperties` 装配 Hikari，`spring.datasource.hikari.*` 在实际连接池上绑定，不退回隐式内存库。
+- Redis 连接地址由 `spring.data.redis.url` 提供，只接受 `redis://`／`rediss://`；ACL 用户名、编码密码和库号由 Lettuce URI 解析，`rediss://` 启用 TLS。`spring.data.redis.ssl.enabled` 也可启用 TLS；命令与建连超时分别消费 `spring.data.redis.timeout`／`connect-timeout`（缺省均2秒），关闭超时消费 `spring.data.redis.lettuce.shutdown-timeout`。此装配不是完整 Redis 自动配置：未接入 Sentinel、Cluster、连接池或 SSL bundle。
+- `admin.initial.*` 只在确认无已有修订后惰性解析。显式非法整数／布尔值拒绝建立初始修订，管理配置保持不可用，不静默改回默认；已有有效修订不受无效但未使用的种子影响。读取／解密已有 MySQL 修订失败不得视为空库并重新播种。
+- 管理端采用状态由 admin 内部服务比对，Controller 不装配远端客户端。缺失或非 Boolean 的 `observability.enabled` 保持 `reachable=true`、`enabled=null`、`adopted=false`，不把“不知道”解释为已关闭。
+
+
 ## 2. 每个配置项的登记契约
 
 新增项先分类，再实现；完成标准是定义、校验、消费、可观测生效、必要迁移和文档同一变更交付。
@@ -65,6 +73,7 @@ Langfuse 不是业务审计。若由控制台管理，其 enable、连接及凭�
 - 状态窗口、逻辑删除、到期不等于物理删除；不得未经批准删除事实或清空在线库。备份覆盖配置修订、业务事实、Pi 表及迁移标记，恢复先进入独立库。
 - SQL 资源与 Java 初始化 DDL 的定义、旧库增量升级必须一致；有 CREATE IF NOT EXISTS 不代表历史库已迁移。按根规范保留 bigint unsigned id 与审计时间，已有主键差异明确登记并另行迁移。
 - 当前结构入口为 `schema.SchemaMigrations`，由共享事实、任务生命周期、候选集和 Pi Session 初始化调用；`db/mysql/*.sql` 是列定义、注释及新库结构的唯一权威，旧库补列／换主键／注释收敛由该模块执行并登记。业务模块不得再新增独立建表或升级常量。原自然／复合唯一键须在移除旧主键之前建立，避免中断窗口丢失幂等约束。
+- 共享事实升级必须先补齐、回填旧 `task_phases` 的定义／结果／失败原因列，再执行 MySQL 列注释与定义收敛；任务生命周期入口仍保留幂等补列，支持独立调用。真实 MySQL 旧表回归使用独立临时 schema，不对在线库造旧结构。
 - 候选集旧句柄从原 JSON 回填，重复或格式非法的非空句柄明确失败，不任意改写历史引用；没有短句柄的旧记录保留 null 和原完整 ID，不臆造 `sN`。新记录每会话通过持久序号行在同一事务中分配短句柄并与事实一起提交。新增序号表也遵守规范主键、审计时间与逐列注释。
 - 审计列回填须说明来源：迁移登记沿用 `applied_at`，恢复检查点缺失的创建时间沿用原 `update_time`，屏障缺失的 `issued_at` 沿用原 `update_time`。这不证明原业务发生时刻，不用启动时刻伪造历史。补列、回填与收紧非空分别自守卫，重启可继续未完成步骤。
 - 已验证的新库及旧结构夹具包含33表，保留 Pi 租约／版本／提交回执、任务补投事实、旧会话迁移标记和候选集引用；见[技术规范改进验证](../.scratch/technical-spec-compliance/evidence/result.json)。2026-11-05 已对本地固定业务库执行升级：先备份到私有发布目录、在独立库恢复预演，再在无在途运行时切换；原记录数量、配置密文、候选集 JSON 与 Pi fencing 事实均保持，59 条无短句柄旧候选集保留完整 ID。见[固定实例升级证据](../.scratch/technical-spec-compliance/evidence/fixed-latest-20261105.json)。其他实例首次采用仍须独立备份及升级窗口；换主键可能重建表，程序回退不能代替数据恢复。

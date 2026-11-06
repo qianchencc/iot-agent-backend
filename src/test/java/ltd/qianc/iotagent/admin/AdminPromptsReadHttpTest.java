@@ -131,8 +131,7 @@ class AdminPromptsReadHttpTest {
             initial.put("draftTtlMs", 600000);
             initial.put("readbackWaitMs", 6000);
             initial.put("controlTimeoutMs", 25000);
-            return AdminConfigurationFactory.encryptedFile(new ObjectMapper(), DIRECTORY.resolve("config.bin"),
-                    new byte[32], initial);
+            return AdminConfigurationFactory.encryptedFile(new ObjectMapper(), DIRECTORY.resolve("config.bin"), new byte[32], () -> initial);
         }
     }
 }

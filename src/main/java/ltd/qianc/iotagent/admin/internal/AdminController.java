@@ -36,8 +36,7 @@ public final class AdminController {
     private final AdminApplyCoordinator apply;
     private final AdminModelTester modelTester;
     private final boolean secureCookie;
-    private org.springframework.web.reactive.function.client.WebClient sidecar;
-    private String sidecarToken = "";
+    private final AdminObservabilityStatus observability;
     private PiSessionOperations piSession = PiSessionOperationsFactory.unavailable();
     @Value("${server.address:127.0.0.1}")
     private String deploymentHost;
@@ -53,12 +52,13 @@ public final class AdminController {
     private long deploymentControlTimeoutMs;
 
     public AdminController(AdminSessionManager sessions, AdminConfigurationStore store, AdminApplyCoordinator apply,
-            AdminModelTester modelTester,
+            AdminModelTester modelTester, AdminObservabilityStatus observability,
             @Value("${admin.origin:http://127.0.0.1:5185}") String origin) {
         this.sessions = sessions;
         this.store = store;
         this.apply = apply;
         this.modelTester = modelTester;
+        this.observability = observability;
         this.secureCookie = origin.startsWith("https:");
     }
 
@@ -67,18 +67,6 @@ public final class AdminController {
         if (operations != null) this.piSession = operations;
     }
 
-    @Autowired(required = false)
-    void setSidecarHealth(org.springframework.beans.factory.ObjectProvider<
-            org.springframework.web.reactive.function.client.WebClient.Builder> builders,
-            @Value("${agent.bridge.base-url:}") String baseUrl,
-            @Value("${agent.bridge.token:}") String token) {
-        if (baseUrl == null || baseUrl.isBlank() || token == null || token.isBlank()) return;
-        org.springframework.web.reactive.function.client.WebClient.Builder builder =
-                builders.getIfAvailable(org.springframework.web.reactive.function.client.WebClient::builder);
-        if (builder == null) return;
-        this.sidecar = builder.baseUrl(baseUrl).build();
-        this.sidecarToken = token;
-    }
 
     /** Accepts a password string; returns an HttpOnly session Cookie and csrfToken, or 401/429/503. */
     @PostMapping("/login")
@@ -188,7 +176,7 @@ public final class AdminController {
                 current.revision(), current.activeRevision(), current.saved(), current.active(),
                 current.secrets(), current.pendingRestart(), current.changedFields(),
                 apply.enabled(), current.deployment(), current.fields(), deploymentSettings,
-                Map.of("observability", observabilityRuntime()));
+                Map.of("observability", observability.current()));
     }
 
     private ResponseEntity<Map<String, Object>> saveError(AdminConfigurationStore.SaveResult result) {
@@ -208,81 +196,6 @@ public final class AdminController {
         return ResponseEntity.status(status).body(Map.of("code", code, "message", message));
     }
 
-    /**
-     * Truthful observability adoption state: asks the sidecar what it actually
-     * runs and compares with the saved snapshot. A saved revision or a
-     * supervisor acknowledgement alone never counts as adopted.
-     */
-    private Map<String, Object> observabilityRuntime() {
-        Map<String, Object> status = new LinkedHashMap<>();
-        status.put("reachable", false);
-        status.put("enabled", null);
-        status.put("adopted", false);
-        status.put("detail", "未配置 sidecar 桥接地址，无法验证观测采用状态");
-        if (sidecar == null) return status;
-        Map<?, ?> health;
-        try {
-            health = sidecar.get().uri("/healthz")
-                    .header(HttpHeaders.AUTHORIZATION, "Bearer " + sidecarToken)
-                    .retrieve().bodyToMono(Map.class)
-                    .block(java.time.Duration.ofMillis(1500));
-        } catch (RuntimeException error) {
-            status.put("detail", "无法连接 sidecar 读取观测采用状态");
-            return status;
-        }
-        status.put("reachable", true);
-        if (!(health != null && health.get("observability") instanceof Map<?, ?> reported)) {
-            status.put("detail", "sidecar 未上报观测状态");
-            return status;
-        }
-        boolean reportedEnabled = Boolean.TRUE.equals(reported.get("enabled"));
-        status.put("enabled", reportedEnabled);
-        Map<String, Object> saved;
-        try {
-            saved = store.saved();
-        } catch (RuntimeException error) {
-            status.put("detail", "管理配置存储暂不可用，无法比对观测配置");
-            return status;
-        }
-        boolean expectedEnabled = Boolean.TRUE.equals(saved.get("langfuseEnabled"))
-                && text(saved.get("langfuseBaseUrl")) != null
-                && text(saved.get("langfusePublicKey")) != null
-                && text(saved.get("langfuseSecretKey")) != null;
-        if (expectedEnabled != reportedEnabled) {
-            status.put("detail", "已保存观测配置与 sidecar 当前采用不一致，需重启应用");
-            return status;
-        }
-        if (!expectedEnabled) {
-            status.put("adopted", true);
-            status.put("detail", "观测已关闭，sidecar 确认未上报");
-            return status;
-        }
-        boolean matches = String.valueOf(saved.get("langfuseBaseUrl")).equals(reported.get("baseUrl"))
-                && credentialsDigest(saved.get("langfusePublicKey"), saved.get("langfuseSecretKey"))
-                        .equals(reported.get("credentialsDigest"));
-        status.put("adopted", matches);
-        status.put("detail", matches ? "sidecar 已采用当前观测配置"
-                : "观测地址或凭据已变化，需通过受监督重启后由 sidecar 采用");
-        return status;
-    }
-
-    private static String credentialsDigest(Object publicKey, Object secretKey) {
-        if (!(publicKey instanceof String pk) || !(secretKey instanceof String sk)) return "";
-        try {
-            java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
-            StringBuilder hex = new StringBuilder();
-            for (byte value : digest.digest((pk + ":" + sk).getBytes(java.nio.charset.StandardCharsets.UTF_8))) {
-                hex.append(String.format("%02x", value));
-            }
-            return hex.toString();
-        } catch (java.security.NoSuchAlgorithmException error) {
-            return "";
-        }
-    }
-
-    private static String text(Object value) {
-        return value instanceof String text && !text.isBlank() ? text : null;
-    }
 
     private ResponseEntity<?> operation(PiSessionOperations.OperationResult result) {
         Map<String, Object> body = new LinkedHashMap<>();

@@ -124,7 +124,7 @@ class AdminInstructionConfigurationContractTest {
 
 
     private AdminConfigurationStore store(Path file, Map<String, Object> initial) {
-        return AdminConfigurationFactory.encryptedFile(new ObjectMapper(), file, new byte[32], initial);
+        return AdminConfigurationFactory.encryptedFile(new ObjectMapper(), file, new byte[32], () -> initial);
     }
 
     private static Map<String, Object> seededFromCatalog(String apiKey) {

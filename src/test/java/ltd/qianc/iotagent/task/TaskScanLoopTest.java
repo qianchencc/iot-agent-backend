@@ -63,6 +63,40 @@ class TaskScanLoopTest {
         assertThat(phase.lastDelay).isEqualTo(Duration.ofMillis(2000));
     }
 
+    @Test
+    void closingSpringContextStopsResubmissionBeforeSchedulersRejectWork() throws Exception {
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var errors = new java.util.concurrent.CopyOnWriteArrayList<Throwable>();
+        TaskScanner scanner = mock(TaskScanner.class);
+        org.mockito.Mockito.doAnswer(invocation -> {
+            entered.countDown();
+            if (!release.await(5, TimeUnit.SECONDS)) throw new AssertionError("shutdown did not release scan");
+            return new TaskScanner.ScanResult(0, 0, 0, 0);
+        }).when(scanner).scanOnce();
+        var phase = new org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler() {
+            @Override
+            public void onApplicationEvent(org.springframework.context.event.ContextClosedEvent event) {
+                super.onApplicationEvent(event);
+                release.countDown();
+            }
+        };
+        var background = new org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler();
+        phase.setErrorHandler(errors::add);
+        background.setErrorHandler(errors::add);
+        try (var context = new org.springframework.context.annotation.AnnotationConfigApplicationContext()) {
+            context.registerBean("phase", org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler.class, () -> phase);
+            context.registerBean("background", org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler.class, () -> background);
+            context.registerBean(TaskScanLoop.class, () -> new TaskScanLoop(scanner, () -> 1, phase, background));
+            context.refresh();
+            assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+        } finally {
+            release.countDown();
+        }
+        assertThat(errors).isEmpty();
+        verify(scanner).stopAndDrain();
+    }
+
     private static final class RecordingScheduler extends ConcurrentTaskScheduler {
         private final List<Runnable> pending = new ArrayList<>();
         private Duration lastDelay;

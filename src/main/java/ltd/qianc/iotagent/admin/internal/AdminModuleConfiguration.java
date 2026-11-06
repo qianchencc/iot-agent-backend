@@ -37,19 +37,18 @@ public class AdminModuleConfiguration {
         if (!secretKey.matches("[a-fA-F0-9]{64}")) return new FailClosedAdminConfigurationStore();
         // admin.initial.* seeds only the very first revision; existing MySQL
         // revisions stay authoritative across restarts.
-        Map<String, Object> initial = initial(environment);
         if (mysqlEnabled) {
             JdbcTemplate jdbc = jdbcProvider.getIfAvailable();
             TransactionTemplate transactions = transactionProvider.getIfAvailable();
             if (jdbc == null || transactions == null) return new FailClosedAdminConfigurationStore();
             try {
-                return AdminConfigurationFactory.mysql(jdbc, transactions, mapper, hex(secretKey), initial);
+                return AdminConfigurationFactory.mysql(jdbc, transactions, mapper, hex(secretKey), () -> initial(environment));
             } catch (RuntimeException e) {
                 return new FailClosedAdminConfigurationStore();
             }
         }
         try {
-            return AdminConfigurationFactory.encryptedFile(mapper, Path.of(configFile), hex(secretKey), initial);
+            return AdminConfigurationFactory.encryptedFile(mapper, Path.of(configFile), hex(secretKey), () -> initial(environment));
         } catch (RuntimeException e) {
             return new FailClosedAdminConfigurationStore();
         }
@@ -59,6 +58,16 @@ public class AdminModuleConfiguration {
     @ConditionalOnMissingBean
     AdminModelTester adminModelTester(ObjectMapper mapper) {
         return new AdminModelTester(mapper);
+    }
+
+    @Bean
+    AdminObservabilityStatus adminObservabilityStatus(AdminConfigurationStore store,
+            ObjectProvider<WebClient.Builder> builders,
+            @Value("${agent.bridge.base-url:}") String baseUrl,
+            @Value("${agent.bridge.token:}") String token) {
+        WebClient client = baseUrl.isBlank() || token.isBlank() ? null
+                : builders.getIfAvailable(WebClient::builder).clone().baseUrl(baseUrl).build();
+        return new AdminObservabilityStatus(store, client, token);
     }
 
     @Bean
@@ -161,10 +170,13 @@ public class AdminModuleConfiguration {
 
     private static int integer(Environment environment, String name, int fallback) {
         try { return Integer.parseInt(environment.getProperty(name, Integer.toString(fallback))); }
-        catch (NumberFormatException ignored) { return fallback; }
+        catch (NumberFormatException invalid) { throw new IllegalArgumentException("配置无效：" + name); }
     }
     private static boolean bool(Environment environment, String name, boolean fallback) {
-        return Boolean.parseBoolean(environment.getProperty(name, Boolean.toString(fallback)));
+        String value = environment.getProperty(name, Boolean.toString(fallback));
+        if ("true".equalsIgnoreCase(value)) return true;
+        if ("false".equalsIgnoreCase(value)) return false;
+        throw new IllegalArgumentException("配置无效：" + name);
     }
     private static byte[] hex(String value) {
         byte[] bytes = new byte[value.length() / 2];

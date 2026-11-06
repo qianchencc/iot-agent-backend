@@ -71,8 +71,38 @@ class BusinessErrorAdviceTest {
                 .andExpect(jsonPath("$.code").value("INVALID_REQUEST"));
     }
 
+    @Test
+    void unsupportedMethodPreservesStatusAndAllowedMethods() throws Exception {
+        mockMvc.perform(post("/test/errors/business"))
+                .andExpect(status().isMethodNotAllowed())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header()
+                        .string("Allow", org.hamcrest.Matchers.containsString("GET")))
+                .andExpect(jsonPath("$.code").value("HTTP_405"));
+    }
+
+    @Test
+    void unsupportedRequestMediaRemainsAClientError() throws Exception {
+        mockMvc.perform(post("/test/errors/json").contentType("text/plain").content("synthetic"))
+                .andExpect(status().isUnsupportedMediaType())
+                .andExpect(jsonPath("$.code").value("HTTP_415"));
+    }
+
+    @Test
+    void unacceptableResponseMediaPreservesNegotiationFailure() throws Exception {
+        mockMvc.perform(post("/test/errors/json").contentType("application/json")
+                        .accept("text/plain").content("{}"))
+                .andExpect(status().isNotAcceptable());
+    }
+
     @RestController
     static class TestErrorController {
+
+        @org.springframework.web.bind.annotation.PostMapping(
+                value = "/test/errors/json", consumes = "application/json", produces = "application/json")
+        java.util.Map<String, Object> json(@org.springframework.web.bind.annotation.RequestBody
+                                          java.util.Map<String, Object> body) {
+            return body;
+        }
 
         @GetMapping("/test/errors/business")
         void business() {

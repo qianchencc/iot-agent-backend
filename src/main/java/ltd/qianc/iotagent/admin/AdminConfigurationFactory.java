@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.file.Path;
 import java.util.Map;
 import java.util.Objects;
+import java.util.function.Supplier;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 import ltd.qianc.iotagent.admin.internal.EncryptedFileAdminConfigurationStore;
@@ -14,7 +15,7 @@ public final class AdminConfigurationFactory {
     }
 
     public static AdminConfigurationStore encryptedFile(
-            ObjectMapper mapper, Path path, byte[] key, Map<String, Object> initial) {
+            ObjectMapper mapper, Path path, byte[] key, Supplier<Map<String, Object>> initial) {
         return new EncryptedFileAdminConfigurationStore(
                 Objects.requireNonNull(mapper), Objects.requireNonNull(path), Objects.requireNonNull(key),
                 Objects.requireNonNull(initial));
@@ -22,7 +23,7 @@ public final class AdminConfigurationFactory {
 
     public static AdminConfigurationStore mysql(
             JdbcTemplate jdbc, TransactionTemplate transactions, ObjectMapper mapper, byte[] key,
-            Map<String, Object> initial) {
+            Supplier<Map<String, Object>> initial) {
         return new JdbcAdminConfigurationStore(
                 Objects.requireNonNull(jdbc), Objects.requireNonNull(transactions), Objects.requireNonNull(mapper),
                 Objects.requireNonNull(key), Objects.requireNonNull(initial));

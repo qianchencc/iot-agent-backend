@@ -180,7 +180,7 @@ public class TaskConfiguration {
                           ObjectProvider<AuditEventStore> audit) {
         return new TaskFacade(mapper, tasks, proposals, plans, notifications, scheduler, phases, iot,
                 identities.getIfAvailable(),
-                new TaskProposalNormalizer(mapper, iot, Clock.systemUTC(), Duration.ofSeconds(30)),
+                Duration.ofSeconds(30),
                 snapshots, atomic.getIfAvailable(TaskAtomicTransactions::direct),
                 audit.getIfAvailable(), Clock.systemUTC());
     }

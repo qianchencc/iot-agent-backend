@@ -1,7 +1,8 @@
 package ltd.qianc.iotagent.storage.internal;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.net.URI;
+import com.zaxxer.hikari.HikariDataSource;
+import io.lettuce.core.RedisURI;
 import javax.sql.DataSource;
 import ltd.qianc.iotagent.action.ActionReadbackStore;
 import ltd.qianc.iotagent.action.ActionReceiptStore;
@@ -22,10 +23,11 @@ import ltd.qianc.iotagent.task.TaskProjectionStore;
 import ltd.qianc.iotagent.task.TaskScheduler;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.boot.jdbc.DataSourceBuilder;
+import org.springframework.boot.autoconfigure.jdbc.DataSourceProperties;
+import org.springframework.boot.autoconfigure.data.redis.RedisProperties;
+import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.data.redis.connection.RedisStandaloneConfiguration;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -36,10 +38,19 @@ import org.springframework.transaction.support.TransactionTemplate;
 public class StorageConfiguration {
     @Bean
     @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
-    DataSource agentDataSource(org.springframework.core.env.Environment environment) {
-        return DataSourceBuilder.create().url(required(environment, "spring.datasource.url"))
-                .username(required(environment, "spring.datasource.username"))
-                .password(required(environment, "spring.datasource.password")).build();
+    @ConfigurationProperties("spring.datasource")
+    DataSourceProperties agentDataSourceProperties() {
+        return new DataSourceProperties();
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
+    @ConfigurationProperties("spring.datasource.hikari")
+    HikariDataSource agentDataSource(DataSourceProperties properties, org.springframework.core.env.Environment environment) {
+        required(environment, "spring.datasource.url");
+        required(environment, "spring.datasource.username");
+        required(environment, "spring.datasource.password");
+        return properties.initializeDataSourceBuilder().type(HikariDataSource.class).build();
     }
 
     @Bean
@@ -56,17 +67,34 @@ public class StorageConfiguration {
 
     @Bean
     @ConditionalOnProperty(name = "agent.storage.redis.enabled", havingValue = "true")
-    LettuceConnectionFactory agentRedisConnectionFactory(org.springframework.core.env.Environment environment) {
-        URI uri = URI.create(required(environment, "spring.data.redis.url"));
-        RedisStandaloneConfiguration configuration = new RedisStandaloneConfiguration(uri.getHost(), uri.getPort() > 0 ? uri.getPort() : 6379);
-        if (uri.getPath() != null && uri.getPath().length() > 1) configuration.setDatabase(Integer.parseInt(uri.getPath().substring(1)));
-        if (uri.getUserInfo() != null && uri.getUserInfo().contains(":")) configuration.setPassword(uri.getUserInfo().substring(uri.getUserInfo().indexOf(':') + 1));
+    @ConfigurationProperties("spring.data.redis")
+    RedisProperties agentRedisProperties() {
+        return new RedisProperties();
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "agent.storage.redis.enabled", havingValue = "true")
+    LettuceConnectionFactory agentRedisConnectionFactory(RedisProperties properties,
+            org.springframework.core.env.Environment environment) {
+        RedisURI uri;
+        try {
+            String url = required(environment, "spring.data.redis.url");
+            if (!url.startsWith("redis://") && !url.startsWith("rediss://")) {
+                throw new IllegalArgumentException();
+            }
+            uri = RedisURI.create(url);
+        } catch (IllegalArgumentException failure) {
+            throw new IllegalStateException("存储配置无效：spring.data.redis.url");
+        }
         var client = org.springframework.data.redis.connection.lettuce.LettuceClientConfiguration.builder()
-                .commandTimeout(java.time.Duration.ofSeconds(2))
-                .shutdownTimeout(java.time.Duration.ofMillis(100))
+                .apply(uri)
+                .commandTimeout(properties.getTimeout() == null ? java.time.Duration.ofSeconds(2) : properties.getTimeout())
+                .shutdownTimeout(properties.getLettuce().getShutdownTimeout())
                 .clientOptions(io.lettuce.core.ClientOptions.builder().socketOptions(io.lettuce.core.SocketOptions.builder()
-                        .connectTimeout(java.time.Duration.ofSeconds(2)).build()).build()).build();
-        return new LettuceConnectionFactory(configuration, client);
+                        .connectTimeout(properties.getConnectTimeout() == null
+                                ? java.time.Duration.ofSeconds(2) : properties.getConnectTimeout()).build()).build());
+        if (properties.getSsl().isEnabled()) client.useSsl();
+        return new LettuceConnectionFactory(LettuceConnectionFactory.createRedisConfiguration(uri), client.build());
     }
 
     @Bean

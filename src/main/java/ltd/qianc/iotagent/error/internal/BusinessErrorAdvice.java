@@ -52,6 +52,12 @@ public class BusinessErrorAdvice {
 
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ErrorResponse> onUnexpected(Exception e) {
+        if (e instanceof org.springframework.web.ErrorResponse framework) {
+            var response = ResponseEntity.status(framework.getStatusCode()).headers(framework.getHeaders());
+            // A 406 cannot carry a JSON error when the caller rejects that representation.
+            return response.body(framework.getStatusCode().value() == 406 ? null
+                    : new ErrorResponse("HTTP_" + framework.getStatusCode().value(), "请求无法处理", null));
+        }
         log.error("未分类失败 type={} at {}", e.getClass().getName(), topFrames(e));
         return ResponseEntity.status(500).body(new ErrorResponse("INTERNAL", "原因未确认", null));
     }

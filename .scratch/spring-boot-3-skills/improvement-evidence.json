@@ -1,0 +1,98 @@
+{
+  "date": "2026-11-06",
+  "baseline": "652aa17afa9d09ec4cdd665933d01268bc663637",
+  "framework": "Spring Boot 3.5.16",
+  "java": {
+    "compileRelease": 21,
+    "runtime": "25.0.2"
+  },
+  "scope": [
+    "R1 framework HTTP status and headers",
+    "R2 Redis ACL/TLS/URI/timeout consumption",
+    "R3 legacy phase migration ordering",
+    "R4 Hikari properties binding",
+    "R5 lazy strict bootstrap seed and revision authority",
+    "R6 truthful observability adoption and controller extraction",
+    "R7 public task API and architecture gates",
+    "R8 Spring context shutdown resubmission ordering"
+  ],
+  "verification": {
+    "delivery": {
+      "source": "clean baseline plus owned changes only",
+      "command": "mvn -o -Dstyle.color=never package",
+      "exit": 0,
+      "tests": 657,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 23,
+      "warning": "Surefire reported fork JVM exit exceeding 30 seconds; build succeeded"
+    },
+    "regressionBefore": {
+      "http": "405/415 tests failed as 500",
+      "pool": "third borrower succeeded despite configured maximum 2",
+      "mysqlUpgrade": "Unknown column definition_json in task_phases",
+      "observability": "missing/null/string enabled incorrectly adopted=true",
+      "architecture": "three public constructors exposed TaskProposalNormalizer",
+      "shutdown": "actual Spring scheduler captured TaskRejectedException"
+    },
+    "smoke": {
+      "exit": 0,
+      "http": [
+        {
+          "label": "health",
+          "status": 200,
+          "allow": null
+        },
+        {
+          "label": "method",
+          "status": 405,
+          "allow": "GET"
+        },
+        {
+          "label": "media",
+          "status": 415,
+          "allow": null
+        },
+        {
+          "label": "accept",
+          "status": 406,
+          "allow": null
+        }
+      ],
+      "redis": "real Redis 7.4 TLS-only, default ACL user disabled, named ACL with percent-encoded password, DB2, reads/writes/idempotency",
+      "timeoutsMs": {
+        "command": 900,
+        "connect": 1200
+      },
+      "mysql": "real MySQL 8.4 isolated schemas; legacy upgrade and existing encrypted revision preserved",
+      "poolCapacity": 2,
+      "restart": "existing MySQL revision ignores invalid unused seed",
+      "taskRejectedExceptions": 0,
+      "jarSha256": "5ba4351238dfe565c387d2cb777f34ecadef322dc7f4423a2298c9c1542cebba",
+      "launch": "java -jar <jar> --spring.config.additional-location=file:<isolated YAML>"
+    },
+    "reviews": [
+      "StorageSeedFinalReview: no actionable findings",
+      "HttpBoundaryFinalReview: no actionable findings",
+      "TaskScanLoop follow-up: no actionable findings"
+    ],
+    "preexistingWorktreeFailures": {
+      "baselineSnapshotVerified": true,
+      "failures": [
+        "AgentToolBridgeContractTest.aggregatesRequestedAlertTypesWithoutMaskingMissingTotals",
+        "AgentToolBridgeContractTest.prepareVideoPlaybackUsesBoundCompanySourceAndNormalizesWindow",
+        "SafetyReviewToolContractTest.singleCandidatePreparesRealPlaybackCardAndProjectsVideoPlaybackBlock"
+      ],
+      "contextError": "ReportJdbcIntegrationTest requires new directory gateway/credential configuration in concurrent worktree",
+      "includedInDelivery": false
+    }
+  },
+  "boundaries": {
+    "productionDataChanged": false,
+    "customerGatewayCalled": false,
+    "fixedServicesRestarted": false,
+    "wechatAcceptance": false,
+    "newRuntimeDependencies": false,
+    "pythonOrLauncherAdded": false
+  }
+}

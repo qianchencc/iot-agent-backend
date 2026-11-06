@@ -20,9 +20,14 @@ import org.springframework.boot.test.context.SpringBootTest;
         "agent.storage.mysql.enabled=true",
         "agent.storage.redis.enabled=true",
         "iot.identity.verify=false",
+        "iot.gateway.base-url=https://fixture.example.invalid",
+        "agent.local-data.credential-key=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         "spring.datasource.url=${AGENT_MYSQL_URL}",
         "spring.datasource.username=${AGENT_MYSQL_USERNAME}",
         "spring.datasource.password=${AGENT_MYSQL_PASSWORD}",
+        "spring.datasource.hikari.maximum-pool-size=2",
+        "spring.datasource.hikari.minimum-idle=0",
+        "spring.datasource.hikari.connection-timeout=300",
         "spring.data.redis.url=${AGENT_REDIS_URL}"
 })
 @EnabledIfEnvironmentVariable(named = "AGENT_MYSQL_USERNAME", matches = ".+")
@@ -37,6 +42,21 @@ class StorageIntegrationTest {
     private RedisCoordinationStore coordination;
     @Autowired
     private ObjectMapper mapper;
+    @Autowired
+    private javax.sql.DataSource dataSource;
+
+    @Test
+    void configuredPoolCapacityBoundsConcurrentBorrowers() throws Exception {
+        try (var first = dataSource.getConnection(); var second = dataSource.getConnection()) {
+            assertThat(first.isValid(1)).isTrue();
+            assertThat(second.isValid(1)).isTrue();
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> {
+                try (var excess = dataSource.getConnection()) {
+                    excess.isValid(1);
+                }
+            }).isInstanceOf(java.sql.SQLTransientConnectionException.class);
+        }
+    }
 
     @Test
     void persistsConversationEventsAndRedisCoordination() throws Exception {

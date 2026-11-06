@@ -75,23 +75,23 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
     public TaskFacade(ObjectMapper mapper, TaskFactStore tasks, TaskProposalStore proposals,
                       TaskPlanStore plans, TaskNotificationStore notifications,
                       TaskScheduler scheduler, TaskPhaseStore phases, IotAdapter iot,
-                      TaskExecutionIdentityStore executionIdentities, TaskProposalNormalizer normalizer,
+                      TaskExecutionIdentityStore executionIdentities, Duration scopeTimeout,
                       ReadSnapshots snapshots, Clock clock) {
         this(mapper, tasks, proposals, plans, notifications, scheduler, phases, iot,
-                executionIdentities, normalizer, snapshots, TaskAtomicTransactions.direct(), null, clock);
+                executionIdentities, scopeTimeout, snapshots, TaskAtomicTransactions.direct(), null, clock);
     }
     public TaskFacade(ObjectMapper mapper, TaskFactStore tasks, TaskProposalStore proposals,
                       TaskPlanStore plans, TaskNotificationStore notifications,
                       TaskScheduler scheduler, TaskPhaseStore phases, IotAdapter iot,
-                      TaskExecutionIdentityStore executionIdentities, TaskProposalNormalizer normalizer,
+                      TaskExecutionIdentityStore executionIdentities, Duration scopeTimeout,
                       ReadSnapshots snapshots, TaskAtomicTransactions atomic, Clock clock) {
         this(mapper, tasks, proposals, plans, notifications, scheduler, phases, iot,
-                executionIdentities, normalizer, snapshots, atomic, null, clock);
+                executionIdentities, scopeTimeout, snapshots, atomic, null, clock);
     }
     public TaskFacade(ObjectMapper mapper, TaskFactStore tasks, TaskProposalStore proposals,
                       TaskPlanStore plans, TaskNotificationStore notifications,
                       TaskScheduler scheduler, TaskPhaseStore phases, IotAdapter iot,
-                      TaskExecutionIdentityStore executionIdentities, TaskProposalNormalizer normalizer,
+                      TaskExecutionIdentityStore executionIdentities, Duration scopeTimeout,
                       ReadSnapshots snapshots, TaskAtomicTransactions atomic, AuditEventStore audit, Clock clock) {
         this.mapper = Objects.requireNonNull(mapper, "mapper");
         this.tasks = Objects.requireNonNull(tasks, "tasks");
@@ -106,8 +106,7 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         this.executionIdentities = executionIdentities;
         this.clock = Objects.requireNonNull(clock, "clock");
         this.atomic = atomic == null ? TaskAtomicTransactions.direct() : atomic;
-        this.normalizer = normalizer != null ? normalizer
-                : new TaskProposalNormalizer(mapper, iot, clock, Duration.ofSeconds(30));
+        this.normalizer = new TaskProposalNormalizer(mapper, iot, clock, scopeTimeout);
         this.projector = new TaskDetailProjector(this.mapper, this::durablePhases);
         this.audit = audit;
     }

@@ -34,7 +34,7 @@ public final class TaskScanLoop {
         scheduleReports();
     }
 
-    private void schedulePhase() {
+    private synchronized void schedulePhase() {
         if (!running.get()) return;
         phaseScheduler.schedule(this::pollOnce, phaseScheduler.getClock().instant().plusMillis(scanIntervalMs.getAsLong()));
     }
@@ -49,7 +49,7 @@ public final class TaskScanLoop {
         }
     }
 
-    private void scheduleReports() {
+    private synchronized void scheduleReports() {
         if (!running.get()) return;
         backgroundScheduler.schedule(this::reportsOnce, backgroundScheduler.getClock().instant().plusMillis(scanIntervalMs.getAsLong()));
     }
@@ -65,8 +65,13 @@ public final class TaskScanLoop {
     }
 
     @PreDestroy
+    @org.springframework.context.event.EventListener(org.springframework.context.event.ContextClosedEvent.class)
+    @org.springframework.core.annotation.Order(org.springframework.core.Ordered.HIGHEST_PRECEDENCE)
     public void stop() {
-        running.set(false);
+        // Stop submitting before Spring's schedulers handle ContextClosedEvent.
+        synchronized (this) {
+            if (!running.getAndSet(false)) return;
+        }
         scanner.stopAndDrain();
     }
 }

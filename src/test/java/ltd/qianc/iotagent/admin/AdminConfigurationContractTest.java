@@ -22,8 +22,7 @@ class AdminConfigurationContractTest {
         AdminConfigurationStore.DeploymentInfo deployment =
                 new AdminConfigurationStore.DeploymentInfo("127.0.0.1", 3200, "test", "test", "UTC");
 
-        AdminConfigurationStore first = AdminConfigurationFactory.encryptedFile(
-                new ObjectMapper(), file, key, initial);
+        AdminConfigurationStore first = AdminConfigurationFactory.encryptedFile(new ObjectMapper(), file, key, () -> initial);
         AdminConfigurationStore.ConfigurationView initialView = first.view(deployment);
         assertThat(initialView.saved()).doesNotContainKey("modelApiKey");
         assertThat(initialView.secrets().get("modelApiKey")).containsEntry("configured", true);
@@ -34,8 +33,7 @@ class AdminConfigurationContractTest {
         assertThat(first.active().get("modelApiKey")).isEqualTo("secret-after");
         first.close();
 
-        AdminConfigurationStore reopened = AdminConfigurationFactory.encryptedFile(
-                new ObjectMapper(), file, key, initial);
+        AdminConfigurationStore reopened = AdminConfigurationFactory.encryptedFile(new ObjectMapper(), file, key, () -> initial);
         AdminConfigurationStore.ConfigurationView reopenedView = reopened.view(deployment);
         assertThat(reopenedView.activeRevision()).isEqualTo(2);
         assertThat(reopenedView.pendingRestart()).isFalse();
@@ -45,9 +43,7 @@ class AdminConfigurationContractTest {
     @Test
     void ineffectiveCacheSettingsCannotPretendToApplyAndDoNotBreakHistoricalRestore(
             @org.junit.jupiter.api.io.TempDir Path directory) {
-        AdminConfigurationStore store = AdminConfigurationFactory.encryptedFile(
-                new ObjectMapper(), directory.resolve("config.bin"), new byte[32],
-                validSettings("secret"));
+        AdminConfigurationStore store = AdminConfigurationFactory.encryptedFile(new ObjectMapper(), directory.resolve("config.bin"), new byte[32], () -> validSettings("secret"));
         var deployment = new AdminConfigurationStore.DeploymentInfo(
                 "127.0.0.1", 3200, "test", "test", "UTC");
         Set<String> retired = Set.of(
@@ -69,8 +65,7 @@ class AdminConfigurationContractTest {
     @Test
     void liveFieldsApplyToNewSnapshotsWhileRestartFieldsWaitForProcessRestart() throws Exception {
         Path file = Files.createTempDirectory("admin-live-policy").resolve("config.bin");
-        AdminConfigurationStore store = AdminConfigurationFactory.encryptedFile(
-                new ObjectMapper(), file, new byte[32], validSettings("retained-secret"));
+        AdminConfigurationStore store = AdminConfigurationFactory.encryptedFile(new ObjectMapper(), file, new byte[32], () -> validSettings("retained-secret"));
         Map<String, Object> running = store.active();
 
         assertThat(store.save(1, Map.of("maxToolCalls", 1000, "heartbeatMs", 0), "operator").status())
@@ -96,8 +91,7 @@ class AdminConfigurationContractTest {
     @Test
     void deploymentReportedKnobsRejectSavesAndNeverAppearAsStoreValues() throws Exception {
         Path file = Files.createTempDirectory("admin-deployment").resolve("config.bin");
-        AdminConfigurationStore store = AdminConfigurationFactory.encryptedFile(
-                new ObjectMapper(), file, new byte[32], validSettings("secret"));
+        AdminConfigurationStore store = AdminConfigurationFactory.encryptedFile(new ObjectMapper(), file, new byte[32], () -> validSettings("secret"));
         var deployment = new AdminConfigurationStore.DeploymentInfo("127.0.0.1", 3200, "test", "test", "UTC");
 
         for (String field : new String[] {"draftTtlMs", "readbackWaitMs", "controlTimeoutMs"}) {
@@ -125,8 +119,7 @@ class AdminConfigurationContractTest {
         initial.put("modelBaseUrl", "");
         initial.put("modelId", "");
 
-        AdminConfigurationStore store = AdminConfigurationFactory.encryptedFile(
-                new ObjectMapper(), file, new byte[32], initial);
+        AdminConfigurationStore store = AdminConfigurationFactory.encryptedFile(new ObjectMapper(), file, new byte[32], () -> initial);
         AdminConfigurationStore.ConfigurationView view = store.view(
                 new AdminConfigurationStore.DeploymentInfo("127.0.0.1", 3200, "test", "test", "UTC"));
         assertThat(view.revision()).isEqualTo(1);
@@ -139,17 +132,14 @@ class AdminConfigurationContractTest {
 
         Map<String, Object> invalidSeed = validSettings("secret");
         invalidSeed.put("contextWindow", 5);
-        assertThatThrownBy(() -> AdminConfigurationFactory.encryptedFile(
-                new ObjectMapper(), Files.createTempDirectory("admin-invalid-seed").resolve("config.bin"),
-                new byte[32], invalidSeed))
+        assertThatThrownBy(() -> AdminConfigurationFactory.encryptedFile(new ObjectMapper(), Files.createTempDirectory("admin-invalid-seed").resolve("config.bin"), new byte[32], () -> invalidSeed))
                 .isInstanceOf(ltd.qianc.iotagent.error.BusinessException.class);
     }
 
     @Test
     void viewServesTheSingleFieldCatalogWithHonestEffectModes() throws Exception {
         Path file = Files.createTempDirectory("admin-catalog").resolve("config.bin");
-        AdminConfigurationStore store = AdminConfigurationFactory.encryptedFile(
-                new ObjectMapper(), file, new byte[32], validSettings("secret"));
+        AdminConfigurationStore store = AdminConfigurationFactory.encryptedFile(new ObjectMapper(), file, new byte[32], () -> validSettings("secret"));
         var view = store.view(new AdminConfigurationStore.DeploymentInfo("127.0.0.1", 3200, "test", "test", "UTC"));
 
         assertThat(view.fields()).extracting(AdminSettingField::name)
@@ -171,8 +161,7 @@ class AdminConfigurationContractTest {
     void persistenceFailureDoesNotPublishAnUncommittedConfiguration() throws Exception {
         Path parent = Files.createTempDirectory("admin-write-failure");
         Path file = parent.resolve("config.bin");
-        AdminConfigurationStore store = AdminConfigurationFactory.encryptedFile(
-                new ObjectMapper(), file, new byte[32], validSettings("old-secret"));
+        AdminConfigurationStore store = AdminConfigurationFactory.encryptedFile(new ObjectMapper(), file, new byte[32], () -> validSettings("old-secret"));
         Files.delete(file);
         Files.delete(parent);
         Files.writeString(parent, "not a directory");

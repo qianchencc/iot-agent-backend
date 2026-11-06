@@ -43,7 +43,7 @@ public final class EncryptedFileAdminConfigurationStore implements AdminConfigur
     private State state;
 
     public EncryptedFileAdminConfigurationStore(ObjectMapper mapper, Path path, byte[] key,
-            Map<String, Object> initial) {
+            java.util.function.Supplier<Map<String, Object>> initial) {
         this.mapper = Objects.requireNonNull(mapper);
         this.path = Objects.requireNonNull(path);
         this.key = key.clone();
@@ -130,9 +130,10 @@ public final class EncryptedFileAdminConfigurationStore implements AdminConfigur
         return !changedFields(saved(), active()).isEmpty();
     }
 
-    private State load(Map<String, Object> initial) {
+    private State load(java.util.function.Supplier<Map<String, Object>> seed) {
         try {
             if (!Files.exists(path)) {
+                Map<String, Object> initial = seed.get();
                 if (initial == null || !seedIssues(initial).isEmpty()) throw unavailable();
                 State created = new State(new ArrayList<>(List.of(new Revision(1,
                         AgentInstructions.withDefaults(initial), List.of(), "bootstrap", Instant.now().toString()))), 0);
