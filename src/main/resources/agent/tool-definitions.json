@@ -1030,7 +1030,7 @@
     "propose_task_change": {
       "name": "propose_task_change",
       "label": "提出任务修改",
-      "description": "用本端精确 task/plan ID 提出修改或周期启停/删除/跳过，绝不直接写入。必须先 get_task 核对；任务引用可读出ID。仅本次用虚拟 occurrence task ID；整个周期用 task_plan ID。edit 必须传包含实际变更的 template；缺少修改内容或新旧安排相同不会生成提案。仅改名称只传 template.label，省略 phases。提交 phases 时每个阶段必须含 at 和 actions 数组；只改时间也须保留原阶段的完整设备动作及控制绑定，不得只传 at 或把 actions 放到 template 根级。只读阶段修改须带 actions:[] 与完整原 read（成员及报告统计要求）。未开始点必须在未来。只生成一张待确认差异卡，答复以返回的 before/after 为准。",
+      "description": "用本端精确 task/plan ID 提出修改或周期启停/删除/跳过，绝不直接写入。必须先 get_task 核对；任务引用可读出ID。仅本次用虚拟 occurrence task ID；整个周期用 task_plan ID。edit 必须传包含实际变更的 template；缺少修改内容或新旧安排相同不会生成提案。仅改名称只传 template.label，省略 phases。仅改时间时按原阶段数量和顺序逐项只传 at，不重抄设备动作；后端复用原阶段的完整动作、控制绑定及 read 要求。增删阶段或修改动作须提交完整阶段，actions 必须放在各阶段内；只读阶段含 actions:[] 与完整 read（成员及报告统计要求）。未开始点必须在未来。只生成一张待确认差异卡，答复以返回的 before/after 为准。",
       "parameters": {
         "type": "object",
         "required": [
@@ -1168,8 +1168,7 @@
                 "items": {
                   "type": "object",
                   "required": [
-                    "at",
-                    "actions"
+                    "at"
                   ],
                   "properties": {
                     "at": {
@@ -3343,7 +3342,7 @@
     "propose_task_change": {
       "name": "propose_task_change",
       "label": "提出任务修改",
-      "description": "用本端精确 task/plan ID 提出修改或周期启停/删除/跳过，绝不直接写入。必须先 get_task 核对；任务引用可读出ID。仅本次用虚拟 occurrence task ID；整个周期用 task_plan ID。edit 必须传包含实际变更的 template；缺少修改内容或新旧安排相同不会生成提案。仅改名称只传 template.label，省略 phases。提交 phases 时每个阶段必须含 at 和 actions 数组；只改时间也须保留原阶段的完整设备动作及控制绑定，不得只传 at 或把 actions 放到 template 根级。只读阶段修改须带 actions:[] 与完整原 read（成员及报告统计要求）。未开始点必须在未来。只生成一张待确认差异卡，答复以返回的 before/after 为准。",
+      "description": "用本端精确 task/plan ID 提出修改或周期启停/删除/跳过，绝不直接写入。必须先 get_task 核对；任务引用可读出ID。仅本次用虚拟 occurrence task ID；整个周期用 task_plan ID。edit 必须传包含实际变更的 template；缺少修改内容或新旧安排相同不会生成提案。仅改名称只传 template.label，省略 phases。仅改时间时按原阶段数量和顺序逐项只传 at，不重抄设备动作；后端复用原阶段的完整动作、控制绑定及 read 要求。增删阶段或修改动作须提交完整阶段，actions 必须放在各阶段内；只读阶段含 actions:[] 与完整 read（成员及报告统计要求）。未开始点必须在未来。只生成一张待确认差异卡，答复以返回的 before/after 为准。",
       "parameters": {
         "type": "object",
         "required": [
@@ -3481,8 +3480,7 @@
                 "items": {
                   "type": "object",
                   "required": [
-                    "at",
-                    "actions"
+                    "at"
                   ],
                   "properties": {
                     "at": {

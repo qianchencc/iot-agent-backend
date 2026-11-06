@@ -51,6 +51,70 @@ class TaskManagementContractTest {
     }
 
     @Test
+    void timeOnlyEditKeepsTheExecutableBindingAndEquivalentTimeStillCreatesNoProposal() throws Exception {
+        for (String actions : List.of("", """
+                ,"actions":[{"kind":"lighting","deviceId":"lamp-1","command":{"closeOrOpen":1},"closeOrOpen":1}]
+                """)) {
+            ObjectMapper mapper = new ObjectMapper();
+            TaskPlanStore plans = org.mockito.Mockito.mock(TaskPlanStore.class);
+            TaskProposalStore proposals = org.mockito.Mockito.mock(TaskProposalStore.class);
+            TaskFactStore tasks = org.mockito.Mockito.mock(TaskFactStore.class);
+            TaskFacade facade = facade(plans, proposals, tasks);
+            var original = (com.fasterxml.jackson.databind.node.ObjectNode) mapper.readTree(plan("bound-plan").payloadJson());
+            var phase = (com.fasterxml.jackson.databind.node.ObjectNode) original.path("phases").get(0);
+            phase.put("requiresVerification", true);
+            ((com.fasterxml.jackson.databind.node.ArrayNode) phase.path("actions")).add(mapper.readTree("""
+                    {"kind":"lighting","deviceId":"lamp-1","controlRef":"authorized-control",
+                     "bindingFingerprint":"verified-binding","command":{"closeOrOpen":1}}
+                    """));
+            when(plans.find("bound-plan")).thenReturn(Optional.of(
+                    new TaskPlanFact("bound-plan", 1, "ENABLED", original.toString(), "bound-plan-key")));
+            when(proposals.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+            TaskProposalFact proposal = facade.proposeChange(PRINCIPAL, "office", "conversation", "time-edit",
+                    """
+                    {"target":{"type":"task_plan","planId":"bound-plan"},"operation":"edit",
+                     "template":{"phases":[{"at":"2026-10-10T13:30:00+08:00"%s}]}}
+                    """.formatted(actions), "time-edit");
+            var afterPhase = mapper.readTree(proposal.afterJson()).path("phases").get(0);
+            assertThat(afterPhase.path("at").asText()).isEqualTo("2026-10-10T13:30:00+08:00");
+            var action = afterPhase.path("actions").get(0);
+            assertThat(action.path("deviceId").asText()).isEqualTo("lamp-1");
+            assertThat(action.path("command").path("closeOrOpen").asInt()).isEqualTo(1);
+            assertThat(action.path("controlRef").asText()).isEqualTo("authorized-control");
+            assertThat(action.path("bindingFingerprint").asText()).isEqualTo("verified-binding");
+            assertThat(afterPhase.path("requiresVerification").asBoolean()).isTrue();
+            assertThat(mapper.readTree(proposal.beforeJson()).path("phases").get(0).path("at").asText())
+                    .isEqualTo("2026-10-09T10:00:00Z");
+            assertThatThrownBy(() -> facade.proposeChange(PRINCIPAL, "office", "conversation", "same-time",
+                    """
+                    {"target":{"type":"task_plan","planId":"bound-plan"},"operation":"edit",
+                     "template":{"phases":[{"at":"2026-10-09T18:00:00+08:00"%s}]}}
+                    """.formatted(actions), "same-time"))
+                    .isInstanceOfSatisfying(BusinessException.class,
+                            error -> assertThat(error.httpStatus()).isEqualTo(400));
+            verify(proposals).save(any());
+            verify(plans, never()).updateIfVersion(any(), anyLong());
+            verify(tasks, never()).save(any());
+        }
+    }
+
+    @Test
+    void timeOnlyEditCannotBorrowBindingsAcrossAChangedPhaseCount() {
+        TaskPlanStore plans = org.mockito.Mockito.mock(TaskPlanStore.class);
+        TaskProposalStore proposals = org.mockito.Mockito.mock(TaskProposalStore.class);
+        TaskFacade facade = facade(plans, proposals, org.mockito.Mockito.mock(TaskFactStore.class));
+        when(plans.find("phase-count")).thenReturn(Optional.of(plan("phase-count")));
+        assertThatThrownBy(() -> facade.proposeChange(PRINCIPAL, "office", "conversation", "phase-count",
+                """
+                {"target":{"type":"task_plan","planId":"phase-count"},"operation":"edit",
+                 "template":{"phases":[{"at":"2026-10-10T10:00:00Z"},{"at":"2026-10-11T10:00:00Z"}]}}
+                """, "phase-count"))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        error -> assertThat(error.httpStatus()).isEqualTo(400));
+        verify(proposals, never()).save(any());
+    }
+
+    @Test
     void editRequiresNonEmptyModificationBeforeSavingAProposal() {
         TaskPlanStore plans = org.mockito.Mockito.mock(TaskPlanStore.class);
         TaskProposalStore proposals = org.mockito.Mockito.mock(TaskProposalStore.class);

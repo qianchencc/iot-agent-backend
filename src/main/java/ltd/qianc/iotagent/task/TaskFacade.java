@@ -1914,11 +1914,13 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
     private JsonNode changedPayload(JsonNode before, JsonNode request, String operation) {
         JsonNode after = before.deepCopy();
         if ("edit".equals(operation) && request.path("template").isObject() && after.isObject()) {
-            ((com.fasterxml.jackson.databind.node.ObjectNode) after).setAll((com.fasterxml.jackson.databind.node.ObjectNode) request.path("template"));
+            var template = request.path("template");
+            var originalPhases = after.path("phases");
+            var replacement = (com.fasterxml.jackson.databind.node.ObjectNode) after;
+            replacement.setAll((com.fasterxml.jackson.databind.node.ObjectNode) template);
+            if (template.has("phases")) replacement.set("phases", editPhases(originalPhases, template.path("phases")));
             // Both persisted name fields describe the reviewed replacement, never
             // a new label paired with the previous schedule's title.
-            var template = request.path("template");
-            var replacement = (com.fasterxml.jackson.databind.node.ObjectNode) after;
             if (template.hasNonNull("label")) replacement.set("title", template.get("label"));
             else if (template.hasNonNull("title")) replacement.set("label", template.get("title"));
         } else if ("skip".equals(operation) && after.isObject() && after.path("phases").isArray()) {
@@ -1940,6 +1942,59 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
             }
         }
         return TaskPayloadSafety.withoutCredentials(mapper, after);
+    }
+
+    private JsonNode editPhases(JsonNode original, JsonNode requested) {
+        if (!requested.isArray()) return requested;
+        com.fasterxml.jackson.databind.node.ArrayNode merged = null;
+        for (int index = 0; index < requested.size(); index++) {
+            JsonNode patch = requested.get(index);
+            if (patch.isObject() && patch.has("at") && (patch.size() == 1
+                    || (patch.size() == 2 && patch.has("actions")
+                            && original.isArray() && original.size() == requested.size()
+                            && sameRepeatedActions(original.get(index).path("actions"), patch.path("actions"))))) {
+                if (!original.isArray() || original.size() != requested.size() || !original.get(index).isObject()) {
+                    throw new BusinessException("INVALID_CHANGE", "仅改时间须保留原阶段数量和顺序；增删阶段须提交完整动作及读取要求", 400);
+                }
+                if (merged == null) {
+                    merged = mapper.getNodeFactory().arrayNode(requested.size());
+                    for (int previous = 0; previous < index; previous++) merged.add(requested.get(previous));
+                }
+                var phase = (com.fasterxml.jackson.databind.node.ObjectNode) original.get(index);
+                phase.set("at", patch.get("at"));
+                merged.add(phase);
+            } else if (merged != null) {
+                merged.add(patch);
+            }
+        }
+        return merged == null ? requested : merged;
+    }
+
+    private boolean sameRepeatedActions(JsonNode original, JsonNode requested) {
+        if (!original.isArray() || !requested.isArray() || original.size() != requested.size()) return false;
+        for (int index = 0; index < original.size(); index++) {
+            JsonNode action = original.get(index), candidate = requested.get(index), command = action.path("command");
+            if (!candidate.isObject() || !action.path("deviceId").isTextual() || !action.path("kind").isTextual()
+                    || !action.path("deviceId").equals(candidate.path("deviceId"))
+                    || !action.path("kind").equals(candidate.path("kind"))
+                    || !command.isObject() || command.isEmpty()) return false;
+            if (candidate.has("command")) {
+                if (!command.equals(candidate.get("command"))) return false;
+            } else {
+                var values = command.fields();
+                while (values.hasNext()) {
+                    var value = values.next();
+                    if (!value.getValue().equals(candidate.get(value.getKey()))) return false;
+                }
+            }
+            var fields = candidate.fields();
+            while (fields.hasNext()) {
+                var field = fields.next();
+                if (!field.getValue().equals(action.get(field.getKey()))
+                        && !field.getValue().equals(command.get(field.getKey()))) return false;
+            }
+        }
+        return true;
     }
 
     /** Compare editable facts, not phase identities, execution state or equivalent timestamp notation. */
