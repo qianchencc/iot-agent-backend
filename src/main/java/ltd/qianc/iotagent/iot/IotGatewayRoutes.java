@@ -85,7 +85,7 @@ public record IotGatewayRoutes(
                 new OfficeDeviceSource("my-office.access", "access", accessMyOffice, Map.of("type", "SECURITY_PROTECTION", "subClass", "ACCESS"), true),
                 new OfficeDeviceSource("my-office.video", "video", videoMyOffice, Map.of("type", "SECURITY_PROTECTION", "subClass", "VIDEO"), true),
                 new OfficeDeviceSource("office-association.ac", "ac", acAssociation, Map.of(), false),
-                new OfficeDeviceSource("office-association.lighting", "lighting", lightingAssociation, Map.of(), false),
+                new OfficeDeviceSource("office-association.lighting", "lighting", lightingAssociation, Map.of("sort", "id,asc"), false),
                 new OfficeDeviceSource("office-association.access", "access", accessAssociation, Map.of(), false));
     }
     private static String requirePath(String value, String name) {

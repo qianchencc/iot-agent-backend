@@ -1,0 +1,75 @@
+{
+  "case": "OFFICE-DIRECTORY-PAGE-01",
+  "scope": "Backend Office lighting-association ordering only; frontend consumes backend task and authorization results.",
+  "diagnosis": {
+    "officeDirectoryState": "FAILED",
+    "batchVersion": 0,
+    "failureCode": "DIRECTORY_SYNC_UNAVAILABLE",
+    "taskReadStatus": 503,
+    "taskReadCode": "TASK_READ_PREPARING",
+    "defaultPaging": {
+      "reportedTotal": 159,
+      "firstPage": 100,
+      "secondPage": 59,
+      "crossPageDuplicates": 12,
+      "uniqueRecords": 147
+    },
+    "stableIdOrderReadOnlyProbe": {
+      "reportedTotal": 159,
+      "crossPageDuplicates": 0,
+      "uniqueRecords": 159
+    }
+  },
+  "regressionBeforeFix": {
+    "command": "mvn -q -Dtest=IotAdapterContractTest#officeLightingAssociationPagingKeepsCompleteBindingsWithoutExpandingAuthorization test",
+    "tests": 2,
+    "failures": 0,
+    "errors": 1,
+    "error": "读取授权设备目录记录重复",
+    "corruptPageRejected": true
+  },
+  "sourceChange": "Only office-association.lighting params: sort=id,asc; preserve pagination integrity and authorized-scope filtering.",
+  "engineering": {
+    "focused": {"tests": 83, "failures": 0, "errors": 0, "skipped": 0, "build": "package succeeded"},
+    "broad": {
+      "tests": 700, "passed": 672, "failures": 0, "errors": 0, "skipped": 28,
+      "excludedKnownUnrelatedFailures": [
+        "AgentToolBridgeContractTest#aggregatesRequestedAlertTypesWithoutMaskingMissingTotals",
+        "AgentToolBridgeContractTest#prepareVideoPlaybackUsesBoundCompanySourceAndNormalizesWindow",
+        "SafetyReviewToolContractTest#singleCandidatePreparesRealPlaybackCardAndProjectsVideoPlaybackBlock"
+      ],
+      "build": "verify succeeded with the stated exclusions; not an unqualified full-suite pass"
+    }
+  },
+  "deployment": {
+    "javaPort": 3381,
+    "releaseDirectory": "var/fixed-office-pagination-20261107-203057",
+    "sha256": "44b990f001841037c4691017ade3e6bc3992a23bb2770f689897641cadcaf052",
+    "baseRelease": "var/fixed-energy-20261106-212234",
+    "onlyChangedJarEntry": "BOOT-INF/classes/ltd/qianc/iotagent/iot/IotGatewayRoutes.class",
+    "sidecar3382Unchanged": true,
+    "configurationUnchanged": true
+  },
+  "frontendAcceptance": {
+    "status": "passed for the reported loading case",
+    "surface": "Real WeChat developer tools, existing compiled miniapp, same retained signed-in account and Office region, selected date 2026-11-07",
+    "observed": "Today 0 records; loading indicator absent; no error; sample mode not entered",
+    "initialLoadMs": 4442,
+    "screenshots": ["before.png", "after.png"],
+    "networkEvidence": "network.json",
+    "nonEmptyNeighborDates": "Real timeline responses contained one task each; their cards were not visually accepted",
+    "frontendSourceChangedByThisFix": false
+  },
+  "backendRecovery": {
+    "office": {"state": "READY", "batchVersion": 3, "lastSuccessAt": "2026-11-07 20:35:27", "failureCode": null},
+    "company": {"state": "READY", "batchVersion": 1401, "lastSuccessAt": "2026-11-07 20:35:46", "failureCode": null}
+  },
+  "safety": {
+    "taskPlanFactAndPhaseCountsUnchanged": true,
+    "taskConfirmations": 0,
+    "taskCreations": 0,
+    "deviceControlRequests": 0,
+    "notificationSends": 0,
+    "nativeRequestInstrumentationRemoved": true
+  }
+}

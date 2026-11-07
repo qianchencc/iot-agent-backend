@@ -1,0 +1,89 @@
+{
+  "capture": "Passive forwarding of unchanged native wx.request; wrapper restored and removed after capture.",
+  "requests": [
+    {
+      "path": "http://127.0.0.1:3381/api/agent/regions",
+      "method": "GET",
+      "startedAt": 1794054929317,
+      "status": 200,
+      "durationMs": 80
+    },
+    {
+      "path": "http://127.0.0.1:3381/api/agent/regions/<region>/calendar",
+      "method": "GET",
+      "startedAt": 1794054929325,
+      "status": 200,
+      "durationMs": 73
+    },
+    {
+      "path": "http://127.0.0.1:3381/api/agent/regions/<region>/timeline",
+      "method": "GET",
+      "startedAt": 1794054929327,
+      "status": 200,
+      "durationMs": 55,
+      "taskCount": 0
+    },
+    {
+      "path": "http://127.0.0.1:3381/api/agent/regions/<region>/timeline",
+      "method": "GET",
+      "startedAt": 1794054929388,
+      "status": 200,
+      "durationMs": 24,
+      "taskCount": 0
+    },
+    {
+      "path": "http://127.0.0.1:3381/api/agent/regions/<region>/timeline",
+      "method": "GET",
+      "startedAt": 1794054929390,
+      "status": 200,
+      "durationMs": 27,
+      "taskCount": 0
+    },
+    {
+      "path": "http://127.0.0.1:3381/api/agent/regions/<region>/timeline",
+      "method": "GET",
+      "startedAt": 1794054929391,
+      "status": 200,
+      "durationMs": 30,
+      "taskCount": 0
+    },
+    {
+      "path": "http://127.0.0.1:3381/api/agent/regions/<region>/timeline",
+      "method": "GET",
+      "startedAt": 1794054929393,
+      "status": 200,
+      "durationMs": 43,
+      "taskCount": 1
+    },
+    {
+      "path": "http://127.0.0.1:3381/api/agent/regions/<region>/timeline",
+      "method": "GET",
+      "startedAt": 1794054929394,
+      "status": 200,
+      "durationMs": 35,
+      "taskCount": 1
+    },
+    {
+      "path": "http://127.0.0.1:3381/api/agent/regions/<region>/seen",
+      "method": "POST",
+      "startedAt": 1794054929395,
+      "status": 200,
+      "durationMs": 46
+    },
+    {
+      "path": "http://127.0.0.1:3381/api/agent/regions/<region>/timeline",
+      "method": "GET",
+      "startedAt": 1794054959427,
+      "status": 200,
+      "durationMs": 51,
+      "taskCount": 0
+    },
+    {
+      "path": "http://127.0.0.1:3381/api/agent/regions/<region>/calendar",
+      "method": "GET",
+      "startedAt": 1794054959486,
+      "status": 200,
+      "durationMs": 19
+    }
+  ]
+}

@@ -104,3 +104,8 @@ Java 构建、测试、启动和本地 healthz 验证命令见 [AGENTS.md](./AGE
 
 - Daily and meter statistics reuse the same identity- and authorized-meter-scoped natural-month raw samples. Comparisons and reports keep their existing calculation rules, left anchors, requested upper bounds and current-month refresh; upstream concurrency remains six. A failed shared stream does not discard healthy meters from best-effort reports or bypass authorization failures.
 - First reads no longer sweep 24 months automatically. Current, selected and visible historical windows prepare on demand; the miniapp retains held results and explicitly labels preparation. Engineering proof, the energy-only fixed-development deployment and remaining visual acceptance limits are recorded in [ENERGY-COLD-01](.scratch/energy-cold-load/evidence/ENERGY-COLD-01/README.md).
+
+## Office directory pagination
+
+- Office 照明关联目录分页显式使用 `sort=id,asc`，避免默认顺序不稳定造成跨页重复、目录无法准备及任务持续加载。完整性校验、授权过滤、其他目录接口和前端保持不变。
+- 固定 Java 3381 运行包为 `var/fixed-office-pagination-20261107-203057/backend.jar`，仅在原运行包上替换该路由类，未混入工作区其他改动；Node 3382 与配置不变。构建、回归边界和真实微信界面证据见 [OFFICE-DIRECTORY-PAGE-01](.scratch/local-data-sync/evidence/OFFICE-DIRECTORY-PAGE-01/README.md)。

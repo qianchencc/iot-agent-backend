@@ -204,6 +204,60 @@ class IotAdapterContractTest {
         assertThat(scope.device("association-only")).isEmpty();
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void officeLightingAssociationPagingKeepsCompleteBindingsWithoutExpandingAuthorization(boolean corruptLastPage) {
+        String firstPage = java.util.stream.IntStream.range(0, 100)
+                .mapToObj(index -> "{\"id\":\"association-%03d\",\"hubDeviceId\":\"hub-%d\",\"name\":\"样例灯\"}"
+                        .formatted(index, index))
+                .collect(java.util.stream.Collectors.joining(","));
+        ExchangeFunction fixture = candidate -> {
+            var url = candidate.url();
+            if (url.getPath().equals("/membership")) {
+                return Mono.just(json("{\"code\":200,\"content\":[{\"elementId\":\"office-a\",\"elementName\":\"样例办公室\"}]}"));
+            }
+            if (url.getPath().equals("/lighting")) {
+                return Mono.just(json("{\"code\":200,\"content\":["
+                        + "{\"id\":\"scoped-first\",\"hubDeviceId\":\"hub-0\",\"name\":\"前区灯\"},"
+                        + "{\"id\":\"scoped-last\",\"hubDeviceId\":\"hub-100\",\"name\":\"后区灯\"}]}"));
+            }
+            if (url.getPath().equals("/lighting-assoc")) {
+                String query = url.getQuery();
+                boolean first = query.contains("page=0");
+                String rows = first ? firstPage
+                        : query.contains("sort=id,asc") && !corruptLastPage
+                                ? "{\"id\":\"association-100\",\"hubDeviceId\":\"hub-100\",\"name\":\"样例灯\"}"
+                                : "{\"id\":\"association-000\",\"hubDeviceId\":\"hub-0\",\"name\":\"样例灯\"}";
+                return Mono.just(json(("{\"code\":200,\"content\":{\"content\":[%s],"
+                        + "\"last\":%s,\"number\":%d,\"totalElements\":101}}")
+                        .formatted(rows, !first, first ? 0 : 1)));
+            }
+            return Mono.just(json("{\"code\":204,\"content\":null}"));
+        };
+        IotAdapter adapter = IotAdapterFactory.webClient(
+                WebClient.builder().exchangeFunction(fixture).build(),
+                IotGatewayRoutes.officeDirectory("/office-scope", null, "/membership",
+                        IotGatewayRoutes.runtimeOfficeSources("/ac", "/lighting", "/access", "/video",
+                                "/ac-assoc", "/lighting-assoc", "/access-assoc")),
+                Duration.ofSeconds(1), IotCallPolicy.passThrough());
+        var request = adapter.collectDirectory(
+                new RequestIdentity("Bearer fixture-pagination", "fixture-tenant", IotSourceEnum.OFFICE));
+
+        if (corruptLastPage) {
+            StepVerifier.create(request).expectError(UpstreamUnavailableException.class)
+                    .verify(Duration.ofSeconds(2));
+            return;
+        }
+        var batch = request.block(Duration.ofSeconds(2));
+        assertThat(batch.regions()).containsExactly(new OfficeRegion("office-a", "样例办公室"));
+        assertThat(batch.scope().devices()).extracting(AuthorizedDevice::id)
+                .containsExactly("scoped-first", "scoped-last");
+        assertThat(batch.scope().device("scoped-first").orElseThrow().controlRef()).isEqualTo("association-000");
+        assertThat(batch.scope().device("scoped-last").orElseThrow().controlRef()).isEqualTo("association-100");
+        assertThat(batch.scope().devices()).allSatisfy(device ->
+                assertThat(device.officeIds()).containsExactly("office-a"));
+    }
+
     @Test
     void candidateSetsPersistFullMembershipAndRejectDevicesOutsideTheirSet() {
         java.util.Map<String, DeviceCandidateRecord> saved = new java.util.concurrent.ConcurrentHashMap<>();
