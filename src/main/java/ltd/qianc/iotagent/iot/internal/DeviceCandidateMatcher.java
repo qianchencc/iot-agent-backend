@@ -79,7 +79,8 @@ final class DeviceCandidateMatcher {
                 || genericScope(scopeText)
                 || submittedScopeTerms.stream().anyMatch(DeviceCandidateMatcher::genericScope);
         if (browse && !explicitAuthorizedScope && nameHints.isEmpty() && query.deviceIds().isEmpty()) {
-            throw new UpstreamUnavailableException("至少需要设备范围或设备描述");
+            throw new BusinessException("INVALID_DEVICE_QUERY", "至少需要设备范围或设备描述",
+                    "地点可省略；查询全部授权区域时请提供deviceText或nameHints，例如deviceText=\"空调\"", 400);
         }
 
         List<String> explicitEnergyFloors = "energy".equalsIgnoreCase(query.kind())

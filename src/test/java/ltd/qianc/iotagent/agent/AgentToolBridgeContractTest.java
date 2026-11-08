@@ -286,30 +286,6 @@ class AgentToolBridgeContractTest {
         assertThat(query.scopeText()).isEqualTo("共享会议室");
     }
 
-    @Test
-    void companyDiscoveryStaysRegionAgnostic() {
-        ConversationFacade conversations = mock(ConversationFacade.class);
-        IotAdapter iot = mock(IotAdapter.class);
-        bind(conversations, "company", null);
-        AtomicReference<DeviceCandidateQuery> captured = new AtomicReference<>();
-        when(iot.findDeviceCandidates(any(), any(), any())).thenAnswer(invocation -> {
-            captured.set(invocation.getArgument(1));
-            return Mono.just(new DeviceCandidateSet("set-1", captured.get(), List.of(), true, 0));
-        });
-        AgentToolBridge bridge = AgentToolBridgeFactory.local(conversations, iot,
-                mock(ActionDraftFacade.class), mock(TaskFacade.class), mapper, null);
-
-        bridge.execute(request("find_device_candidates", Map.of("kind", "lighting", "scopeText", "26楼")));
-        assertThat(captured.get().regionId()).isNull();
-        assertThat(captured.get().scopeText()).isEqualTo("26楼");
-
-        Map<String, Object> second = request("find_device_candidates", Map.of("kind", "lighting", "scopeText", "公司"));
-        second.put("toolCallId", "call-2");
-        bridge.execute(second);
-        assertThat(captured.get().regionId()).isNull();
-        assertThat(captured.get().scopeText()).isNull();
-        verify(iot, never()).loadOfficeRegions(any());
-    }
 
     @Test
     void companyEnergyToolsUseMeterReportWithBoundSourceAndWindow() {

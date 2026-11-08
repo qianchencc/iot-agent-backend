@@ -58,14 +58,6 @@ public final class AgentBusinessToolDispatcher implements AgentToolBridge {
     private static final Set<String> FORBIDDEN_INTERNAL_ARGUMENTS = Set.of(
             "tenantCode", "reference", "principal", "ownerKey", "runId", "conversationId", "turnId", "toolContextId");
     private static final DateTimeFormatter VIDEO_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSXXX");
-    private static final Set<String> COMPANY_WIDE_SCOPE_TOKENS = Set.of(
-            "公司", "全部", "所有", "不限位置", "授权范围", "授权区域", "公司范围", "公司授权范围");
-    private static final java.util.regex.Pattern COMPANY_WIDE_SCOPE_A =
-            java.util.regex.Pattern.compile("^(?:当前)?公司(?:授权)?(?:范围|目录|区域)(?:内)?(?:全部|所有)?(?:环境设备)?$");
-    private static final java.util.regex.Pattern COMPANY_WIDE_SCOPE_B =
-            java.util.regex.Pattern.compile("^(?:当前)?公司(?:全部|所有)(?:授权)?(?:范围|目录|区域)(?:内)?(?:环境设备)?$");
-    private static final java.util.regex.Pattern COMPANY_WIDE_SCOPE_C =
-            java.util.regex.Pattern.compile("^(?:全部|所有|不限位置)(?:公司|环境设备|公司区域)?$");
     private static final java.util.regex.Pattern DEVICE_HANDLE =
             java.util.regex.Pattern.compile("^d(\\d+)_(\\d+)$");
     private static final java.util.regex.Pattern REGION_NAME_SPACING =
@@ -848,13 +840,6 @@ public final class AgentBusinessToolDispatcher implements AgentToolBridge {
         String scopeText = nullableText(args, "scopeText");
         List<String> deviceIds = strings(args.get("deviceIds"));
         List<String> scopeTerms = strings(args.get("scopeTerms"));
-        if (source == IotSourceEnum.COMPANY) {
-            // Runtime pi-runner companyQueryWithoutWideScope: source-wide words are not
-            // physical locations; they are dropped before the catalog query.
-            if (scopeText != null && isCompanyWideScope(scopeText)) scopeText = null;
-            List<String> physical = scopeTerms.stream().filter(term -> !isCompanyWideScope(term)).toList();
-            if (physical.size() != scopeTerms.size()) scopeTerms = physical;
-        }
         String regionId = null;
         if (source == IotSourceEnum.OFFICE && deviceIds.isEmpty() && !isBlank(focusRegionId)) {
             // The bound focus region is the default scope, not a ceiling: generic or absent
@@ -1032,16 +1017,6 @@ public final class AgentBusinessToolDispatcher implements AgentToolBridge {
             devices.add(view);
         }
         return devices;
-    }
-
-    /** Runtime pi-runner isCompanyWideScope token list and grammar. */
-    private static boolean isCompanyWideScope(String value) {
-        if (value == null) return false;
-        String normalized = value.replaceAll("[\\s，,、;；]", "");
-        return COMPANY_WIDE_SCOPE_TOKENS.contains(normalized)
-                || COMPANY_WIDE_SCOPE_A.matcher(normalized).matches()
-                || COMPANY_WIDE_SCOPE_B.matcher(normalized).matches()
-                || COMPANY_WIDE_SCOPE_C.matcher(normalized).matches();
     }
 
     private static Map<String, Object> publicDevice(AuthorizedDevice device) {

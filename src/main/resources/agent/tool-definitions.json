@@ -1530,7 +1530,7 @@
     "find_device_candidates": {
       "name": "find_device_candidates",
       "label": "查询设备候选",
-      "description": "查询Company微脑环境、能耗、安全及智慧空调、照明、门禁、监控目录；不含Office。来源已限定，只有物理地点放scopeText/scopeTerms，全来源词不是地点。scopeText保留原位置说法，scopeTerms为共同满足的硬条件，deviceText/nameHints只排序注释。返回真实成员明细、分组与范围解析。complete表示明细是否齐全，membersComplete表示服务器固定成员是否齐全；整组引用需要已精确查明成员（exact，或服务器固定成员的browse）的完整照明集合，fuzzy或未解析的结果只是调查线索，已明确设备可用get_device_details补读成精确引用。建议或局部展示不能代表用户选择或全部范围。",
+      "description": "查询Company微脑环境、能耗、安全及智慧空调、照明、门禁、监控目录；不含Office。地点可省略：省略scopeText/scopeTerms表示在当前身份的Company授权范围内按kind全量浏览，此时须提供deviceText或nameHints，例如查询公司有哪些空调用{kind:\"ac\",deviceText:\"空调\"}；不要只传kind。“公司/全部/授权范围”表示全授权范围，不作为物理地点过滤。具体地点放scopeText/scopeTerms，scopeText保留原位置说法，scopeTerms为共同满足的硬条件，deviceText/nameHints只排序注释。返回真实成员明细、分组与范围解析。complete表示明细是否齐全，membersComplete表示服务器固定成员是否齐全；整组引用需要已精确查明成员（exact，或服务器固定成员的browse）的完整照明集合，fuzzy或未解析的结果只是调查线索，已明确设备可用get_device_details补读成精确引用。建议或局部展示不能代表用户选择或全部范围。",
       "parameters": {
         "type": "object",
         "required": [

@@ -377,7 +377,11 @@ class IotAdapterContractTest {
 
         StepVerifier.create(adapter.findDeviceCandidates(identity,
                         new DeviceCandidateQuery("lighting", List.of(), null, List.of(), List.of(), null, null)))
-                .expectError(UpstreamUnavailableException.class)
+                .expectErrorSatisfies(error -> {
+                    assertThat(error).isInstanceOf(BusinessException.class);
+                    assertThat(((BusinessException) error).code()).isEqualTo("INVALID_DEVICE_QUERY");
+                    assertThat(((BusinessException) error).httpStatus()).isEqualTo(400);
+                })
                 .verify(Duration.ofSeconds(1));
     }
 
@@ -627,7 +631,11 @@ class IotAdapterContractTest {
         StepVerifier.create(adapter.findDeviceCandidates(
                         new RequestIdentity("Bearer company-token", "TENANT-1", IotSourceEnum.COMPANY),
                         new DeviceCandidateQuery("energy", List.of(), null, List.of(), List.of(), null, null)))
-                .expectError(UpstreamUnavailableException.class).verify();
+                .expectErrorSatisfies(error -> {
+                    assertThat(error).isInstanceOf(BusinessException.class);
+                    assertThat(((BusinessException) error).code()).isEqualTo("INVALID_DEVICE_QUERY");
+                    assertThat(((BusinessException) error).httpStatus()).isEqualTo(400);
+                }).verify();
     }
 
     @Test

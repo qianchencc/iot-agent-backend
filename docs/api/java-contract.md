@@ -26,6 +26,13 @@
 | `POST /{id}/messages` | 正文 `content`，可选 `focusRegionId`、对象 `reference`；`Idempotency-Key` 请求头 | `application/x-ndjson`；恢复、取消及终态遵循事件协议，HTTP 成功不代表控制成功 |
 | `POST /{id}/runs/cancel` | 可选查询 `source` | 当前运行取消结果；不重放设备副作用 |
 
+## 设备候选查询（Agent 工具）
+
+- Company `find_device_candidates` 的地点可省略；省略 `scopeText/scopeTerms` 且提供 `deviceText/nameHints` 时，按 `kind` 浏览当前身份在 Company 来源下的全部授权区域，例如 `{kind:"ac",deviceText:"空调"}`。
+- 显式的“公司／全部／授权范围”表示授权范围浏览，由检索模块识别，不在工具入口提前删除；同时提供的真实楼层、区域条件仍须满足。Office 的服务端关注区域绑定不变。
+- 只有 `kind`、既无范围也无设备描述的请求返回 400 `INVALID_DEVICE_QUERY` 并提供补参指引，不再误报 503 `IOT_UPSTREAM_UNAVAILABLE`；真实上游不可用仍保留 503。
+- 浏览只产生候选集合，不授予设备操作权限；现有完整成员、展示上限、租户／主体／来源／会话绑定及草案确认检查不变。
+
 ## 即时动作草案
 
 前缀 `/api/agent/action-drafts`。读取返回草案视图；只有人工确认路径可以进入执行。草案版本变化后应重新读取，不用旧 revision 强行覆盖。
