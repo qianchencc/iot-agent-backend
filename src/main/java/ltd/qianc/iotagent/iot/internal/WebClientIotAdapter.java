@@ -58,6 +58,7 @@ public final class WebClientIotAdapter implements IotAdapter {
 
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final long READ_SCOPE_REUSE_MILLIS = 5_000L;
+    private static final long VIDEO_SCOPE_REUSE_MILLIS = 60_000L;
     /**
      * Runtime worker queue bound: coarse lighting-area reads and AC detail reads
      * share one queue per call (originally three lanes, user-approved raise to 6).
@@ -126,25 +127,21 @@ public final class WebClientIotAdapter implements IotAdapter {
     private Mono<AuthorizedDeviceScope> cachedReadScope(
             RequestIdentity identity, Mono<AuthorizedDeviceScope> request) {
         String key = identity.tenantCode() + "\u0000" + identity.ownerKey() + "\u0000" + identity.source();
-        // Company keeps control bindings fresh, so only concurrent callers share one load;
-        // a completed result is never reused. Office additionally reuses it for 5 seconds.
-        if (identity.source() != IotSourceEnum.OFFICE) {
-            Mono<AuthorizedDeviceScope> fresh = request
-                    .doFinally(signal -> scopeJobs.remove(key))
-                    .cache();
-            Mono<AuthorizedDeviceScope> prior = scopeJobs.putIfAbsent(key, fresh);
-            return prior == null ? fresh : prior;
-        }
+        // Control authorization stays fresh. Video and Office reads reuse only complete scopes.
+        return cachedReadScope(key, request, identity.source() == IotSourceEnum.OFFICE ? READ_SCOPE_REUSE_MILLIS : 0);
+    }
+
+    private Mono<AuthorizedDeviceScope> cachedReadScope(String key, Mono<AuthorizedDeviceScope> request, long reuseMillis) {
         long now = System.currentTimeMillis();
         scopeCache.forEach((cacheKey, entry) -> {
-            if (now - entry.at() > READ_SCOPE_REUSE_MILLIS) scopeCache.remove(cacheKey, entry);
+            if (entry.expiresAt() <= now) scopeCache.remove(cacheKey, entry);
         });
         ScopeEntry cached = scopeCache.get(key);
-        if (cached != null && now - cached.at() <= READ_SCOPE_REUSE_MILLIS) {
-            return Mono.just(cached.scope());
-        }
+        if (cached != null && cached.expiresAt() > now) return Mono.just(cached.scope());
         Mono<AuthorizedDeviceScope> fresh = request
-                .doOnNext(scope -> scopeCache.put(key, new ScopeEntry(scope, System.currentTimeMillis())))
+                .doOnNext(scope -> {
+                    if (reuseMillis > 0) scopeCache.put(key, new ScopeEntry(scope, System.currentTimeMillis() + reuseMillis));
+                })
                 .doFinally(signal -> scopeJobs.remove(key))
                 .cache();
         Mono<AuthorizedDeviceScope> prior = scopeJobs.putIfAbsent(key, fresh);
@@ -942,8 +939,18 @@ public final class WebClientIotAdapter implements IotAdapter {
     }
 
     private Mono<AuthorizedDeviceScope> loadCompanyVideoScope(RequestIdentity identity) {
-        return collectCompanySmart(identity, "monitor")
-                .map(devices -> (AuthorizedDeviceScope) new AuthorizedDeviceScopeSnapshot(identity, devices));
+        // Match Runtime's one-minute video-only authorization reuse; never cache stream URLs.
+        // The credential digest prevents token rotation from reusing an earlier authorization.
+        String credentialKey;
+        try {
+            credentialKey = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(identity.authorization().getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException(impossible);
+        }
+        String key = "video\u0000" + identity.tenantCode() + "\u0000" + identity.ownerKey() + "\u0000" + credentialKey;
+        return Mono.defer(() -> cachedReadScope(key, collectCompanySmart(identity, "monitor")
+                .map(devices -> (AuthorizedDeviceScope) new AuthorizedDeviceScopeSnapshot(identity, devices)), VIDEO_SCOPE_REUSE_MILLIS));
     }
 
     private Mono<List<AuthorizedDevice>> collectCompanySafety(RequestIdentity identity) {
@@ -1623,7 +1630,7 @@ public final class WebClientIotAdapter implements IotAdapter {
         return timeout;
     }
 
-    private record ScopeEntry(AuthorizedDeviceScope scope, long at) { }
+    private record ScopeEntry(AuthorizedDeviceScope scope, long expiresAt) { }
     private record PageResult(List<JsonNode> records, boolean last) {
         static PageResult empty() { return new PageResult(List.of(), true); }
     }

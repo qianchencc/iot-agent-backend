@@ -88,6 +88,67 @@ class VideoAdapterContractTest {
                 }).verify();
     }
 
+    @Test
+    void liveAndPlaybackReuseVideoAuthorizationButAlwaysRequestNewStreams() {
+        var directoryReads = new java.util.concurrent.atomic.AtomicInteger();
+        var streamReads = new java.util.concurrent.atomic.AtomicInteger();
+        IotAdapter adapter = adapter(request -> {
+            if (request.url().getPath().endsWith("/myAreaList")) {
+                directoryReads.incrementAndGet();
+                return Mono.just(json(request.url().getQuery() == null
+                        ? "[{\"id\":\"leaf\",\"fullCode\":\"L-1\",\"name\":\"Fixture floor\"}]" : "[]"));
+            }
+            if (request.url().getPath().endsWith("/monitor/devicePage")) {
+                directoryReads.incrementAndGet();
+                return Mono.just(json("[{\"id\":\"monitor-1\",\"hubDeviceId\":\"hub-authorized\",\"name\":\"Fixture camera\"}]"));
+            }
+            return Mono.just(json("{\"code\":200,\"content\":{\"result\":true,\"url\":\"wss://fixture/session-"
+                    + streamReads.incrementAndGet() + "\"}}"));
+        });
+        var first = adapter.openVideoStream(COMPANY, "monitor-1").block();
+        int initialDirectoryReads = directoryReads.get();
+        var recording = adapter.openVideoPlayback(COMPANY, "monitor-1",
+                new VideoPlaybackWindow("2026-10-08T00:00:00.000+08:00", "2026-10-08T02:00:00.000+08:00")).block();
+        var retry = adapter.openVideoStream(COMPANY, "monitor-1").block();
+        assertThat(first.url()).isEqualTo("wss://fixture/session-1");
+        assertThat(recording.url()).isEqualTo("wss://fixture/session-2");
+        assertThat(retry.url()).isEqualTo("wss://fixture/session-3");
+        assertThat(directoryReads.get()).isEqualTo(initialDirectoryReads);
+        // A rotated token with the same principal must not reuse the prior authorization.
+        RequestIdentity rotated = new RequestIdentity("Bearer rotated", COMPANY.tenantCode(), IotSourceEnum.COMPANY, COMPANY.ownerKey());
+        adapter.openVideoStream(rotated, "monitor-1").block();
+        assertThat(directoryReads.get()).isEqualTo(initialDirectoryReads * 2);
+        RequestIdentity otherTenant = new RequestIdentity(COMPANY.authorization(), "TENANT-2", IotSourceEnum.COMPANY, COMPANY.ownerKey());
+        adapter.openVideoStream(otherTenant, "monitor-1").block();
+        assertThat(directoryReads.get()).isEqualTo(initialDirectoryReads * 3);
+        RequestIdentity otherOwner = new RequestIdentity(COMPANY.authorization(), COMPANY.tenantCode(), IotSourceEnum.COMPANY, "other-owner");
+        adapter.openVideoStream(otherOwner, "monitor-1").block();
+        assertThat(directoryReads.get()).isEqualTo(initialDirectoryReads * 4);
+    }
+
+    @Test
+    void failedVideoDirectoryIsNotReusedAndCannotAuthorizeAStream() {
+        var firstFailure = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var streamReads = new java.util.concurrent.atomic.AtomicInteger();
+        IotAdapter adapter = adapter(request -> {
+            if (request.url().getPath().endsWith("/myAreaList")) {
+                if (firstFailure.getAndSet(false)) return Mono.just(ClientResponse.create(HttpStatus.FORBIDDEN).build());
+                return Mono.just(json(request.url().getQuery() == null
+                        ? "[{\"id\":\"leaf\",\"fullCode\":\"L-1\"}]" : "[]"));
+            }
+            if (request.url().getPath().endsWith("/monitor/devicePage")) {
+                return Mono.just(json("[{\"id\":\"monitor-1\",\"hubDeviceId\":\"hub-authorized\",\"name\":\"Fixture camera\"}]"));
+            }
+            streamReads.incrementAndGet();
+            return Mono.just(json("{\"code\":200,\"content\":{\"result\":true,\"url\":\"wss://fixture/recovered\"}}"));
+        });
+        StepVerifier.create(adapter.openVideoStream(COMPANY, "monitor-1"))
+                .expectError(GatewayAuthorizationException.class).verify();
+        assertThat(streamReads.get()).isZero();
+        assertThat(adapter.openVideoStream(COMPANY, "monitor-1").block().url()).isEqualTo("wss://fixture/recovered");
+        assertThat(streamReads.get()).isEqualTo(1);
+    }
+
     private static IotAdapter adapter(ExchangeFunction exchange) {
         return IotAdapterFactory.webClient(WebClient.builder().exchangeFunction(exchange).build(),
                 IotGatewayRoutes.runtimeCompany("/office-scope", null,
