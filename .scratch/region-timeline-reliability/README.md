@@ -26,8 +26,9 @@
 
 ## 本地部署及回退
 
-- 当前Java：`var/region-timeline-fix-20261109-155030/backend.jar`，PID58624，服务`RegionTimelineFixJavaNov09`持久运行，LAN `192.168.102.19:3381`。
-- SHA256：`b53a1e4c90db90436412fac1b3093cdbb5eb52a7b7581d36248434a53c91f1ac`。
+- 本轮部署：`var/region-timeline-fix-20261109-155030/backend.jar`，当时PID58624，服务`RegionTimelineFixJavaNov09`，LAN `192.168.102.19:3381`。
+- 本轮包SHA256：`b53a1e4c90db90436412fac1b3093cdbb5eb52a7b7581d36248434a53c91f1ac`。
+- 交付末检查：另一线程已将3381更新为`var/task-creator-name-20261109-155111/backend.jar`／PID60375，SHA256 `47fc9ed6fdd6b24715d0f10d0c2b4b11330daaf27e0b97a5fea481cb70475c28`。新包的JdbcTaskProjectionStore、TaskDetailProjector与本轮修复类逐字节一致，LAN健康正常；没有覆盖或回退该后续更新。
 - 单向基于`var/task-confirmation-fix-20261109-151329/backend.jar`，仅替换JdbcTaskProjectionStore、TaskDetailProjector两个class，其他JAR成员逐项零差异。上一包及既有一致数据库备份保留；无数据库迁移，不自动恢复事实库。
 - 切换前Sidecar activeRuns为0，任务无EXECUTING、阶段无PENDING／EXECUTING；Node3382、模型、外置YAML、凭据与数据库结构不改。微信开发构建已编译／打开；uniCloud、旧页面sourcemap与鸿蒙告警保留。
 - 临时只读Java烟测、原始截图副本及本轮安装的原生自动化SDK在验证后清理；真实证据图片、本地后端和开发者工具保留。未混入其他线程的源码、文案或个人临时文件。
