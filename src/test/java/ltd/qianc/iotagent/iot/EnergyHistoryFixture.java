@@ -36,6 +36,7 @@ public final class EnergyHistoryFixture implements AutoCloseable {
     public final AtomicInteger sourceCalls = new AtomicInteger();
     public final AtomicInteger directoryCalls = new AtomicInteger();
     public volatile List<AuthorizedDevice> meters = List.of(METER);
+    public String gatewayBase = GATEWAY;
     public volatile List<AuthorizedDevice> catalog;
     public volatile List<Map<String,Object>> rows = List.of();
     public volatile DeviceStateReadResult currentStates = new DeviceStateReadResult(Map.of(), null);
@@ -130,7 +131,7 @@ public final class EnergyHistoryFixture implements AutoCloseable {
     private void open() {
         snapshots = ReadSnapshots.create(clock,Runnable::run,Runnable::run,null,barrier,mapper,ReadSnapshots.Settings.defaults());
         directory = DeviceDirectory.jdbc(jdbc,transactions,mapper,gateway,source,
-                presented -> principal(presented.authorization(),presented.tenantCode()),snapshots,barrier,GATEWAY,"ef".repeat(32),clock);
+                presented -> principal(presented.authorization(),presented.tenantCode()),snapshots,barrier,gatewayBase,"ef".repeat(32),clock);
     }
     public RequestIdentity identity() { return identity("Bearer fixture-energy","fixture-tenant"); }
     public RequestIdentity identity(String token,String tenant) {

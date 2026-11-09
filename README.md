@@ -105,8 +105,8 @@ Java 构建、测试、启动和本地 healthz 验证命令见 [AGENTS.md](./AGE
 
 ## Energy history composition
 
-- Daily and meter statistics reuse the same identity- and authorized-meter-scoped natural-month raw samples. Comparisons and reports keep their existing calculation rules, left anchors, requested upper bounds and current-month refresh; upstream concurrency remains six. A failed shared stream does not discard healthy meters from best-effort reports or bypass authorization failures.
-- First reads no longer sweep 24 months automatically. Current, selected and visible historical windows prepare on demand; the miniapp retains held results and explicitly labels preparation. Engineering proof, the energy-only fixed-development deployment and remaining visual acceptance limits are recorded in [ENERGY-COLD-01](.scratch/energy-cold-load/evidence/ENERGY-COLD-01/README.md).
+- Daily, meter statistics, comparisons and reports read the same persisted raw observations through `EnergyHistory`. The requesting owner's dedicated meter grant remains mandatory; published samples and complete coverage can be reused across owners only within the same gateway, tenant and source. Duplicate source records resolve to their latest published revision. Boundary samples, exact decimals, statistics and upstream concurrency remain unchanged.
+- A newly authorized owner reuses fresh data and existing complete history without another full scan. Background collection still refreshes current observations and performs the existing nightly full reconciliation; genuinely uncovered meters remain preparing/partial. No raw-history copy, deletion, new cache or schema migration is introduced. The earlier [energy cold-load evidence](.scratch/energy-cold-load/evidence/ENERGY-COLD-01/README.md) is historical; current implementation and acceptance limits are in the [reliability fix record](.scratch/energy-weekday-reliability/README.md).
 
 ## Office directory pagination
 

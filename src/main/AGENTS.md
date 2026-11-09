@@ -17,7 +17,7 @@
 - 普通草案准备使用本地目录、状态与按目录类型/只读标记确定的能力；旧值或采样时刻未知不得判断NO_CHANGE。真实确认/绑定重验使用`IotAdapter.revalidateAuthorizedDeviceScope`，执行预检与回读使用`readLiveDeviceStates`；Agent/HTTP/区域/dashboard事件必须透传状态质量与逐设备采样时间，不能补当前时间。
 - 草案普通状态读取须保留已有`BusinessException`的业务码与拒绝状态，不把目录/状态准备、当前授权拒绝统一包装成“上游状态读取失败”；缺采样时间不等于缺设备状态，不因null采样阻止生成待确认草案，也不能据此判NO_CHANGE。
 - 动作确认结果与授权代次分离：成功、拒绝、中断及重复确认均不因HTTP响应清除本地目录或轮换共享授权屏障；现态沿既有后台同步更新，执行结果沿真实回读保存。真实401/403撤销与凭据轮换仍按原授权规则封闭读取。
-- 能耗普通读统一经包根`iot.EnergyHistory`取得MySQL原始样本与覆盖，六类HTTP/Agent能耗计算共享既有Composer/MeterReports。专用电表授权独立发布，不从总目录猜授权；未采集是preparing/partial，不是noData或零。采样时间、同步成功、尝试时间分列，历史样本不能被投影重建时间刷新。
+- 能耗普通读统一经`iot.EnergyHistory`取得MySQL样本与覆盖；同网关、租户、来源按当前用户的专用电表授权复用已发布历史，授权隔离不等于每用户重采。六类HTTP/Agent统计沿既有Composer；未覆盖保持preparing/partial。采样、同步成功、尝试时间分列，读取不能刷新历史采样时间。
 - `IotAdapterConfiguration.Source`与`ObservationAdapterConfiguration.Source`只供后台采集注入；同步器不能注入普通本地读取包装器，否则专用授权会依赖尚未发布的自身数据。原始数字从来源字节直接按BigDecimal解析，再以DECIMAL(65,30)持久化；只在既有统计公式边界转换，禁止先经Double解码。
 - 环境历史普通读统一经`iot.EnvironmentHistory`，当前值复用`DeviceObservations`；Agent查询与环境期间引用由服务端设置内部`fullWindow=true`，一次读取窗口内全部本地样本并统一统计，模型工具不再接受page；HTTP原始明细仍每页100条。原始历史的deviceCode没有已证明的设备/楼层关联，不能从当前目录拼造历史归属。未知采样时间保留null与原文，缺值不补零；未知时间、冲突或来源质量未经核实的样本不得参与区间峰值。HTTP、Agent事件与环境引用透传partial/覆盖，不以当前时间补observedAt。
 - 通过公开模块入口／HTTP 契约验证版本冲突、失败不发布、身份隔离和真实应用；不以源码字段存在、表有数据或类型通过替代端到端证据。

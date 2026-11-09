@@ -51,6 +51,10 @@ public final class JdbcEnergyHistory implements EnergyHistory {
                     + "=CASE WHEN local_energy_samples.credential_generation=VALUES(credential_generation) AND local_energy_samples.synchronized_at>? "
                     + "THEN local_energy_samples." + field + " ELSE VALUES(" + field + ") END").toList())
             + ",credential_generation=VALUES(credential_generation)";
+    // Stored observations are reusable facts; the requesting owner's grant remains the read gate.
+    private static final String SOURCES = "sources AS (SELECT s.scope_key FROM local_sync_scopes v "
+            + "JOIN local_sync_scopes s ON s.gateway_instance=v.gateway_instance AND s.tenant_code=v.tenant_code "
+            + "AND s.source=v.source AND s.data_kind=v.data_kind WHERE v.scope_key=?)";
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
     private final ObjectMapper mapper;
@@ -79,39 +83,44 @@ public final class JdbcEnergyHistory implements EnergyHistory {
             Grant grant = grant(identity);
             List<String> ids = checkedIds(grant, meterIds);
             if (ids.isEmpty()) return new Window(List.of(), List.of(), cache(grant));
-            // One statement observes grants, coverage, in-range samples and boundary samples together.
-            StringBuilder sql = new StringBuilder("WITH requested AS (SELECT meter_key,source_meter_id FROM local_energy_meters "
+            // One statement holds the viewer's grant, shared coverage and latest published sample revisions.
+            StringBuilder sql = new StringBuilder("WITH " + SOURCES + ", requested AS (SELECT meter_key,source_meter_id FROM local_energy_meters "
                     + "WHERE scope_key=? AND credential_generation=? AND grant_version=? AND source_meter_id IN (")
                     .append(String.join(",", Collections.nCopies(ids.size(), "?")))
-                    .append(")), edges AS (SELECT s.meter_key,MAX(CASE WHEN s.read_time<? THEN s.read_time END) AS left_at");
-            List<Object> parameters = new ArrayList<>(List.of(grant.key(), grant.generation(), grant.version()));
+                    .append(")), coverage AS (SELECT c.meter_key,MAX(c.synchronized_at) AS history_synced_at FROM local_energy_coverage c "
+                            + "JOIN sources k ON k.scope_key=c.scope_key JOIN requested r ON r.meter_key=c.meter_key GROUP BY c.meter_key), "
+                            + "edges AS (SELECT s.meter_key,MAX(CASE WHEN s.read_time<? THEN s.read_time END) AS left_at");
+            List<Object> parameters = new ArrayList<>(List.of(grant.key(), grant.key(), grant.generation(), grant.version()));
             parameters.addAll(ids);
             parameters.add(Timestamp.from(from));
             if (includeLatest) sql.append(",MAX(s.read_time) AS latest_at");
-            sql.append(" FROM requested r JOIN local_energy_samples s ON s.meter_key=r.meter_key WHERE s.scope_key=?");
-            parameters.add(grant.key());
+            sql.append(" FROM requested r JOIN local_energy_samples s ON s.meter_key=r.meter_key "
+                    + "JOIN sources k ON k.scope_key=s.scope_key");
             if (!includeLatest) {
-                sql.append(" AND s.read_time<?");
+                sql.append(" WHERE s.read_time<?");
                 parameters.add(Timestamp.from(from));
             }
             sql.append(" GROUP BY s.meter_key), facts AS (SELECT s.* FROM requested r JOIN local_energy_samples s ON s.meter_key=r.meter_key "
-                    + "WHERE s.scope_key=? AND s.read_time>=? AND s.read_time<=?");
-            parameters.addAll(List.of(grant.key(), Timestamp.from(from), Timestamp.from(to)));
-            appendEdgeQuery(sql, parameters, grant.key(), "left_at");
-            if (includeLatest) appendEdgeQuery(sql, parameters, grant.key(), "latest_at");
-            sql.append(") SELECT r.source_meter_id AS requested_meter_id,c.id AS coverage_id,f.* FROM requested r "
-                    + "LEFT JOIN local_energy_coverage c ON c.scope_key=? AND c.meter_key=r.meter_key "
-                    + "LEFT JOIN facts f ON f.meter_key=r.meter_key ORDER BY r.source_meter_id,f.read_time,f.sample_key");
-            parameters.add(grant.key());
+                    + "JOIN sources k ON k.scope_key=s.scope_key WHERE s.read_time>=? AND s.read_time<=?");
+            parameters.addAll(List.of(Timestamp.from(from), Timestamp.from(to)));
+            appendEdgeQuery(sql, "left_at");
+            if (includeLatest) appendEdgeQuery(sql, "latest_at");
+            sql.append("), revisions AS (SELECT f.*,ROW_NUMBER() OVER(PARTITION BY sample_key ORDER BY synchronized_at DESC,scope_key) AS revision_rank "
+                    + "FROM facts f) SELECT r.source_meter_id AS requested_meter_id,c.history_synced_at,f.* FROM requested r "
+                    + "LEFT JOIN coverage c ON c.meter_key=r.meter_key "
+                    + "LEFT JOIN revisions f ON f.meter_key=r.meter_key AND f.revision_rank=1 ORDER BY r.source_meter_id,f.read_time,f.sample_key");
             Window view = jdbc.query(sql.toString(), rs -> {
                 var missing = new LinkedHashSet<String>();
                 Map<String, Sample> samples = new LinkedHashMap<>();
+                Instant sharedSuccess = null;
                 while (rs.next()) {
-                    if (rs.getObject("coverage_id") == null) missing.add(rs.getString("requested_meter_id"));
+                    Instant covered = instant(rs, "history_synced_at");
+                    if (covered == null) missing.add(rs.getString("requested_meter_id"));
+                    if (covered != null && (sharedSuccess == null || covered.isAfter(sharedSuccess))) sharedSuccess = covered;
                     String sampleKey = rs.getString("sample_key");
                     if (sampleKey != null && !samples.containsKey(sampleKey)) samples.put(sampleKey, sample(rs, 0));
                 }
-                return new Window(new ArrayList<>(samples.values()), new ArrayList<>(missing), cache(grant));
+                return new Window(new ArrayList<>(samples.values()), new ArrayList<>(missing), cache(grant, sharedSuccess));
             }, parameters.toArray());
             recheck(identity, grant);
             for (String missing : view.missingCoverageMeterIds()) request(grant, meterKey(missing), from, to);
@@ -168,11 +177,10 @@ public final class JdbcEnergyHistory implements EnergyHistory {
         } catch (DataAccessException failure) { throw unavailable(); }
     }
 
-    private static void appendEdgeQuery(StringBuilder sql, List<Object> parameters, String scopeKey, String boundary) {
-        // Group boundaries once, then retain every source row at that timestamp.
+    private static void appendEdgeQuery(StringBuilder sql, String boundary) {
+        // Group boundaries once, then retain every source record at that timestamp.
         sql.append(" UNION ALL SELECT s.* FROM edges e JOIN local_energy_samples s ON s.meter_key=e.meter_key AND s.read_time=e.")
-                .append(boundary).append(" WHERE s.scope_key=?");
-        parameters.add(scopeKey);
+                .append(boundary).append(" JOIN sources k ON k.scope_key=s.scope_key");
     }
 
     private Grant grant(RequestIdentity identity) {
@@ -227,8 +235,13 @@ public final class JdbcEnergyHistory implements EnergyHistory {
     }
 
     private Map<String, Object> cache(Grant grant) {
+        return cache(grant, null);
+    }
+
+    private Map<String, Object> cache(Grant grant, Instant sharedSuccess) {
         Instant success = grant.currentSuccess();
         if (success == null || grant.fullSuccess() != null && grant.fullSuccess().isAfter(success)) success = grant.fullSuccess();
+        if (sharedSuccess != null && (success == null || sharedSuccess.isAfter(success))) success = sharedSuccess;
         Map<String, Object> cache = new LinkedHashMap<>();
         cache.put("status", success == null || grant.failure() != null || !clock.instant().isBefore(success.plusSeconds(60)) ? "stale" : "fresh");
         cache.put("updatedAt", success == null ? null : success.toString());
@@ -273,6 +286,18 @@ public final class JdbcEnergyHistory implements EnergyHistory {
     }
 
     public boolean begin(String key, String generation, boolean full, Instant attempt) {
+        SharedCoverage shared = sharedCoverage(key, generation, true);
+        if (!full && shared != null && clock.instant().isBefore(shared.synchronizedAt().plusSeconds(60))) return false;
+        if (full) {
+            if (shared != null && !shared.coveredUntil().isBefore(nextNight(attempt).minusSeconds(86400))) {
+                jdbc.update("UPDATE local_energy_sync SET full_state='READY',full_success_at=?,full_covered_until=?,"
+                                + "full_next_due_at=?,full_failure_code=NULL,update_time=? "
+                                + "WHERE scope_key=? AND credential_generation=? AND full_next_due_at<=?",
+                        Timestamp.from(shared.synchronizedAt()), Timestamp.from(shared.coveredUntil()), Timestamp.from(nextNight(attempt)),
+                        Timestamp.from(clock.instant()), key, generation, Timestamp.from(attempt));
+                return false;
+            }
+        }
         String next = full ? ",full_state='RUNNING',full_next_due_at=?" : "";
         List<Object> args = new ArrayList<>(); args.add(Timestamp.from(attempt));
         if (full) args.add(Timestamp.from(nextNight(attempt)));
@@ -321,10 +346,32 @@ public final class JdbcEnergyHistory implements EnergyHistory {
     }
 
     public Instant currentCutoff(String key, String generation) {
-        List<Instant> rows = jdbc.query("SELECT full_covered_until FROM local_energy_sync WHERE scope_key=? AND credential_generation=?",
-                (rs,row) -> instant(rs,"full_covered_until"),key,generation);
-        return rows.isEmpty() ? null : rows.getFirst();
+        SharedCoverage shared = sharedCoverage(key, generation, false);
+        return shared == null ? null : shared.coveredUntil();
     }
+
+    private SharedCoverage sharedCoverage(String key, String generation, boolean otherOwnersOnly) {
+        String sql = "WITH " + SOURCES + ", coverage AS (SELECT c.meter_key,MAX(c.covered_until) AS covered_until,"
+                + "MAX(CASE WHEN e.current_success_at>c.synchronized_at THEN e.current_success_at ELSE c.synchronized_at END) AS synchronized_at "
+                + "FROM local_energy_coverage c JOIN sources k ON k.scope_key=c.scope_key JOIN local_energy_sync e ON e.scope_key=c.scope_key "
+                + (otherOwnersOnly ? "WHERE c.scope_key<>? " : "")
+                + "GROUP BY c.meter_key) SELECT COUNT(*) AS requested_count,COUNT(c.meter_key) AS covered_count,"
+                + "MIN(c.covered_until) AS covered_until,MIN(c.synchronized_at) AS synchronized_at "
+                + "FROM local_energy_meters m LEFT JOIN coverage c ON c.meter_key=m.meter_key "
+                + "WHERE m.scope_key=? AND m.credential_generation=?";
+        List<Object> parameters = new ArrayList<>();
+        parameters.add(key);
+        if (otherOwnersOnly) parameters.add(key);
+        parameters.add(key);
+        parameters.add(generation);
+        return jdbc.query(sql, rs -> {
+            if (!rs.next() || rs.getLong("requested_count") == 0
+                    || rs.getLong("requested_count") != rs.getLong("covered_count")) return null;
+            return new SharedCoverage(instant(rs, "covered_until"), instant(rs, "synchronized_at"));
+        }, parameters.toArray());
+    }
+
+    private record SharedCoverage(Instant coveredUntil, Instant synchronizedAt) { }
 
     public void failed(String key, String generation, boolean full, Instant attempt) {
         Timestamp now = Timestamp.from(clock.instant());

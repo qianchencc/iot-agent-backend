@@ -391,6 +391,69 @@ class EnergyHistoryBehaviorTest {
         }
     }
 
+    @Test void newlyAuthorizedOwnerReusesCompleteHistoryWithoutAnotherFullScan() {
+        try (var f = new EnergyHistoryFixture()) {
+            f.rows = denseRows(501, "100");
+            f.publish();
+            var original = window(f);
+            int before = f.sourceCalls.get();
+            var other = f.identity("Bearer fixture-other", "fixture-tenant");
+            f.register(other);
+            f.directory.synchronizeDue();
+            int calls = f.sourceCalls.get();
+            assertEquals(before, calls, "已有新鲜完整数据时新主体只核验授权，不重复采样");
+            var reused = f.history().window(other, List.of(METER), FROM, TO, false);
+            assertEquals(original.samples(), reused.samples());
+            assertTrue(reused.missingCoverageMeterIds().isEmpty());
+            f.directory.synchronizeHistoryDue();
+            assertEquals(calls, f.sourceCalls.get(), "新主体不应重复全量扫描已有完整历史");
+            f.restart();
+            f.unavailable = true;
+            assertEquals(original.samples(), f.history().window(other, List.of(METER), FROM, TO, false).samples());
+        }
+    }
+
+    @Test void sharedHistoryStillRequiresTheViewersOwnGrantAndKeepsNewerSamples() {
+        try (var f = new EnergyHistoryFixture()) {
+            var hidden = new AuthorizedDevice("fixture-hidden", "energy", "受限电表", "测试位置", true);
+            f.meters = List.of(EnergyHistoryFixture.METER, hidden);
+            f.rows = List.of(EnergyHistoryFixture.row(METER, "retained", "2020-01-01T00:00:00Z", "100"),
+                    EnergyHistoryFixture.row(hidden.id(), "hidden", "2020-01-01T00:00:00Z", "300"));
+            f.publish();
+            var other = f.identity("Bearer fixture-other", "fixture-tenant");
+            f.meters = List.of(EnergyHistoryFixture.METER);
+            f.clock.advance(65);
+            f.rows = List.of(EnergyHistoryFixture.row(METER, "retained", "2020-01-01T00:00:00Z", "200"));
+            f.register(other);
+            f.directory.synchronizeDue();
+            var reused = f.history().window(other, List.of(METER), FROM, TO, false);
+            assertTrue(reused.missingCoverageMeterIds().isEmpty());
+            assertEquals(List.of(new BigDecimal("200").setScale(30)),
+                    reused.samples().stream().map(EnergyHistory.Sample::epf).toList());
+            assertEquals(403, assertThrows(BusinessException.class,
+                    () -> f.history().window(other, List.of(hidden.id()), FROM, TO, false)).httpStatus());
+            var tenant = f.identity("Bearer fixture-other", "fixture-other-tenant");
+            f.register(tenant);
+            f.unavailable = true;
+            f.directory.synchronizeDue();
+            assertEquals("ENERGY_HISTORY_PREPARING", assertThrows(BusinessException.class,
+                    () -> f.history().window(tenant, List.of(METER), FROM, TO, false)).code());
+        }
+    }
+
+    @Test void identicalMeterIdsFromAnotherGatewayCannotReuseHistory() {
+        try (var f = new EnergyHistoryFixture()) {
+            f.rows = List.of(EnergyHistoryFixture.row(METER, "retained", "2020-01-01T00:00:00Z", "100"));
+            f.publish();
+            f.gatewayBase = "https://other-energy-fixture.example.invalid";
+            f.restart();
+            f.register(f.identity());
+            f.unavailable = true;
+            f.directory.synchronizeDue();
+            assertEquals("ENERGY_HISTORY_PREPARING", assertThrows(BusinessException.class, () -> window(f)).code());
+        }
+    }
+
     private static EnergyHistory.Window window(EnergyHistoryFixture f) { return f.history().window(f.identity(),List.of(METER),FROM,TO,false); }
     private static List<Map<String,Object>> denseRows(int count,String value) {
         List<Map<String,Object>> rows=new ArrayList<>();
