@@ -51,7 +51,7 @@ class ActionDispatchConcurrencyContractTest {
         List<String> events = new ArrayList<>();
         CountDownLatch sixInFlight = new CountDownLatch(6);
         IotAdapter iot = mock(IotAdapter.class);
-        when(iot.readDeviceStates(eq(IDENTITY), anyList())).thenAnswer(invocation -> {
+        when(iot.readLiveDeviceStates(eq(IDENTITY), anyList())).thenAnswer(invocation -> {
             List<String> ids = invocation.getArgument(1);
             Map<String, Object> states = new java.util.LinkedHashMap<>();
             for (String id : ids) states.put(id, Map.of("power", "on"));
@@ -110,7 +110,7 @@ class ActionDispatchConcurrencyContractTest {
         AtomicInteger hubARequests = new AtomicInteger();
         CountDownLatch independentArrived = new CountDownLatch(1);
         IotAdapter iot = mock(IotAdapter.class);
-        when(iot.readDeviceStates(eq(IDENTITY), anyList()))
+        when(iot.readLiveDeviceStates(eq(IDENTITY), anyList()))
                 .thenReturn(Mono.just(new DeviceStateReadResult(Map.of(), nowIso())));
         ActionCommandGateway gateway = gateway(candidate -> {
             String hub = hubOf(candidate.url().getPath());

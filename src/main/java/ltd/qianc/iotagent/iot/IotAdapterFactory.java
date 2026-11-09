@@ -3,11 +3,10 @@ package ltd.qianc.iotagent.iot;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Duration;
 import java.util.Objects;
-import ltd.qianc.iotagent.iot.internal.AgentReadIotAdapter;
+import ltd.qianc.iotagent.iot.internal.LocalReadIotAdapter;
 import ltd.qianc.iotagent.iot.internal.FailClosedIotAdapter;
 import ltd.qianc.iotagent.iot.internal.JdbcDeviceCandidateSetStore;
 import ltd.qianc.iotagent.iot.internal.WebClientIotAdapter;
-import ltd.qianc.iotagent.readmodel.ReadSnapshots;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.reactive.function.client.WebClient;
 
@@ -33,9 +32,10 @@ public final class IotAdapterFactory {
             DeviceCandidateSetStore candidateStore) {
         return new WebClientIotAdapter(webClient, routes, callTimeout, callPolicy, candidateStore);
     }
-    /** Agent ordinary reads reuse the existing backend read entries; actions stay on the source adapter. */
-    public static IotAdapter agentReads(IotAdapter source, ReadSnapshots snapshots, ObjectMapper mapper) {
-        return new AgentReadIotAdapter(source, snapshots, mapper);
+    /** One ordinary read adapter for HTTP, Agent and business consumers; real actions are explicit. */
+    public static IotAdapter localReads(IotAdapter source, java.util.function.Supplier<DeviceDirectory> directories,
+            java.util.function.Supplier<DeviceObservations> observations, DeviceCandidateSetStore candidates) {
+        return new LocalReadIotAdapter(source, directories, observations, candidates);
     }
 
     public static DeviceCandidateSetStore candidateSets(JdbcTemplate jdbc, ObjectMapper mapper) {

@@ -126,6 +126,15 @@ public final class JdbcSchemaMigrations {
         polish("device-candidate-set-column-comments-v2", "db/mysql/device-candidate-sets.sql");
     }
 
+    public void ensureLocalCompanyDirectory() {
+        ensureRegistry();
+        runOnce("local-company-directory-v1", () -> runBaseline("db/mysql/local-company-directory.sql"));
+        runOnce("local-office-directory-v1", () -> runBaseline("db/mysql/local-office-directory.sql"));
+        runOnce("local-device-states-v1", () -> runBaseline("db/mysql/local-device-states.sql"));
+        runOnce("local-energy-history-v1", () -> runBaseline("db/mysql/local-energy-history.sql"));
+        runOnce("local-environment-history-v1", () -> runBaseline("db/mysql/local-environment-history.sql"));
+    }
+
     public void ensurePiSessions() {
         ensureRegistry();
         runBaseline("db/mysql/pi-sessions.sql");

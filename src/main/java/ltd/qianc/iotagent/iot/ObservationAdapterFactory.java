@@ -8,7 +8,6 @@ import ltd.qianc.iotagent.iot.internal.FailClosedObservationAdapter;
 import ltd.qianc.iotagent.iot.internal.SafetyLedgerComposer;
 import ltd.qianc.iotagent.iot.internal.WebClientObservationAdapter;
 import ltd.qianc.iotagent.region.RegionSeenStore;
-import ltd.qianc.iotagent.readmodel.ReadSnapshots;
 import org.springframework.web.reactive.function.client.WebClient;
 
 /** Construction entry point for observation adapters; implementations stay internal. */
@@ -33,8 +32,9 @@ public final class ObservationAdapterFactory {
             IotAdapter iot,
             AutomationSummaryReader automation,
             RegionSeenStore regionSeen,
+            EnvironmentHistory environmentHistory,
             Clock clock) {
-        return new CompanyOfficeObservationAdapter(upstream, iot, automation, regionSeen, clock);
+        return new CompanyOfficeObservationAdapter(upstream, iot, automation, regionSeen, environmentHistory, clock);
     }
     /** Builds the composition boundary with the optional Company energy projection. */
     public static ObservationAdapter composed(
@@ -43,15 +43,9 @@ public final class ObservationAdapterFactory {
             AutomationSummaryReader automation,
             RegionSeenStore regionSeen,
             CompanyEnergyObservationComposer energyComposer,
+            EnvironmentHistory environmentHistory,
             Clock clock) {
-        return new CompanyOfficeObservationAdapter(upstream, iot, automation, regionSeen, energyComposer, clock);
-    }
-    public static ObservationAdapter composed(
-            ObservationAdapter upstream, IotAdapter iot, AutomationSummaryReader automation,
-            RegionSeenStore regionSeen, CompanyEnergyObservationComposer energyComposer,
-            ReadSnapshots snapshots, Clock clock) {
-        return new CompanyOfficeObservationAdapter(upstream, iot, automation, regionSeen,
-                energyComposer, null, snapshots, clock);
+        return new CompanyOfficeObservationAdapter(upstream, iot, automation, regionSeen, energyComposer, environmentHistory, clock);
     }
 
     /** Safety history and event resolution share the same source-bound authorization. */
@@ -78,8 +72,8 @@ public final class ObservationAdapterFactory {
     public static ObservationAdapter composed(
             ObservationAdapter upstream, IotAdapter iot, AutomationSummaryReader automation,
             RegionSeenStore regionSeen, CompanyEnergyObservationComposer energyComposer,
-            ObservationAdapter safetyLedger, ReadSnapshots snapshots, Clock clock) {
+            ObservationAdapter safetyLedger, EnvironmentHistory environmentHistory, Clock clock) {
         return new CompanyOfficeObservationAdapter(upstream, iot, automation, regionSeen,
-                energyComposer, safetyLedger, snapshots, clock);
+                energyComposer, safetyLedger, environmentHistory, clock);
     }
 }

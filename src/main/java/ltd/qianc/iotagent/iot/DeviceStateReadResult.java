@@ -1,6 +1,5 @@
 package ltd.qianc.iotagent.iot;
 
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -10,7 +9,9 @@ import java.util.Map;
 /** Read-only state projection; unknown state is represented by null, never by false. */
 public record DeviceStateReadResult(Map<String, Object> states, String observedAt,
                                     List<Map<String, Object>> blocks,
-                                    Map<String, String> observedAtByDevice) {
+                                    Map<String, String> observedAtByDevice,
+                                    ObservationStatusEnum status, List<String> missingDeviceIds,
+                                    Map<String, Object> cache) {
     public DeviceStateReadResult(Map<String, Object> states, String observedAt) {
         this(states, observedAt, List.of(), Map.of());
     }
@@ -20,10 +21,15 @@ public record DeviceStateReadResult(Map<String, Object> states, String observedA
         this(states, observedAt, blocks, Map.of());
     }
 
+    public DeviceStateReadResult(Map<String, Object> states, String observedAt,
+                                 List<Map<String, Object>> blocks, Map<String, String> observedAtByDevice) {
+        this(states, observedAt, blocks, observedAtByDevice, null, null, Map.of());
+    }
+
     public DeviceStateReadResult {
         Map<String, Object> stateCopy = new LinkedHashMap<>(states == null ? Map.of() : states);
         states = Collections.unmodifiableMap(stateCopy);
-        observedAt = observedAt == null || observedAt.isBlank() ? Instant.now().toString() : observedAt;
+        observedAt = observedAt == null || observedAt.isBlank() ? null : observedAt;
         List<Map<String, Object>> blockCopy = new ArrayList<>();
         if (blocks != null) {
             for (Map<String, Object> block : blocks) {
@@ -38,5 +44,16 @@ public record DeviceStateReadResult(Map<String, Object> states, String observedA
             });
         }
         observedAtByDevice = Collections.unmodifiableMap(observedCopy);
+        missingDeviceIds = missingDeviceIds == null
+                ? states.entrySet().stream().filter(entry -> entry.getValue() == null).map(Map.Entry::getKey).toList()
+                : List.copyOf(missingDeviceIds);
+        if (status == null) {
+            boolean missingTime = observedAt == null && !observedAtByDevice.keySet().containsAll(states.keySet());
+            status = states.isEmpty() ? ObservationStatusEnum.EMPTY
+                    : missingDeviceIds.size() == states.size() ? ObservationStatusEnum.UNAVAILABLE
+                    : !missingDeviceIds.isEmpty() || missingTime ? ObservationStatusEnum.PARTIAL
+                    : ObservationStatusEnum.AVAILABLE;
+        }
+        cache = Collections.unmodifiableMap(new LinkedHashMap<>(cache == null ? Map.of() : cache));
     }
 }

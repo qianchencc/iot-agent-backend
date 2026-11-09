@@ -185,6 +185,11 @@ public class TaskConfiguration {
                 audit.getIfAvailable(), Clock.systemUTC());
     }
     @Bean
+    ltd.qianc.iotagent.admin.AuditProposalProvider auditProposalProvider(TaskProposalStore proposals,
+                                                                        ObjectMapper mapper) {
+        return new ltd.qianc.iotagent.task.TaskProposalAuditProvider(proposals, mapper);
+    }
+    @Bean
     ltd.qianc.iotagent.task.TaskConfirmationService taskConfirmationService(TaskFacade tasks,
             ltd.qianc.iotagent.conversation.ConversationFacade conversations, ObjectMapper mapper) {
         return new ltd.qianc.iotagent.task.TaskConfirmationService(tasks, conversations, mapper);

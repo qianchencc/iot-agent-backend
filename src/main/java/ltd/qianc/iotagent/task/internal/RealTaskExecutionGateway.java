@@ -1143,7 +1143,7 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
 
     private AuthorizedDeviceScope loadScope(RequestIdentity identity) {
         try {
-            AuthorizedDeviceScope scope = iot.loadAuthorizedDeviceScope(identity).block(scopeTimeout);
+            AuthorizedDeviceScope scope = iot.revalidateAuthorizedDeviceScope(identity).block(scopeTimeout);
             if (scope == null || scope.source() != identity.source()) {
                 throw new DispatchException("读取任务设备授权范围失败", false);
             }
@@ -1160,7 +1160,7 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
     private DeviceStateReadResult readStates(RequestIdentity identity, List<String> ids) {
         if (ids.isEmpty()) return new DeviceStateReadResult(Map.of(), clock.instant().toString());
         try {
-            DeviceStateReadResult result = iot.readDeviceStates(identity, ids).block(scopeTimeout);
+            DeviceStateReadResult result = iot.readLiveDeviceStates(identity, ids).block(scopeTimeout);
             if (result == null) throw new DispatchException("读取设备状态失败", false);
             return result;
         } catch (DispatchException failure) {

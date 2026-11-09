@@ -411,7 +411,7 @@ class SafetyLedgerObservationContractTest {
     }
 
     private static ObservationAdapter composed(ObservationAdapter upstream, IotAdapter iot) {
-        return ObservationAdapterFactory.composed(upstream, iot, identity -> Mono.just(Map.of()), null, CLOCK);
+        return ObservationAdapterFactory.composed(upstream, iot, identity -> Mono.just(Map.of()), null, null, CLOCK);
     }
 
     private static IotAdapter iot(RequestIdentity identity, AuthorizedDevice... devices) {

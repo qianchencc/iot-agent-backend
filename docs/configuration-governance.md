@@ -39,6 +39,13 @@
 - 超时、容量、并发和缓存策略可纳管，但须保留上下游 deadline、完整数据范围与授权新鲜度约束。不能把加密参数、幂等约束、设备温度边界、日界时区或协议格式做成任意输入控件。
 - `fixture`、关闭身份验证、模拟成功等开发控制仅限隔离测试，生产控制台不提供这些开关。
 
+### 独立同步凭据根（2026-11-06）
+
+`agent.local-data.credential-key`：Java部署侧必填秘密字符串，64位十六进制／32字节；无默认、无控制台编辑项。由外置 `application.yaml` 经 `CompanyDirectoryConfiguration.Credentials` 启动绑定，`DeviceDirectory` 创建时校验；MySQL同步启用而缺失或非法时启动失败。仅用于已核验主体独立同步凭据的AES-GCM加密，随机IV、范围与代次AAD；不借用 `agent.task.credential-key`，不下发Node、不写审计正文。
+
+应用需重启；保持原根才能解密已有登记。轮换前备份数据库与原根，恢复须配对；无法解密的范围暂停发布并明确 `SYNC_CREDENTIAL_UNAVAILABLE`，不能回退明文或借用任务凭据。当前代码/验证范围及部署前置见[02公司目录票](../.scratch/local-data-sync/issues/02-company-catalog.md)，不据此认定现有固定实例已配置此键。
+
+
 ## 3. 保存、应用与运行快照
 
 定义清楚四种状态：编辑草稿、已持久保存、目标应用修订、消费者实际采用修订。

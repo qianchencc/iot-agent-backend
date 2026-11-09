@@ -15,7 +15,15 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import ltd.qianc.iotagent.admin.AdminConfigurationStore;
+import ltd.qianc.iotagent.action.ActionDraftFacade;
 import ltd.qianc.iotagent.auth.PrincipalInfo;
 import ltd.qianc.iotagent.conversation.AgentEngineEvent;
 import ltd.qianc.iotagent.conversation.AgentRunPolicy;
@@ -28,15 +36,15 @@ import ltd.qianc.iotagent.iot.AuthorizedDevice;
 import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
 import ltd.qianc.iotagent.iot.IotAdapter;
 import ltd.qianc.iotagent.iot.IotSourceEnum;
-import ltd.qianc.iotagent.iot.OfficeRegion;
 import ltd.qianc.iotagent.iot.ObservationAdapter;
 import ltd.qianc.iotagent.iot.ObservationOperationEnum;
 import ltd.qianc.iotagent.iot.ObservationRequest;
 import ltd.qianc.iotagent.iot.ObservationResponse;
+import ltd.qianc.iotagent.iot.OfficeRegion;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.report.ReportService;
 import ltd.qianc.iotagent.task.TaskFacade;
-import org.junit.jupiter.api.Test;
+import ltd.qianc.iotagent.task.TaskProjectionStore;
 import reactor.core.publisher.Mono;
 
 class AgentBusinessDefinitionContractTest {
@@ -210,6 +218,149 @@ class AgentBusinessDefinitionContractTest {
                 .apply(event("run.started", Map.of())).getFirst().fields().get("reference"));
         assertThat(referenceView).containsEntry("from", from).containsEntry("to", to)
                 .containsEntry("verified", true);
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans={true,false})
+    void videoDiscoveryUsesPersistedStatesWithoutInventingSampleTime(boolean knownStates) {
+        try(var fixture=new ltd.qianc.iotagent.iot.EnvironmentHistoryFixture()) {
+            new ltd.qianc.iotagent.schema.SchemaMigrations(fixture.jdbc.getDataSource()).ensureDeviceCandidateSets();
+            fixture.jdbc.execute("ALTER TABLE device_candidate_sets ALTER COLUMN payload_json VARCHAR(1000000) NOT NULL");
+            fixture.devices=List.of(
+                    new AuthorizedDevice("fixture-video-online","video","测试摄像头甲","测试区域",true),
+                    new AuthorizedDevice("fixture-video-offline","video","测试摄像头乙","测试区域",true),
+                    new AuthorizedDevice("fixture-video-unknown","video","测试摄像头丙","测试区域",true));
+            String sampledAt=fixture.clock.instant().minusSeconds(10).toString();
+            fixture.currentResult=new ltd.qianc.iotagent.iot.DeviceStateReadResult(
+                    knownStates?Map.of("fixture-video-online",true,"fixture-video-offline",false):Map.of(),
+                    null,List.of(),knownStates?Map.of("fixture-video-offline",sampledAt):Map.of());
+            var identity=fixture.identity("Bearer fixture-environment","TENANT");
+            fixture.register(identity);
+            fixture.directory.synchronizeDue();
+            fixture.unavailable=true;
+            var viewer=new PrincipalInfo(identity.authorization(),identity.tenantCode(),"fixture-principal","fixture-realm");
+            ConversationFacade conversations=mock(ConversationFacade.class);
+            when(conversations.toolContext("tool-video","conversation-1","turn-1","run-1"))
+                    .thenReturn(new AgentToolContext(viewer,"run-1","conversation-1","turn-1","company",null,Map.of()));
+            AgentRunPolicy policy=AgentBusinessEngineFactory.policyProvider(() -> conversations,fixture.ordinary,
+                    fixture.composed(),null,null,fixture.clock,8)
+                    .prepare(requestFor("tool-video","company",null,Map.of()));
+            AgentToolBridge bridge=AgentToolBridgeFactory.local(conversations,fixture.ordinary,fixture.composed(),
+                    mock(TaskProjectionStore.class),mock(ActionDraftFacade.class),mock(TaskFacade.class),new ObjectMapper(),null);
+            Map<String,Object> result=bridge.execute(Map.of("runId","run-1","toolContextId","tool-video",
+                    "conversationId","conversation-1","turnId","turn-1","toolCallId","call-video",
+                    "toolName","find_device_candidates","arguments",Map.of("kind","video","scopeText","测试区域")));
+            var events=policy.projection().apply(event("tool.result",Map.of(
+                    "tool","find_device_candidates","toolCallId","call-video","result",result)));
+            assertThat(events).singleElement().satisfies(observation -> {
+                assertThat(observation.type()).isEqualTo("observation.reported");
+                assertThat(observation.fields()).containsEntry("observedAt",null);
+                var rows=listOfMaps(listOfMaps(observation.fields().get("blocks")).getFirst().get("devices"));
+                var onlineById=new LinkedHashMap<String,Object>();
+                rows.forEach(row -> onlineById.put(String.valueOf(row.get("deviceId")),row.get("online")));
+                assertThat(onlineById).containsEntry("fixture-video-online",knownStates?true:null)
+                        .containsEntry("fixture-video-offline",knownStates?false:null)
+                        .containsEntry("fixture-video-unknown",null);
+                if(knownStates) assertThat(map(observation.fields().get("observedAtByDevice")))
+                        .containsEntry("fixture-video-offline",sampledAt).doesNotContainKey("fixture-video-online");
+            });
+        }
+    }
+
+    @Test
+    void environmentToolAndReferenceReadTheWholeWindowWhileRawHistoryStaysPaged() {
+        try(var fixture=new ltd.qianc.iotagent.iot.EnvironmentHistoryFixture()) {
+            String from="2020-01-01T00:00:00Z",to="2020-01-08T00:00:00Z";
+            var rows=new java.util.ArrayList<Map<String,Object>>();
+            for(int index=0;index<165;index++) rows.add(ltd.qianc.iotagent.iot.EnvironmentHistoryFixture.row(
+                    "fixture-hour-"+index,"fixture-env-code",Instant.parse(from).plusSeconds(index*3600L).toString(),
+                    index==0?"35":"25"));
+            fixture.rows=rows;
+            var identity=fixture.identity("Bearer fixture-environment","TENANT");
+            fixture.register(identity);
+            fixture.directory.synchronizeDue();
+            fixture.directory.synchronizeHistoryDue();
+            fixture.unavailable=true;
+            int sourceCalls=fixture.sourceCalls.get();
+            var viewer=new PrincipalInfo(identity.authorization(),identity.tenantCode(),"fixture-principal","fixture-realm");
+            ConversationFacade conversations=mock(ConversationFacade.class);
+            Map<String,Object> reference=Map.of("type","environment_window","from",from,"to",to);
+            when(conversations.toolContext("tool-full-env","conversation-1","turn-1","run-1"))
+                    .thenReturn(new AgentToolContext(viewer,"run-1","conversation-1","turn-1","company",null,reference));
+            AtomicReference<ObservationResponse> referenceRead=new AtomicReference<>();
+            ObservationAdapter referenceObservations=query -> fixture.composed().read(query).doOnNext(referenceRead::set);
+            AgentRunPolicy policy=AgentBusinessEngineFactory.policyProvider(() -> conversations,fixture.ordinary,
+                    referenceObservations,null,null,fixture.clock,8)
+                    .prepare(requestFor("tool-full-env","company",null,reference));
+            AgentToolBridge bridge=AgentToolBridgeFactory.local(conversations,fixture.ordinary,fixture.composed(),
+                    mock(TaskProjectionStore.class),mock(ActionDraftFacade.class),mock(TaskFacade.class),new ObjectMapper(),null);
+            Map<String,Object> result=bridge.execute(Map.of("runId","run-1","toolContextId","tool-full-env",
+                    "conversationId","conversation-1","turnId","turn-1","toolCallId","call-full-env",
+                    "toolName","query_environment_history","arguments",Map.of("from",from,"to",to)));
+            assertThat(listOfMaps(result.get("samples"))).hasSize(165);
+            assertThat(result.get("nextPage")).isNull();
+            assertThat(map(result.get("coverage"))).containsEntry("complete",true).containsEntry("from",from);
+            assertThat(map(listOfMaps(result.get("metrics")).getFirst().get("peak")))
+                    .containsEntry("at",from);
+            assertThat(new java.math.BigDecimal(String.valueOf(map(listOfMaps(result.get("metrics")).getFirst()
+                    .get("peak")).get("value")))).isEqualByComparingTo("35");
+            assertThat(map(result.get("window"))).containsEntry("from",from).containsEntry("to",to);
+            assertThat(listOfMaps(referenceRead.get().payload().get("samples"))).hasSize(165);
+            assertThat(referenceRead.get().payload().get("metrics")).isEqualTo(result.get("metrics"));
+            var projected=policy.projection().apply(event("tool.result",Map.of("tool","query_environment_history",
+                    "toolCallId","call-full-env","result",result)));
+            Map<String,Object> card=map(listOfMaps(projected.getFirst().fields().get("blocks")).getFirst().get("report"));
+            assertThat(listOfMaps(card.get("samples"))).hasSize(165);
+            assertThat(card.get("metrics")).isEqualTo(result.get("metrics"));
+            var first=fixture.composed().read(fixture.request(identity,from,to,0)).block();
+            var last=fixture.composed().read(fixture.request(identity,from,to,1)).block();
+            assertThat(listOfMaps(first.payload().get("samples"))).hasSize(100);
+            assertThat(first.payload().get("nextPage")).isEqualTo(1);
+            assertThat(listOfMaps(last.payload().get("samples"))).hasSize(65);
+            assertThat(listOfMaps(last.payload().get("samples")).getFirst()).containsEntry("id","fixture-hour-0");
+            assertThat(last.payload().get("nextPage")).isNull();
+            assertThat(fixture.sourceCalls.get()).isEqualTo(sourceCalls);
+        }
+    }
+
+    @Test
+    void localEnvironmentGapsReachToolsAndUnknownTimeCannotBecomeCurrentTime() {
+        try(var fixture=new ltd.qianc.iotagent.iot.EnvironmentHistoryFixture()) {
+            var rows=new java.util.ArrayList<Map<String,Object>>();
+            for(int index=0;index<=100;index++) rows.add(ltd.qianc.iotagent.iot.EnvironmentHistoryFixture.row(
+                    "fixture-undated-"+index,"fixture-env-code","invalid-time","25"));
+            fixture.rows=rows;
+            var identity=fixture.identity("Bearer fixture-environment","TENANT");
+            fixture.register(identity);
+            fixture.directory.synchronizeDue();
+            fixture.directory.synchronizeHistoryDue();
+            fixture.unavailable=true;
+            int calls=fixture.sourceCalls.get();
+            var viewer=new PrincipalInfo(identity.authorization(),identity.tenantCode(),"fixture-principal","fixture-realm");
+            ConversationFacade conversations=mock(ConversationFacade.class);
+            when(conversations.toolContext("tool-local-env","conversation-1","turn-1","run-1"))
+                    .thenReturn(new AgentToolContext(viewer,"run-1","conversation-1","turn-1","company",null,Map.of()));
+            AgentRunPolicy policy=AgentBusinessEngineFactory.policyProvider(() -> conversations,fixture.ordinary,
+                    fixture.composed(),null,null,fixture.clock,8)
+                    .prepare(requestFor("tool-local-env","company",null,Map.of()));
+            AgentToolBridge bridge=AgentToolBridgeFactory.local(conversations,fixture.ordinary,fixture.composed(),
+                    mock(TaskProjectionStore.class),mock(ActionDraftFacade.class),mock(TaskFacade.class),new ObjectMapper(),null);
+            Map<String,Object> result=bridge.execute(Map.of("runId","run-1","toolContextId","tool-local-env",
+                    "conversationId","conversation-1","turnId","turn-1","toolCallId","call-local-env",
+                    "toolName","query_environment_history","arguments",Map.of("from","2020-01-01T00:00:00Z","to","2020-01-02T00:00:00Z")));
+            // The generic engine uses result when no separate modelResult is supplied.
+            assertThat(result).containsEntry("status","partial").containsEntry("coverageComplete",false).containsEntry("nextPage",null);
+            assertThat(map(result.get("coverage"))).containsEntry("unknownTimeSamples",101).containsEntry("truncated",false);
+            assertThat(listOfMaps(result.get("metrics")).getFirst().get("peak")).isNull();
+            var projected=policy.projection().apply(event("tool.result",Map.of("tool","query_environment_history",
+                    "toolCallId","call-local-env","result",result)));
+            assertThat(projected).singleElement().satisfies(observation -> {
+                assertThat(observation.type()).isEqualTo("observation.reported");
+                assertThat(observation.fields()).containsKey("observedAt");
+                assertThat(observation.fields().get("observedAt")).isNull();
+            });
+            assertThat(fixture.sourceCalls.get()).isEqualTo(calls);
+        }
     }
 
     @Test
@@ -480,7 +631,9 @@ class AgentBusinessDefinitionContractTest {
         List<AgentEngineEvent> live = policy.projection().apply(event("tool.result", Map.of(
                 "tool", "find_device_candidates", "toolCallId", "call-find",
                 "result", Map.of("devices", List.of(Map.of("id", "camera-1", "kind", "video",
-                        "name", "大堂摄像头", "location", "一层大堂"))))));
+                        "name", "大堂摄像头", "location", "一层大堂")),
+                        "videoObservation", Map.of("states", Map.of("camera-1", true),
+                                "observedAt", "2026-11-02T01:55:00Z")))));
         assertThat(live).singleElement().satisfies(projected -> {
             List<Map<String, Object>> blocks = listOfMaps(projected.fields().get("blocks"));
             assertThat(blocks).singleElement().satisfies(block -> {

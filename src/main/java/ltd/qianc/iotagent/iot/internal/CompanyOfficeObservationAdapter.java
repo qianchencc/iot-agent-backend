@@ -11,16 +11,18 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+import ltd.qianc.iotagent.error.BusinessException;
 import ltd.qianc.iotagent.iot.AuthorizedDevice;
+import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
 import ltd.qianc.iotagent.iot.AutomationSummaryReader;
 import ltd.qianc.iotagent.iot.CompanyEnergyObservationComposer;
-import ltd.qianc.iotagent.error.BusinessException;
-import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
 import ltd.qianc.iotagent.iot.DeviceStateReadResult;
+import ltd.qianc.iotagent.iot.EnvironmentHistory;
 import ltd.qianc.iotagent.iot.GatewayAuthorizationException;
 import ltd.qianc.iotagent.iot.IotAdapter;
 import ltd.qianc.iotagent.iot.IotSourceEnum;
@@ -31,7 +33,6 @@ import ltd.qianc.iotagent.iot.ObservationResponse;
 import ltd.qianc.iotagent.iot.ObservationStatusEnum;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.region.RegionSeenStore;
-import ltd.qianc.iotagent.readmodel.ReadSnapshots;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
@@ -41,12 +42,10 @@ import reactor.core.scheduler.Schedulers;
  * <p>This adapter deliberately never calls the upstream DASHBOARD operation. It
  * obtains the current authorization catalog from {@link IotAdapter}, then reads
  * each observation area independently through the existing observation boundary.
- * Office region names may share a daily source snapshot; device observations
- * and control checks keep their existing live semantics.</p>
+ * Office regions and membership come from one local persisted directory batch;
+ * observation collection and real control retain their separate boundaries.</p>
  */
 public final class CompanyOfficeObservationAdapter implements ObservationAdapter {
-    private static final String REGION_UNAVAILABLE = "当前用户区域暂不可用，请稍后重试";
-
     private static final Pattern FLOOR_PATTERN = Pattern.compile("(?:^|[^\\d])(\\d+)(?:楼|层)");
 
     private final ObservationAdapter upstream;
@@ -54,8 +53,8 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
     private final AutomationSummaryReader automation;
     private final RegionSeenStore regionSeen;
     private final CompanyEnergyObservationComposer energyComposer;
-    private final ReadSnapshots regionSnapshots;
     private final ObservationAdapter safetyLedger;
+    private final EnvironmentHistory environmentHistory;
     private final Clock clock;
 
     public CompanyOfficeObservationAdapter(
@@ -63,8 +62,9 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
             IotAdapter iot,
             AutomationSummaryReader automation,
             RegionSeenStore regionSeen,
+            EnvironmentHistory environmentHistory,
             Clock clock) {
-        this(upstream, iot, automation, regionSeen, null, null, null, clock);
+        this(upstream, iot, automation, regionSeen, null, null, environmentHistory, clock);
     }
 
     public CompanyOfficeObservationAdapter(
@@ -73,23 +73,24 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
             AutomationSummaryReader automation,
             RegionSeenStore regionSeen,
             CompanyEnergyObservationComposer energyComposer,
+            EnvironmentHistory environmentHistory,
             Clock clock) {
-        this(upstream, iot, automation, regionSeen, energyComposer, null, null, clock);
+        this(upstream, iot, automation, regionSeen, energyComposer, null, environmentHistory, clock);
     }
 
     public CompanyOfficeObservationAdapter(
             ObservationAdapter upstream, IotAdapter iot, AutomationSummaryReader automation,
             RegionSeenStore regionSeen, CompanyEnergyObservationComposer energyComposer,
-            ObservationAdapter safetyLedger, ReadSnapshots regionSnapshots, Clock clock) {
+            ObservationAdapter safetyLedger, EnvironmentHistory environmentHistory, Clock clock) {
         this.upstream = Objects.requireNonNull(upstream, "upstream");
         this.iot = Objects.requireNonNull(iot, "iot");
         this.automation = Objects.requireNonNull(automation, "automation");
         this.regionSeen = regionSeen;
         this.energyComposer = energyComposer;
-        this.regionSnapshots = regionSnapshots;
         this.safetyLedger = safetyLedger == null
                 ? ltd.qianc.iotagent.iot.ObservationAdapterFactory.safetyLedger(upstream, iot, null, clock)
                 : safetyLedger;
+        this.environmentHistory = environmentHistory;
         this.clock = Objects.requireNonNull(clock, "clock");
     }
 
@@ -102,9 +103,10 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
             case REGION_DEVICES -> regionDevices(request);
             case REGION_STATES -> regionStates(request);
             case REGION_SEEN -> regionSeen(request);
+            case ENVIRONMENT_HISTORY -> composeEnvironment(request);
             case SAFETY_EVENTS, SAFETY_EVENT -> safetyLedger.read(request);
             case SAFETY_EVENT_CAMERAS -> safetyEventCameras(request);
-            case COMPANY_ENERGY_DAILY, COMPANY_ENERGY_REPORT, ENERGY_COMPARISON, COMPANY_METER_REPORT, ENERGY_REPORT ->
+            case ENERGY_HISTORY, COMPANY_ENERGY_DAILY, COMPANY_ENERGY_REPORT, ENERGY_COMPARISON, COMPANY_METER_REPORT, ENERGY_REPORT ->
                     composeEnergy(request);
             default -> upstream.read(request);
         };
@@ -113,10 +115,19 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
 
 
     private Mono<ObservationResponse> composeEnergy(ObservationRequest request) {
-        if (energyComposer == null) return upstream.read(request);
+        if (energyComposer == null) return Mono.error(new BusinessException("ENERGY_HISTORY_UNAVAILABLE", "本地计量历史组合器未配置", 503));
         return request.operation() == ObservationOperationEnum.ENERGY_REPORT
                 ? energyComposer.readEnergyReport(request)
                 : energyComposer.read(request);
+    }
+
+    private Mono<ObservationResponse> composeEnvironment(ObservationRequest request) {
+        if (environmentHistory == null) return Mono.error(environmentUnavailable());
+        return Mono.fromCallable(() -> environmentHistory.read(request)).subscribeOn(Schedulers.boundedElastic());
+    }
+
+    private static BusinessException environmentUnavailable() {
+        return new BusinessException("ENVIRONMENT_HISTORY_UNAVAILABLE", "本地环境读取未配置", 503);
     }
 
     private Mono<ObservationResponse> safetyEventCameras(ObservationRequest request) {
@@ -349,7 +360,13 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
         Map<String, Object> payload = new LinkedHashMap<>();
         if (section != null) payload.put("section", section);
         payload.put("source", "company");
-        payload.put("observedAt", clock.instant().toString());
+        payload.put("observedAt", stateObservedAt(environmentRead, energyRead));
+        Map<String, Object> quality = new LinkedHashMap<>();
+        if (section == null || section.equals("summary") || section.equals("environment"))
+            quality.put("environment", stateMetadata(environmentRead.observation));
+        if (section == null || section.equals("energy"))
+            quality.put("energy", stateMetadata(energyRead.observation));
+        if (!quality.isEmpty()) payload.put("stateQuality", quality);
         payload.put("devices", dashboardDevices(environment, energy, safety));
         List<Map<String, Object>> errors = new ArrayList<>();
         errors.addAll(environmentRead.errors);
@@ -357,10 +374,10 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
         errors.addAll(alerts.errors);
         errors.addAll(automation.errors);
         if (section == null || section.equals("summary") || section.equals("environment")) {
-            payload.put("environment", readings(environment, environmentRead.values));
+            payload.put("environment", readings(environment, environmentRead));
         }
         if (section == null || section.equals("energy")) {
-            payload.put("energy", readings(energy, energyRead.values));
+            payload.put("energy", readings(energy, energyRead));
         }
         if (section == null || section.equals("summary") || section.equals("alerts")) {
             payload.put("alerts", Map.of("total", alerts.total, "records", alerts.records));
@@ -378,11 +395,18 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
             String area,
             String unavailableMessage) {
         if (devices.isEmpty()) return Mono.just(AreaRead.empty());
-        return iot.readObservationStates(identity, devices)
+        Mono<DeviceStateReadResult> observation;
+        if ("environment".equals(area)) {
+            observation = environmentHistory == null ? Mono.error(environmentUnavailable())
+                    : Mono.fromCallable(() -> environmentHistory.current(identity, devices.stream().map(AuthorizedDevice::id).toList()))
+                            .subscribeOn(Schedulers.boundedElastic());
+        } else observation = iot.readObservationStates(identity, devices);
+        return observation
                 .map(read -> observationAreaRead(read, devices, area, unavailableMessage))
-                .onErrorResume(error -> isAuthorizationFailure(error)
+                .onErrorResume(error -> isAuthorizationFailure(error) || error instanceof BusinessException business
+                        && "DEVICE_STATE_PREPARING".equals(business.code())
                         ? Mono.error(error)
-                        : Mono.just(AreaRead.failed(area, unavailableMessage)));
+                        : Mono.just(AreaRead.failed(area, unavailableMessage, devices)));
     }
 
     private AreaRead observationAreaRead(
@@ -398,7 +422,7 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
             values.put(device.id(), publicValue(state));
         }
         if (values.size() < devices.size()) errors.add(error(area, unavailableMessage));
-        return new AreaRead(values, errors);
+        return new AreaRead(values, errors, read);
     }
 
     private Mono<AlertRead> readAlerts(RequestIdentity identity, List<AuthorizedDevice> safety) {
@@ -444,8 +468,8 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
         requireSource(request.identity(), IotSourceEnum.OFFICE, "SOURCE_UNAVAILABLE", "区域仅支持办公室来源");
         // Cacheable office names and live local task attention have separate lifetimes.
         // The HTTP composition adds attention after resolving this directory snapshot.
-        return regionCatalog(request.identity())
-                .map(catalog -> ObservationResponse.available(Map.of("regions", catalog)));
+        return officeContext(request.identity())
+                .map(context -> ObservationResponse.available(Map.of("regions", context.regions, "cache", context.cache)));
     }
 
     private Mono<ObservationResponse> regionDevices(ObservationRequest request) {
@@ -454,7 +478,8 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
         return officeContext(request.identity()).map(context -> {
             Map<String, Object> region = findRegion(context.regions, regionId)
                     .orElseThrow(() -> new BusinessException("REGION_NOT_FOUND", "区域不存在", 404));
-            return ObservationResponse.available(Map.of("devices", deviceViews(devicesInRegion(context.scope.devices(), regionId))));
+            return ObservationResponse.available(Map.of("devices", deviceViews(devicesInRegion(context.scope.devices(), regionId)),
+                    "cache", context.cache));
         });
     }
 
@@ -466,8 +491,13 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
                     .orElseThrow(() -> new BusinessException("REGION_NOT_FOUND", "区域不存在", 404));
             List<AuthorizedDevice> devices = devicesInRegion(context.scope.devices(), regionId);
             List<String> ids = devices.stream().map(AuthorizedDevice::id).toList();
-            if (ids.isEmpty()) return Mono.just(ObservationResponse.available(Map.of("states", List.of())));
-            return iot.readDeviceStates(request.identity(), ids).map(read -> ObservationResponse.available(Map.of("states", stateViews(devices, read))));
+            if (ids.isEmpty()) return Mono.just(ObservationResponse.empty(Map.of("states", List.of())));
+            return iot.readDeviceStates(request.identity(), ids).map(read -> {
+                Map<String, Object> payload = stateMetadata(read);
+                payload.put("states", stateViews(devices, read));
+                return new ObservationResponse(read.status(), payload, List.of(),
+                        read.status() == ObservationStatusEnum.AVAILABLE || read.status() == ObservationStatusEnum.EMPTY);
+            });
         });
     }
 
@@ -475,9 +505,8 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
         requireSource(request.identity(), IotSourceEnum.OFFICE, "SOURCE_UNAVAILABLE", "区域仅支持办公室来源");
         if (regionSeen == null) return Mono.error(new BusinessException("REGION_SEEN_UNAVAILABLE", "区域已读存储暂不可用", 503));
         String regionId = requiredRegionId(request);
-        return iot.loadAuthorizedDeviceScope(request.identity())
-                .flatMap(scope -> readRegionCatalog(request.identity())).flatMap(regions -> {
-            findRegion(regions, regionId).orElseThrow(() -> new BusinessException("REGION_NOT_FOUND", "区域不存在", 404));
+        return officeContext(request.identity()).flatMap(context -> {
+            findRegion(context.regions, regionId).orElseThrow(() -> new BusinessException("REGION_NOT_FOUND", "区域不存在", 404));
             Instant at = clock.instant();
             return Mono.fromRunnable(() -> regionSeen.markSeen(request.identity().tenantCode(), request.identity().ownerKey(), regionId, at))
                     .thenReturn(ObservationResponse.available(Map.of("regionId", regionId, "seenAt", at.toString())));
@@ -485,48 +514,12 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
     }
 
     private Mono<OfficeContext> officeContext(RequestIdentity identity) {
-        return iot.loadAuthorizedDeviceScope(identity)
-                .flatMap(scope -> regionCatalog(identity)
-                        .map(regions -> new OfficeContext(scope, regions)));
+        return iot.readDirectory(identity).map(batch ->
+                new OfficeContext(batch.scope(), batch.regions().stream()
+                        .map(region -> Map.<String, Object>of("id", region.id(), "name", region.name())).toList(), batch.cacheMetadata()));
     }
 
-    private Mono<List<Map<String, Object>>> regionCatalog(RequestIdentity identity) {
-        if (regionSnapshots == null) return readRegionCatalog(identity);
-        ReadSnapshots.Identity scope = new ReadSnapshots.Identity(identity.tenantCode(),
-                identity.authorization(), identity.source().name(), identity.ownerKey());
-        return Mono.fromCallable(() -> parseRegions(regionSnapshots.load(scope, "OFFICE_REGION_CATALOG",
-                Map.of(), ReadSnapshots.PolicyEnum.HISTORICAL, () -> {
-                    List<Map<String, Object>> rows = readRegionCatalog(identity).block();
-                    if (rows == null) throw new BusinessException("AUTHORIZED_SCOPE_UNAVAILABLE", REGION_UNAVAILABLE, 503);
-                    return Map.of("regions", rows);
-                }))).subscribeOn(Schedulers.boundedElastic());
-    }
 
-    private Mono<List<Map<String, Object>>> readRegionCatalog(RequestIdentity identity) {
-        return upstream.read(new ObservationRequest(
-                        identity, ObservationOperationEnum.REGION_LIST, Map.of()))
-                .flatMap(response -> {
-                    if (response.status() != ObservationStatusEnum.AVAILABLE) {
-                        return Mono.error(new BusinessException(
-                                "AUTHORIZED_SCOPE_UNAVAILABLE", REGION_UNAVAILABLE, 503));
-                    }
-                    return Mono.just(parseRegions(response.payload()));
-                });
-    }
-
-    private static List<Map<String, Object>> parseRegions(Map<String, Object> payload) {
-        List<Map<String, Object>> result = new ArrayList<>();
-        Object raw = payload.get("regions");
-        if (!(raw instanceof Collection<?> rows)) return result;
-        for (Object value : rows) {
-            if (!(value instanceof Map<?, ?> row)) continue;
-            String id = text(row, "id", "elementId");
-            if (id == null || id.isBlank()) continue;
-            String name = text(row, "name", "elementName");
-            result.add(Map.of("id", id, "name", name == null || name.isBlank() ? "未命名区域" : name));
-        }
-        return result;
-    }
 
     private static List<AuthorizedDevice> devicesInRegion(List<AuthorizedDevice> devices, String regionId) {
         return devices.stream().filter(device -> device.officeIds().contains(regionId)).toList();
@@ -551,15 +544,33 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
         }).toList();
     }
 
-    private static List<Map<String, Object>> readings(List<AuthorizedDevice> devices, Map<String, Object> values) {
+    private static List<Map<String, Object>> readings(List<AuthorizedDevice> devices, AreaRead read) {
         return devices.stream().map(device -> {
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("deviceId", device.id());
             row.put("name", device.name());
             row.put("location", device.installAddress());
-            row.put("reading", values.get(device.id()));
+            row.put("reading", read.values.get(device.id()));
+            row.put("observedAt", read.observation.observedAtByDevice().getOrDefault(device.id(), read.observation.observedAt()));
             return row;
         }).toList();
+    }
+
+    private static Map<String, Object> stateMetadata(DeviceStateReadResult read) {
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("status", read.status().name().toLowerCase(java.util.Locale.ROOT));
+        metadata.put("observedAt", read.observedAt());
+        metadata.put("observedAtByDevice", read.observedAtByDevice());
+        metadata.put("missingDeviceIds", read.missingDeviceIds());
+        metadata.put("cache", read.cache());
+        return metadata;
+    }
+
+    private static String stateObservedAt(AreaRead first, AreaRead second) {
+        if (first.observation.status() == ObservationStatusEnum.EMPTY) return second.observation.observedAt();
+        if (second.observation.status() == ObservationStatusEnum.EMPTY) return first.observation.observedAt();
+        Instant a = parseInstant(first.observation.observedAt()), b = parseInstant(second.observation.observedAt());
+        return a == null || b == null ? null : (a.isBefore(b) ? a : b).toString();
     }
 
     private static List<Map<String, Object>> stateViews(List<AuthorizedDevice> devices, DeviceStateReadResult read) {
@@ -570,11 +581,10 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
             row.put("id", device.id());
             if (raw instanceof Map<?, ?> state && (state.containsKey("state") || state.containsKey("reportedAt"))) {
                 row.put("state", state.get("state"));
-                row.put("reportedAt", state.get("reportedAt"));
             } else {
                 row.put("state", raw);
-                row.put("reportedAt", null);
             }
+            row.put("reportedAt", read.observedAtByDevice().getOrDefault(device.id(), read.observedAt()));
             result.add(row);
         }
         return result;
@@ -656,10 +666,16 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
         return Map.of("area", area, "message", message);
     }
 
-    private record OfficeContext(AuthorizedDeviceScope scope, List<Map<String, Object>> regions) { }
-    private record AreaRead(Map<String, Object> values, List<Map<String, Object>> errors) {
-        static AreaRead empty() { return new AreaRead(Map.of(), List.of()); }
-        static AreaRead failed(String area, String message) { return new AreaRead(Map.of(), List.of(error(area, message))); }
+    private record OfficeContext(AuthorizedDeviceScope scope, List<Map<String, Object>> regions, Map<String, Object> cache) { }
+    private record AreaRead(Map<String, Object> values, List<Map<String, Object>> errors, DeviceStateReadResult observation) {
+        private static final AreaRead EMPTY = new AreaRead(Map.of(), List.of(), new DeviceStateReadResult(Map.of(), null));
+        static AreaRead empty() { return EMPTY; }
+        static AreaRead failed(String area, String message, List<AuthorizedDevice> devices) {
+            Map<String, Object> states = new LinkedHashMap<>();
+            for (AuthorizedDevice device : devices) states.put(device.id(), null);
+            return new AreaRead(Map.of(), List.of(error(area, message)), new DeviceStateReadResult(
+                    states, null, List.of(), Map.of(), ObservationStatusEnum.UNAVAILABLE, null, Map.of("status", "unavailable")));
+        }
     }
     private record AlertRead(List<Map<String, Object>> records, int total, List<Map<String, Object>> errors) {
         static AlertRead empty() { return new AlertRead(List.of(), 0, List.of()); }

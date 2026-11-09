@@ -34,11 +34,12 @@ class AutomationSummaryReaderContractTest {
 
     @Test
     void coldSummaryComposesAuthorizationAndLocalResultsOffTheNonblockingSubscriber() {
-        // Defer reproduces the WebClient publisher rather than Mono.just's optimized block().
-        when(iot.loadAuthorizedDeviceScope(any())).thenAnswer(invocation -> {
+        // Defer exercises local composition off the nonblocking subscription thread.
+        when(iot.readDirectory(any())).thenAnswer(invocation -> {
             RequestIdentity identity = invocation.getArgument(0);
-            return Mono.defer(() -> Mono.just(AuthorizedDeviceScope.of(identity, IotSourceEnum.COMPANY,
-                    List.of(new AuthorizedDevice("light-1", "lighting", "灯", "26楼", false)))));
+            return Mono.defer(() -> Mono.just(new ltd.qianc.iotagent.iot.DeviceDirectoryBatch(
+                    AuthorizedDeviceScope.of(identity, IotSourceEnum.COMPANY,
+                            List.of(new AuthorizedDevice("light-1", "lighting", "灯", "26楼", false))), List.of())));
         });
         // Substitute only the database port; authorization, snapshots and runtime composition are real.
         when(database.listByIdentity(any(), isNull(), isNull())).thenAnswer(invocation -> {

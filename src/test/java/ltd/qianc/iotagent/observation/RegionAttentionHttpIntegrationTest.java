@@ -8,22 +8,15 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.sun.net.httpserver.HttpServer;
-import java.io.IOException;
-import java.io.OutputStream;
-import java.net.InetSocketAddress;
+
 import java.nio.charset.StandardCharsets;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.SynchronousQueue;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
 import ltd.qianc.iotagent.auth.PrincipalInfo;
 import ltd.qianc.iotagent.iot.AuthorizedDevice;
 import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
@@ -31,7 +24,6 @@ import ltd.qianc.iotagent.iot.IotAdapter;
 import ltd.qianc.iotagent.iot.IotSourceEnum;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.task.TaskFacade;
-import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -44,8 +36,6 @@ import org.springframework.context.annotation.Primary;
 import org.springframework.http.HttpHeaders;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.annotation.DirtiesContext;
-import org.springframework.test.context.DynamicPropertyRegistry;
-import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import reactor.core.publisher.Mono;
@@ -54,12 +44,13 @@ import reactor.core.publisher.Mono;
  * 真实 /api/agent/regions 与 /regions/{id}/seen 的 HTTP 回归：无任何办公室任务且从未查看时
  * 不得出现异常关注（修复前基线把“未读”直接当“有异常”，本用例对其保持红）；目录里的第一条
  * 真实异常任务记录才点亮关注；同租户不同查看者的已读水印相互隔离；确认后再出现的异常记录
- * 无需刷新目录即可重新点亮；已从上游成员目录撤销的区域不可再确认。走生产
- * ObservationAdapter 组合与真实 MySQL 任务/已读事实，仅伪造外部 Office 上游（成员区域目录
- * 与设备授权范围）。
+ * 无需刷新目录即可重新点亮；本地完整授权批次撤销的区域不可再确认。走生产
+ * ObservationAdapter组合与真实MySQL任务/已读事实，目录使用明确的本地批次夹具。
  */
 @SpringBootTest(properties = {"agent.storage.mysql.enabled=true", "agent.storage.redis.enabled=false",
         "iot.identity.verify=false", "agent.heartbeat-ms=0", "agent.task.scanner.poll-ms=3600000",
+        "iot.gateway.base-url=https://fixture.example.invalid",
+        "agent.local-data.credential-key=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         "spring.datasource.url=${AGENT_TASK_FIXTURE_MYSQL_URL}",
         "spring.datasource.username=${AGENT_TASK_FIXTURE_MYSQL_USERNAME}",
         "spring.datasource.password=${AGENT_TASK_FIXTURE_MYSQL_PASSWORD}"})
@@ -91,16 +82,6 @@ class RegionAttentionHttpIntegrationTest {
 
     private final List<String> taskIds = new ArrayList<>();
 
-    @DynamicPropertySource
-    static void officeUpstream(DynamicPropertyRegistry registry) throws IOException {
-        String baseUrl = OfficeMemberDirectory.start().baseUrl();
-        registry.add("iot.gateway.base-url", () -> baseUrl);
-    }
-
-    @AfterAll
-    static void stopOfficeUpstream() {
-        OfficeMemberDirectory.stop();
-    }
 
     @Test
     void regionAttentionTracksDurableAbnormalTasksPerViewerReadmark() throws Exception {
@@ -150,8 +131,8 @@ class RegionAttentionHttpIntegrationTest {
             assertThat(attention(later, REGION_A)).as("确认后的新异常应重新点亮").isTrue();
             assertThat(attention(later, REGION_B)).isFalse();
 
-            // 上游成员目录撤销的区域不可再确认；仍在线的区域照常确认。
-            OfficeMemberDirectory.current().retainOnly(REGION_A);
+            // 已发布本地批次撤销的区域不可再确认；仍有权的区域照常确认。
+            FixtureOfficeIot.regions = List.of(FixtureOfficeIot.INITIAL_REGIONS.getFirst());
             seen(CREATOR, REGION_B).andExpect(status().isNotFound())
                     .andExpect(jsonPath("$.code").value("REGION_NOT_FOUND"));
             seen(CREATOR, REGION_A).andExpect(status().isOk())
@@ -162,6 +143,7 @@ class RegionAttentionHttpIntegrationTest {
                 jdbc.update("DELETE FROM task_facts WHERE task_id=?", taskId);
             }
             jdbc.update("DELETE FROM region_seen WHERE tenant_code=?", TENANT);
+            FixtureOfficeIot.regions = FixtureOfficeIot.INITIAL_REGIONS;
         }
     }
 
@@ -252,15 +234,27 @@ class RegionAttentionHttpIntegrationTest {
                 "rgn-phase-" + UUID.randomUUID(), taskId, "office", Timestamp.from(at), definition, definition);
     }
 
-    /** 外部 Office 授权范围的本地替身：两个区域各一台已授权设备。 */
+    /** 本地Office授权批次夹具；不监听端口、不访问客户数据来源。 */
     @TestConfiguration(proxyBeanMethods = false)
     static class FixtureOfficeIot {
+        static final List<ltd.qianc.iotagent.iot.OfficeRegion> INITIAL_REGIONS = List.of(
+                new ltd.qianc.iotagent.iot.OfficeRegion(REGION_A, "Fixture Region A"),
+                new ltd.qianc.iotagent.iot.OfficeRegion(REGION_B, "Fixture Region B"));
+        static volatile List<ltd.qianc.iotagent.iot.OfficeRegion> regions = INITIAL_REGIONS;
         @Bean
         @Primary
         IotAdapter fixtureOfficeDeviceScope() {
-            return identity -> Mono.just(AuthorizedDeviceScope.of(identity, identity.source(), List.of(
-                    device(DEVICE_A, "走廊照明", REGION_A),
-                    device(DEVICE_B, "会议区照明", REGION_B))));
+            return new IotAdapter() {
+                @Override public Mono<AuthorizedDeviceScope> loadAuthorizedDeviceScope(RequestIdentity identity) {
+                    return Mono.just(AuthorizedDeviceScope.of(identity, identity.source(), List.of(
+                            device(DEVICE_A, "走廊照明", REGION_A), device(DEVICE_B, "会议区照明", REGION_B))));
+                }
+                @Override public Mono<ltd.qianc.iotagent.iot.DeviceDirectoryBatch> readDirectory(RequestIdentity identity) {
+                    List<ltd.qianc.iotagent.iot.OfficeRegion> current = regions;
+                    return loadAuthorizedDeviceScope(identity).map(scope -> new ltd.qianc.iotagent.iot.DeviceDirectoryBatch(
+                            scope.retain(device -> current.stream().anyMatch(region -> device.officeIds().contains(region.id()))), current));
+                }
+            };
         }
 
         private static AuthorizedDevice device(String id, String name, String regionId) {
@@ -269,74 +263,4 @@ class RegionAttentionHttpIntegrationTest {
         }
     }
 
-    /** 外部 Office 成员目录的本地替身：仅服务真实上游的区域目录读取。 */
-    static final class OfficeMemberDirectory {
-        private static OfficeMemberDirectory current;
-        private final HttpServer server;
-        private final ThreadPoolExecutor worker;
-        private volatile List<Map<String, String>> regions;
-
-        private OfficeMemberDirectory() throws IOException {
-            regions = List.of(
-                    member(REGION_A, "数智工程研究院院长室"),
-                    member(REGION_B, "会议室"));
-            server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-            worker = new ThreadPoolExecutor(0, 2, 10L, TimeUnit.SECONDS, new SynchronousQueue<>(),
-                    task -> {
-                        Thread thread = new Thread(task, "office-member-directory-stub");
-                        thread.setDaemon(true);
-                        return thread;
-                    });
-            worker.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
-            server.setExecutor(worker);
-            server.createContext("/", exchange -> {
-                byte[] body;
-                try {
-                    body = new ObjectMapper().writeValueAsBytes(Map.of("code", 0, "content", regions));
-                } catch (IOException unreachable) {
-                    throw new IllegalStateException(unreachable);
-                }
-                exchange.getResponseHeaders().set("Content-Type", "application/json");
-                try (OutputStream out = exchange.getResponseBody()) {
-                    exchange.sendResponseHeaders(200, body.length);
-                    out.write(body);
-                } finally {
-                    exchange.close();
-                }
-            });
-            server.start();
-        }
-
-        private static Map<String, String> member(String id, String name) {
-            Map<String, String> member = new LinkedHashMap<>();
-            member.put("elementId", id);
-            member.put("elementName", name);
-            return member;
-        }
-
-        static synchronized OfficeMemberDirectory start() throws IOException {
-            if (current == null) current = new OfficeMemberDirectory();
-            return current;
-        }
-
-        static synchronized OfficeMemberDirectory current() {
-            if (current == null) throw new IllegalStateException("Office 成员目录替身尚未启动");
-            return current;
-        }
-
-        static synchronized void stop() {
-            if (current == null) return;
-            current.server.stop(0);
-            current.worker.shutdownNow();
-            current = null;
-        }
-
-        String baseUrl() {
-            return "http://127.0.0.1:" + server.getAddress().getPort();
-        }
-
-        void retainOnly(String regionId) {
-            regions = regions.stream().filter(member -> regionId.equals(member.get("elementId"))).toList();
-        }
-    }
 }

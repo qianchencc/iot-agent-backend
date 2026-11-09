@@ -5,5 +5,10 @@ public enum ObservationStatusEnum {
     AVAILABLE,
     PARTIAL,
     EMPTY,
-    UNAVAILABLE
+    UNAVAILABLE;
+
+    @com.fasterxml.jackson.annotation.JsonValue
+    public String wireValue() {
+        return name().toLowerCase(java.util.Locale.ROOT);
+    }
 }

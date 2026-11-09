@@ -74,9 +74,12 @@ public class AdminModuleConfiguration {
     @ConditionalOnMissingBean
     AdminSessionManager adminSessionManager(
             @Value("${admin.password-minimum:6}") int minimum,
-            @Value("${admin.password:}") String configured) {
+            @Value("${admin.password:}") String configured,
+            @Value("${admin.sessions-file:var/admin-sessions.json}") String sessionsFile) {
         // Deployment-only credential: the native admin.password property; empty fails closed.
-        return new AdminSessionManager(configured, Math.max(1, Math.min(128, minimum)));
+        // Empty sessions-file keeps sessions memory-only (tests); otherwise they survive restarts.
+        Path file = sessionsFile == null || sessionsFile.isBlank() ? null : Path.of(sessionsFile);
+        return new AdminSessionManager(configured, Math.max(1, Math.min(128, minimum)), file);
     }
 
     @Bean

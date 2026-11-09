@@ -16,6 +16,8 @@ final class TestIotAdapter implements IotAdapter {
     private final List<AuthorizedDevice> devices;
     private final Function<RequestIdentity, Map<String, Object>> states;
     private final List<ltd.qianc.iotagent.iot.OfficeRegion> regions;
+    String observedAt = "2026-10-30T09:00:00Z";
+    Map<String, Object> cache = Map.of();
 
     TestIotAdapter(List<AuthorizedDevice> devices, Function<RequestIdentity, Map<String, Object>> states) {
         this(devices, states, List.of());
@@ -43,6 +45,6 @@ final class TestIotAdapter implements IotAdapter {
         Map<String, Object> values = new LinkedHashMap<>(states.apply(identity));
         Map<String, Object> selected = new LinkedHashMap<>();
         for (String id : deviceIds) selected.put(id, values.get(id));
-        return Mono.just(new DeviceStateReadResult(selected, "2026-10-30T09:00:00Z"));
+        return Mono.just(new DeviceStateReadResult(selected, observedAt, List.of(), Map.of(), null, null, cache));
     }
 }

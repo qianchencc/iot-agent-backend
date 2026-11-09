@@ -63,7 +63,9 @@ final class NightMeterReport {
             }
             boolean inSpan = samples.stream().anyMatch(sample -> sample.readTime().toEpochMilli() >= from
                     && sample.readTime().toEpochMilli() <= to);
-            String status = valid > 0 && valid == windows.size() ? "ok" : valid > 0 || inSpan ? "partial" : "noData";
+            boolean incomplete = read == null || read.truncated();
+            String status = incomplete ? "partial"
+                    : valid > 0 && valid == windows.size() ? "ok" : valid > 0 || inSpan ? "partial" : "noData";
             Map<String, Object> night = new LinkedHashMap<>();
             night.put("usage", valid > 0 ? round(usage) : null);
             night.put("validDays", valid); night.put("expectedDays", windows.size());
@@ -76,7 +78,7 @@ final class NightMeterReport {
             row.put("floor", floor(meter.installAddress())); row.put("value", valid > 0 ? round(usage) : null);
             row.put("status", status); row.put("observed", observed); row.put("night", night); rows.add(row);
             if ("noData".equals(status)) noData.add(meter.id());
-            else if (valid < windows.size() || windows.isEmpty()) {
+            else if (incomplete || valid < windows.size() || windows.isEmpty()) {
                 Map<String, Object> missing = new LinkedHashMap<>();
                 missing.put("id", meter.id()); missing.put("through", last == null ? null : format(last)); partial.add(missing);
             }

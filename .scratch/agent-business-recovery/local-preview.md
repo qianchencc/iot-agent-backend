@@ -2,6 +2,12 @@
 
 > 固定开发后端的最新入口为 Java `3381` / Node `3382` / 控制台 `5185`；2026-11-06 起以常规命令启动（Java `java -jar … --spring.config.additional-location`、Node `node dist/server.js --config`、`web/admin` 内 `npm run dev`），见[仓根常规本地启动](../../README.md#常规本地启动)；Python／tmux 统一启动器与 launch-YAML 已随 `tools/` 退役。下文3217、13215等端口及 `tools/start-sidecar.py` 等命令为历史独立验收环境记录，不应据此启动或覆盖当前固定后端。
 
+> 2026-11-08 23:28 视频接入修复：保留同一冻结视频状态 jar（SHA256 不变），仅把外置 `agent.video.allowed-origin` 改为客户播放页的精确来源 `https://ncim.577119.com`，优雅重启 Java `3381` 为 PID `21777`；Node `3382`／PID `32963` 不动。小程序客户播放页的取流 API 已改回本地 `http://127.0.0.1:3381/api`，没有新建公网隧道。真实微信同账号、同摄像头、同期间已到达本地取流链路，但客户上游录像查询返回 `code:200, content:{result:true,url:null}`，无录像首帧，业务仍未验收；不推断录像不存在，不换窗口冒充通过。详见[视频票09](issues/09-real-video-live-playback.md)。
+
+> 2026-11-08 23:12：固定Java`3381`更新视频候选卡本地在线状态及真实采样时间修复，冻结产物`var/fixed-video-state-20261108-231135/backend.jar`，SHA256=`46816a507a345a7981713f9e6e8350c85b2e27368254a719c8c38f9054b996f3`。23:28 原PID`15433`收到SIGTERM优雅退出（非崩溃），外部守护/手动于23:28:38重启同jar为PID`21777`，3381健康恢复；Node`3382`/PID`32963`及原配置、表结构、业务记录数保持；回退产物为下条环境完整窗口jar。66项定向通过；真实13台本地状态只读投影通过，未申请视频流，微信/播放未验收。[工程与发布证据](../local-data-sync/evidence/video-candidate-state-20261108.json)。
+
+> 2026-11-08 22:41：按用户要求将固定Java`3381`启动到最新工作区构建，PID`4647`，冻结产物`var/fixed-environment-window-20261108-224008/backend.jar`，SHA256=`12bd73ec5cc59375555dec15c426b4b131a504e41bdba5635aed3503a69542d9`，含环境趋势完整窗口读取。Node`3382`保持原PID`32963`；原外置配置、MySQL/Redis及业务记录数保持，切换前无在途对话/执行阶段，数据库备份与核验记录位于同一私有发布目录。Java健康与Node鉴权健康通过；不据此宣称微信业务验收。旧Java回退产物`var/fixed-alert-note-20261108-2037/backend.jar`保留。全量测试的既有安全录像失败见环境历史06票，未扩展修改。
+
 > 2026-11-06 原生启动已实际切换：固定 Java `3381`／Node `3382` 运行 `var/fixed-native-20261106-014739/` 冻结产物，控制台 `5185` 通过 `npm run dev` 启动；助手仅在既有 tmux 窗口逐条执行常规命令，无 Python／启动脚本。私密配置统一为 `var/config/application.yaml`、`agent-engine.yaml` 与 `shared/agent.bridge.token`，配置修订9及原业务事实／Pi fencing 均保留，原 MySQL／Redis 未重启。640项 Java、34项 Node、8项启动安全、进程／重启契约、30/30 Pi 契约及真实配置页核对见[当前运行证据](../technical-spec-compliance/evidence/native-startup-20261106.json)。这是工程启动验证，不追加真实微信或设备执行验收。
 
 > 历史：2026-11-05 固定实例曾按当时源码更新，Java `3381`／Node `3382` 使用 `var/fixed-latest-20261105-181818/` 的冻结产物，637 项 Java、34 项 Node 与 30/30 Pi Session 工程契约通过。固定业务库先备份／独立恢复预演再升级，原配置修订8、候选集及 Pi 会话保留；控制台 `5185`、MySQL、Redis 未重启。实际 PID、产物哈希、只读健康与事实核对见[当轮运行证据](../technical-spec-compliance/evidence/fixed-latest-20261105.json)，已由上述原生启动版本替代。
@@ -75,7 +81,7 @@ PATH=/opt/homebrew/opt/node@22/bin:$PATH /Users/qianchen/anaconda3/bin/python to
 - MySQL备份需包含业务事实、Pi表及迁移标记的一致恢复点，恢复到另一个独立库，不覆盖在线库。O02是v17真实恢复后继续业务的历史证据，不能冒充v24同版演练。
 - Node/Java中断后只恢复已提交事实；未确认副作用视为未知，不自动重发。Redis不可用不能用清空历史掩盖。
 - 上游代理仅放行明确只读路由及已授权读取动作；不能因HTTP动词为POST就认定控制，也不能用通配放行解决拒绝。未知控制、任务、通知、配置写入拒绝；不向生产试下发来证明禁写。
-- 视频来源精确允许 `http://127.0.0.1:9419`，只覆盖视频取流GET/OPTIONS；实际GET仍需真实身份。预检200、静态页200、URL或录像卡不是播放验收。
+- 当前客户播放页来源精确允许 `https://ncim.577119.com`，只覆盖视频取流GET/OPTIONS；实际GET仍需真实身份。历史本地 `9419` 播放页不再是当前来源。预检200、静态页200、URL或录像卡不是播放验收。
 - 自动化须等实际控件/报告加载完成；Markdown正文不一定出现在`page.text()`。禁用值可能是字符串`"false"`，不能按truthiness误判；截图保留失败与修复后版本。
 - 不运行或重启可靠原Runtime；只读其源码作为业务逻辑对照。原业务父票不因存储迁移自动关闭，未抽取场景标未验收，不追加149条硬门禁。
 

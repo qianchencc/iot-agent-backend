@@ -300,23 +300,36 @@ public final class ObservationController {
         Map<String, String> query = parameters(request, operation, extras);
         ObservationRequest captured = new ObservationRequest(identity, operation, query);
         if (operation != ObservationOperationEnum.REGION_SEEN && operation != ObservationOperationEnum.VIDEO_STREAM
+                && operation != ObservationOperationEnum.REGION_LIST && operation != ObservationOperationEnum.REGION_DEVICES
+                && operation != ObservationOperationEnum.REGION_STATES && operation != ObservationOperationEnum.DASHBOARD
+                && operation != ObservationOperationEnum.ENVIRONMENT_HISTORY && !energyOperation(operation)
                 && operation != ObservationOperationEnum.REPORT && operation != ObservationOperationEnum.REPORT_DOWNLOAD) {
             ReadSnapshots.Identity scope = new ReadSnapshots.Identity(identity.tenantCode(), identity.authorization(),
                     identity.source().name(), identity.ownerKey());
-            boolean directory = operation == ObservationOperationEnum.REGION_LIST
-                    && "directory".equals(query.get("section"));
-            String realm = operation == ObservationOperationEnum.REGION_LIST
-                    ? "REGION_DIRECTORY"
-                    : operation == ObservationOperationEnum.COMPANY_ENERGY_DAILY
-                            ? DAILY_REALM : operation.name();
-            ReadSnapshots.PolicyEnum policy = directory ? ReadSnapshots.PolicyEnum.HISTORICAL
-                    : ReadSnapshots.PolicyEnum.forQuery(query, java.time.Clock.systemUTC());
+            String realm = operation == ObservationOperationEnum.COMPANY_ENERGY_DAILY ? DAILY_REALM : operation.name();
+            ReadSnapshots.PolicyEnum policy = ReadSnapshots.PolicyEnum.forQuery(query, java.time.Clock.systemUTC());
             Map<String, Object> body = snapshots.read(scope, realm, query,
                     policy, () -> snapshotBody(captured));
             return ResponseEntity.ok(body);
         }
-        ObservationResponse result = readAdapter(captured);
-        if (result.status() == ObservationStatusEnum.UNAVAILABLE) throw new ObservationUnavailableException("只读观察读取失败");
+        ObservationResponse result;
+        try {
+            result = readAdapter(captured);
+        } catch (BusinessException failure) {
+            boolean localRead = operation == ObservationOperationEnum.REGION_LIST || operation == ObservationOperationEnum.REGION_DEVICES
+                    || operation == ObservationOperationEnum.REGION_STATES || operation == ObservationOperationEnum.DASHBOARD
+                    || operation == ObservationOperationEnum.ENVIRONMENT_HISTORY || energyOperation(operation);
+            if (!localRead || !("IOT_SCOPE_PREPARING".equals(failure.code()) || "DEVICE_STATE_PREPARING".equals(failure.code())
+                    || "ENERGY_HISTORY_PREPARING".equals(failure.code()) || "ENVIRONMENT_HISTORY_PREPARING".equals(failure.code()))) throw failure;
+            Map<String, Object> cache = new LinkedHashMap<>();
+            cache.put("status", "preparing");
+            cache.put("updatedAt", null);
+            cache.put("refreshing", true);
+            cache.put("retryAfterMs", 1000);
+            return ResponseEntity.ok(Map.of("status", "preparing", "message", failure.getMessage(), "cache", cache));
+        }
+        if (result.status() == ObservationStatusEnum.UNAVAILABLE && operation != ObservationOperationEnum.REGION_STATES
+                && operation != ObservationOperationEnum.DASHBOARD) throw new ObservationUnavailableException("只读观察读取失败");
         Map<String, Object> body = new LinkedHashMap<>(result.payload());
         if (result.status() != ObservationStatusEnum.AVAILABLE && !body.containsKey("status")) {
             body.put("status", result.status().name().toLowerCase(java.util.Locale.ROOT));
@@ -327,6 +340,13 @@ public final class ObservationController {
             return ResponseEntity.ok().header(HttpHeaders.CACHE_CONTROL, "no-store, private").body(body);
         }
         return ResponseEntity.ok(body);
+    }
+
+    private static boolean energyOperation(ObservationOperationEnum operation) {
+        return switch (operation) {
+            case ENERGY_HISTORY, ENERGY_COMPARISON, ENERGY_REPORT, COMPANY_ENERGY_DAILY, COMPANY_ENERGY_REPORT, COMPANY_METER_REPORT -> true;
+            default -> false;
+        };
     }
 
     private Map<String, Object> snapshotBody(ObservationRequest request) {

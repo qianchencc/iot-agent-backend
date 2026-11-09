@@ -1,0 +1,80 @@
+CREATE TABLE IF NOT EXISTS local_environment_sync (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    scope_key CHAR(64) NOT NULL,
+    credential_generation VARCHAR(64) NOT NULL,
+    publication_version BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    current_attempt_at DATETIME(6) NULL,
+    current_success_at DATETIME(6) NULL,
+    current_failure_code VARCHAR(80) NULL,
+    full_attempt_at DATETIME(6) NULL,
+    full_success_at DATETIME(6) NULL,
+    full_covered_until DATETIME(6) NULL,
+    full_next_due_at DATETIME(6) NOT NULL,
+    full_state VARCHAR(20) NOT NULL DEFAULT 'PREPARING',
+    full_failure_code VARCHAR(80) NULL,
+    create_time DATETIME(6) NOT NULL,
+    update_time DATETIME(6) NOT NULL,
+    UNIQUE KEY uk_local_environment_sync (scope_key)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS local_environment_samples (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    scope_key CHAR(64) NOT NULL,
+    sample_key CHAR(64) NOT NULL,
+    source_record_id VARCHAR(255) NULL,
+    source_id_missing BOOLEAN NOT NULL,
+    device_code VARCHAR(255) NULL,
+    original_recorded_at VARCHAR(512) NULL,
+    recorded_at DATETIME(6) NULL,
+    temp DECIMAL(65,30) NULL,
+    humidity DECIMAL(65,30) NULL,
+    pm25 DECIMAL(65,30) NULL,
+    pm10 DECIMAL(65,30) NULL,
+    pm1 DECIMAL(65,30) NULL,
+    invalid_values BOOLEAN NOT NULL,
+    source_quality_json JSON NULL,
+    conflicted BOOLEAN NOT NULL,
+    credential_generation VARCHAR(64) NOT NULL,
+    synchronized_at DATETIME(6) NOT NULL,
+    create_time DATETIME(6) NOT NULL,
+    update_time DATETIME(6) NOT NULL,
+    UNIQUE KEY uk_local_environment_sample (scope_key,sample_key),
+    KEY ix_local_environment_window (scope_key,recorded_at)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS local_environment_sample_batches (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    run_id CHAR(36) NOT NULL,
+    scope_key CHAR(64) NOT NULL,
+    sample_key CHAR(64) NOT NULL,
+    source_record_id VARCHAR(255) NULL,
+    source_id_missing BOOLEAN NOT NULL,
+    device_code VARCHAR(255) NULL,
+    original_recorded_at VARCHAR(512) NULL,
+    recorded_at DATETIME(6) NULL,
+    temp DECIMAL(65,30) NULL,
+    humidity DECIMAL(65,30) NULL,
+    pm25 DECIMAL(65,30) NULL,
+    pm10 DECIMAL(65,30) NULL,
+    pm1 DECIMAL(65,30) NULL,
+    invalid_values BOOLEAN NOT NULL,
+    source_quality_json JSON NULL,
+    conflicted BOOLEAN NOT NULL,
+    create_time DATETIME(6) NOT NULL,
+    update_time DATETIME(6) NOT NULL,
+    UNIQUE KEY uk_local_environment_batch (run_id,sample_key)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS local_environment_requests (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    scope_key CHAR(64) NOT NULL,
+    credential_generation VARCHAR(64) NOT NULL,
+    request_key CHAR(64) NOT NULL,
+    range_from DATETIME(6) NOT NULL,
+    range_to DATETIME(6) NOT NULL,
+    state VARCHAR(20) NOT NULL DEFAULT 'PREPARING',
+    applied_at DATETIME(6) NULL,
+    create_time DATETIME(6) NOT NULL,
+    update_time DATETIME(6) NOT NULL,
+    UNIQUE KEY uk_local_environment_request (scope_key,credential_generation,request_key)
+) ENGINE=InnoDB;

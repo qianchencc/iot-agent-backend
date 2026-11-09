@@ -10,6 +10,8 @@ Java public backend plus an independent Node `agent-sidecar`: Spring Boot 3.5 / 
 
 固定端口 Java `3381`、Node `3382`、管理控制台 `5185`。三个进程都用各自的常规命令启动：无启动器脚本、无自定义进程清单、不加载 `.env`。tmux 只是可选的手动终端——需要时自己 `tmux new -s backend` 开会话、逐窗口粘贴下列命令即可，不作为必需编排，也没有自动重启。
 
+2026-11-06 21:22固定Java3381已更新为`var/fixed-energy-20261106-212234/backend.jar`，修复正常刷新误判授权变化、同主体合法换证重拉已有电表历史及本地统计逐表查询；Node3382仍使用`var/fixed-latest-20261106-194349/agent-sidecar/`，原外置YAML、控制台、MySQL、Redis和管理设置保持。定向42/42及打包通过；全量701项中670通过、28跳过，原有3项告警／视频断言失败仍在。重启后43台/237624条样本及全量覆盖保持，真实小程序日统计约0.89–1.76秒并正常展示；未备份或下发控制。[当前运行及验证边界](.scratch/agent-business-recovery/local-preview.md)；[此前任务命名部署证据](.scratch/task-title-naming/evidence/TITLE-02/deployment.json)及[18:46启动清理记录](.scratch/local-data-sync/evidence/fixed-latest-20261106.json)保留。
+
 ```sh
 # 0. 构建（首次先安装依赖：agent-sidecar 与 web/admin 各执行一次 npm ci）
 mvn package
@@ -34,6 +36,7 @@ cd web/admin && npm run dev                  # http://127.0.0.1:5185/login
 - **Node `agent-engine.yaml`**：仅通用传输／资源设置，全部 kebab-case：`server.host/port`、`bridge.token-file`、`java.tools-url`、`java.sessions-url`（缺省按 `tools-url` 派生）、`java.token-file`（缺省同 `bridge.token-file`，测试夹具可显式指定独立回调 token）、`resources.java-tool-timeout-ms/run-timeout-ms/heartbeat-ms`。
 - 模型、指引、生成参数与观测设置不是启动输入：MySQL 管理的可管理业务修订仍是权威，Node 每次 `/run` 从 Java 获取完整模型定义快照，启动观测从 Java 私有接口拉取。
 - 需要固定版本时，把 jar 与 `agent-sidecar/dist` 复制到 `var/` 下带时间戳的目录，再用同一命令启动该副本，避免运行中的产物被下一次 `mvn package` 覆盖。
+- **独立同步安全根**：公司目录要求 Java 外置 YAML 的 `agent.local-data.credential-key`（64位十六进制，独立于任务密钥；无默认），部署所有者须稳定保管，不传给Node。2026-11-06固定实例已配置并初始化本地同步表；各领域实现与未验边界仍按[本地数据执行图](.scratch/local-data-sync/README.md)推进，启动成功不等于14票全部完成。
 
 控制台监听 `0.0.0.0:5185`（strict port，被占用直接失败，不漂移到 5186），仅代理 `/api/admin` 到 `127.0.0.1:3381`（`ADMIN_API_TARGET` 可覆盖）；`ADMIN_PROXY_ORIGIN`（默认 `http://127.0.0.1:5185`）必须等于 Java 的 `admin.origin`，而不是填 `0.0.0.0`。只有与来访 Host 同源的 HTTP Origin 才规范化为 Java 配置的源；外部 Origin 不改写，管理员密码、Cookie 和 CSRF 校验仍由 Java 执行。仅限可信开发网络；不是生产部署或公网 HTTPS 方案。Node 内部监听不因此对外开放。
 
@@ -64,7 +67,7 @@ Java 构建、测试、启动和本地 healthz 验证命令见 [AGENTS.md](./AGE
 - 控制指令由 `iot.DeviceCommands` 统一校验，动作提案、编辑、任务与网关均拒绝小数、文本和溢出整数；版本参数由 `error.RequestValues` 区分缺省与显式非法值。HTTP 字段、响应及错误语义见 [Java 契约补充](docs/api/java-contract.md)。
 - 任务报告汇总实现隐藏在 `task.internal.TaskReportSummaries`；零告警的合法 null 保留。任务详情与报告共用当前授权裁剪，部分设备失权时不公开无法拆分的汇总／原始事实。
 - 结构资源与旧库升级统一归 `schema.SchemaMigrations`：规范代理主键、审计时间和字段注释，保留自然唯一键、Pi fencing／提交回执与一次性迁移记录。候选集使用会话内持久序号行分配句柄及唯一索引；不会逐次扫描全部历史句柄。
-- 2026-11-06 原生启动改造的可交付源码快照经 `mvn clean package`：640 项、0 失败／错误／跳过；Node 34 项、启动安全 8 项、进程／重启契约及 Pi Session 工程契约 30/30 通过，管理端构建通过。固定 Java `3381`／Node `3382`／控制台 `5185` 已由助手逐窗口手动启动，后端冻结产物为 `var/fixed-native-20261106-014739/`；配置修订9、业务事实与 Pi fencing 保留，原 MySQL／Redis 实例未重启。实际配置页已在真实 Chrome 登录核对。构建排除并发未完成改动，并保留此前已部署的能耗投影；不声称其他工作区实验已通过。[当前固定实例证据](.scratch/technical-spec-compliance/evidence/native-startup-20261106.json)。
+- 历史：2026-11-06凌晨原生启动改造源码快照经`mvn clean package`640项通过；当时Node34项、启动安全8项、进程／重启及Pi契约30/30通过，使用`var/fixed-native-20261106-014739/`。该旧发布副本已由上述18:46最新源码版本替换并依用户要求删除；[历史运行证据](.scratch/technical-spec-compliance/evidence/native-startup-20261106.json)保留，不作为当前版本通过证明。
 - 技术规范初次改进及 2026-11-05 的637项构建／旧固定版本记录作为历史保留：[初次改进验证](.scratch/technical-spec-compliance/evidence/result.json)／[当轮固定实例证据](.scratch/technical-spec-compliance/evidence/fixed-latest-20261105.json)。以上均为工程证据，不是生产部署或真实微信／设备执行验收。
 
 
@@ -79,7 +82,7 @@ Java 构建、测试、启动和本地 healthz 验证命令见 [AGENTS.md](./AGE
 
 - `task/internal/TaskProposalNormalizer` owns one-time, interval, recurring and conditional task definitions; `TaskFacade` owns human confirmation and plan/task management. Model tool calls cannot grant confirmation authority.
 - 新建任务按“日期或周期＋简要地点范围＋简要任务”命名，如“每周五早上办公室开灯”“11月7日公司用电报告推送”“工作日上午26楼运营部过道开灯”。名称概括业务，回路编号、设备全名、精确时刻和报告统计期间留在原结构化安排中，简称不改变实际成员或统计范围。前端既有`deviceDisplayName`继续负责设备行简称，不将该设备截短规则搬成任务命名算法；组件、展示文字、`title/label`读取优先级及Java命名归一逻辑均不变，不批量改写历史任务。
-- 修改提案保留跨轮澄清前的改动意图；`template.label`仍为必填，按新安排概括名称，不在旧名后拼修改日志。仅下一次使用具体日期和新时段，不改父周期名称；整个周期使用新周期名称。改时间通过`template.phases[].at`表达，保持中国标准时间与时区一致；仅改名不必提交阶段。沿用既有前后快照、名称同步、阶段绑定和确认保存逻辑，不修改调度。此次只调整`shared-instructions.txt`及工具说明，未修改字段结构、管理端已保存指引或运行服务；存量指引会覆盖资源默认值，因此源码更新不等于运行中已启用，真实小程序仍需另行验收。[本轮隔离模型与契约验证](.scratch/task-title-naming/evidence/TITLE-02/result.json)保留最终输出、先前失败尝试和全量测试的既有失败，不作为真实小程序验收。原修改卡验证见[MP交接](../mp/plan/2026-10-27-task-presentation-handoff.md#2026-11-06修改确认卡快照修复)。
+- 修改提案保留跨轮澄清前的改动意图；`template.label`仍为必填，按新安排概括名称，不在旧名后拼修改日志。仅下一次使用具体日期和新时段，不改父周期名称；整个周期使用新周期名称。改时间通过`template.phases[].at`表达，保持中国标准时间与时区一致；仅改名不必提交阶段。沿用既有前后快照、名称同步、阶段绑定和确认保存逻辑，不修改调度。源码只调整`shared-instructions.txt`及工具说明，未修改字段结构；2026-11-06启动最新源码后，经用户明确选择，仅同步管理端两段任务指引，修订14已生效，其余指引／模型参数保持。Office与Company实际指引预览均已核对，真实小程序仍未验收。[本轮隔离模型与契约验证](.scratch/task-title-naming/evidence/TITLE-02/result.json)保留最终输出、先前失败尝试和全量测试的既有失败，不作为真实小程序验收。原修改卡验证见[MP交接](../mp/plan/2026-10-27-task-presentation-handoff.md#2026-11-06修改确认卡快照修复)。
 - 编辑提案必须带非空 `template`，两端工具 Schema 只对 `edit` 要求该字段，暂停／恢复／删除／跳过保持原契约。`TaskFacade` 拒绝缺失修改内容，保存前默认比较全部定义字段，包括报告请求、核验要求和任务目标；仅排除已有来源证明的运行元数据，并归一名称别名、阶段 ID 和等价时区写法。无实际变化返回 `TASK_CHANGE_UNCHANGED`，不生成卡片、不改原任务；正常仅改名称仍可提案。仅改时间时各阶段只给 `at`，后端按原数量和顺序复用完整阶段，保留设备动作、控制绑定及读取／核验要求；也兼容重传相同设备／指令的时间修改，不让模型重建控制绑定，重复指令的平铺别名不算实际变更。阶段数量变化不能借用旧绑定，增删或改动作仍须完整定义。模型跨轮澄清后须保留先前修改意图，并依据工具返回的 `before/after` 描述待确认提案，不能只在正文宣称新时间，也不得擅自用取消再新建代替修改。本修复不改变重新排期或当天执行规则。
 - `TaskScanner` and `task/internal/RealTaskExecutionGateway` own durable checkpoint execution, interruption/recovery, device reservations and terminal report/notification timing. A completed checkpoint does not end an open interval.
 - Java requires a stable `agent.task.credential-key` (64 hex characters) to encrypt task/plan execution credentials. Missing configuration fails confirmation closed; never rotate the key while encrypted identities exist or pass it to Node.

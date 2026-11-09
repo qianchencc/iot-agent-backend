@@ -90,7 +90,7 @@ cd web/admin && npm update && npm run build
 
 ## 会话/安全边界（排障时先核这里）
 
-- cookie `runtime_admin`：`HttpOnly` `SameSite=Strict` `Path=/api/admin`，长期有效（不显式过期；登出或后端重启失效）。
+- cookie `runtime_admin`：`HttpOnly` `SameSite=Strict` `Path=/api/admin`，长期有效（不显式过期；登出失效，后端重启会保留——会话存于 `var/admin-sessions.json`，仅记录 token 哈希与 CSRF）。
 - `x-admin-csrf`：每会话随机，登录/`GET /session` 下发；非 GET 必须带。
 - `Origin` 校验：仅非 GET；GET 不校。
 - 限流只对 login：按 IP，5 次/5 分钟。

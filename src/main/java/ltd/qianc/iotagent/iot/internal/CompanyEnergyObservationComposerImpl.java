@@ -1,7 +1,5 @@
 package ltd.qianc.iotagent.iot.internal;
 
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Clock;
@@ -9,11 +7,11 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
+import java.time.YearMonth;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
-import java.time.YearMonth;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -24,95 +22,41 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import ltd.qianc.iotagent.error.BusinessException;
 import ltd.qianc.iotagent.iot.AuthorizedDevice;
 import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
 import ltd.qianc.iotagent.iot.CompanyEnergyObservationComposer;
 import ltd.qianc.iotagent.iot.CompanyEnergyPolicy;
-import ltd.qianc.iotagent.iot.IotAdapter;
 import ltd.qianc.iotagent.iot.IotSourceEnum;
-import ltd.qianc.iotagent.iot.ObservationAdapter;
 import ltd.qianc.iotagent.iot.ObservationOperationEnum;
 import ltd.qianc.iotagent.iot.ObservationRequest;
 import ltd.qianc.iotagent.iot.ObservationResponse;
-import ltd.qianc.iotagent.iot.ObservationStatusEnum;
 import ltd.qianc.iotagent.iot.ObservationUnavailableException;
 import ltd.qianc.iotagent.iot.RequestIdentity;
-import ltd.qianc.iotagent.readmodel.ReadSnapshots;
-import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
-/** Company energy projections with identity-scoped reusable history; upstream routes remain external. */
+/** Existing Company energy calculations over one persisted, currently authorized raw-sample boundary. */
 public final class CompanyEnergyObservationComposerImpl implements CompanyEnergyObservationComposer {
     private static final ZoneId SHANGHAI = ZoneId.of("Asia/Shanghai");
     private static final ZoneOffset SHANGHAI_OFFSET = ZoneOffset.ofHours(8);
     private static final DateTimeFormatter LOCAL_DATE_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-    private static final int DEFAULT_MAX_PAGES = 60;
-    private static final int DEFAULT_MAX_ROWS = 1_200;
-    /** Meter fan-out is bounded so a large catalog cannot saturate the customer gateway. */
-    private static final int METER_CONCURRENCY = 6;
-    /** Wall-clock budget for one composed energy read; exhaustion is reported as truncation. */
-    private static final long DEFAULT_READ_BUDGET_MS = 120_000L;
-    /** Concurrent stream page fetches; the pages are independent and the window caps the count. */
-    private static final int STREAM_PAGE_CONCURRENCY = 6;
     private static final int MAX_DAYS = 90;
     private static final long DAY_SECONDS = 86_400L;
     private static final long TWELVE_HOURS_SECONDS = 43_200L;
 
-    private final ObservationAdapter rawHistory;
-    private final IotAdapter iot;
+    private final ltd.qianc.iotagent.iot.EnergyHistory history;
     private final Clock clock;
-    private final int maxPages;
-    private final int maxRows;
     private final CompanyEnergyPolicy policy;
-    private final EnergyHistoryStore history;
-    private final ReadSnapshots historySnapshots;
 
-    public CompanyEnergyObservationComposerImpl(ObservationAdapter rawHistory, IotAdapter iot, Clock clock) {
-        this(rawHistory, iot, clock, DEFAULT_MAX_PAGES, DEFAULT_MAX_ROWS, null);
-    }
-
-    public CompanyEnergyObservationComposerImpl(
-            ObservationAdapter rawHistory, IotAdapter iot, Clock clock, CompanyEnergyPolicy policy) {
-        this(rawHistory, iot, clock, DEFAULT_MAX_PAGES, DEFAULT_MAX_ROWS, policy);
-    }
-
-    public CompanyEnergyObservationComposerImpl(
-            ObservationAdapter rawHistory, IotAdapter iot, Clock clock, int maxPages, int maxRows) {
-        this(rawHistory, iot, clock, maxPages, maxRows, null, null);
-    }
-
-    public CompanyEnergyObservationComposerImpl(
-            ObservationAdapter rawHistory, IotAdapter iot, Clock clock,
-            int maxPages, int maxRows, CompanyEnergyPolicy policy) {
-        this(rawHistory, iot, clock, maxPages, maxRows, policy, null);
-    }
-
-    public CompanyEnergyObservationComposerImpl(
-            ObservationAdapter rawHistory, IotAdapter iot, Clock clock,
-            CompanyEnergyPolicy policy, ReadSnapshots historySnapshots) {
-        this(rawHistory, iot, clock, DEFAULT_MAX_PAGES, DEFAULT_MAX_ROWS, policy, historySnapshots);
-    }
-
-    public CompanyEnergyObservationComposerImpl(
-            ObservationAdapter rawHistory, IotAdapter iot, Clock clock, ReadSnapshots historySnapshots) {
-        this(rawHistory, iot, clock, DEFAULT_MAX_PAGES, DEFAULT_MAX_ROWS, null, historySnapshots);
-    }
-
-    public CompanyEnergyObservationComposerImpl(
-            ObservationAdapter rawHistory, IotAdapter iot, Clock clock,
-            int maxPages, int maxRows, CompanyEnergyPolicy policy, ReadSnapshots historySnapshots) {
-        this.rawHistory = Objects.requireNonNull(rawHistory, "rawHistory");
-        this.iot = Objects.requireNonNull(iot, "iot");
+    public CompanyEnergyObservationComposerImpl(ltd.qianc.iotagent.iot.EnergyHistory history, Clock clock, CompanyEnergyPolicy policy) {
+        this.history = Objects.requireNonNull(history, "history");
         this.clock = Objects.requireNonNull(clock, "clock");
-        if (maxPages < 1 || maxPages > 1_000) throw new IllegalArgumentException("maxPages must be 1..1000");
-        if (maxRows < 1 || maxRows > 100_000) throw new IllegalArgumentException("maxRows must be 1..100000");
-        this.maxPages = maxPages;
-        this.maxRows = maxRows;
         this.policy = policy;
-        this.history = new EnergyHistoryStore(clock);
-        this.historySnapshots = historySnapshots;
     }
 
     @Override
@@ -140,7 +84,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
                         }
                         Instant from = windows.stream().map(ReportWindow::from).min(Instant::compareTo).orElseThrow();
                         Instant to = windows.stream().map(ReportWindow::to).max(Instant::compareTo).orElseThrow();
-                        return readMeterHistory(request.identity(), all, selected, from, to, true)
+                        return localReads(request.identity(), selected, from, to, false)
                                 .map(reads -> energyResponse(energyBusinessPayload(
                                         request, selected, reads, windows, kind, p)));
                     });
@@ -391,7 +335,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("meter", Map.of("id", meter.id(), "name", meter.name(), "location", meter.installAddress()));
             row.put("status", read.samples.isEmpty() && read.truncated ? "failed" : "ready");
-            row.put("error", read.truncated ? "读取页数预算用尽，保留已取得采样" : "");
+            row.put("error", read.truncated ? "本地历史覆盖不完整或来源样本存在冲突" : "");
             row.put("unit", configured == null ? null : configured.unit());
             row.put("multiplier", configured == null ? null : configured.multiplier());
             row.put("periods", periods);
@@ -457,7 +401,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("reportId", java.util.UUID.randomUUID().toString());
         result.put("type", "energy-report"); result.put("source", "company"); result.put("kind", kind);
-        result.put("observedAt", clock.instant().toString());
+        readQuality(result, reads);
         result.put("requested", Map.of("from", format(selectedFrom), "to", format(selectedTo)));
         result.put("windows", windows.stream().map(w -> {
             Map<String, Object> out = new LinkedHashMap<>(); out.put("from", format(w.from())); out.put("to", format(w.to()));
@@ -515,6 +459,8 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         Objects.requireNonNull(request, "request");
         return Mono.defer(() -> {
             requireCompany(request.identity());
+            if (request.operation() == ObservationOperationEnum.ENERGY_HISTORY)
+                return Mono.fromCallable(() -> history.read(request)).subscribeOn(Schedulers.boundedElastic());
             if (request.operation() != ObservationOperationEnum.COMPANY_ENERGY_DAILY
                     && request.operation() != ObservationOperationEnum.ENERGY_COMPARISON
                     && request.operation() != ObservationOperationEnum.COMPANY_ENERGY_REPORT
@@ -538,12 +484,6 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
                         }
                         return meterReport(request, meters);
                     })
-                    .doOnError(error -> {
-                        if (error instanceof BusinessException business
-                                && (business.httpStatus() == 401 || business.httpStatus() == 403)) {
-                            history.discard(historyKey(request.identity()));
-                        }
-                    })
                     .onErrorMap(error -> error instanceof BusinessException
                             ? error : new ObservationUnavailableException("公司电量读取失败"));
         });
@@ -556,329 +496,8 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         LocalDate start = end.minusDays(days - 1L);
         Instant from = samplingBoundary(start).minusSeconds(TWELVE_HOURS_SECONDS);
         Instant to = samplingBoundary(end.plusDays(1));
-        Instant now = clock.instant();
-        Instant readTo = to.isAfter(now) ? to : now;
-        // Strict read plus the wall-clock budget: work stops early as truncation instead of
-        // letting one slow catalog hit the upstream timeout and turn the strip into a 503.
-        Mono<List<MeterRead>> reads = historySnapshots == null
-                ? readCompanyStream(request.identity(), meters, from, to, readTo)
-                : Mono.fromCallable(() -> readDailyHistory(request.identity(), meters, from, to, readTo))
-                        .subscribeOn(Schedulers.boundedElastic());
+        Mono<List<MeterRead>> reads = localReads(request.identity(), meters, from, to, true);
         return reads.map(result -> energyResponse(dailyPayload(meters, result, start, end, days)));
-    }
-
-    /**
-     * Composes daily history from persisted natural-month blocks. The blocks are
-     * stable date ranges, so overlapping and fully contained windows reuse them
-     * without walking upstream pages again. Month blocks also carry the boundary
-     * anchor before the first day.
-     */
-    private List<MeterRead> readDailyHistory(
-            RequestIdentity identity, List<AuthorizedDevice> meters, Instant from, Instant to, Instant readTo) {
-        List<EnergyHistoryStore.Reading> combined = new ArrayList<>();
-        YearMonth first = YearMonth.from(from.plusSeconds(TWELVE_HOURS_SECONDS).atZone(SHANGHAI));
-        YearMonth last = YearMonth.from(to.atZone(SHANGHAI).toLocalDate().minusDays(1));
-        for (YearMonth month = first; !month.isAfter(last); month = month.plusMonths(1)) {
-            Instant monthStart = month.atDay(1).atStartOfDay(SHANGHAI).toInstant();
-            if (monthStart.isAfter(readTo)) break;
-            combined.addAll(blockReadings(loadMonthBlock(identity, meters, month)));
-        }
-        YearMonth currentMonth = YearMonth.now(clock.withZone(SHANGHAI));
-        if (currentMonth.isAfter(last)) {
-            Instant currentStart = currentMonth.atDay(1).atStartOfDay(SHANGHAI).toInstant();
-            if (!currentStart.isAfter(readTo)) {
-                // The previous implementation read through "now" even for a historical
-                // window, so latestSampleTime and per-meter latest included current data.
-                // Restore that metadata/comparison basis from the fixed CURRENT month block.
-                combined.addAll(blockReadings(loadMonthBlock(identity, meters, currentMonth)));
-            }
-        }
-        return buildMeterReads(meters, mergeReadings(
-                List.<EnergyHistoryStore.Reading>of(), combined), from, false);
-    }
-
-    /**
-     * Raw samples for metered statistics, keyed by the same natural-month blocks
-     * the daily strip uses. Blocks are scoped to the full authorized meter set,
-     * so overlapping statistics, comparison, night and region windows reuse the
-     * held samples instead of walking per-meter upstream pages again.
-     */
-    private List<MeterRead> readMonthBlocks(
-            RequestIdentity identity, List<AuthorizedDevice> authorized, List<AuthorizedDevice> needed,
-            Instant from, Instant to) {
-        List<EnergyHistoryStore.Reading> combined = new ArrayList<>();
-        YearMonth first = YearMonth.from(from.atZone(SHANGHAI));
-        YearMonth last = YearMonth.from(to.atZone(SHANGHAI));
-        for (YearMonth month = first; !month.isAfter(last); month = month.plusMonths(1)) {
-            for (EnergyHistoryStore.Reading reading : blockReadings(loadMonthBlock(identity, authorized, month))) {
-                if (!reading.readTime().isAfter(to)) combined.add(reading);
-            }
-        }
-        return buildMeterReads(needed, mergeReadings(List.<EnergyHistoryStore.Reading>of(), combined), from, false);
-    }
-
-    private Map<String, Object> loadMonthBlock(
-            RequestIdentity identity, List<AuthorizedDevice> meters, YearMonth month) {
-        List<String> meterIds = meters.stream().map(AuthorizedDevice::id).sorted().toList();
-        String scope = digest(identity.source() + "\u0000" + String.join(",", meterIds));
-        ReadSnapshots.Identity snapshotIdentity = new ReadSnapshots.Identity(
-                identity.tenantCode(), identity.authorization(), identity.source().name(), identity.ownerKey());
-        Instant monthEnd = month.plusMonths(1).atDay(1).atTime(8, 0).atZone(SHANGHAI).toInstant();
-        ReadSnapshots.PolicyEnum policy = monthEnd.isAfter(clock.instant())
-                ? ReadSnapshots.PolicyEnum.CURRENT : ReadSnapshots.PolicyEnum.HISTORICAL;
-        // Earlier bodies used unreliable upstream time filters and may contain false empty months.
-        return historySnapshots.load(snapshotIdentity, "ENERGY_HISTORY_MONTH:v4:" + scope,
-                Map.of("month", month.toString()), policy,
-                () -> fetchMonthBlock(identity, meters, month));
-    }
-
-    private Map<String, Object> fetchMonthBlock(
-            RequestIdentity identity, List<AuthorizedDevice> meters, YearMonth month) {
-        Instant monthStart = month.atDay(1).atStartOfDay(SHANGHAI).toInstant();
-        Instant monthEnd = month.plusMonths(1).atDay(1).atTime(8, 0).atZone(SHANGHAI).toInstant();
-        // Recompute the cutoff on every loader execution; a scheduled refresh must
-        // not keep publishing yesterday's read horizon as fresh.
-        Instant now = clock.instant();
-        Instant blockTo = monthEnd.isAfter(now) ? now : monthEnd;
-        if (!monthStart.isBefore(blockTo)) {
-            Map<String, Object> empty = new LinkedHashMap<>();
-            empty.put("month", month.toString());
-            empty.put("from", monthStart.toString());
-            empty.put("to", monthStart.toString());
-            empty.put("readings", List.of());
-            return empty;
-        }
-        // Runtime's upstream contract: neither startTime nor endTime selects readTime reliably.
-        // Locate this month in the unfiltered ordered stream, then filter timestamps locally.
-        List<EnergyHistoryStore.Reading> raw = mergeReadings(
-                List.<EnergyHistoryStore.Reading>of(), readMonthStream(identity, monthStart, blockTo));
-        List<EnergyHistoryStore.Reading> fetched = raw.stream().filter(reading ->
-                !reading.readTime().isBefore(monthStart) && !reading.readTime().isAfter(blockTo)).toList();
-        Map<String, EnergyHistoryStore.Reading> boundary = new HashMap<>();
-        for (EnergyHistoryStore.Reading reading : raw) {
-            if (!reading.readTime().isBefore(monthStart)) continue;
-            EnergyHistoryStore.Reading prior = boundary.get(reading.meterId());
-            if (prior == null || reading.readTime().isAfter(prior.readTime())) {
-                boundary.put(reading.meterId(), reading);
-            }
-        }
-        Set<String> authorized = Set.copyOf(meters.stream().map(AuthorizedDevice::id).toList());
-        Set<String> needingAnchor = new LinkedHashSet<>();
-        for (EnergyHistoryStore.Reading reading : fetched) {
-            if (authorized.contains(reading.meterId()) && !boundary.containsKey(reading.meterId())) {
-                needingAnchor.add(reading.meterId());
-            }
-        }
-        if (!needingAnchor.isEmpty()) {
-            long anchorDeadline = deadline();
-            Map<String, EnergyHistoryStore.Reading> anchors = Flux.fromIterable(needingAnchor)
-                    .flatMap(meterId -> readBoundaryAnchor(identity, meterId, monthStart, anchorDeadline),
-                            METER_CONCURRENCY)
-                    .collectMap(EnergyHistoryStore.Reading::meterId, reading -> reading)
-                    .block();
-            if (anchors != null) boundary.putAll(anchors);
-        }
-        Map<String, EnergyHistoryStore.Reading> kept = new LinkedHashMap<>();
-        for (EnergyHistoryStore.Reading reading : fetched) kept.put(readingKey(reading), reading);
-        for (EnergyHistoryStore.Reading reading : boundary.values()) kept.put(readingKey(reading), reading);
-        List<Map<String, Object>> rows = new ArrayList<>();
-        for (EnergyHistoryStore.Reading reading : kept.values()) {
-            if (!authorized.contains(reading.meterId())) continue;
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("meterId", reading.meterId());
-            row.put("id", reading.id());
-            row.put("readTime", reading.readTime().toString());
-            row.put("value", reading.value());
-            row.put("powerFactor", reading.powerFactor());
-            rows.add(row);
-        }
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("month", month.toString());
-        body.put("from", monthStart.toString());
-        body.put("to", blockTo.toString());
-        body.put("readings", rows);
-        return body;
-    }
-
-    private List<EnergyHistoryStore.Reading> readMonthStream(
-            RequestIdentity identity, Instant monthStart, Instant monthEnd) {
-        long deadlineAt = deadline();
-        Map<Integer, StreamPage> pages = new java.util.TreeMap<>();
-        StreamPage first = monthPage(identity, 0, pages, deadlineAt);
-        if (first.samples().isEmpty()) return List.of();
-        int totalPages = first.totalElements() < 0 ? -1
-                : (int) Math.min(Integer.MAX_VALUE, (first.totalElements() + 499L) / 500L);
-        int startPage = 0;
-        if (totalPages > 1 && oldestSample(first).isAfter(monthEnd)) {
-            int left = 1, right = totalPages;
-            while (left < right) {
-                int distance = right - left;
-                int probes = Math.min(4, distance);
-                List<Integer> indices = new ArrayList<>(probes);
-                for (int index = 0; index < probes; index++) {
-                    indices.add(distance <= 4 ? left + index
-                            : left + (index + 1) * distance / (probes + 1));
-                }
-                monthPages(identity, indices, pages, deadlineAt);
-                int previous = left - 1;
-                boolean found = false;
-                for (int index : indices) {
-                    StreamPage probe = pages.get(index);
-                    if (probe.samples().isEmpty() || !oldestSample(probe).isAfter(monthEnd)) {
-                        left = previous + 1;
-                        right = index;
-                        found = true;
-                        break;
-                    }
-                    previous = index;
-                }
-                if (!found) left = previous + 1;
-            }
-            startPage = left;
-            if (startPage == totalPages) return List.of();
-        }
-        List<List<Map<String, Object>>> chunks = new ArrayList<>();
-        StreamPage seed = monthPage(identity, startPage, pages, deadlineAt);
-        chunks.add(seed.samples());
-        if (seed.last() || seed.samples().isEmpty()) return readings(chunks);
-        // A timestamp group can straddle two pages. Include the following page when
-        // the first page already crosses the month boundary, rather than re-reading
-        // that missing boundary separately for every meter.
-        boolean crossed = oldestSample(seed).isBefore(monthStart);
-        for (int page = startPage + 1; ; ) {
-            int count = crossed ? 1 : STREAM_PAGE_CONCURRENCY;
-            if (totalPages >= 0) count = Math.min(count, totalPages - page);
-            if (count <= 0) return readings(chunks);
-            count = Math.min(count, Math.max(1, maxPages - pages.size()));
-            List<Integer> indices = new ArrayList<>(count);
-            for (int index = 0; index < count; index++) indices.add(page + index);
-            monthPages(identity, indices, pages, deadlineAt);
-            boolean ended = crossed;
-            for (int index : indices) {
-                StreamPage current = pages.get(index);
-                chunks.add(current.samples());
-                ended |= current.last() || current.samples().isEmpty()
-                        || oldestSample(current).isBefore(monthStart);
-            }
-            if (ended) return readings(chunks);
-            page += count;
-        }
-    }
-
-    private StreamPage monthPage(RequestIdentity identity, int page,
-            Map<Integer, StreamPage> pages, long deadlineAt) {
-        monthPages(identity, List.of(page), pages, deadlineAt);
-        return pages.get(page);
-    }
-
-    private void monthPages(RequestIdentity identity, List<Integer> indices,
-            Map<Integer, StreamPage> pages, long deadlineAt) {
-        List<Integer> missing = indices.stream().filter(index -> !pages.containsKey(index)).toList();
-        if (missing.isEmpty()) return;
-        if (pages.size() + missing.size() > maxPages || System.currentTimeMillis() >= deadlineAt) {
-            throw new ObservationUnavailableException("计量历史月块读取达到预算");
-        }
-        List<Map.Entry<Integer, StreamPage>> loaded = Flux.fromIterable(missing)
-                .flatMapSequential(index -> fetchStreamPage(identity, null, null, index)
-                        .map(page -> Map.entry(index, page)), STREAM_PAGE_CONCURRENCY)
-                .collectList().block();
-        if (loaded == null) throw new ObservationUnavailableException("计量历史月块读取未完成");
-        for (Map.Entry<Integer, StreamPage> entry : loaded) {
-            if (entry.getValue().partial()) {
-                throw new ObservationUnavailableException("计量历史月块读取未完成");
-            }
-            pages.put(entry.getKey(), entry.getValue());
-        }
-        StreamPage previous = null;
-        for (StreamPage current : pages.values()) {
-            if (previous != null && !previous.samples().isEmpty() && !current.samples().isEmpty()
-                    && oldestSample(previous).isBefore(newestSample(current))) {
-                throw new ObservationUnavailableException("计量历史跨页时间顺序变化");
-            }
-            previous = current;
-        }
-    }
-
-    private static Instant oldestSample(StreamPage page) {
-        Instant result = Instant.MAX;
-        for (Map<String, Object> sample : page.samples()) {
-            Instant at = instantOrNull(text(sample.get("readTime")));
-            if (at == null) throw new ObservationUnavailableException("计量样本时间格式无效");
-            if (at.isBefore(result)) result = at;
-        }
-        return result;
-    }
-
-    private static Instant newestSample(StreamPage page) {
-        Instant result = Instant.MIN;
-        for (Map<String, Object> sample : page.samples()) {
-            Instant at = instantOrNull(text(sample.get("readTime")));
-            if (at == null) throw new ObservationUnavailableException("计量样本时间格式无效");
-            if (at.isAfter(result)) result = at;
-        }
-        return result;
-    }
-
-    /** Reads a sparse left anchor without the gateway's unreliable date filters. */
-    private Mono<EnergyHistoryStore.Reading> readBoundaryAnchor(
-            RequestIdentity identity, String meterId, Instant monthStart, long deadlineAt) {
-        return readBoundaryPage(identity, meterId, monthStart, deadlineAt, 0);
-    }
-
-    private Mono<EnergyHistoryStore.Reading> readBoundaryPage(
-            RequestIdentity identity, String meterId, Instant monthStart, long deadlineAt, int page) {
-        if (page >= maxPages || System.currentTimeMillis() >= deadlineAt) {
-            return Mono.error(new ObservationUnavailableException("计量历史边界锚点读取达到预算"));
-        }
-        Map<String, String> params = new LinkedHashMap<>();
-        params.put("equipmentId", meterId);
-        params.put("page", Integer.toString(page));
-        params.put("size", "500");
-        return rawHistory.read(new ObservationRequest(identity, ObservationOperationEnum.ENERGY_HISTORY, params))
-                .flatMap(response -> {
-                    if (response.status() == ObservationStatusEnum.EMPTY) return Mono.empty();
-                    if (response.status() != ObservationStatusEnum.AVAILABLE
-                            && response.status() != ObservationStatusEnum.PARTIAL) {
-                        return Mono.error(new ObservationUnavailableException("计量历史边界锚点上游不可用"));
-                    }
-                    boolean continuationOnly = response.payload().get("nextPage") != null
-                            && response.failures().stream().allMatch(failure -> "HISTORY_PARTIAL".equals(failure.code()));
-                    if (response.status() == ObservationStatusEnum.PARTIAL && !continuationOnly) {
-                        return Mono.error(new ObservationUnavailableException("计量历史边界锚点读取不完整"));
-                    }
-                    List<Sample> pageRows = parseRows(response.payload(), meterId);
-                    Sample candidate = pageRows.stream()
-                            .filter(sample -> !sample.readTime.isAfter(monthStart))
-                            .max(Comparator.comparing(Sample::readTime)).orElse(null);
-                    if (candidate != null) {
-                        return Mono.just(new EnergyHistoryStore.Reading(
-                                meterId, candidate.id, candidate.readTime, candidate.value, candidate.powerFactor));
-                    }
-                    if (isLast(response.payload())) return Mono.empty();
-                    return readBoundaryPage(identity, meterId, monthStart, deadlineAt, page + 1);
-                })
-                .onErrorMap(error -> error instanceof BusinessException
-                        ? error : new ObservationUnavailableException("计量历史边界锚点读取失败"));
-    }
-
-    private static List<EnergyHistoryStore.Reading> blockReadings(Map<String, Object> body) {
-        Object raw = body.get("readings");
-        if (!(raw instanceof List<?> rows)) {
-            throw new ObservationUnavailableException("计量历史月块格式无效");
-        }
-        List<EnergyHistoryStore.Reading> result = new ArrayList<>();
-        for (Object value : rows) {
-            if (!(value instanceof Map<?, ?> row)) throw new ObservationUnavailableException("计量历史月块格式无效");
-            String meterId = text(row.get("meterId"));
-            String readTime = text(row.get("readTime"));
-            Double epf = numberOrNull(row.get("value"));
-            Instant at = instantOrNull(readTime);
-            if (meterId == null || at == null || epf == null) {
-                throw new ObservationUnavailableException("计量历史月块样本无效");
-            }
-            result.add(new EnergyHistoryStore.Reading(meterId, text(row.get("id")), at, epf, numberOrNull(row.get("powerFactor"))));
-        }
-        return result;
     }
 
     private Mono<ObservationResponse> comparison(ObservationRequest request, List<AuthorizedDevice> meters) {
@@ -902,8 +521,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         }
         Instant start = end.minus((count + 1L) * 7L, ChronoUnit.DAYS);
         Instant finalEnd = end;
-        return readMeterHistory(request.identity(), meters, List.of(meter), start,
-                now.isBefore(end.plus(7, ChronoUnit.DAYS)) ? now : end.plus(7, ChronoUnit.DAYS), false)
+        return localReads(request.identity(), List.of(meter), start, now.isBefore(end.plus(7, ChronoUnit.DAYS)) ? now : end.plus(7, ChronoUnit.DAYS), false)
                 .map(reads -> energyResponse(comparisonPayload(meter, reads.get(0), start, finalEnd, count, boundary, now)));
     }
 
@@ -927,7 +545,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         }
         Instant from = windows.get(0).from.minusSeconds(TWELVE_HOURS_SECONDS);
         Instant to = windows.get(windows.size() - 1).to;
-        return readMeterHistory(request.identity(), meters, meters, from, to, true)
+        return localReads(request.identity(), meters, from, to, false)
                 .map(reads -> energyResponse(monthlyPayload(meters, reads, windows, boundary)));
     }
 
@@ -988,7 +606,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
             if (other.isEmpty()) {
                 throw new BusinessException("FORBIDDEN", "对照计量范围不在当前授权范围内", 403);
             }
-            return readMeterHistory(request.identity(), meters, meters, from.minus(7, ChronoUnit.DAYS), to, false)
+            return localReads(request.identity(), meters, from.minus(7, ChronoUnit.DAYS), to, false)
                     .map(reads -> energyResponse(MeterReports.region(
                             baseReport(request, selected, reads, from, to, "comparison"),
                             scopeParam(request, selected), scopeParam(otherScopeParams(p), other),
@@ -1002,7 +620,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         }
         boolean nightly = p.containsKey("windowFrom") || p.containsKey("windowTo");
         if (nightly) {
-            return readMeterHistory(request.identity(), meters, selected, from.minus(7, ChronoUnit.DAYS), to, false)
+            return localReads(request.identity(), selected, from.minus(7, ChronoUnit.DAYS), to, false)
                     .map(reads -> energyResponse(NightMeterReport.build(
                             baseReport(request, selected, reads, from, to, "statistics"), request, selected, reads,
                             from.toEpochMilli(), to.toEpochMilli())));
@@ -1018,7 +636,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         Instant readFrom = (comparison && baseFrom.isBefore(from) ? baseFrom : from).minus(7, ChronoUnit.DAYS);
         Instant readTo = comparison ? (baseTo.isAfter(to) ? baseTo : to) : to;
         Instant finalBaseFrom = baseFrom, finalBaseTo = baseTo;
-        return readMeterHistory(request.identity(), meters, meters, readFrom, readTo, false)
+        return localReads(request.identity(), meters, readFrom, readTo, false)
                 .map(reads -> energyResponse(comparison
                         ? MeterReports.time(baseReport(request, selected, reads, from, to, "comparison"),
                                 scopeParam(request, selected), selected, reads, from.toEpochMilli(), to.toEpochMilli(),
@@ -1033,407 +651,44 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         if (!truncated) return ObservationResponse.available(payload);
         return ObservationResponse.partial(payload,
                 List.of(new ltd.qianc.iotagent.iot.ObservationFailure(
-                        "energy", "HISTORY_TRUNCATED", "计量历史读取达到页/行预算，统计仅保留已取得事实")),
+                        "energy", "HISTORY_TRUNCATED", "本地计量历史覆盖不完整，统计仅保留已取得事实")),
                 false);
     }
 
-    /**
-     * Every page contains all meters. Fetch bounded batches until an actual timestamp crosses
-     * the requested start (or the feed ends); sample density is never a correctness assumption.
-     */
-    private Mono<List<MeterRead>> readCompanyStream(
-            RequestIdentity identity, List<AuthorizedDevice> meters, Instant from, Instant to, Instant readTo) {
-        List<String> meterIds = meters.stream().map(AuthorizedDevice::id).toList();
-        String key = historyKey(identity);
-        EnergyHistoryStore.View view = history.view(key, meterIds, from, to, to);
-        if (view.covered()) {
-            return Mono.just(buildMeterReads(meters, view.readings(), from, false));
-        }
-        EnergyHistoryStore.Fetch fetch = history.missing(key, meterIds, from, to, readTo, to);
-        long deadlineAt = deadline();
-        boolean filtered = fetch.from().isAfter(from.minusSeconds(TWELVE_HOURS_SECONDS))
-                || fetch.to().isBefore(readTo);
-        if (!filtered) {
-            return readCompanyStreamFull(identity, meters, from, readTo, key, meterIds, view, deadlineAt);
-        }
-        return readStreamBatch(identity, fetch.from(), fetch.from(), fetch.to(), deadlineAt, 0,
-                new ArrayList<>(), false)
-                .flatMap(scan -> {
-                    List<EnergyHistoryStore.Reading> fetched = readings(scan.chunks());
-                    boolean trustworthy = !fetched.isEmpty() && fetched.stream().allMatch(reading ->
-                            !reading.readTime().isBefore(fetch.from()) && !reading.readTime().isAfter(fetch.to()));
-                    if (!scan.truncated() && !trustworthy) {
-                        // A date-filtered range that came back empty (or outside the range) is not
-                        // proof that history is absent; fall back to the unfiltered stream.
-                        return readCompanyStreamFull(identity, meters, from, readTo, key, meterIds, view, deadlineAt);
-                    }
-                    List<EnergyHistoryStore.Reading> combined = mergeReadings(view.readings(), fetched);
-                    if (!scan.truncated()) {
-                        history.record(key, meterIds, fetch.from(), fetch.to(), fetched);
-                    }
-                    return Mono.just(buildMeterReads(meters, combined, from, scan.truncated()));
-                });
-    }
+    
 
-    private Mono<List<MeterRead>> readCompanyStreamFull(
-            RequestIdentity identity, List<AuthorizedDevice> meters, Instant from, Instant readTo,
-            String key, List<String> meterIds, EnergyHistoryStore.View view, long deadlineAt) {
-        return readStreamBatch(identity, from, null, null, deadlineAt, 0, new ArrayList<>(), false)
-                .map(scan -> {
-                    List<EnergyHistoryStore.Reading> fetched = readings(scan.chunks());
-                    List<EnergyHistoryStore.Reading> combined = mergeReadings(view.readings(), fetched);
-                    if (!scan.truncated()) {
-                        history.record(key, meterIds, from, readTo, fetched);
-                    }
-                    return buildMeterReads(meters, combined, from, scan.truncated());
-                });
-    }
-
-    private Mono<StreamScan> readStreamBatch(
-            RequestIdentity identity, Instant scanFrom, Instant requestFrom, Instant requestTo,
-            long deadlineAt, int page, List<List<Map<String, Object>>> chunks, boolean partial) {
-        if (page >= maxPages || System.currentTimeMillis() >= deadlineAt) {
-            return Mono.just(new StreamScan(chunks, true));
-        }
-        int count = Math.min(STREAM_PAGE_CONCURRENCY, maxPages - page);
-        return Flux.range(page, count)
-                .flatMapSequential(index -> fetchStreamPage(identity, requestFrom, requestTo, index),
-                        STREAM_PAGE_CONCURRENCY)
-                .collectList()
-                .flatMap(batch -> {
-                    boolean reachedStart = false;
-                    boolean ended = false;
-                    boolean incomplete = partial;
-                    for (StreamPage result : batch) {
-                        chunks.add(result.samples());
-                        incomplete |= result.partial();
-                        ended |= result.last();
-                        for (Map<String, Object> sample : result.samples()) {
-                            Instant time = instantOrNull(text(sample.get("readTime")));
-                            if (time == null) {
-                                return Mono.error(new ObservationUnavailableException("计量样本时间格式无效"));
-                            }
-                            reachedStart |= time.isBefore(scanFrom);
-                        }
-                    }
-                    if (reachedStart || ended) return Mono.just(new StreamScan(chunks, incomplete));
-                    return readStreamBatch(identity, scanFrom, requestFrom, requestTo, deadlineAt,
-                            page + count, chunks, incomplete);
-                });
-    }
-
-    private Mono<StreamPage> fetchStreamPage(
-            RequestIdentity identity, Instant requestFrom, Instant requestTo, int page) {
-        Map<String, String> params = new LinkedHashMap<>();
-        if (requestFrom != null) params.put("from", format(requestFrom));
-        if (requestTo != null) params.put("to", format(requestTo));
-        params.put("page", Integer.toString(page));
-        params.put("size", "500");
-        return rawHistory.read(new ObservationRequest(identity, ObservationOperationEnum.ENERGY_HISTORY, params))
-                .flatMap(response -> {
-                    if (response.status() == ObservationStatusEnum.EMPTY) {
-                        return Mono.just(new StreamPage(List.of(), true, false, 0));
-                    }
-                    if (response.status() != ObservationStatusEnum.AVAILABLE
-                            && response.status() != ObservationStatusEnum.PARTIAL) {
-                        return Mono.error(new ObservationUnavailableException("计量样本流上游不可用"));
-                    }
-                    List<Map<String, Object>> samples = streamSamples(response.payload());
-                    boolean continuationOnly = response.payload().get("nextPage") != null
-                            && response.failures().stream().allMatch(failure -> "HISTORY_PARTIAL".equals(failure.code()));
-                    Object total = response.payload().get("totalElements");
-                    if (total == null && response.payload().get("content") instanceof Map<?, ?> content) {
-                        total = content.get("totalElements");
-                    }
-                    return Mono.just(new StreamPage(samples, isLast(response.payload()),
-                            response.status() == ObservationStatusEnum.PARTIAL && !continuationOnly,
-                            total instanceof Number count ? count.longValue() : -1));
-                })
-                .onErrorMap(error -> error instanceof BusinessException
-                        ? error : new ObservationUnavailableException("计量样本流读取失败"));
-    }
-
-    private record StreamPage(List<Map<String, Object>> samples, boolean last, boolean partial, long totalElements) { }
-    private record StreamScan(List<List<Map<String, Object>>> chunks, boolean truncated) { }
-
-    private static String historyKey(RequestIdentity identity) {
-        // ownerKey normally already hashes the credential, but the explicit digest keeps a
-        // custom ownerKey from reusing another token's authorized scope.
-        return identity.tenantCode() + '\u0000' + identity.source() + '\u0000' + identity.ownerKey()
-                + '\u0000' + digest(identity.authorization());
-    }
-
-    private static String digest(String value) {
-        try {
-            return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
-                    .digest(value.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
-        } catch (java.security.NoSuchAlgorithmException impossible) {
-            throw new IllegalStateException(impossible);
-        }
-    }
-
-    private static List<EnergyHistoryStore.Reading> readings(List<List<Map<String, Object>>> chunks) {
-        List<EnergyHistoryStore.Reading> result = new ArrayList<>();
-        for (List<Map<String, Object>> chunk : chunks) {
-            for (Map<String, Object> sample : chunk) {
-                String meterId = text(sample.get("equipmentId"));
-                String readTime = text(sample.get("readTime"));
-                Instant at = instantOrNull(readTime);
-                // Malformed sample time is a content defect, never a silently skipped row.
-                if (readTime != null && at == null) {
-                    throw new ObservationUnavailableException("计量样本时间格式无效");
-                }
-                if (meterId == null || at == null) continue;
-                Object values = sample.get("values");
-                Double epf = values instanceof Map<?, ?> mapValues ? numberOrNull(mapValues.get("epf")) : null;
-                if (epf == null) continue;
-                result.add(new EnergyHistoryStore.Reading(meterId, text(sample.get("id")), at, epf,
-                        numberOrNull(sample.get("totalPowerFactor"))));
+    private Mono<List<MeterRead>> localReads(RequestIdentity identity, List<AuthorizedDevice> meters,
+            Instant from, Instant to, boolean includeLatest) {
+        return Mono.fromCallable(() -> {
+            var view = history.window(identity, meters.stream().map(AuthorizedDevice::id).toList(), from, to, includeLatest);
+            Map<String, List<Sample>> byMeter = new LinkedHashMap<>();
+            Set<String> incomplete = new LinkedHashSet<>(view.missingCoverageMeterIds());
+            for (var reading : view.samples()) {
+                if (reading.conflicted() || reading.epf() == null) incomplete.add(reading.meterId());
+                if (reading.conflicted() || reading.epf() == null) continue;
+                byMeter.computeIfAbsent(reading.meterId(), ignored -> new ArrayList<>()).add(new Sample(
+                        reading.identity(), reading.readTime(), reading.epf().doubleValue(),
+                        reading.powerFactor() == null ? null : reading.powerFactor().doubleValue()));
             }
-        }
-        return result;
-    }
-
-    private static List<EnergyHistoryStore.Reading> mergeReadings(
-            List<EnergyHistoryStore.Reading> cached, List<EnergyHistoryStore.Reading> fetched) {
-        Map<String, EnergyHistoryStore.Reading> values = new LinkedHashMap<>();
-        for (EnergyHistoryStore.Reading reading : cached) values.put(readingKey(reading), reading);
-        for (EnergyHistoryStore.Reading reading : fetched) values.put(readingKey(reading), reading);
-        return values.values().stream()
-                .sorted(Comparator.comparing(EnergyHistoryStore.Reading::readTime)
-                        .thenComparing(EnergyHistoryStore.Reading::meterId)
-                        .thenComparing(EnergyHistoryStore.Reading::id))
-                .toList();
-    }
-
-    private static String readingKey(EnergyHistoryStore.Reading reading) {
-        return reading.meterId() + '\u0000' + reading.id() + '\u0000' + reading.readTime();
-    }
-
-    private List<MeterRead> buildMeterReads(
-            List<AuthorizedDevice> meters, List<EnergyHistoryStore.Reading> readings,
-            Instant from, boolean truncated) {
-        Map<String, List<Sample>> inWindow = new LinkedHashMap<>();
-        Map<String, Sample> anchors = new LinkedHashMap<>();
-        for (EnergyHistoryStore.Reading reading : readings) {
-            Sample value = new Sample(reading.id(), reading.readTime(), reading.value(), reading.powerFactor());
-            if (reading.readTime().isBefore(from)) {
-                // Interval differences need the last reading at or before the window start.
-                Sample prior = anchors.get(reading.meterId());
-                if (prior == null || reading.readTime().isAfter(prior.readTime)) {
-                    anchors.put(reading.meterId(), value);
-                }
-            } else {
-                inWindow.computeIfAbsent(reading.meterId(), key -> new ArrayList<>()).add(value);
+            List<MeterRead> reads = new ArrayList<>();
+            for (AuthorizedDevice meter : meters) {
+                List<Sample> samples = byMeter.getOrDefault(meter.id(), List.of()).stream()
+                        .sorted(Comparator.comparing(Sample::readTime).thenComparing(Sample::id)).toList();
+                reads.add(new MeterRead(meter, samples, incomplete.contains(meter.id()), view.cache()));
             }
-        }
-        List<MeterRead> result = new ArrayList<>();
-        for (AuthorizedDevice meter : meters) {
-            List<Sample> samples = new ArrayList<>(inWindow.getOrDefault(meter.id(), List.of()));
-            Sample anchor = anchors.get(meter.id());
-            if (anchor != null) samples.add(anchor);
-            result.add(new MeterRead(meter, unique(samples), truncated));
-        }
-        return result;
+            return reads;
+        }).subscribeOn(Schedulers.boundedElastic());
     }
 
-    @SuppressWarnings("unchecked")
-    private static List<Map<String, Object>> streamSamples(Map<String, Object> payload) {
-        Object raw = payload.get("samples");
-        if (raw instanceof List<?> rows) {
-            List<Map<String, Object>> result = new ArrayList<>();
-            for (Object row : rows) {
-                if (row instanceof Map<?, ?> values) result.add((Map<String, Object>) values);
-            }
-            return result;
-        }
-        // Raw upstream page shape (content/rows/items) is accepted so the seam stays testable
-        // against the customer payload without a second parser.
-        Object page = payload.get("content");
-        if (page instanceof Map<?, ?> nested) page = nested.get("content");
-        if (page == null) page = payload.get("rows");
-        if (page == null) page = payload.get("items");
-        if (!(page instanceof List<?> rows)) return List.of();
-        List<Map<String, Object>> result = new ArrayList<>();
-        for (Object row : rows) {
-            if (!(row instanceof Map<?, ?> rawRow)) continue;
-            Map<String, Object> values = new LinkedHashMap<>();
-            values.put("id", rawRow.get("id"));
-            values.put("equipmentId", rawRow.get("equipmentId"));
-            values.put("readTime", rawRow.get("readTime"));
-            Map<String, Object> metrics = new LinkedHashMap<>();
-            metrics.put("epf", rawRow.get("epf"));
-            values.put("values", metrics);
-            result.add(values);
-        }
-        return result;
-    }
-
-    private static Instant instantOrNull(String value) {
-        try { return instant(value); } catch (BusinessException invalid) { return null; }
-    }
-
-    private Mono<List<MeterRead>> readAll(RequestIdentity identity, List<AuthorizedDevice> meters, Instant from, Instant to) {
-        long deadlineAt = deadline();
-        return Flux.fromIterable(meters)
-                .flatMap(meter -> readMeter(identity, meter, from, to, deadlineAt), METER_CONCURRENCY)
-                .collectList();
-    }
-
-    private Mono<List<MeterRead>> readAllBestEffort(
-            RequestIdentity identity, List<AuthorizedDevice> meters, Instant from, Instant to) {
-        long deadlineAt = deadline();
-        return Flux.fromIterable(meters)
-                .flatMap(meter -> readMeter(identity, meter, from, to, deadlineAt)
-                        .onErrorResume(error -> {
-                            if (error instanceof BusinessException business
-                                    && (business.httpStatus() == 401 || business.httpStatus() == 403)) return Mono.error(error);
-                            return Mono.just(new MeterRead(meter, List.of(), true));
-                        }), METER_CONCURRENCY)
-                .collectList();
-    }
-
-    private Mono<List<MeterRead>> readMeterHistory(
-            RequestIdentity identity, List<AuthorizedDevice> authorized, List<AuthorizedDevice> needed,
-            Instant from, Instant to, boolean bestEffort) {
-        if (historySnapshots == null) {
-            return bestEffort ? readAllBestEffort(identity, needed, from, to)
-                    : readAll(identity, needed, from, to);
-        }
-        return Mono.fromCallable(() -> readMonthBlocks(identity, authorized, needed, from, to))
-                .subscribeOn(Schedulers.boundedElastic())
-                .onErrorResume(error -> {
-                    if (!bestEffort || error instanceof BusinessException business
-                            && (business.httpStatus() == 401 || business.httpStatus() == 403)) {
-                        return Mono.error(error);
-                    }
-                    // Preserve healthy meters when the shared stream is unavailable.
-                    return readAllBestEffort(identity, needed, from, to);
-                });
-    }
-
-    /**
-     * Energy composition needs only observation fields. The readable projection is
-     * reused through the guarded snapshot model for the day instead of re-reading
-     * the upstream meter directory on every new outer query. Control references are
-     * never persisted in this projection.
-     */
     private Mono<AuthorizedDeviceScope> authorizedScope(RequestIdentity identity) {
-        if (historySnapshots == null) return iot.loadAuthorizedDeviceScope(identity);
-        return Mono.fromCallable(() -> loadScopeProjection(identity))
-                .subscribeOn(Schedulers.boundedElastic());
-    }
-
-    private AuthorizedDeviceScope loadScopeProjection(RequestIdentity identity) {
-        ReadSnapshots.Identity snapshot = new ReadSnapshots.Identity(
-                identity.tenantCode(), identity.authorization(), identity.source().name(), identity.ownerKey());
-        Map<String, Object> body = historySnapshots.load(snapshot, "ENERGY_AUTH_SCOPE",
-                Map.of("source", identity.source().name()), ReadSnapshots.PolicyEnum.HISTORICAL,
-                () -> scopeBody(identity));
-        return scopeFromBody(identity, body);
-    }
-
-    private Map<String, Object> scopeBody(RequestIdentity identity) {
-        AuthorizedDeviceScope scope = iot.loadAuthorizedDeviceScope(identity).block();
-        if (scope == null) throw new ObservationUnavailableException("公司电表授权范围为空");
-        validateScope(identity, scope);
-        List<Map<String, Object>> devices = new ArrayList<>();
-        for (AuthorizedDevice device : scope.devices()) {
-            if (!"energy".equalsIgnoreCase(device.kind())) continue;
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("id", device.id());
-            row.put("kind", device.kind());
-            row.put("name", device.name());
-            row.put("installAddress", device.installAddress());
-            row.put("observationOnly", device.observationOnly());
-            devices.add(row);
-        }
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("source", identity.source().name());
-        body.put("devices", devices);
-        return body;
-    }
-
-    private static AuthorizedDeviceScope scopeFromBody(RequestIdentity identity, Map<String, Object> body) {
-        Object raw = body.get("devices");
-        if (!(raw instanceof List<?> rows)) {
-            throw new ObservationUnavailableException("公司电表授权投影格式无效");
-        }
-        List<AuthorizedDevice> devices = new ArrayList<>();
-        for (Object value : rows) {
-            if (!(value instanceof Map<?, ?> row)) {
-                throw new ObservationUnavailableException("公司电表授权投影格式无效");
-            }
-            devices.add(new AuthorizedDevice(
-                    text(row.get("id")), text(row.get("kind")), text(row.get("name")),
-                    text(row.get("installAddress")), Boolean.TRUE.equals(row.get("observationOnly"))));
-        }
-        return new AuthorizedDeviceScopeSnapshot(identity, devices);
-    }
-
-    private long deadline() {
-        return System.currentTimeMillis() + DEFAULT_READ_BUDGET_MS;
-    }
-
-    private Mono<MeterRead> readMeter(
-            RequestIdentity identity, AuthorizedDevice meter, Instant from, Instant to, long deadlineAt) {
-        return readPage(identity, meter, from, to, 0, new ArrayList<>(), false, 0, deadlineAt)
-                .map(rows -> new MeterRead(meter, rows.rows, rows.truncated));
-    }
-
-    private Mono<PageRead> readPage(
-            RequestIdentity identity, AuthorizedDevice meter, Instant from, Instant to,
-            int page, List<Sample> collected, boolean truncated, int rowCount, long deadlineAt) {
-        // This is background work, not a frontend deadline. Keep the sorted raw
-        // boundary row: filtering it in the adapter would force an archive-wide scan.
-        if (page >= maxPages || rowCount >= maxRows || System.currentTimeMillis() >= deadlineAt) {
-            return Mono.just(new PageRead(collected, true));
-        }
-        Map<String, String> params = new LinkedHashMap<>();
-        params.put("equipmentId", meter.id());
-        params.put("page", Integer.toString(page));
-        params.put("size", "500");
-        return rawHistory.read(new ObservationRequest(identity, ObservationOperationEnum.ENERGY_HISTORY, params))
-                .flatMap(response -> {
-                    if (response.status() == ObservationStatusEnum.UNAVAILABLE) {
-                        return Mono.error(new ObservationUnavailableException("计量历史上游不可用"));
-                    }
-                    if (response.status() != ObservationStatusEnum.AVAILABLE
-                            && response.status() != ObservationStatusEnum.EMPTY
-                            && response.status() != ObservationStatusEnum.PARTIAL) {
-                        return Mono.error(new ObservationUnavailableException("计量历史上游返回不可用结果"));
-                    }
-                    boolean continuationOnly = response.payload().get("nextPage") != null
-                            && response.failures().stream().allMatch(failure -> "HISTORY_PARTIAL".equals(failure.code()));
-                    boolean pagePartial = response.status() == ObservationStatusEnum.PARTIAL && !continuationOnly;
-                    List<Sample> pageRows = response.status() == ObservationStatusEnum.EMPTY
-                            ? List.of() : parseRows(response.payload(), meter.id());
-                    int nextCount = rowCount;
-                    for (Sample sample : pageRows) {
-                        if (!sample.readTime.isAfter(to)) {
-                            collected.add(sample);
-                            nextCount++;
-                        }
-                    }
-                    boolean reachesRequestedStart = pageRows.stream().anyMatch(sample -> !sample.readTime.isAfter(from));
-                    boolean last = response.status() == ObservationStatusEnum.EMPTY
-                            || isLast(response.payload()) || reachesRequestedStart;
-                    boolean pageTruncated = truncated || pagePartial;
-                    if (last) return Mono.just(new PageRead(unique(collected), pageTruncated));
-                    if (nextCount >= maxRows || page + 1 >= maxPages) {
-                        return Mono.just(new PageRead(unique(collected), true));
-                    }
-                    return readPage(identity, meter, from, to, page + 1, collected, pageTruncated, nextCount, deadlineAt);
-                })
-                .onErrorMap(error -> error instanceof BusinessException
-                        ? error : new ObservationUnavailableException("计量历史页读取失败"));
+        return Mono.fromCallable(() -> history.authorizedScope(identity)).subscribeOn(Schedulers.boundedElastic());
     }
 
     private Map<String, Object> dailyPayload(
             List<AuthorizedDevice> meters, List<MeterRead> reads, LocalDate start, LocalDate end, int days) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("source", "company");
-        payload.put("observedAt", clock.instant().toString());
+        readQuality(payload, reads);
         payload.put("timezone", "Asia/Shanghai");
         Map<String, Object> basis = new LinkedHashMap<>();
         basis.put("field", "epf"); basis.put("boundaryHour", 8); basis.put("cycle", "08:00 → 次日 08:00（采样日）");
@@ -1503,8 +758,6 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         payload.put("days", daysOut);
         payload.put("meters", meterOut);
         payload.put("comparison", comparisonSlices(reads, meters, end));
-        payload.put("budget", Map.of("maxPagesPerMeter", maxPages, "maxRowsPerMeter", maxRows,
-                "truncated", truncated));
         return payload;
     }
 
@@ -1542,7 +795,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
                 meter.id(), start, end, count, boundary)));
         payload.put("type", "energy-comparison");
         payload.put("source", "company");
-        payload.put("observedAt", clock.instant().toString());
+        readQuality(payload, List.of(read));
         payload.put("status", comparisonStatus(weeks));
         payload.put("meter", Map.of("id", meter.id(), "name", meter.name(), "location", meter.installAddress()));
         Map<String, Object> basis = new LinkedHashMap<>();
@@ -1703,7 +956,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("reportId", "local-company-energy-" + Integer.toHexString(Objects.hash(windows.get(0).from, windows.get(windows.size() - 1).to)));
         payload.put("type", "company-energy"); payload.put("source", "company");
-        payload.put("observedAt", clock.instant().toString());
+        readQuality(payload, reads);
         payload.put("window", Map.of("from", format(windows.get(0).from), "to", format(windows.get(windows.size() - 1).to)));
         Map<String, Object> basis = new LinkedHashMap<>();
         basis.put("field", "epf"); basis.put("timezone", "Asia/Shanghai"); basis.put("boundaryHour", boundary);
@@ -1772,7 +1025,7 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         payload.put("type", "meter-report");
         payload.put("kind", kind);
         payload.put("source", "company");
-        payload.put("observedAt", clock.instant().toString());
+        readQuality(payload, reads);
         Map<String, Object> span = new LinkedHashMap<>();
         span.put("requested", Map.of("from", format(from), "to", format(to)));
         Map<String, Object> observed = new LinkedHashMap<>();
@@ -1808,8 +1061,12 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         List<Map<String, Object>> partial = new ArrayList<>();
         Instant latest = latestReads(reads);
         for (MeterRead read : reads) {
-            if (read.samples.isEmpty()) noData.add(read.device.id());
-            else if (read.truncated) partial.add(Map.of("id", read.device.id(), "through", formatNullable(latestSample(read.samples))));
+            if (read.truncated) {
+                Map<String, Object> gap = new LinkedHashMap<>();
+                gap.put("id", read.device.id());
+                gap.put("through", formatNullable(latestSample(read.samples)));
+                partial.add(gap);
+            } else if (read.samples.isEmpty()) noData.add(read.device.id());
         }
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("meters", meters.size());
@@ -1841,45 +1098,11 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
         return result;
     }
 
-    private static List<Sample> parseRows(Map<String, Object> payload, String requestedMeter) {
-        Object raw = payload.get("content");
-        if (raw instanceof Map<?, ?> map) raw = map.get("content");
-        if (raw == null) raw = payload.get("rows");
-        if (raw == null) raw = payload.get("items");
-        if (raw == null) raw = payload.get("samples");
-        if (raw == null) return List.of();
-        if (!(raw instanceof List<?> rows)) throw new IllegalArgumentException("计量历史内容不是数组");
-        List<Sample> result = new ArrayList<>();
-        for (Object item : rows) {
-            if (!(item instanceof Map<?, ?> rawMap)) throw new IllegalArgumentException("计量历史行格式无效");
-            Map<?, ?> row = rawMap;
-            String meterId = text(row.get("equipmentId"));
-            if (meterId == null || !requestedMeter.equals(meterId)) continue;
-            String readTime = text(row.get("readTime"));
-            if (readTime == null || text(row.get("id")) == null) throw new IllegalArgumentException("计量历史行缺少身份或时间");
-            Object rawValue = row.get("epf");
-            if (rawValue == null && row.get("values") instanceof Map<?, ?> values) rawValue = values.get("epf");
-            if (rawValue == null) continue;
-            double value = number(rawValue);
-            result.add(new Sample(text(row.get("id")), instant(readTime), value, numberOrNull(row.get("totalPowerFactor"))));
-        }
-        return result;
-    }
+    
 
-    private static boolean isLast(Map<String, Object> payload) {
-        Object value = payload.get("last");
-        if (value instanceof Boolean last) return last;
-        value = payload.get("hasNext");
-        if (value instanceof Boolean next) return !next;
-        Object nextPage = payload.get("nextPage");
-        return nextPage == null;
-    }
+    
 
-    private static List<Sample> unique(List<Sample> rows) {
-        Map<String, Sample> result = new LinkedHashMap<>();
-        for (Sample row : rows) result.put(row.id + ":" + row.readTime, row);
-        return result.values().stream().sorted(Comparator.comparing(Sample::readTime)).toList();
-    }
+    
 
     private static Double usage(List<Sample> samples, Instant from, Instant to) {
         Sample start = null, end = null;
@@ -2015,12 +1238,20 @@ public final class CompanyEnergyObservationComposerImpl implements CompanyEnergy
     private static int dayCount(Instant from, Instant to) { return Math.max(1, (int) Math.ceil((to.toEpochMilli() - from.toEpochMilli()) / 86_400_000d)); }
     private static double round(double value) { return BigDecimal.valueOf(value).setScale(2, RoundingMode.HALF_UP).doubleValue(); }
 
+    private static void readQuality(Map<String, Object> payload, List<MeterRead> reads) {
+        payload.put("observedAt", formatNullable(latestReads(reads)));
+        if (!reads.isEmpty() && !reads.getFirst().cache().isEmpty()) payload.put("cache", reads.getFirst().cache());
+    }
+
     private record ReportWindow(Instant from, Instant to, String label) { }
     private record MonthWindow(YearMonth month, Instant from, Instant to, boolean current) { }
 
     record Sample(String id, Instant readTime, double value, Double powerFactor) { }
-    record MeterRead(AuthorizedDevice device, List<Sample> samples, boolean truncated) { }
-    private record PageRead(List<Sample> rows, boolean truncated) { }
+    record MeterRead(AuthorizedDevice device, List<Sample> samples, boolean truncated, Map<String, Object> cache) {
+        MeterRead(AuthorizedDevice device, List<Sample> samples, boolean truncated) {
+            this(device, samples, truncated, Map.of());
+        }
+    }
     private record Zoned(java.time.ZonedDateTime value) {
         Instant toInstant() { return value.toInstant(); }
     }

@@ -120,6 +120,44 @@ class ConversationFacadeContractTest {
     }
 
     @Test
+    void retryingUneditedTextAfterLocalPublicationStartsANewRunInsteadOfReplayingFailure() {
+        try (var local = new ltd.qianc.iotagent.iot.EnergyHistoryFixture()) {
+            MemoryConversationStore store = new MemoryConversationStore();
+            MemoryEventStore events = new MemoryEventStore();
+            AtomicInteger attempts = new AtomicInteger();
+            AgentEngineBridge bridge = new AgentEngineBridge() {
+                public CompletionStage<Void> start(AgentRunRequest request, Consumer<AgentEngineEvent> sink) {
+                    attempts.incrementAndGet();
+                    try {
+                        local.directory.loadScope(local.identity());
+                        sink.accept(new AgentEngineEvent(request.runId(), request.conversationId(), request.turnId(),
+                                "run.completed", Map.of()));
+                        return CompletableFuture.completedFuture(null);
+                    } catch (BusinessException pending) {
+                        return CompletableFuture.failedFuture(pending);
+                    }
+                }
+                public CompletionStage<Void> cancel(String id) { return CompletableFuture.completedFuture(null); }
+            };
+            ConversationFacade facade = new ConversationFacade(local.mapper, store, events, bridge,
+                    Runnable::run, mock(ConversationDrafts.class), mock(ConversationTaskCards.class));
+            String id = (String) facade.create(PRINCIPAL, "company").get("id");
+            for (int attempt = 0; attempt < 2; attempt++) {
+                facade.message(PRINCIPAL, id, "你好", null, "company");
+                assertThat(events.values.getLast().payloadJson()).contains("IOT_SCOPE_PREPARING");
+                facade.discard(PRINCIPAL, id, store.latestTurn(id).orElseThrow().id(), "company");
+            }
+            local.publish();
+            int sourceCalls = local.directoryCalls.get();
+            facade.message(PRINCIPAL, id, "你好", null, "company");
+            assertThat(events.values.getLast().type()).isEqualTo("run.completed");
+            assertThat(store.turns(id)).extracting(ConversationTurn::content).containsExactly("你好");
+            assertThat(attempts.get()).isEqualTo(3);
+            assertThat(local.directoryCalls.get()).isEqualTo(sourceCalls);
+        }
+    }
+
+    @Test
     void restoresAllTurnsFromOneCoherentEventSnapshot() {
         MemoryConversationStore conversations = new MemoryConversationStore();
         AtomicInteger reads = new AtomicInteger();
@@ -217,6 +255,7 @@ class ConversationFacadeContractTest {
     private static final class MemoryConversationStore implements ConversationStore {
         private ConversationRecord conversation;
         private final List<ConversationTurn> values = new ArrayList<>();
+        private int nextTurn;
 
         @Override
         public ConversationRecord create(String tenantCode, String ownerKey, String source, Instant createdAt) {
@@ -238,7 +277,7 @@ class ConversationFacadeContractTest {
 
         @Override
         public ConversationTurn startTurn(String conversationId, String content, Instant startedAt, String idempotencyKey) {
-            ConversationTurn turn = new ConversationTurn("turn-" + (values.size() + 1), conversationId, content, startedAt, idempotencyKey);
+            ConversationTurn turn = new ConversationTurn("turn-" + (++nextTurn), conversationId, content, startedAt, idempotencyKey);
             values.add(turn);
             return turn;
         }

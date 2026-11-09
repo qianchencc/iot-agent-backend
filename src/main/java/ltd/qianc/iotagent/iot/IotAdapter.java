@@ -8,6 +8,34 @@ public interface IotAdapter {
 
     Mono<AuthorizedDeviceScope> loadAuthorizedDeviceScope(RequestIdentity identity);
 
+    /** Explicit mutation/real-execution boundary, never for ordinary read authorization. */
+    default Mono<AuthorizedDeviceScope> revalidateAuthorizedDeviceScope(RequestIdentity identity) {
+        return loadAuthorizedDeviceScope(identity);
+    }
+
+    /** Explicit real preflight/readback; must not use retained local observations. */
+    default Mono<DeviceStateReadResult> readLiveDeviceStates(RequestIdentity identity, List<String> deviceIds) {
+        return readDeviceStates(identity, deviceIds);
+    }
+
+    /** Background collection only; Office regions and devices must originate from the same complete run. */
+    default Mono<DeviceDirectoryBatch> collectDirectory(RequestIdentity identity) {
+        if (identity.source() == IotSourceEnum.OFFICE) {
+            return Mono.error(new UpstreamUnavailableException("Office 完整目录采集未接入"));
+        }
+        return loadAuthorizedDeviceScope(identity).map(scope -> new DeviceDirectoryBatch(scope, List.of()));
+    }
+
+    /** Background current-state collection. Unknown source timestamps must remain null. */
+    default Mono<DeviceStateReadResult> collectCurrentStates(RequestIdentity identity, AuthorizedDeviceScope scope) {
+        return Mono.error(new UpstreamUnavailableException("当前状态独立采集未接入"));
+    }
+
+    /** Ordinary reads require a complete local published batch, never an upstream collection. */
+    default Mono<DeviceDirectoryBatch> readDirectory(RequestIdentity identity) {
+        return Mono.error(new ltd.qianc.iotagent.error.BusinessException("IOT_SCOPE_UNAVAILABLE", "本地设备目录未配置", 503));
+    }
+
     /** Optional display metadata only; callers must never use it for authorization. */
     default Mono<String> readCreatorDisplayName(RequestIdentity identity) {
         return Mono.error(new UpstreamUnavailableException("成员姓名读取适配器未接入"));

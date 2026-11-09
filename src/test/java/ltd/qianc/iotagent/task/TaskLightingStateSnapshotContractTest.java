@@ -28,14 +28,7 @@ import ltd.qianc.iotagent.readmodel.ReadSnapshots;
 import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Mono;
 
-/**
- * Consumer-visible contract for the task detail lighting states ("现在状态"):
- * an authorized read never blocks the request thread on the gateway, a cold
- * snapshot reports preparation instead of unknown states, concurrent reads
- * coalesce and stay isolated per credential/source/device set, revocation and
- * de-authorization never leak held rows, and a completed phase can never reuse
- * the pre-execution observation.
- */
+/** Task current states preserve local observation quality and never replace durable execution facts. */
 class TaskLightingStateSnapshotContractTest {
     private static final Instant NOW = Instant.parse("2026-11-05T08:00:00Z");
     private static final PrincipalInfo PRINCIPAL =
@@ -47,157 +40,72 @@ class TaskLightingStateSnapshotContractTest {
             "{\"actions\":[{\"deviceId\":\"light-3\",\"kind\":\"lighting\"}]}";
 
     @Test
-    void coldStateReportsPreparingAndHeldStateSurvivesSlowOrFailedStateRenewal() {
+    void partialLocalStateRetainsUnknownSampleTimeAndTheMissingDevice() {
         try (Harness h = new Harness()) {
-            h.prepare();
-            Map<String, Object> cold = h.facade.lightingStates(PRINCIPAL, "task-1", "company");
-            assertThat(cold.get("status")).isEqualTo("preparing");
-            assertThat(cold.get("states")).as("cold reads never fabricate state rows").isNull();
-            assertThat(h.stateReads).as("the request thread never crawls upstream").isEmpty();
-
-            h.runUpstream();
-            Map<String, Object> warm = h.facade.lightingStates(PRINCIPAL, "task-1", "company");
-            assertThat(warm.get("observedAt")).isEqualTo("2026-11-05T07:59:00Z");
-            assertThat(ids(warm)).containsExactly("light-1", "light-2");
-            assertThat(state(warm, "light-1")).isEqualTo("on");
-            assertThat(state(warm, "light-2")).isEqualTo("off");
-            assertThat(warm.get("cache")).isInstanceOf(Map.class);
-
-            // Only the state renewal fails here while the scope catalog stays
-            // available: the held observation keeps serving without blocking,
-            // now marked with its renewal failure.
-            h.statesAvailable = false;
-            h.clock.now = NOW.plusSeconds(61);
-            Map<String, Object> held = h.facade.lightingStates(PRINCIPAL, "task-1", "company");
-            assertThat(held.get("observedAt")).isEqualTo("2026-11-05T07:59:00Z");
-            assertThat(ids(held)).containsExactly("light-1", "light-2");
-            h.runUpstream();
-            Map<String, Object> afterFailure = h.facade.lightingStates(PRINCIPAL, "task-1", "company");
-            assertThat(ids(afterFailure)).containsExactly("light-1", "light-2");
-            assertThat(state(afterFailure, "light-1")).isEqualTo("on");
-            assertThat(((Map<?, ?>) afterFailure.get("cache")).get("lastError")).isNotNull();
+            h.observedAt.set(null);
+            Map<String, Object> states = new java.util.LinkedHashMap<>();
+            states.put("light-1", Map.of("state", "on"));
+            states.put("light-2", null);
+            h.liveStates.set(states);
+            Map<String, Object> result = h.facade.lightingStates(PRINCIPAL, "task-1", "company");
+            assertThat(result.get("status")).isEqualTo("partial");
+            assertThat(result.get("observedAt")).isNull();
+            assertThat(result.get("missingDeviceIds")).isEqualTo(List.of("light-2"));
+            assertThat(state(result, "light-1")).isEqualTo("on");
+            assertThat(state(result, "light-2")).isNull();
         }
     }
 
     @Test
-    void successiveColdReadsCoalesceIntoOneUpstreamStateLoad() {
+    void aCompletedPhaseDoesNotTurnItsCommandTargetIntoCurrentDeviceState() {
         try (Harness h = new Harness()) {
-            h.prepare();
-            for (int index = 0; index < 3; index++) {
-                assertThat(h.facade.lightingStates(PRINCIPAL, "task-1", "company").get("status"))
-                        .isEqualTo("preparing");
-            }
-            assertThat(h.upstream).as("three reads share one background load").hasSize(1);
-            assertThat(h.stateReads).isEmpty();
-            h.runUpstream();
-            assertThat(ids(h.facade.lightingStates(PRINCIPAL, "task-1", "company")))
-                    .containsExactly("light-1", "light-2");
-            assertThat(h.stateReads).hasSize(1);
-        }
-    }
-
-    @Test
-    void liveCredentialDenialRevokesHeldStatesSoNothingLeaksFromCache() {
-        try (Harness h = new Harness()) {
-            h.prepare();
-            assertThat(h.facade.lightingStates(PRINCIPAL, "task-1", "company").get("status"))
-                    .isEqualTo("preparing");
-            h.runUpstream();
-            assertThat(ids(h.facade.lightingStates(PRINCIPAL, "task-1", "company")))
-                    .containsExactly("light-1", "light-2");
-
-            // Held rows may serve while revalidation is in flight, but once the
-            // live credential is denied the cached observation must not leak.
-            h.clock.now = NOW.plusSeconds(61);
-            h.upstreamDenial = new BusinessException("UNAUTHORIZED", "上游身份已失效", 401);
-            assertThat(ids(h.facade.lightingStates(PRINCIPAL, "task-1", "company")))
-                    .containsExactly("light-1", "light-2");
-            h.runUpstream();
-            assertThatThrownBy(() -> h.facade.lightingStates(PRINCIPAL, "task-1", "company"))
-                    .isInstanceOfSatisfying(BusinessException.class,
-                            failure -> assertThat(failure.httpStatus()).isEqualTo(401));
-        }
-    }
-
-    @Test
-    void stateReadsAreIsolatedByCredentialSourceAndDeviceSet() {
-        try (Harness h = new Harness()) {
-            h.prepare();
-            assertThat(h.facade.lightingStates(PRINCIPAL, "task-1", "company").get("status"))
-                    .isEqualTo("preparing");
-            h.runUpstream();
-
-            PrincipalInfo rotated = new PrincipalInfo("Bearer rotated-reader", "TENANT", "member", "gateway");
-            assertThatThrownBy(() -> h.facade.lightingStates(rotated, "task-1", "company"))
-                    .isInstanceOfSatisfying(BusinessException.class,
-                            failure -> assertThat(failure.code()).isEqualTo("TASK_READ_PREPARING"));
-            assertThatThrownBy(() -> h.facade.lightingStates(PRINCIPAL, "task-office", "office"))
-                    .isInstanceOfSatisfying(BusinessException.class,
-                            failure -> assertThat(failure.code()).isEqualTo("TASK_READ_PREPARING"));
-            assertThat(h.facade.lightingStates(PRINCIPAL, "task-2", "company").get("status"))
-                    .isEqualTo("preparing");
-            assertThat(ids(h.facade.lightingStates(PRINCIPAL, "task-1", "company")))
-                    .containsExactly("light-1", "light-2");
-        }
-    }
-
-    @Test
-    void completedPhaseCannotReuseThePreExecutionStateSnapshot() {
-        try (Harness h = new Harness()) {
-            h.prepare();
-            assertThat(h.facade.lightingStates(PRINCIPAL, "task-1", "company").get("status"))
-                    .isEqualTo("preparing");
-            h.runUpstream();
-            assertThat(state(h.facade.lightingStates(PRINCIPAL, "task-1", "company"), "light-1"))
-                    .isEqualTo("on");
-            assertThat(h.stateReads).hasSize(1);
-
-            // The phase executes: the durable execution fact must make the held
-            // pre-execution observation unusable for the same device set.
             h.phases.set(List.of(phase("task-1", "phase-1", "COMPLETED", TASK1_ACTIONS,
                     "{\"devices\":{\"light-1\":{\"outcome\":\"turnedOff\"}}}",
                     NOW.minusSeconds(60), NOW.minusSeconds(50))));
-            h.liveStates.set(Map.of(
-                    "light-1", Map.of("state", "off", "reportedAt", "r-1b"),
-                    "light-2", Map.of("state", "off", "reportedAt", "r-2b")));
+            Map<String, Object> beforeSync = h.facade.lightingStates(PRINCIPAL, "task-1", "company");
+            assertThat(state(beforeSync, "light-1")).isEqualTo("on");
+            assertThat(beforeSync.get("observedAt")).isEqualTo("2026-11-05T07:59:00Z");
+            h.liveStates.set(Map.of("light-1", Map.of("state", "off"), "light-2", Map.of("state", "off")));
             h.observedAt.set("2026-11-05T08:01:00Z");
-            Map<String, Object> postExecution = h.facade.lightingStates(PRINCIPAL, "task-1", "company");
-            assertThat(postExecution.get("status"))
-                    .as("execution makes the pre-execution snapshot cold").isEqualTo("preparing");
-            assertThat(postExecution.get("states")).isNull();
-            h.runUpstream();
-            Map<String, Object> refreshed = h.facade.lightingStates(PRINCIPAL, "task-1", "company");
-            assertThat(refreshed.get("observedAt")).isEqualTo("2026-11-05T08:01:00Z");
-            assertThat(state(refreshed, "light-1")).isEqualTo("off");
-            assertThat(h.stateReads).hasSize(2);
+            Map<String, Object> afterSync = h.facade.lightingStates(PRINCIPAL, "task-1", "company");
+            assertThat(state(afterSync, "light-1")).isEqualTo("off");
+            assertThat(afterSync.get("observedAt")).isEqualTo("2026-11-05T08:01:00Z");
         }
     }
 
     @Test
-    void invisibleTasksStayInvisibleAndDeAuthorizedLightingFailsClosed() {
+    void denialAndDatabaseFailureDoNotExposeHeldCurrentStates() {
         try (Harness h = new Harness()) {
-            h.prepare();
+            assertThat(ids(h.facade.lightingStates(PRINCIPAL, "task-1", "company")))
+                    .containsExactly("light-1", "light-2");
+            h.upstreamDenial = new BusinessException("UNAUTHORIZED", "测试授权已失效", 401);
+            assertThatThrownBy(() -> h.facade.lightingStates(PRINCIPAL, "task-1", "company"))
+                    .isInstanceOfSatisfying(BusinessException.class,
+                            failure -> assertThat(failure.httpStatus()).isEqualTo(401));
+            h.upstreamDenial = null;
+            h.statesAvailable = false;
+            assertThatThrownBy(() -> h.facade.lightingStates(PRINCIPAL, "task-1", "company"))
+                    .isInstanceOfSatisfying(BusinessException.class,
+                            failure -> assertThat(failure.code()).isEqualTo("TASK_LIGHTING_STATES_UNAVAILABLE"));
+        }
+    }
+
+    @Test
+    void foreignTasksAndRemovedOrRepurposedDevicesDoNotExposeState() {
+        try (Harness h = new Harness()) {
             PrincipalInfo foreign = new PrincipalInfo("Bearer foreign-tenant", "OTHER", "member", "gateway");
             assertThatThrownBy(() -> h.facade.lightingStates(foreign, "task-1", "company"))
                     .isInstanceOfSatisfying(BusinessException.class,
                             failure -> assertThat(failure.code()).isEqualTo("TASK_NOT_FOUND"));
-            assertThat(h.upstream).as("an invisible task queues no state work").isEmpty();
-
-            assertThat(h.facade.lightingStates(PRINCIPAL, "task-1", "company").get("status"))
-                    .isEqualTo("preparing");
-            h.runUpstream();
+            PrincipalInfo rotated = new PrincipalInfo("Bearer rotated-reader", "TENANT", "member", "gateway");
+            assertThatThrownBy(() -> h.facade.lightingStates(rotated, "task-1", "company"))
+                    .isInstanceOfSatisfying(BusinessException.class,
+                            failure -> assertThat(failure.code()).isEqualTo("TASK_READ_PREPARING"));
             assertThat(ids(h.facade.lightingStates(PRINCIPAL, "task-1", "company")))
                     .containsExactly("light-1", "light-2");
-
-            // A device re-purposed away from lighting de-authorizes the whole
-            // read; previously held states must not leak back.
             h.devices.set(List.of(
                     new AuthorizedDevice("light-1", "energy", "灯一", "26楼", true),
                     new AuthorizedDevice("light-2", "lighting", "灯二", "26楼", false)));
-            h.clock.now = NOW.plusSeconds(61);
-            assertThat(ids(h.facade.lightingStates(PRINCIPAL, "task-1", "company")))
-                    .containsExactly("light-1", "light-2");
-            h.runUpstream();
             assertThatThrownBy(() -> h.facade.lightingStates(PRINCIPAL, "task-1", "company"))
                     .isInstanceOfSatisfying(BusinessException.class,
                             failure -> assertThat(failure.code()).isEqualTo("TASK_NOT_FOUND"));
@@ -251,6 +159,16 @@ class TaskLightingStateSnapshotContractTest {
 
         Harness() {
             IotAdapter iot = new IotAdapter() {
+                @Override public Mono<ltd.qianc.iotagent.iot.DeviceDirectoryBatch> readDirectory(RequestIdentity identity) {
+                    if (upstreamDenial != null) return Mono.error(upstreamDenial);
+                    if (!PRINCIPAL.authorization().equals(identity.authorization())
+                            || identity.source() != ltd.qianc.iotagent.iot.IotSourceEnum.COMPANY) {
+                        return Mono.error(new BusinessException("IOT_SCOPE_PREPARING", "Fixture directory pending", 503));
+                    }
+                    return Mono.just(new ltd.qianc.iotagent.iot.DeviceDirectoryBatch(
+                            AuthorizedDeviceScope.of(identity, identity.source(), devices.get()), List.of()));
+                }
+
                 @Override public Mono<AuthorizedDeviceScope> loadAuthorizedDeviceScope(RequestIdentity identity) {
                     if (upstreamDenial != null) return Mono.error(upstreamDenial);
                     return Mono.just(AuthorizedDeviceScope.of(identity, identity.source(), devices.get()));
@@ -259,9 +177,11 @@ class TaskLightingStateSnapshotContractTest {
                 @Override public Mono<DeviceStateReadResult> readDeviceStates(
                         RequestIdentity identity, List<String> deviceIds) {
                     if (upstreamDenial != null) return Mono.error(upstreamDenial);
-                    if (!statesAvailable) return Mono.error(new IllegalStateException("state upstream unavailable"));
+                    if (!statesAvailable) return Mono.error(new IllegalStateException("local database unavailable"));
                     stateReads.add(List.copyOf(deviceIds));
-                    return Mono.just(new DeviceStateReadResult(liveStates.get(), observedAt.get()));
+                    Map<String, Object> selected = new java.util.LinkedHashMap<>();
+                    for (String id : deviceIds) selected.put(id, liveStates.get().get(id));
+                    return Mono.just(new DeviceStateReadResult(selected, observedAt.get()));
                 }
             };
             String owner = PRINCIPAL.ownerKey();
@@ -283,14 +203,6 @@ class TaskLightingStateSnapshotContractTest {
                     phaseStore, iot, snapshots, clock);
         }
 
-        void prepare() {
-            try {
-                facade.scope(PRINCIPAL, "company");
-            } catch (BusinessException pending) {
-                if (!"TASK_READ_PREPARING".equals(pending.code())) throw pending;
-            }
-            runUpstream();
-        }
 
         void runUpstream() {
             while (!upstream.isEmpty()) upstream.remove().run();

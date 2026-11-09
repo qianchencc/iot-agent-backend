@@ -88,7 +88,17 @@ export class PiSessionRun {
     this.finished = true;
   }
   async close(): Promise<void> {
-    try { await this.repository.close(); } finally { this.onClose(); }
+    // Session release is cleanup, not part of the user-visible run. A stuck
+    // Java release endpoint must not hold the NDJSON terminal event hostage.
+    const closing = this.repository.close().catch(() => undefined);
+    const closeDeadline = Promise.withResolvers<void>();
+    const timer = setTimeout(closeDeadline.resolve, 2_000);
+    try {
+      await Promise.race([closing, closeDeadline.promise]);
+    } finally {
+      clearTimeout(timer);
+    }
+    this.onClose();
   }
 }
 

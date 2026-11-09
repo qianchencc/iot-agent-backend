@@ -47,6 +47,11 @@ public final class SchemaMigrations {
         migrations.ensureDeviceCandidateSets();
     }
 
+    /** Principal-isolated Company/Office directories, grants and independently encrypted synchronization registration. */
+    public void ensureLocalCompanyDirectory() {
+        migrations.ensureLocalCompanyDirectory();
+    }
+
     /** Pi 原生会话日志四表：范围租约、虚拟文件、分块内容与提交回执。 */
     public void ensurePiSessions() {
         migrations.ensurePiSessions();

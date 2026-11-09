@@ -162,6 +162,15 @@ public final class AgentBusinessToolDispatcher implements AgentToolBridge {
             case "get_task" -> getTask(toolContextId, principal, source, arguments);
             default -> throw new BusinessException("AGENT_TOOL_UNAVAILABLE", "工具未接入", 404);
             };
+            if ("query_alerts".equals(definition.name())) {
+                Map<String, Object> model = new LinkedHashMap<>();
+                for (String key : List.of("status", "total", "scanned", "excludedCount", "excludedCountNote",
+                        "coverageComplete", "summaryStatus", "windowDays", "failures")) {
+                    if (result.containsKey(key)) model.put(key, result.get(key));
+                }
+                if (result.get("items") instanceof List<?> items) model.put("itemsCount", items.size());
+                result.put("modelResult", model);
+            }
             if (Set.of("propose_action_draft", "propose_lighting_draft").contains(toolName)
                     && ("PENDING_CONFIRMATION".equals(result.get("status")) || "NO_CHANGE".equals(result.get("status")))) {
                 Map<String, Object> fact = new LinkedHashMap<>();
@@ -548,6 +557,10 @@ public final class AgentBusinessToolDispatcher implements AgentToolBridge {
             result.put("summaryStatus", available == 0 ? "unavailable" : failures.isEmpty() && complete ? "complete" : "partial");
             if (!failures.isEmpty()) result.put("failures", failures);
         }
+        if (result.get("excludedCount") instanceof Number excluded && excluded.longValue() > 0) {
+            result.put("excludedCountNote", "excludedCount 是在查询的授权设备和所请求告警类型范围内被过滤的记录数；"
+                    + "不是时间窗外的记录数。窗口外记录另行处理，不计入该字段。");
+        }
         if (unreportedOnly && result.get("items") instanceof List<?> rows) {
             result.put("items", rows.stream()
                     .filter(row -> row instanceof Map<?, ?> record && Boolean.FALSE.equals(record.get("report")))
@@ -725,6 +738,10 @@ public final class AgentBusinessToolDispatcher implements AgentToolBridge {
     private static Map<String, Object> normalizeObservationParameters(
             ObservationOperationEnum operation, Map<String, Object> args) {
         Map<String, Object> normalized = new LinkedHashMap<>(args);
+        if (operation == ObservationOperationEnum.ENVIRONMENT_HISTORY) {
+            normalized.remove("page");
+            normalized.put("fullWindow", true);
+        }
         if (operation == ObservationOperationEnum.COMPANY_METER_REPORT
                 && args.get("dailyWindow") instanceof Map<?, ?> dailyWindow) {
             // Original tool vocabulary dailyWindow{from,to} reaches the composer seam
@@ -955,6 +972,15 @@ public final class AgentBusinessToolDispatcher implements AgentToolBridge {
         full.put("candidateSetId", candidates.candidateSetId());
         if (membership != null) full.put("candidateMembersFingerprint", membership);
         full.put("devices", candidates.devices().stream().map(AgentBusinessToolDispatcher::publicDevice).toList());
+        List<String> videoIds = candidates.devices().stream().filter(device -> "video".equals(device.kind()))
+                .map(AuthorizedDevice::id).toList();
+        if (!videoIds.isEmpty()) {
+            DeviceStateReadResult video = iot.readDeviceStates(identity(principal, source),
+                    new DeviceCapabilityRequest(List.of(new DeviceCapabilityRequest.DeviceCapabilitySelection(
+                            candidates.candidateSetId(), videoIds))), conversationId).block(TIMEOUT);
+            if (video == null) throw new BusinessException("DEVICE_STATE_UNAVAILABLE", "本地视频状态暂不可用", 503);
+            full.put("videoObservation", mapper.convertValue(video, Map.class));
+        }
         full.put("modelResult", result);
         return full;
     }

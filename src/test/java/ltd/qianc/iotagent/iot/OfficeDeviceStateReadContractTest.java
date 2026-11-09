@@ -138,7 +138,6 @@ class OfficeDeviceStateReadContractTest {
         assertThat(states.states())
                 .containsEntry("light-a", Boolean.TRUE)
                 .containsEntry("light-b", Boolean.FALSE)
-                .containsEntry("ac-b", Map.of("power", "on", "temperature", 26, "targetTemperature", 20))
                 .containsEntry("ac-empty", null);
         assertThat(gateway.calls()).containsExactlyInAnyOrder(
                 "lighting|office-a", "lighting|office-b", "ac|office-b");

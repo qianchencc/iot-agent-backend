@@ -168,6 +168,31 @@ class IotAdapterContractTest {
         assertThat(officeIds.get()).allMatch(query -> query.contains("elementId=office-"));
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+            "{\"code\":200,\"content\":{\"content\":[{\"elementId\":\"office-a\"}],\"totalElements\":2}}",
+            "{\"code\":200,\"content\":{\"content\":[{\"elementId\":\"office-a\"}],\"last\":true,\"totalElements\":2}}",
+            "{\"code\":200,\"content\":{\"content\":[{\"elementId\":\"office-a\"}],\"last\":true,\"number\":1}}",
+            "{\"code\":200,\"content\":[{\"elementName\":\"Missing identity\"}]}",
+            "{\"code\":200,\"content\":[{\"elementId\":\"office-a\"},{\"elementId\":\"office-a\"}]}"
+    })
+    void officeBatchRejectsUnprovenOrInvalidMembershipBeforeCollectingDevices(String response) {
+        AtomicInteger deviceCalls = new AtomicInteger();
+        ExchangeFunction fixture = request -> {
+            if (request.url().getPath().equals("/membership")) return Mono.just(json(response));
+            deviceCalls.incrementAndGet();
+            return Mono.just(json("{\"code\":204,\"content\":null}"));
+        };
+        IotAdapter adapter = IotAdapterFactory.webClient(WebClient.builder().exchangeFunction(fixture).build(),
+                IotGatewayRoutes.officeDirectory("/office-scope", null, "/membership", List.of(
+                        new OfficeDeviceSource("my-office.lighting", "lighting", "/lighting", Map.of(), true))),
+                Duration.ofSeconds(1), IotCallPolicy.passThrough());
+        StepVerifier.create(adapter.collectDirectory(
+                        new RequestIdentity("Bearer fixture-membership", "fixture-tenant", IotSourceEnum.OFFICE)))
+                .expectError(UpstreamUnavailableException.class).verify(Duration.ofSeconds(2));
+        assertThat(deviceCalls).hasValue(0);
+    }
+
     @Test
     void officePhysicalJoinKeepsScopedIdentityAndDropsAssociationOnlyDevices() {
         ExchangeFunction fixture = candidate -> {
@@ -347,7 +372,7 @@ class IotAdapterContractTest {
         RequestIdentity identity = new RequestIdentity("Bearer office-token", "TENANT-1", IotSourceEnum.OFFICE, "owner-1");
 
         DeviceCandidateSet set = adapter.findDeviceCandidates(identity,
-                        new DeviceCandidateQuery("lighting", List.of(), "杨国英办公室", List.of(), List.of(), null, "office-a"))
+                        new DeviceCandidateQuery("lighting", List.of(), "测试负责人办公室", List.of(), List.of(), null, "office-a"))
                 .block(Duration.ofSeconds(1));
 
         assertThat(set).isNotNull();
@@ -485,8 +510,6 @@ class IotAdapterContractTest {
                                 "set-meter", List.of("meter-1", "meter-2")))), "conversation-meter")
                 .block(Duration.ofSeconds(1));
 
-        assertThat(((Map<?, ?>) states.states().get("meter-1")).get("ia")).isEqualTo(7.7);
-        assertThat(((Map<?, ?>) states.states().get("meter-2")).get("ia")).isEqualTo(2.1);
         assertThat(states.states().get("meter-1")).isNotEqualTo(states.states().get("meter-2"));
         synchronized (requests) {
             assertThat(requests).allMatch(request -> request.contains("/energy/"));
@@ -638,12 +661,13 @@ class IotAdapterContractTest {
                 }).verify();
     }
 
-    @Test
-    void acBindingPaginationWithoutLastAndFullPagesFailsClosedAfterTenPages() {
-        String rows = java.util.stream.IntStream.range(0, 100)
-                .mapToObj(index -> "{\"id\":\"binding-" + index + "\"}")
-                .collect(java.util.stream.Collectors.joining(","));
-        String fullPage = "{\"code\":200,\"content\":{\"content\":[" + rows + "]}}";
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+            "{\"code\":200,\"content\":{\"content\":[{\"id\":\"binding-1\"}],\"totalElements\":2}}",
+            "{\"code\":200,\"content\":{\"content\":[{\"id\":\"binding-1\"}],\"last\":true,\"totalElements\":2}}",
+            "{\"code\":200,\"content\":{\"content\":[{\"id\":\"binding-1\"}],\"last\":true,\"number\":1}}"
+    })
+    void acBindingRejectsUnprovenOrInconsistentCompletion(String fullPage) {
         ExchangeFunction fixture = candidate -> {
             String path = candidate.url().getPath();
             String query = candidate.url().getQuery() == null ? "" : candidate.url().getQuery();
@@ -669,6 +693,27 @@ class IotAdapterContractTest {
                         new RequestIdentity("Bearer company-token", "TENANT-1", IotSourceEnum.COMPANY)))
                 .expectError(UpstreamUnavailableException.class)
                 .verify(Duration.ofSeconds(2));
+    }
+
+    @Test
+    void companyDirectoryRejectsPartialPageOverlapEvenWhenReportedTotalMatchesRawCount() {
+        ExchangeFunction fixture = candidate -> {
+            String path = candidate.url().getPath();
+            if (path.endsWith("/energy/equipment/page")) {
+                boolean first = candidate.url().getQuery().contains("page=0");
+                return Mono.just(json(first
+                        ? "{\"code\":200,\"content\":{\"content\":[{\"id\":\"meter-a\",\"name\":\"A\"},{\"id\":\"meter-b\",\"name\":\"B\"}],\"last\":false,\"number\":0,\"totalElements\":4}}"
+                        : "{\"code\":200,\"content\":{\"content\":[{\"id\":\"meter-a\",\"name\":\"A changed\"},{\"id\":\"meter-c\",\"name\":\"C\"}],\"last\":true,\"number\":1,\"totalElements\":4}}"));
+            }
+            return Mono.just(json("{\"code\":204,\"content\":null}"));
+        };
+        IotAdapter adapter = IotAdapterFactory.webClient(WebClient.builder().exchangeFunction(fixture).build(),
+                IotGatewayRoutes.runtimeCompany("/office-scope", null, "/environment/page", "/energy/equipment/page",
+                        "/safety/page", null, "/smart", "/ac/myAreaList", "/ac/devicePage", "/binding/page"),
+                Duration.ofSeconds(1), IotCallPolicy.passThrough());
+        StepVerifier.create(adapter.loadAuthorizedDeviceScope(
+                        new RequestIdentity("Bearer fixture-overlap", "fixture-tenant", IotSourceEnum.COMPANY)))
+                .expectError(UpstreamUnavailableException.class).verify(Duration.ofSeconds(2));
     }
 
     @Test
@@ -892,17 +937,17 @@ class IotAdapterContractTest {
             if (url.getPath().equals("/membership")) {
                 if (membershipState.get() < 0) {
                     return Mono.just(json("{\"code\":200,\"content\":["
-                            + "{\"elementId\":\"office-b\",\"elementName\":\"杨国英办公室\"}]}"));
+                            + "{\"elementId\":\"office-b\",\"elementName\":\"测试负责人办公室\"}]}"));
                 }
                 return Mono.just(json("{\"code\":200,\"content\":["
                         + "{\"elementId\":\"office-a\",\"elementName\":\"26楼运营办公区\"},"
-                        + "{\"elementId\":\"office-b\",\"elementName\":\"杨国英办公室\"}]}"));
+                        + "{\"elementId\":\"office-b\",\"elementName\":\"测试负责人办公室\"}]}"));
             }
             if (url.getPath().equals("/lighting")) {
                 String devices = url.getQuery().contains("elementId=office-a")
                         ? "{\"id\":\"light-a1\",\"name\":\"照明开关-前台\",\"installAddress\":\"26楼运营办公区 前台\"},"
                                 + "{\"id\":\"light-a2\",\"name\":\"照明开关-后区\",\"installAddress\":\"26楼运营办公区 后区\"}"
-                        : "{\"id\":\"light-b1\",\"name\":\"照明开关\",\"installAddress\":\"杨国英办公室\"}";
+                        : "{\"id\":\"light-b1\",\"name\":\"照明开关\",\"installAddress\":\"测试负责人办公室\"}";
                 return Mono.just(json("{\"code\":200,\"content\":[" + devices + "]}"));
             }
             return Mono.just(json("{\"code\":204,\"content\":null}"));

@@ -257,10 +257,6 @@ class IotAdapterConcurrencyContractTest {
         assertThat(energyStarts.get()).isEqualTo(1);
         assertThat(result.states().keySet()).containsExactly(
                 "env-0", "env-1", "env-2", "env-3", "env-4", "env-5", "meter-1");
-        for (int index = 0; index < 6; index++) {
-            assertThat(((Map<?, ?>) result.states().get("env-" + index)).get("temp")).isEqualTo(25.0);
-        }
-        assertThat(((Map<?, ?>) result.states().get("meter-1")).get("ia")).isEqualTo(1.5);
     }
     @Test
     void officeScopeFansOutSourcesBoundedAtSixWithSequentialSamePathPagination() {

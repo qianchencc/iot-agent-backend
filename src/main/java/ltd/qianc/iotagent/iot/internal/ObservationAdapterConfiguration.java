@@ -35,16 +35,11 @@ import org.springframework.web.reactive.function.client.WebClient;
  */
 @Configuration(proxyBeanMethods = false)
 public class ObservationAdapterConfiguration {
+    /** Kept distinct from the ordinary ObservationAdapter bean so no consumer accidentally injects transport. */
+    public record Source(ObservationAdapter adapter) { }
+
     @Bean
-    @ConditionalOnMissingBean(ObservationAdapter.class)
-    ObservationAdapter observationAdapter(
-            WebClient.Builder builder,
-            Environment environment,
-            IotAdapter iot,
-            ObjectProvider<AutomationSummaryReader> automation,
-            ObjectProvider<RegionSeenStore> regionSeen,
-            ObjectProvider<CompanyEnergyPolicy> energyPolicy,
-            ObjectProvider<ReadSnapshots> readSnapshots,
+    Source observationSource(WebClient.Builder builder, Environment environment,
             @Value("${iot.gateway.call-timeout-ms:15000}") long timeoutMs,
             @Value("${iot.gateway.base-url:}") String baseUrl) {
         ObservationAdapter delegate;
@@ -81,9 +76,6 @@ public class ObservationAdapterConfiguration {
                     route(environment, ObservationOperationEnum.REPORT, null));
             configured.put(ObservationOperationEnum.REPORT_DOWNLOAD,
                     route(environment, ObservationOperationEnum.REPORT_DOWNLOAD, null));
-            configured.put(ObservationOperationEnum.REGION_LIST,
-                    route(environment, ObservationOperationEnum.REGION_LIST,
-                            "/micro-api/api/office/office/member/my/office"));
             configured.values().removeIf(path -> path == null || path.isBlank());
             try {
                 delegate = ObservationAdapterFactory.webClient(
@@ -95,19 +87,29 @@ public class ObservationAdapterConfiguration {
                 delegate = ObservationAdapterFactory.failClosed("物联只读观察上游配置无效");
             }
         }
+        return new Source(delegate);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(ObservationAdapter.class)
+    ObservationAdapter observationAdapter(WebClient.Builder builder, Environment environment, IotAdapter iot,
+            ObjectProvider<AutomationSummaryReader> automation, ObjectProvider<RegionSeenStore> regionSeen,
+            ObjectProvider<CompanyEnergyPolicy> energyPolicy, ObjectProvider<ltd.qianc.iotagent.iot.EnergyHistory> histories,
+            ObjectProvider<ltd.qianc.iotagent.iot.EnvironmentHistory> environments, Source source,
+            @Value("${iot.gateway.call-timeout-ms:15000}") long timeoutMs,
+            @Value("${iot.gateway.base-url:}") String baseUrl) {
+        ObservationAdapter delegate = source.adapter();
         AutomationSummaryReader automationReader = automation.getIfAvailable(
                 () -> identity -> Mono.error(new IllegalStateException("任务摘要读取适配器未配置")));
         Clock clock = Clock.systemUTC();
         CompanyEnergyPolicy configuredPolicy = energyPolicy.getIfAvailable();
-        ReadSnapshots snapshots = readSnapshots.getIfAvailable();
-        CompanyEnergyObservationComposer energyComposer = configuredPolicy == null
-                ? CompanyEnergyObservationComposerFactory.composed(delegate, iot, clock, snapshots)
-                : CompanyEnergyObservationComposerFactory.composed(delegate, iot, clock, configuredPolicy, snapshots);
+        var history = histories.getIfAvailable(UnavailableEnergyHistory::new);
+        CompanyEnergyObservationComposer energyComposer = CompanyEnergyObservationComposerFactory.composed(history, clock, configuredPolicy);
         SafetyLedgerComposer.MetadataSource metadata = metadataReader(builder, baseUrl, environment, timeoutMs);
         ObservationAdapter safetyLedger = ObservationAdapterFactory.safetyLedger(delegate, iot,
                 metadata == null ? null : metadata::currentDevice, cursorMacKey(environment), clock);
         return ObservationAdapterFactory.composed(
-                delegate, iot, automationReader, regionSeen.getIfAvailable(), energyComposer, safetyLedger, snapshots, clock);
+                delegate, iot, automationReader, regionSeen.getIfAvailable(), energyComposer, safetyLedger, environments.getIfAvailable(), clock);
     }
 
     /**

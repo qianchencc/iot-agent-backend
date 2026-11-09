@@ -176,6 +176,42 @@ class AgentToolBridgeContractTest {
     }
 
     @Test
+    void waterAlertCoverageKeepsModelFactsAndSuppliesExclusionMeaning() {
+        ConversationFacade conversations = mock(ConversationFacade.class);
+        ObservationAdapter observations = mock(ObservationAdapter.class);
+        bind(conversations, "company", null);
+        when(observations.read(any(ObservationRequest.class))).thenAnswer(invocation -> {
+            Map<String, Object> water = new LinkedHashMap<>();
+            water.put("items", List.of());
+            water.put("total", null);
+            water.put("scanned", 300);
+            water.put("excludedCount", 289);
+            water.put("unknownCount", 11);
+            water.put("coverageComplete", false);
+            water.put("nextCursor", "opaque-continuation");
+            water.put("window", Map.of("from", "2026-11-02T00:00:00+08:00",
+                    "to", "2099-01-01T00:00:00.000+08:00"));
+            return Mono.just(ObservationResponse.available(water));
+        });
+        AgentToolBridge bridge = AgentToolBridgeFactory.local(conversations, mock(IotAdapter.class), observations,
+                mock(TaskProjectionStore.class), mock(ActionDraftFacade.class), mock(TaskFacade.class), mapper, null);
+
+        String currentTime = java.time.OffsetDateTime.now(java.time.ZoneOffset.UTC).format(
+                java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSXXX"));
+        Map<String, Object> result = bridge.execute(request("query_alerts",
+                Map.of("types", List.of("water"), "from", "2026-11-02T00:00:00+08:00", "to", currentTime)));
+
+        assertThat(result).containsEntry("coverageComplete", false)
+                .containsEntry("scanned", 300).containsEntry("excludedCount", 289)
+                .containsEntry("excludedCountNote", "excludedCount 是在查询的授权设备和所请求告警类型范围内被过滤的记录数；"
+                        + "不是时间窗外的记录数。窗口外记录另行处理，不计入该字段。");
+        Map<String, Object> model = mapper.convertValue(result.get("modelResult"), Map.class);
+        assertThat(model).containsEntry("excludedCountNote", result.get("excludedCountNote"))
+                .containsEntry("scanned", 300).containsEntry("excludedCount", 289)
+                .containsEntry("coverageComplete", false);
+    }
+
+    @Test
     void currentOfficeRegionIsBoundIntoPersistedCandidateQuery() {
         ConversationFacade conversations = mock(ConversationFacade.class);
         IotAdapter iot = mock(IotAdapter.class);

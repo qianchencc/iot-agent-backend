@@ -17,51 +17,8 @@ import reactor.core.publisher.Mono;
 class CompanyOfficeObservationAdapterContractTest {
     private static final RequestIdentity COMPANY = new RequestIdentity("Bearer company-a", "TENANT", IotSourceEnum.COMPANY);
     private static final RequestIdentity OFFICE = new RequestIdentity("Bearer office-a", "TENANT", IotSourceEnum.OFFICE);
-    private static final AuthorizedDevice ENV = new AuthorizedDevice("env-1", "environment", "温度", "一号楼", true);
     private static final AuthorizedDevice AC = new AuthorizedDevice("ac-1", "ac", "空调", "一号楼", false);
 
-    @Test
-    void dashboardComposesCompanyCatalogWithoutCallingSingleDashboardEndpoint() {
-        AtomicReference<ObservationOperationEnum> operation = new AtomicReference<>();
-        AtomicReference<List<AuthorizedDevice>> observed = new AtomicReference<>();
-        ObservationAdapter upstream = request -> {
-            operation.set(request.operation());
-            throw new AssertionError("unexpected operation " + request.operation());
-        };
-        IotAdapter iot = new IotAdapter() {
-            @Override
-            public Mono<AuthorizedDeviceScope> loadAuthorizedDeviceScope(RequestIdentity identity) {
-                assertThat(identity.source()).isEqualTo(COMPANY.source());
-                return Mono.just(new AuthorizedDeviceScope() {
-                    @Override public RequestIdentity identity() { return COMPANY; }
-                    @Override public IotSourceEnum source() { return IotSourceEnum.COMPANY; }
-                    @Override public List<AuthorizedDevice> devices() { return List.of(ENV); }
-                });
-            }
-
-            @Override
-            public Mono<DeviceStateReadResult> readObservationStates(
-                    RequestIdentity identity, List<AuthorizedDevice> devices) {
-                observed.set(List.copyOf(devices));
-                return Mono.just(new DeviceStateReadResult(
-                        Map.of("env-1", Map.of("temp", 26, "source", "device")),
-                        Instant.now().toString()));
-            }
-        };
-        ObservationAdapter adapter = ObservationAdapterFactory.composed(
-                upstream, iot, identity -> Mono.just(Map.of()), null,
-                Clock.fixed(Instant.parse("2026-01-01T00:00:00Z"), ZoneOffset.UTC));
-        ObservationResponse response = adapter.read(new ObservationRequest(COMPANY, ObservationOperationEnum.DASHBOARD, Map.of("section", "environment"))).block();
-        Map<String, Object> result = response.payload();
-
-        assertThat(result.get("source")).isEqualTo("company");
-        assertThat(result.get("alerts")).isNull();
-        assertThat(operation.get()).isNull();
-        assertThat(observed.get()).containsExactly(ENV);
-        assertThat(result.toString()).doesNotContain("hubDeviceId");
-        Object environment = result.get("environment");
-        assertThat(environment.toString()).contains("26");
-    }
 
     @Test
     void regionMembershipUsesExactOfficeIdsForDevicesStatesAndSeen() {
@@ -73,11 +30,10 @@ class CompanyOfficeObservationAdapterContractTest {
                 null, "ac-b", null, null, List.of(), List.of("office-b"), Map.of());
         AuthorizedDevice noMembership = new AuthorizedDevice("ac-c", "ac", "空调 C", "一号楼", false,
                 null, "ac-c", null, null, List.of(), List.of(), Map.of());
-        ObservationAdapter upstream = request -> Mono.just(ObservationResponse.available(Map.of(
-                "regions", List.of(Map.of("id", "office-a", "name", "一号楼")))));
+        ObservationAdapter upstream = request -> Mono.error(new UpstreamUnavailableException("fixture source unavailable"));
         ObservationAdapter adapter = ObservationAdapterFactory.composed(
                 upstream, iot(OFFICE, List.of(member, sameNameDifferentOffice, noMembership), stateIds),
-                identity -> Mono.just(Map.of()), seen, Clock.systemUTC());
+                identity -> Mono.just(Map.of()), seen, null, Clock.systemUTC());
 
         Map<String, Object> devices = adapter.read(new ObservationRequest(OFFICE, ObservationOperationEnum.REGION_DEVICES,
                 Map.of("regionId", "office-a"))).block().payload();
@@ -98,10 +54,17 @@ class CompanyOfficeObservationAdapterContractTest {
     }
 
     @Test
-    void regionNamesRemainAvailableWhenDeviceDirectoryAndAttentionAreUnavailable() {
-        ObservationAdapter upstream = request -> Mono.just(ObservationResponse.available(Map.of(
-                "regions", List.of(Map.of("id", "office-a", "name", "一号楼")))));
-        IotAdapter iot = identity -> Mono.error(new UpstreamUnavailableException("device directory"));
+    void regionNamesReadLocalBatchWhenSourceAndAttentionAreUnavailable() {
+        ObservationAdapter upstream = request -> Mono.error(new UpstreamUnavailableException("fixture source unavailable"));
+        IotAdapter iot = new IotAdapter() {
+            @Override public Mono<AuthorizedDeviceScope> loadAuthorizedDeviceScope(RequestIdentity identity) {
+                return Mono.error(new UpstreamUnavailableException("fixture source unavailable"));
+            }
+            @Override public Mono<DeviceDirectoryBatch> readDirectory(RequestIdentity identity) {
+                return Mono.just(new DeviceDirectoryBatch(AuthorizedDeviceScope.of(identity, identity.source(), List.of()),
+                        List.of(new OfficeRegion("office-a", "一号楼"))));
+            }
+        };
         RegionSeenStore unavailableAttention = new RegionSeenStore() {
             @Override public void markSeen(String tenant, String owner, String region, Instant at) {
                 throw new IllegalStateException("attention unavailable");
@@ -111,7 +74,7 @@ class CompanyOfficeObservationAdapterContractTest {
             }
         };
         ObservationAdapter adapter = ObservationAdapterFactory.composed(
-                upstream, iot, identity -> Mono.just(Map.of()), unavailableAttention, Clock.systemUTC());
+                upstream, iot, identity -> Mono.just(Map.of()), unavailableAttention, null, Clock.systemUTC());
 
         ObservationResponse result = adapter.read(new ObservationRequest(
                 OFFICE, ObservationOperationEnum.REGION_LIST, Map.of("section", "directory"))).block();
@@ -124,11 +87,10 @@ class CompanyOfficeObservationAdapterContractTest {
 
     @Test
     void regionDevicesRejectRegionOutsideCurrentOfficeIdentity() {
-        ObservationAdapter upstream = request -> Mono.just(ObservationResponse.available(Map.of(
-                "regions", List.of(Map.of("id", "region-a", "name", "一号楼")))));
+        ObservationAdapter upstream = request -> Mono.error(new UpstreamUnavailableException("fixture source unavailable"));
         ObservationAdapter adapter = ObservationAdapterFactory.composed(
                 upstream, iot(OFFICE, List.of(AC)), identity -> Mono.just(Map.of()),
-                new MemorySeenStore(), Clock.systemUTC());
+                new MemorySeenStore(), null, Clock.systemUTC());
 
         assertThatThrownBy(() -> adapter.read(new ObservationRequest(OFFICE, ObservationOperationEnum.REGION_DEVICES,
                 Map.of("regionId", "region-b"))).block())
@@ -145,7 +107,7 @@ class CompanyOfficeObservationAdapterContractTest {
         };
         ObservationAdapter adapter = ObservationAdapterFactory.composed(
                 request -> Mono.just(ObservationResponse.available(Map.of())),
-                iot(OFFICE, List.of()), identity -> Mono.just(Map.of()), null, composer,
+                iot(OFFICE, List.of()), identity -> Mono.just(Map.of()), null, composer, null,
                 Clock.fixed(Instant.parse("2026-01-01T00:00:00Z"), ZoneOffset.UTC));
         ObservationRequest energy = new ObservationRequest(COMPANY,
                 ObservationOperationEnum.COMPANY_ENERGY_DAILY, Map.of("days", "30"));
@@ -180,6 +142,10 @@ class CompanyOfficeObservationAdapterContractTest {
             List<AuthorizedDevice> devices,
             AtomicReference<List<String>> stateIds) {
         return new IotAdapter() {
+            @Override public Mono<DeviceDirectoryBatch> readDirectory(RequestIdentity identity) {
+                return Mono.just(new DeviceDirectoryBatch(AuthorizedDeviceScope.of(identity, identity.source(), devices),
+                        List.of(new OfficeRegion("office-a", "一号楼"))));
+            }
             @Override
             public Mono<AuthorizedDeviceScope> loadAuthorizedDeviceScope(RequestIdentity identity) {
                 assertThat(identity.source()).isEqualTo(expected.source());

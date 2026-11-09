@@ -154,8 +154,8 @@ class TaskReadScopeContractTest {
     void notificationsAndDetailTrimToTheAuthorizedScopeWithStableCursorShape() {
         PrincipalInfo principal = new PrincipalInfo("Bearer reader", "TENANT", "person", "gateway");
         Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
-        IotAdapter iot = identity -> Mono.just(AuthorizedDeviceScope.of(identity, IotSourceEnum.COMPANY, List.of(
-                new AuthorizedDevice("allowed", "energy", "表", "办公室", true))));
+        IotAdapter iot = localCatalog(identity -> Mono.just(AuthorizedDeviceScope.of(identity, IotSourceEnum.COMPANY, List.of(
+                new AuthorizedDevice("allowed", "energy", "表", "办公室", true)))));
         String owner = principal.ownerKey();
         TaskFact visibleTask = new TaskFact("task-visible", 1, "COMPLETED",
                 "{\"source\":\"company\",\"tenantCode\":\"TENANT\",\"ownerKey\":\"" + owner + "\",\"label\":\"抄表任务\","
@@ -217,13 +217,12 @@ class TaskReadScopeContractTest {
     @Test
     void unavailableCatalogFailsClosedInsteadOfLeakingTenantWideRows() {
         PrincipalInfo principal = new PrincipalInfo("Bearer reader", "TENANT", "person", "gateway");
-        IotAdapter iot = identity -> Mono.error(new IllegalStateException("upstream down"));
+        IotAdapter iot = localCatalog(identity -> Mono.error(new IllegalStateException("local database down")));
         TaskFacade facade = new TaskFacade(new ObjectMapper(), mock(TaskFactStore.class),
                 mock(TaskProposalStore.class), mock(TaskPlanStore.class),
                 mock(TaskNotificationStore.class), mock(TaskScheduler.class), null, iot,
                 snapshots(Clock.fixed(NOW, ZoneOffset.UTC)),
                 Clock.fixed(NOW, ZoneOffset.UTC));
-        prepareScope(facade, principal, "company");
 
         assertThatThrownBy(() -> facade.notificationsView(principal, "company", 30, null))
                 .isInstanceOfSatisfying(BusinessException.class, error -> {
@@ -240,8 +239,8 @@ class TaskReadScopeContractTest {
             @Override public ZoneId getZone() { return ZoneOffset.UTC; }
             @Override public Clock withZone(ZoneId zone) { return Clock.fixed(NOW, zone); }
         };
-        IotAdapter iot = identity -> Mono.just(AuthorizedDeviceScope.of(identity, IotSourceEnum.OFFICE, List.of(
-                new AuthorizedDevice("allowed", "lighting", "灯", "办公室", false))));
+        IotAdapter iot = localCatalog(identity -> Mono.just(AuthorizedDeviceScope.of(identity, IotSourceEnum.OFFICE, List.of(
+                new AuthorizedDevice("allowed", "lighting", "灯", "办公室", false)))));
         String owner = principal.ownerKey();
         TaskFact task = new TaskFact("task-1", 1, "PARTIAL",
                 "{\"source\":\"office\",\"tenantCode\":\"TENANT\",\"ownerKey\":\"" + owner + "\","
@@ -293,7 +292,7 @@ class TaskReadScopeContractTest {
                 "{\"source\":\"office\",\"tenantCode\":\"TENANT\",\"ownerKey\":\"" + principal.ownerKey()
                         + "\",\"repeat\":{\"frequency\":\"daily\"},\"phases\":[]}", "plan-key")));
         when(plans.occurrences("plan-1")).thenThrow(new IllegalStateException("database unavailable"));
-        IotAdapter iot = identity -> Mono.just(AuthorizedDeviceScope.of(identity, IotSourceEnum.OFFICE, List.of()));
+        IotAdapter iot = localCatalog(identity -> Mono.just(AuthorizedDeviceScope.of(identity, IotSourceEnum.OFFICE, List.of())));
         TaskFacade facade = new TaskFacade(new ObjectMapper(), mock(TaskFactStore.class),
                 mock(TaskProposalStore.class), plans, mock(TaskNotificationStore.class),
                 mock(TaskScheduler.class), null, iot, snapshots(Clock.fixed(NOW, ZoneOffset.UTC)),
@@ -350,6 +349,17 @@ class TaskReadScopeContractTest {
             }
         }
         return ids;
+    }
+
+    private static IotAdapter localCatalog(java.util.function.Function<RequestIdentity, Mono<AuthorizedDeviceScope>> catalog) {
+        return new IotAdapter() {
+            @Override public Mono<AuthorizedDeviceScope> loadAuthorizedDeviceScope(RequestIdentity identity) {
+                return catalog.apply(identity);
+            }
+            @Override public Mono<ltd.qianc.iotagent.iot.DeviceDirectoryBatch> readDirectory(RequestIdentity identity) {
+                return catalog.apply(identity).map(scope -> new ltd.qianc.iotagent.iot.DeviceDirectoryBatch(scope, List.of()));
+            }
+        };
     }
 
     private void prepareScope(TaskFacade facade, PrincipalInfo principal, String source) {

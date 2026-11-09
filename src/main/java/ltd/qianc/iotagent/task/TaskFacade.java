@@ -1,5 +1,6 @@
 package ltd.qianc.iotagent.task;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Clock;
@@ -47,6 +48,7 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
     private static final String CONFIRMED = "CONFIRMED";
     private static final String CANCELLED = "CANCELLED";
     private static final String SCHEDULED = "SCHEDULED";
+    private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() { };
     private final ObjectMapper mapper;
     private final TaskFactStore tasks;
     private final TaskProposalStore proposals;
@@ -845,21 +847,13 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         return task;
     }
 
-    /**
-     * Returns the durable lighting device identities for a task (real or virtual
-     * occurrence), already trimmed to the viewer's authorized catalog; the state
-     * snapshot loader rechecks them against the fresh gateway scope.
-     */
+    /** Lighting identities from durable task facts, trimmed to the current local authorization. */
     public List<String> lightingDeviceIds(PrincipalInfo principal, String taskId, String requestedSource) {
         checkPrincipal(principal);
         return lightingDeviceIds(taskView(principal, taskId, requestedSource));
     }
 
-    /**
-     * Runtime GET task lighting states: one authorized task projection supplies
-     * identities and execution facts, states come from the shared DEVICE_STATES
-     * snapshot, and cold snapshots report preparing/unavailable instead of rows.
-     */
+    /** Current local observations, separate from the task's durable execution readbacks. */
     public Map<String, Object> lightingStates(PrincipalInfo principal, String taskId, String requestedSource) {
         checkPrincipal(principal);
         if (iot == null) throw new BusinessException("TASK_LIGHTING_STATES_UNAVAILABLE", "物联设备状态适配器未接入", 503);
@@ -868,16 +862,10 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         catch (RuntimeException invalid) { throw new BusinessException("INVALID_AGENT_SOURCE", "Agent 来源无效", 400); }
         Map<String, Object> view = taskView(principal, taskId, requested.wireValue());
         List<String> deviceIds = lightingDeviceIds(view);
-        if (deviceIds.isEmpty()) return Map.of("observedAt", clock.instant().toString(), "states", List.of());
+        if (deviceIds.isEmpty()) return Map.of("status", "empty", "states", List.of());
         assertHeldLightingScope(principal, requested, deviceIds);
         RequestIdentity identity = new RequestIdentity(principal.authorization(), principal.tenantCode(), requested, ownerKey(principal));
-        String executed = executionWatermark(view);
-        Map<String, Object> query = executed == null
-                ? Map.of("deviceIds", deviceIds.stream().sorted().toList())
-                : Map.of("deviceIds", deviceIds.stream().sorted().toList(), "executed", executed);
-        Map<String, Object> body = snapshots.read(snapshotIdentity(identity), "DEVICE_STATES", query,
-                ReadSnapshots.PolicyEnum.CURRENT, () -> deviceStatesBody(identity, requested, deviceIds));
-        return taskStatesView(body, deviceIds);
+        return taskStatesView(deviceStatesBody(identity, requested, deviceIds), deviceIds);
     }
 
     /** Stops exposing states once the held catalog revokes a device or re-purposes its kind. */
@@ -910,29 +898,8 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         return List.copyOf(ids);
     }
 
-    /**
-     * Execution fingerprint for the state snapshot key, present only once a
-     * durable phase started or ended; built from status/start/end facts alone
-     * (no task or phase id, no version) so equal histories share one entry.
-     */
-    private static String executionWatermark(Map<String, Object> view) {
-        if (!(view.get("phases") instanceof List<?> phases)) return null;
-        List<String> marks = new ArrayList<>();
-        for (Object phaseObject : phases) {
-            if (!(phaseObject instanceof Map<?, ?> phase)) continue;
-            Object startedAt = phase.get("startedAt");
-            Object endedAt = phase.get("endedAt");
-            if (startedAt == null && endedAt == null) continue;
-            marks.add(phase.get("status") + "|" + startedAt + "|" + endedAt);
-        }
-        return marks.isEmpty() ? null : String.join(";", marks.stream().sorted().toList());
-    }
 
-    /**
-     * Snapshot loader on the queued executor: fresh scope/state authorization
-     * and the state read happen only here, never on the request thread; a task
-     * lighting device that left the scope or lost its kind hides the task.
-     */
+    /** Rechecks local membership before reading persisted current state; never opens a source request. */
     private Map<String, Object> deviceStatesBody(RequestIdentity identity, IotSourceEnum requested, List<String> deviceIds) {
         AuthorizedDeviceScope scope;
         try {
@@ -958,36 +925,21 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
             throw new BusinessException("TASK_LIGHTING_STATES_UNAVAILABLE", "读取设备状态失败", 503);
         }
         if (result == null) throw new BusinessException("TASK_LIGHTING_STATES_UNAVAILABLE", "读取设备状态失败", 503);
-        // Shared body shape of the DEVICE_STATES realm: a states map keyed by
-        // device id, so an entry loaded by any consumer serves all of them.
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("states", result.states());
-        body.put("observedAt", result.observedAt());
-        body.put("source", "production");
+        Map<String, Object> body = mapper.convertValue(result, MAP_TYPE);
+        body.put("source", "local");
         return body;
     }
 
-    /** Converts the held shared states map into the legacy task response rows. */
+    /** Keeps state quality and nullable source times while projecting the task's device rows. */
     private static Map<String, Object> taskStatesView(Map<String, Object> body, List<String> deviceIds) {
-        if (!(body.get("states") instanceof Map<?, ?> states)
-                || !(body.get("observedAt") instanceof String observedAt)) {
-            // Preparing/unavailable snapshot contracts pass through untouched —
-            // never an empty or fabricated state list.
-            return body;
-        }
+        if (!(body.get("states") instanceof Map<?, ?> states)) return body;
         List<Map<String, Object>> rows = new ArrayList<>();
         for (String deviceId : deviceIds) rows.add(stateView(deviceId, states.get(deviceId)));
-        Map<String, Object> view = new LinkedHashMap<>();
-        view.put("observedAt", observedAt);
+        Map<String, Object> view = new LinkedHashMap<>(body);
         view.put("states", rows);
-        if (body.get("cache") instanceof Map<?, ?> cache) view.put("cache", cache);
         return view;
     }
 
-    private static ReadSnapshots.Identity snapshotIdentity(RequestIdentity identity) {
-        return new ReadSnapshots.Identity(identity.tenantCode(), identity.authorization(),
-                identity.source().name(), identity.ownerKey());
-    }
 
     // ---------------------------------------------------------- management
 

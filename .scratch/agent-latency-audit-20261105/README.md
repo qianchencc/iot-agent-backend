@@ -26,3 +26,10 @@
 - 受影响公开契约与 ArchUnit：通过；主源码编译通过。
 - 真实小程序首次冷读在 5.75ms 目录阶段返回准备中；后台准备完成后同一业务再次读取，目录 2.22225ms、Java 前置 103.19225ms、总耗时 15.8624s，统计工具 0.115s。界面显示 43 台电表、132.35 度；Langfuse trace `5b5796d8909f88331a8791a2ccfbc28d` 有对应 model/tool 记录。
 - 干净 `mvn -q clean test` 共642项：613通过、25跳过、4失败、0错误。失败为当前其他线程的 Agent 投影／视频断言及既有能耗夹具断言；本轮新增读取契约和 ArchUnit 不在失败项中。
+
+## “编排定时任务进行中”根因（2026-11-06）
+
+- `propose_task` 本身已在 Langfuse 完成：截图对应 `runId=d4f18a33-2bc6-45fb-82d3-e7267618b831`，模型回合约 23.542 秒，提案工具约 13.821 秒，Node 的 `finish-session` 已结束。
+- Node `/run` 在 `AgentRunner.run()` 返回前等待 `checkpoint.close()`；`PiSessionRun.close()` 又等待 Java Pi Session 的 `release`。Java release 卡住时，Node 只发送 heartbeat，不发送 `run.completed`／`run.awaiting_confirmation`，所以小程序持续显示工具处理中。
+- Java 最终日志证明同一运行直到用户停止才以 `run.aborted` 收口：总耗时约 859.5 秒，`appendCount=4`、`sendCount=63`，不是模型或 `propose_task` 继续运行。
+- sidecar 已增加有界会话清理：release 最多阻塞 2 秒，终态不再等待无限期会话释放；回归测试 `agent-sidecar/test/session-close.test.ts` 通过。

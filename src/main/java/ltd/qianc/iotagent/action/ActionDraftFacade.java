@@ -139,7 +139,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
             }
         }
         ObjectNode payload = object(payloadJson);
-        AuthorizedDeviceScope catalogScope = loadScope(principal, iotSource);
+        AuthorizedDeviceScope catalogScope = loadScope(principal, iotSource, false);
         AuthorizedDeviceScope scope = catalogScope;
         if (iotSource == IotSourceEnum.OFFICE && focusRegionId != null && !focusRegionId.isBlank()) {
             scope = focusScope(principal, iotSource, scope, focusRegionId);
@@ -172,7 +172,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
             payload.put("question", page.question());
             payload.put("originalQuestion", page.question());
         }
-        payload.put("observedAt", page.observedAt());
+        stateQuality(payload, page.observations());
         String status = page.counts().path("satisfied").asInt() == page.actions().size()
                 ? ActionDraftStatusEnum.NO_CHANGE.name() : ActionDraftStatusEnum.PENDING_CONFIRMATION.name();
         payload.put("status", status);
@@ -452,7 +452,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
                 throw new ActionDraftBusyException("请先处理当前待确认草案");
             }
         }
-        AuthorizedDeviceScope scope = loadScope(principal, source);
+        AuthorizedDeviceScope scope = loadScope(principal, source, false);
         String focusRegionId = body.path("focusRegionId").asText("");
         if (source == IotSourceEnum.OFFICE && !focusRegionId.isBlank()) {
             scope = focusScope(principal, source, scope, focusRegionId);
@@ -481,7 +481,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
             JsonNode command = action.path("command");
             validateCommand(device.kind(), command);
             Object state = states.get(deviceId);
-            if (commandSatisfied(command, state)) continue;
+            if (usableForPreparation(fresh, deviceId) && commandSatisfied(command, state)) continue;
             ObjectNode next = action(device, command, state, false);
             actions.add(next);
             if (previousSelected.containsKey(action.path("id").asText())) selected.add(next.path("id").asText());
@@ -549,7 +549,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
         replacement.put("status", actions.isEmpty()
                 ? ActionDraftStatusEnum.NO_CHANGE.name() : ActionDraftStatusEnum.PENDING_CONFIRMATION.name());
         replacement.put("expiresAt", clock.instant().plus(draftTtl).toString());
-        replacement.put("observedAt", fresh.observedAt());
+        stateQuality(replacement, fresh);
         replacement.put("revalidatedFrom", draft.draftId());
         replacement.put("dispatchStarted", false);
         replacement.remove("result");
@@ -716,6 +716,9 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
         view.put("inventory", mapper.convertValue(array(body, "inventory"), Object.class));
         view.put("counts", mapper.convertValue(objectNode(body.get("counts")), Object.class));
         view.put("observedAt", body.path("observedAt").asText(null));
+        for (String field : List.of("stateCache", "stateStatus", "missingStateDeviceIds", "stateObservedAtByDevice")) {
+            if (body.has(field)) view.put(field, mapper.convertValue(body.get(field), Object.class));
+        }
         if (!body.path("revalidatedInto").asText("").isBlank()) {
             view.put("revalidatedInto", body.path("revalidatedInto").asText());
         }
@@ -742,17 +745,11 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
         IotSourceEnum source = parseSource(payload(draft).path("source").asText(null));
         RequestIdentity identity = new RequestIdentity(principal.authorization(), principal.tenantCode(), source, principal.ownerKey());
         List<String> ids = actionDevices(draft).values().stream().distinct().sorted().toList();
-        ReadSnapshots.Identity scope = new ReadSnapshots.Identity(identity.tenantCode(), identity.authorization(),
-                identity.source().name(), identity.ownerKey());
-        return snapshots.read(scope, "DEVICE_STATES", Map.of("deviceIds", ids), ReadSnapshots.PolicyEnum.CURRENT, () -> {
-            DeviceStateReadResult result = iot.readDeviceStates(identity, ids).block(ORDINARY_STATE_TIMEOUT);
-            if (result == null) throw new UpstreamUnavailableException("设备状态");
-            Map<String, Object> body = new LinkedHashMap<>();
-            body.put("states", result.states());
-            body.put("observedAt", result.observedAt());
-            body.put("source", "production");
-            return body;
-        });
+        DeviceStateReadResult result = iot.readDeviceStates(identity, ids).block(ORDINARY_STATE_TIMEOUT);
+        if (result == null) throw new UpstreamUnavailableException("设备状态");
+        Map<String, Object> body = mapper.convertValue(result, RESULT_TYPE);
+        body.put("source", "local");
+        return body;
     }
 
     private List<Map<String, Object>> durableReadbacks(ActionDraftFact draft) {
@@ -917,7 +914,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
                 .filter(id -> !id.isBlank()).distinct().toList();
         if (ids.isEmpty()) return new DeviceStateReadResult(Map.of(), clock.instant().toString());
         try {
-            DeviceStateReadResult states = iot.readDeviceStates(identity, ids).block(scopeTimeout);
+            DeviceStateReadResult states = iot.readLiveDeviceStates(identity, ids).block(scopeTimeout);
             if (states == null) throw new UpstreamUnavailableException("设备状态");
             return states;
         } catch (GatewayAuthorizationException error) {
@@ -1035,10 +1032,10 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
 
     private AuthorizedDeviceScope verifyScope(PrincipalInfo principal, ObjectNode body) {
         IotSourceEnum source = parseSource(body.path("source").asText(null));
-        AuthorizedDeviceScope scope = loadScope(principal, source);
+        AuthorizedDeviceScope scope = loadScope(principal, source, true);
         String focusRegionId = body.path("focusRegionId").asText("");
         if (source == IotSourceEnum.OFFICE && !focusRegionId.isBlank()) {
-            scope = focusScope(principal, source, scope, focusRegionId);
+            scope = scope.retain(device -> device.officeIds().contains(focusRegionId));
         }
         verifyActions(body, scope);
         return scope;
@@ -1054,10 +1051,11 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
         }
     }
 
-    private AuthorizedDeviceScope loadScope(PrincipalInfo principal, IotSourceEnum source) {
+    private AuthorizedDeviceScope loadScope(PrincipalInfo principal, IotSourceEnum source, boolean live) {
         RequestIdentity identity = new RequestIdentity(principal.authorization(), principal.tenantCode(), source, ownerKey(principal));
         try {
-            AuthorizedDeviceScope scope = iot.loadAuthorizedDeviceScope(identity).block(scopeTimeout);
+            AuthorizedDeviceScope scope = (live ? iot.revalidateAuthorizedDeviceScope(identity)
+                    : iot.loadAuthorizedDeviceScope(identity)).block(scopeTimeout);
             if (scope == null || !identity.equals(scope.identity()) || source != scope.source()) {
                 throw new UpstreamUnavailableException("授权设备范围");
             }
@@ -1091,7 +1089,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
     }
 
     private record Page(ArrayNode actions, ArrayNode selected, ArrayNode inventory, ObjectNode counts,
-                        String summary, String question, String observedAt) { }
+                        String summary, String question, DeviceStateReadResult observations) { }
 
     private record CandidateView(String candidateSetId, String kind, List<AuthorizedDevice> members) { }
 
@@ -1188,7 +1186,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
             }
             if (device.observationOnly()) throw new ActionDraftScopeChangedException();
             validateCommand(device.kind(), command);
-            boolean satisfied = commandSatisfied(command, state);
+            boolean satisfied = usableForPreparation(read, device.id()) && commandSatisfied(command, state);
             ObjectNode action = action(device, command, state, satisfied);
             actions.add(action);
             boolean isSelected = !satisfied;
@@ -1222,7 +1220,28 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
         if (summary.isBlank()) summary = "设备操作草案 · " + actions.size() + " 台设备";
         String question = payload.path("question").isTextual() ? payload.path("question").asText().trim() : null;
         if (question != null && question.isBlank()) question = null;
-        return new Page(actions, selected, inventory, counts, summary, question, read.observedAt());
+        return new Page(actions, selected, inventory, counts, summary, question, read);
+    }
+
+    private void stateQuality(ObjectNode payload, DeviceStateReadResult observations) {
+        payload.put("observedAt", observations.observedAt());
+        payload.set("stateCache", mapper.valueToTree(observations.cache()));
+        payload.put("stateStatus", observations.status().name().toLowerCase(java.util.Locale.ROOT));
+        payload.set("missingStateDeviceIds", mapper.valueToTree(observations.missingDeviceIds()));
+        payload.set("stateObservedAtByDevice", mapper.valueToTree(observations.observedAtByDevice()));
+    }
+
+    private boolean usableForPreparation(DeviceStateReadResult observations, String deviceId) {
+        if ("stale".equals(observations.cache().get("status"))) return false;
+        String observedAt = observations.observedAtByDevice().getOrDefault(deviceId, observations.observedAt());
+        if (observedAt == null) return false;
+        try {
+            Instant sample = Instant.parse(observedAt);
+            Instant now = clock.instant();
+            return !sample.isAfter(now) && !sample.isBefore(now.minusSeconds(60));
+        } catch (java.time.format.DateTimeParseException unknownTime) {
+            return false;
+        }
     }
 
     /** Runtime resolveExcludedDevice: verify the source set without expanding the operation universe. */
@@ -1352,13 +1371,11 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
             // server-side expansion is exactly what prevents the model from owning the
             // final id list.
             AuthorizedDeviceScope candidateScope = candidateScope(catalogScope, record);
-            if (!candidateScope.catalogFingerprint().equals(record.catalogFingerprint())) {
-                throw new BusinessException("CANDIDATE_SET_STALE", "设备候选集已过期，请重新检索", 409);
-            }
             List<AuthorizedDevice> members = new ArrayList<>();
             for (AuthorizedDevice member : record.members()) {
                 AuthorizedDevice current = scope.device(member.id())
                         .filter(device -> device.kind().equals(member.kind()))
+                        .filter(device -> candidateScope.device(device.id()).filter(allowed -> allowed.kind().equals(device.kind())).isPresent())
                         .orElseThrow(ActionDraftScopeChangedException::new);
                 members.add(current);
             }
@@ -1495,7 +1512,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
             DeviceStateReadResult result = iot.readDeviceStates(identity, ids).block(scopeTimeout);
             if (result == null) throw new UpstreamUnavailableException("设备当前状态");
             return result;
-        } catch (GatewayAuthorizationException error) {
+        } catch (BusinessException error) {
             throw error;
         } catch (RuntimeException error) {
             throw new ActionDraftUnavailableException("读取设备当前状态失败", error);

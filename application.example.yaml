@@ -63,6 +63,11 @@ agent:
       enabled: true
     redis:
       enabled: true
+  local-data:
+    # Required independent 64-hex AES-GCM key for verified users' read-only sync
+    # credentials. Not the task key; keep stable across restarts and backups.
+    # Changing it requires restoring the original key or registering fresh credentials.
+    credential-key: ''
   task:
     # Required 64-hex (32-byte) key guarding encrypted task execution identities;
     # stable across restarts and backups. Empty fails closed at first use.

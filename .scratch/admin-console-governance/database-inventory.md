@@ -1,5 +1,28 @@
 ## Summary
 
+- 2026-11-06本地目录/状态/能耗/环境持久同步新增下列表；本节其余表数/行数仍是原盘点，不代表当前部署。迁移`local-company-directory-v1`、`local-office-directory-v1`、`local-device-states-v1`、`local-energy-history-v1`、`local-environment-history-v1`经`SchemaMigrations`唯一入口。工程验证仅在独立临时MySQL库运行，未据此迁移固定业务库。
+
+| 新表 | 唯一键与读写者 | 保留与敏感性 |
+|---|---|---|
+| `local_sync_scopes` | `scope_key`＝来源实例/租户/主体/company或office/目录；`DeviceDirectory`登记并由独立调度更新 | 凭据AES-GCM独立加密；代次、批次、尝试/成功/来源时间分列；页面关闭不删除；只读状态不返回凭据/哈希 |
+| `local_company_devices` | `(scope_key,device_key)`，设备键为类型+来源ID；后台整批发布，普通读重建投影 | 主体独立正文；控制引用仅服务端；新目录事务替换旧目录，不删除历史业务事实 |
+| `local_company_grants` | `(scope_key,device_key)`；同事务发布完整批次版本 | 总目录可见性，不替代能耗/安全/视频专用授权 |
+| `local_company_locations` | `(scope_key,device_key,path_index,segment_index)` | 保存来源位置层级，同批替换 |
+| `local_company_offices` | `(scope_key,device_key,office_id)` | 保存办公室关联，不授予办公室访问权，同批替换 |
+| `local_office_regions` | `(scope_key,source_region_id)`；Office区域与目录设备同事务同批次发布 | 保存真实区域ID与名称，空区域仍保留；当前完整视图替换，不复制region_seen事实 |
+| `local_device_states` | `(scope_key,device_key)`；`DeviceObservations`读取，目录同步后的独立当前状态采集批写 | 类型/字段结构化；小数DECIMAL(65,30)，扩展JSON不存秘密绑定；observed_at允许NULL、synchronized_at独立；代次隔离，无自动历史保留/清理副作用 |
+| `local_device_state_sync` | `scope_key`；当前状态独立进度与凭据代次 | 状态批次成功才推进last_success_at；失败/迟到不把旧样本变新鲜，换代次不复用旧成功；无外键 |
+| `local_energy_sync` | `scope_key`；`EnergyHistory`独立授权版本及当前/全量尝试、成功、失败、上海03:00下次到期 | 绑定同步凭据代次，不保存第二份凭据；失败不推进成功/覆盖；前台重复补缺不抹掉后台重试到期 |
+| `local_energy_meters` | `(scope_key,meter_key)`；独立电表来源授权完整发布 | 不以总目录成员代替专用授权；名称/位置/必要元数据，换代次旧授权不可读 |
+| `local_energy_samples` | `(scope_key,sample_key)`；原始计量点+来源记录命名空间+原始时间；后台upsert，普通六类能耗读取 | 四类小数DECIMAL(65,30)，真实时间/缺ID/冲突质量分列；无自动历史删除，原有report_facts不改写 |
+| `local_energy_sample_batches` | `(run_id,sample_key)`；采集页私有暂存，完整成功才发布 | 普通读不可见；本次运行结束清理暂存，不是删除已发布历史事实 |
+| `local_energy_coverage` | `(scope_key,meter_key)`；完整无筛选流成功才更新覆盖及代次 | 与事实发布同事务；当前采集不冒充全历史覆盖 |
+| `local_energy_requests` | `(scope_key,request_key)`；尚未覆盖的计量点/起止范围持久登记 | full成功后标READY；重启不丢失；只登记，不在普通读取中采集客户数据 |
+| `local_environment_sync` | `scope_key`；`EnvironmentHistory`当前/全量独立尝试、成功、失败、覆盖与上海03:00下次到期 | 同步凭据代次隔离；不保存第二份凭据，失败不推进成功/覆盖；当前采集不能证明全历史覆盖 |
+| `local_environment_samples` | `(scope_key,sample_key)`；来源ID/缺ID命名空间+原始时间+测点代码 | 五项DECIMAL(65,30)，真实时间可NULL、保留原文与质量；代码不证明楼层/设备归属；不自动删除消失测点历史 |
+| `local_environment_sample_batches` | `(run_id,sample_key)`；后台分页私有暂存 | 完整成功才与进度原子发布；旧全量不覆盖更新当前值；运行结束清理暂存，不清理已发布历史 |
+| `local_environment_requests` | `(scope_key,credential_generation,request_key)`；尚未覆盖的起止范围持久登记 | full成功后标READY；重启不丢失，普通读取只登记、不直接回源，也不抹掉后台重试到期 |
+
 - Current source defines **29 MySQL tables**: 24 from SQL resources (including the two `agent-allowlist.sql` company-Agent user allowlist tables), three task-owned tables created both in a resource and Java, four Pi tables created in Java, and the Java-created `storage_migrations` table. The categories overlap: the three task tables are included in the 24 SQL-resource definitions. No production Node-side `CREATE TABLE` was found in the investigated sidecar; Node uses Java’s private session API.
 - MySQL storage is **disabled by packaged default**. Schema and JDBC writers are conditional on `agent.storage.mysql.enabled=true`; a table definition or local row count does not prove that a writer is active in a particular deployment. `src/main/resources/application.yml:23-27`, `src/main/java/ltd/qianc/iotagent/storage/internal/StorageConfiguration.java:37-56`.
 - Parent-provided local, read-only evidence records 27 tables in `iot_agent_business` and 25 in `iot_agent_mysql_final`; the latter lacks the two read-snapshot tables. It is a local snapshot, not production or business acceptance: `.scratch/admin-console-governance/evidence/local-mysql-metadata.json:1-6,3810-4079`.

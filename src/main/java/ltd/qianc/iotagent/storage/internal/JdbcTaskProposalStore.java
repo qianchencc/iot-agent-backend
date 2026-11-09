@@ -30,6 +30,9 @@ public final class JdbcTaskProposalStore extends AbstractJdbcFactSupport impleme
     @Override public Optional<TaskProposalFact> findByIdempotencyKey(String key) {
         return one("SELECT proposal_id,version,status,payload_json,idempotency_key,kind,target_json,before_json,after_json,operation,tenant_code,owner_key,source,expires_at FROM task_proposals WHERE idempotency_key=?", this::map, key);
     }
+    @Override public Optional<TaskProposalFact> findByConversationAndTurn(String conversationId, String turnId) {
+        return one("SELECT proposal_id,version,status,payload_json,idempotency_key,kind,target_json,before_json,after_json,operation,tenant_code,owner_key,source,expires_at FROM task_proposals WHERE conversation_id=? AND turn_id=? ORDER BY create_time DESC LIMIT 1", this::map, conversationId, turnId);
+    }
     @Override public Optional<TaskProposalFact> updateIfVersion(TaskProposalFact replacement, long expectedVersion) {
         int changed = jdbc.update("UPDATE task_proposals SET version=?,status=?,payload_json=?,update_time=? WHERE proposal_id=? AND version=?",
                 replacement.version(), replacement.status(), replacement.payloadJson(), time(java.time.Instant.now()),

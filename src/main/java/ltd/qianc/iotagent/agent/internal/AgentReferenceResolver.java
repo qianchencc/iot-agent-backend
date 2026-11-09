@@ -212,7 +212,7 @@ final class AgentReferenceResolver {
         ObservationResponse response;
         try {
             response = observations.read(new ObservationRequest(identity(context, source),
-                    ObservationOperationEnum.ENVIRONMENT_HISTORY, Map.of("from", from, "to", to))).block(TIMEOUT);
+                    ObservationOperationEnum.ENVIRONMENT_HISTORY, Map.of("from", from, "to", to, "fullWindow", "true"))).block(TIMEOUT);
         } catch (BusinessException error) {
             throw error;
         } catch (RuntimeException error) {
@@ -222,6 +222,11 @@ final class AgentReferenceResolver {
             throw unavailable("环境历史事实暂不可读取");
         }
         Map<String, Object> report = new LinkedHashMap<>(response.payload());
+        report.put("status", response.status().wireValue());
+        report.put("coverageComplete", response.coverageComplete());
+        // The model needs full-window metrics, not raw rows that can truncate those metrics.
+        report.remove("samples");
+        report.put("failures", response.failures());
         Map<String, Object> reference = new LinkedHashMap<>();
         reference.put("type", "environment_window");
         reference.put("from", from);

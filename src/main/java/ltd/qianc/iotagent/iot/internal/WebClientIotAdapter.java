@@ -56,7 +56,10 @@ import reactor.core.publisher.Mono;
  */
 public final class WebClientIotAdapter implements IotAdapter {
 
-    private static final ObjectMapper JSON = new ObjectMapper();
+    private static final ObjectMapper JSON = new ObjectMapper()
+            .enable(com.fasterxml.jackson.databind.DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS);
+    private static final java.util.regex.Pattern NUMERIC_VALUE = java.util.regex.Pattern.compile(
+            "[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][+-]?\\d+)?");
     private static final long READ_SCOPE_REUSE_MILLIS = 5_000L;
     private static final long VIDEO_SCOPE_REUSE_MILLIS = 60_000L;
     /**
@@ -107,21 +110,33 @@ public final class WebClientIotAdapter implements IotAdapter {
         this.candidateStore = candidateStore;
     }
 
+
     @Override
     public Mono<AuthorizedDeviceScope> loadAuthorizedDeviceScope(RequestIdentity identity) {
         Objects.requireNonNull(identity, "identity");
-        Mono<AuthorizedDeviceScope> request;
-        if (identity.source() == IotSourceEnum.OFFICE && routes.hasOfficeDirectoryRoutes()) {
-            request = loadOfficeScope(identity);
-        } else if (identity.source() == IotSourceEnum.COMPANY && routes.hasCompanyCatalogRoutes()) {
-            request = loadCompanyScope(identity);
-        } else if (routes.path(identity.source()) != null) {
-            request = loadPaginatedScope(identity);
-        } else {
-            request = Mono.error(new UpstreamUnavailableException("物联授权设备范围路径未配置"));
-        }
         return execute("load authorized " + identity.source().wireValue() + " device scope",
-                cachedReadScope(identity, request));
+                cachedReadScope(identity, scopeRequest(identity)));
+    }
+
+    @Override public Mono<AuthorizedDeviceScope> revalidateAuthorizedDeviceScope(RequestIdentity identity) {
+        Objects.requireNonNull(identity, "identity");
+        return execute("revalidate live device authorization", scopeRequest(identity));
+    }
+
+    private Mono<AuthorizedDeviceScope> scopeRequest(RequestIdentity identity) {
+        if (identity.source() == IotSourceEnum.OFFICE && routes.hasOfficeDirectoryRoutes()) return loadOfficeScope(identity);
+        if (identity.source() == IotSourceEnum.COMPANY && routes.hasCompanyCatalogRoutes()) return loadCompanyScope(identity);
+        if (routes.path(identity.source()) != null) return loadPaginatedScope(identity);
+        return Mono.error(new UpstreamUnavailableException("物联授权设备范围路径未配置"));
+    }
+
+    @Override public Mono<DeviceStateReadResult> readLiveDeviceStates(RequestIdentity identity, List<String> ids) {
+        return revalidateAuthorizedDeviceScope(identity).flatMap(scope -> {
+            List<AuthorizedDevice> requested = ids.stream().map(id -> scope.device(id).orElseThrow(() ->
+                    new BusinessException("DEVICE_OUTSIDE_SCOPE", "设备不在当前授权范围内", 403))).toList();
+            if (identity.source() == IotSourceEnum.COMPANY) return readAuthorizedCompanyStates(identity, requested);
+            return readOfficeStateRecords(identity, requested).map(records -> officeStates(requested, records));
+        });
     }
 
     private Mono<AuthorizedDeviceScope> cachedReadScope(
@@ -165,28 +180,7 @@ public final class WebClientIotAdapter implements IotAdapter {
             return Mono.error(new BusinessException("CANDIDATE_SET_STORE_UNAVAILABLE", "设备候选集事实存储未配置", 503));
         }
         return execute("find authorized " + identity.source().wireValue() + " device candidates",
-                scopedForRegion(identity, query.regionId()).map(scope -> {
-                    DeviceCandidateMatcher.Result result = DeviceCandidateMatcher.search(scope.devices(), query);
-                    String setId = UUID.randomUUID().toString();
-                    DeviceCandidateSet set = new DeviceCandidateSet(setId, query, result.visible(),
-                            result.complete(), result.totalMatches(), result.groups(),
-                            result.nameHintMatches(), result.unmatchedNameHints(), result.resolution(), result.members());
-                    if (binding != null) {
-                        DeviceCandidateRecord saved = candidateStore.save(new DeviceCandidateRecord(setId, binding.conversationId(), identity.tenantCode(), identity.ownerKey(), identity.source(), scope.catalogFingerprint(), query, result.members(), result.complete(), result.totalMatches(), Instant.now().toString(), result.resolution().mode(), null));
-                        // Runtime persistCandidateSet: the persisted record owns the sN handle; the
-                        // model-facing set carries device handles parallel to its visible devices.
-                        if (saved.handle() != null && !saved.handle().isBlank()) {
-                            List<String> deviceHandles = new ArrayList<>();
-                            for (int index = 0; index < result.visible().size(); index++) {
-                                deviceHandles.add(saved.deviceHandle(index));
-                            }
-                            set = new DeviceCandidateSet(setId, query, result.visible(), result.complete(),
-                                    result.totalMatches(), result.groups(), result.nameHintMatches(),
-                                    result.unmatchedNameHints(), result.resolution(), saved.handle(), deviceHandles, result.members());
-                        }
-                    }
-                    return set;
-                }));
+                scopedForRegion(identity, query.regionId()).map(scope -> DeviceCandidates.find(scope, query, binding, candidateStore)));
     }
 
     private Mono<AuthorizedDeviceScope> scopedForRegion(RequestIdentity identity, String regionId) {
@@ -214,11 +208,14 @@ public final class WebClientIotAdapter implements IotAdapter {
     }
 
     private Mono<List<JsonNode>> readOfficeMembers(RequestIdentity identity) {
-        return getJson(routes.officeMembershipPath(), Map.of(), identity)
-                .map(body -> contentArray(body, "读取 Office 成员范围"))
-                .flatMap(offices -> offices.stream().anyMatch(row -> text(row, "elementId", "id") == null)
-                        ? Mono.error(new UpstreamUnavailableException("读取 Office 成员范围响应"))
-                        : Mono.just(offices));
+        return page(routes.officeMembershipPath(), Map.of(), identity).map(offices -> {
+            Set<String> ids = new java.util.HashSet<>();
+            for (JsonNode office : offices) {
+                String id = text(office, "elementId", "id");
+                if (id == null || !ids.add(id)) throw new UpstreamUnavailableException("读取 Office 成员范围响应");
+            }
+            return offices;
+        });
     }
 
     @Override
@@ -244,11 +241,9 @@ public final class WebClientIotAdapter implements IotAdapter {
                 DeviceCandidateRecord set = requiredCandidateSet(identity, selection.candidateSetId(), conversationId);
                 Map<String, AuthorizedDevice> members = membersById(set);
                 AuthorizedDeviceScope setScope = candidateScope(scope, set);
-                if (!setScope.catalogFingerprint().equals(set.catalogFingerprint())) {
-                    throw new BusinessException("CANDIDATE_SET_STALE", "设备候选集已过期，请重新检索", 409);
-                }
                 for (String id : selection.deviceIds()) {
-                    if (!members.containsKey(id) || setScope.device(id).isEmpty()) {
+                    AuthorizedDevice member = members.get(id);
+                    if (member == null || setScope.device(id).filter(device -> device.kind().equals(member.kind())).isEmpty()) {
                         throw new BusinessException("INVALID_DEVICE_REFERENCE", "设备不属于引用的候选集", 403);
                     }
                     ids.add(id);
@@ -256,6 +251,16 @@ public final class WebClientIotAdapter implements IotAdapter {
             }
             return List.copyOf(ids);
         })).flatMap(ids -> readDeviceStates(identity, ids));
+    }
+
+    @Override public Mono<DeviceStateReadResult> collectCurrentStates(RequestIdentity identity, AuthorizedDeviceScope scope) {
+        if (!identity.equals(scope.identity())) return Mono.error(new GatewayAuthorizationException(403));
+        if (identity.source() == IotSourceEnum.OFFICE) {
+            return execute("collect Office current observations", readOfficeStateRecords(identity, scope.devices())
+                    .map(records -> officeStates(scope.devices(), records)));
+        }
+        return execute("collect Company current observations",
+                readAuthorizedCompanyStates(identity, scope.devices(), new ConcurrentHashMap<>(), true));
     }
 
     @Override
@@ -277,16 +282,17 @@ public final class WebClientIotAdapter implements IotAdapter {
                         requested.put(id, scope.device(id).orElseThrow(() ->
                                 new BusinessException("DEVICE_OUTSIDE_SCOPE", "设备不在当前授权范围内", 403)));
                     }
-                    return readOfficeStateRecords(identity, requested.values()).map(recordsById -> {
-                        Map<String, Object> states = new LinkedHashMap<>();
-                        requested.forEach((id, device) -> states.put(id, stateOf(device, recordsById.get(id))));
-                        return new DeviceStateReadResult(states, Instant.now().toString());
-                    });
+                    return readOfficeStateRecords(identity, requested.values())
+                            .map(records -> officeStates(requested.values(), records));
                 }));
     }
     @Override
     public Mono<DeviceStateReadResult> readObservationStates(
             RequestIdentity identity, List<AuthorizedDevice> devices) {
+        return observationStates(identity, devices, false);
+    }
+
+    private Mono<DeviceStateReadResult> observationStates(RequestIdentity identity, List<AuthorizedDevice> devices, boolean collecting) {
         Objects.requireNonNull(identity, "identity");
         if (identity.source() != IotSourceEnum.COMPANY) {
             return Mono.error(new BusinessException("IOT_SOURCE_UNAVAILABLE", "观察状态仅支持 Company 来源", 404));
@@ -300,7 +306,7 @@ public final class WebClientIotAdapter implements IotAdapter {
                 .filter(device -> "energy".equalsIgnoreCase(device.kind())).toList();
         Mono<Map<String, Object>> energy = energyDevices.isEmpty() ? Mono.just(Map.of())
                 : energyStates(identity, energyDevices)
-                        .onErrorResume(error -> error instanceof GatewayAuthorizationException
+                        .onErrorResume(error -> collecting || error instanceof GatewayAuthorizationException
                                 ? Mono.error(error) : Mono.just(Map.of()));
         // The Node runtime looped environment devices serially and only then read the
         // energy batch (adapter.ts readCompanyObservationStates). Those reads have no
@@ -311,7 +317,7 @@ public final class WebClientIotAdapter implements IotAdapter {
         List<Mono<Map<String, Object>>> reads = new ArrayList<>();
         for (AuthorizedDevice device : requested) {
             if (!"environment".equalsIgnoreCase(device.kind())) continue;
-            reads.add(environmentState(identity, device).map(state -> {
+            reads.add(environmentState(identity, device, collecting).map(state -> {
                 Map<String, Object> entryState = new LinkedHashMap<>();
                 entryState.put(device.id(), state);
                 return entryState;
@@ -320,7 +326,7 @@ public final class WebClientIotAdapter implements IotAdapter {
         reads.add(energy);
         return drainQueue(reads).map(states -> {
             for (AuthorizedDevice device : requested) states.putIfAbsent(device.id(), null);
-            return new DeviceStateReadResult(states, Instant.now().toString());
+            return stateResult(states, List.of(), new LinkedHashMap<>());
         });
     }
 
@@ -348,13 +354,18 @@ public final class WebClientIotAdapter implements IotAdapter {
      */
     private Mono<DeviceStateReadResult> readAuthorizedCompanyStates(
             RequestIdentity identity, List<AuthorizedDevice> requested) {
+        return readAuthorizedCompanyStates(identity, requested, new ConcurrentHashMap<>(), false);
+    }
+
+    private Mono<DeviceStateReadResult> readAuthorizedCompanyStates(RequestIdentity identity,
+            List<AuthorizedDevice> requested, Map<String, String> sampleTimes, boolean collecting) {
         List<AuthorizedDevice> observed = requested.stream()
                 .filter(device -> "environment".equalsIgnoreCase(device.kind())
                         || "energy".equalsIgnoreCase(device.kind()))
                 .toList();
         Mono<Map<String, Object>> observationStates = observed.isEmpty()
                 ? Mono.just(Map.of())
-                : readObservationStates(identity, observed).map(DeviceStateReadResult::states);
+                : observationStates(identity, observed, collecting).map(DeviceStateReadResult::states);
         // Runtime groups coarse lighting/video reads by kind + area, not by device.
         // One batch must use one area observation; the coarse area reads and AC
         // detail reads share one bounded worker queue.
@@ -368,7 +379,7 @@ public final class WebClientIotAdapter implements IotAdapter {
                             ignored -> new ArrayList<>()).add(device);
                 }
             } else if ("ac".equals(device.kind())) {
-                reads.add(companyAcState(identity, device).map(state -> {
+                reads.add(companyAcState(identity, device, collecting).map(state -> {
                     Map<String, Object> result = new LinkedHashMap<>();
                     result.put(device.id(), state);
                     return result;
@@ -387,6 +398,10 @@ public final class WebClientIotAdapter implements IotAdapter {
                 Map<String, Object> result = new LinkedHashMap<>();
                 for (AuthorizedDevice device : devices) {
                     result.put(device.id(), companySmartState(device, byId.get(device.officeDeviceRef())));
+                    if (sampleTimes != null) {
+                        String at = sampleTime(byId.get(device.officeDeviceRef()));
+                        if (at != null) sampleTimes.put(device.id(), at);
+                    }
                 }
                 return result;
             }));
@@ -399,9 +414,34 @@ public final class WebClientIotAdapter implements IotAdapter {
             Map<String, Object> states = new LinkedHashMap<>(observedStates);
             states.putAll(queueStates);
             for (AuthorizedDevice device : requested) states.putIfAbsent(device.id(), null);
-            String observedAt = Instant.now().toString();
-            return new DeviceStateReadResult(states, observedAt, companyObservationBlocks(requested, states));
+            return stateResult(states, companyObservationBlocks(requested, states), sampleTimes);
         }));
+    }
+
+    private DeviceStateReadResult officeStates(Collection<AuthorizedDevice> devices, Map<String, JsonNode> records) {
+        Map<String, Object> states = new LinkedHashMap<>();
+        Map<String, String> times = new LinkedHashMap<>();
+        for (AuthorizedDevice device : devices) {
+            JsonNode record = records.get(device.id());
+            states.put(device.id(), stateOf(device, record));
+            String at = sampleTime(record);
+            if (at != null) times.put(device.id(), at);
+        }
+        return stateResult(states, List.of(), times);
+    }
+
+    private static DeviceStateReadResult stateResult(Map<String, Object> states, List<Map<String, Object>> blocks,
+            Map<String, String> sampleTimes) {
+        states.forEach((id, state) -> {
+            if (state instanceof Map<?, ?> reading) {
+                Object raw = reading.containsKey("observedAt") ? reading.get("observedAt") : reading.get("readTime");
+                String at = sampleTime(raw instanceof String text ? text : null);
+                if (at != null) sampleTimes.put(id, at);
+            }
+        });
+        String observedAt = sampleTimes.keySet().containsAll(states.keySet()) && !states.isEmpty()
+                ? states.keySet().stream().map(sampleTimes::get).min(String::compareTo).orElse(null) : null;
+        return new DeviceStateReadResult(states, observedAt, blocks, sampleTimes);
     }
 
     /**
@@ -481,13 +521,13 @@ public final class WebClientIotAdapter implements IotAdapter {
     private static Object companySmartState(AuthorizedDevice device, JsonNode row) {
         if (row == null) return null;
         if ("lighting".equals(device.kind())) {
-            return row.has("switchStatus") && !row.get("switchStatus").isNull() ? row.get("switchStatus").asBoolean() : null;
+            return booleanValue(row.get("switchStatus"));
         }
         String status = text(row, "netStatus");
         return "ON_LINE".equalsIgnoreCase(status) ? Boolean.TRUE : "OFF_LINE".equalsIgnoreCase(status) ? Boolean.FALSE : null;
     }
 
-    private Mono<Object> companyAcState(RequestIdentity identity, AuthorizedDevice device) {
+    private Mono<Object> companyAcState(RequestIdentity identity, AuthorizedDevice device, boolean collecting) {
         String action = metadataText(device, "companyAcDetailActionId");
         if (device.hubDeviceId() == null || action == null) return Mono.justOrEmpty((Object) null);
         return webClient.post().uri("/micro-api/api/iot-center/interactive/{hub}/{action}/down", device.hubDeviceId(), action)
@@ -501,7 +541,7 @@ public final class WebClientIotAdapter implements IotAdapter {
                     if (!response.statusCode().is2xxSuccessful()) {
                         return response.releaseBody().then(Mono.error(new UpstreamUnavailableException("读取空调回读响应")));
                     }
-                    return response.bodyToMono(JsonNode.class)
+                    return GatewayJson.read(response)
                             .switchIfEmpty(Mono.error(new UpstreamUnavailableException("读取空调回读响应")))
                             .flatMap(body -> {
                                 int code = body.path("code").asInt(0);
@@ -516,7 +556,7 @@ public final class WebClientIotAdapter implements IotAdapter {
                             });
                 })
                 .timeout(callTimeout)
-                .onErrorResume(error -> error instanceof GatewayAuthorizationException
+                .onErrorResume(error -> collecting || error instanceof GatewayAuthorizationException
                         ? Mono.error(error) : Mono.empty());
     }
 
@@ -528,17 +568,23 @@ public final class WebClientIotAdapter implements IotAdapter {
         JsonNode data = content.path("data");
         if (!data.isObject()) return null;
         Map<String, Object> state = new LinkedHashMap<>();
-        if (data.path("O").has("val")) state.put("power", data.path("O").path("val").asInt() == 1 ? "on" : "off");
-        if (data.path("tT").has("val")) state.put("temperature", data.path("tT").path("val").asDouble() / 10.0);
+        Boolean power = booleanValue(data.path("O").get("val"));
+        if (power != null) state.put("power", power ? "on" : "off");
+        java.math.BigDecimal temperature = numberValue(data.path("tT").get("val"));
+        if (temperature != null) state.put("temperature", temperature.movePointLeft(1));
         if (data.path("MODE").has("val")) state.put("mode", Map.of(2, "fan", 3, "cool", 4, "heat", 5, "dry", 7, "auto").get(data.path("MODE").path("val").asInt()));
         if (data.path("F").has("val")) state.put("fanSpeed", Map.of(15, "low", 75, "high", 101, "auto").get(data.path("F").path("val").asInt()));
+        String at = sampleTime(data);
+        if (at == null) at = sampleTime(content);
+        if (at != null && !state.isEmpty()) state.put("observedAt", at);
         return state.isEmpty() ? null : state;
     }
 
-    private Mono<Object> environmentState(RequestIdentity identity, AuthorizedDevice device) {
+    private Mono<Object> environmentState(RequestIdentity identity, AuthorizedDevice device, boolean collecting) {
         return environmentLive(identity, device)
-                .onErrorResume(error -> environmentShadow(identity))
-                .switchIfEmpty(environmentShadow(identity));
+                .onErrorResume(error -> error instanceof GatewayAuthorizationException
+                        ? Mono.error(error) : environmentShadow(identity, collecting))
+                .switchIfEmpty(environmentShadow(identity, collecting));
     }
 
     private Mono<Object> environmentLive(RequestIdentity identity, AuthorizedDevice device) {
@@ -585,7 +631,7 @@ public final class WebClientIotAdapter implements IotAdapter {
                     if (!response.statusCode().is2xxSuccessful()) {
                         return response.releaseBody().then(Mono.error(new UpstreamUnavailableException("读取观察设备数据")));
                     }
-                    return response.bodyToMono(JsonNode.class)
+                    return GatewayJson.read(response)
                             .switchIfEmpty(Mono.error(new UpstreamUnavailableException("读取观察设备数据")))
                             .flatMap(body -> {
                                 int code = body.path("code").asInt(-1);
@@ -608,13 +654,13 @@ public final class WebClientIotAdapter implements IotAdapter {
                 .timeout(callTimeout);
     }
 
-    private Mono<Object> environmentShadow(RequestIdentity identity) {
+    private Mono<Object> environmentShadow(RequestIdentity identity, boolean collecting) {
         return getJson("/micro-api/api/iot-center/home/yq/env/data", Map.of(), identity)
                 .flatMap(body -> {
                     Map<String, Object> reading = environmentReading(body.get("content"), "shadow");
                     return reading.isEmpty() ? Mono.empty() : Mono.<Object>just(reading);
                 })
-                .onErrorResume(error -> Mono.empty());
+                .onErrorResume(error -> collecting || error instanceof GatewayAuthorizationException ? Mono.error(error) : Mono.empty());
     }
 
     private static Map<String, Object> environmentReading(JsonNode source, String origin) {
@@ -622,20 +668,23 @@ public final class WebClientIotAdapter implements IotAdapter {
         reading.put("source", origin);
         if (source != null && source.isObject()) {
             for (String key : List.of("temp", "humidity", "pm25", "pm10", "pm101")) {
-                Double value = numberValue(source.get(key));
+                java.math.BigDecimal value = numberValue(source.get(key));
                 if (value != null) reading.put(key, value);
             }
+            String at = sampleTime(source);
+            if (at != null && reading.size() > 1) reading.put("observedAt", at);
         }
         return reading.size() > 1 ? reading : Map.of();
     }
 
-    private static Double numberValue(JsonNode value) {
+    private static java.math.BigDecimal numberValue(JsonNode value) {
         if (value == null || value.isNull()) return null;
-        if (value.isNumber()) return value.asDouble();
+        if (value.isNumber()) return value.decimalValue();
         if (value.isTextual()) {
-            String digits = value.asText().replaceAll("[^0-9+\\-.]", "");
-            if (digits.isBlank()) return null;
-            try { return Double.parseDouble(digits); } catch (NumberFormatException invalid) { return null; }
+            var match = NUMERIC_VALUE.matcher(value.asText().replace(",", ""));
+            if (!match.find()) return null;
+            try { return new java.math.BigDecimal(match.group()); }
+            catch (NumberFormatException invalid) { return null; }
         }
         return null;
     }
@@ -665,7 +714,7 @@ public final class WebClientIotAdapter implements IotAdapter {
         String readTime = text(row, "readTime");
         if (readTime != null) reading.put("readTime", localDateTimeIso(readTime));
         for (String key : List.of("ia", "ib", "ic", "totalActivePower")) {
-            Double value = numberValue(row.get(key));
+            java.math.BigDecimal value = numberValue(row.get(key));
             if (value != null) reading.put(key, value);
         }
         return reading.size() > 1 ? reading : null;
@@ -701,7 +750,7 @@ public final class WebClientIotAdapter implements IotAdapter {
                     resolveCompanyCandidateDevices(identity, request, conversationId).map(devices ->
                             new DeviceCapabilityInspection(request.candidateSets().stream()
                                     .map(DeviceCapabilityRequest.DeviceCapabilitySelection::candidateSetId).toList(),
-                                    devices.stream().map(this::capability).toList())));
+                                    devices.stream().map(DeviceCapabilities::describe).toList())));
         }
         return execute("inspect authorized " + identity.source().wireValue() + " device capabilities",
                 loadAuthorizedDeviceScope(identity).map(scope -> {
@@ -712,7 +761,7 @@ public final class WebClientIotAdapter implements IotAdapter {
                             for (String id : selection.deviceIds()) {
                                 AuthorizedDevice device = scope.device(id).orElseThrow(() -> new BusinessException(
                                         "DEVICE_OUTSIDE_SCOPE", "设备不在当前授权范围内", 403));
-                                capabilities.add(capability(device));
+                                capabilities.add(DeviceCapabilities.describe(device));
                             }
                         }
                         return new DeviceCapabilityInspection(request.candidateSets().stream()
@@ -722,20 +771,18 @@ public final class WebClientIotAdapter implements IotAdapter {
                     for (DeviceCapabilityRequest.DeviceCapabilitySelection selection : request.candidateSets()) {
                         DeviceCandidateRecord set = requiredCandidateSet(identity, selection.candidateSetId(), conversationId);
                         AuthorizedDeviceScope setScope = candidateScope(scope, set);
-                        if (!setScope.catalogFingerprint().equals(set.catalogFingerprint())) {
-                            throw new BusinessException("CANDIDATE_SET_STALE", "设备候选集已过期，请重新检索", 409);
-                        }
                         Map<String, AuthorizedDevice> members = membersById(set);
                         for (String id : selection.deviceIds()) {
                             AuthorizedDevice member = members.get(id);
-                            if (member == null || setScope.device(id).isEmpty()) throw new BusinessException(
+                            AuthorizedDevice current = setScope.device(id).orElse(null);
+                            if (member == null || current == null || !current.kind().equals(member.kind())) throw new BusinessException(
                                     "INVALID_DEVICE_REFERENCE", "设备不属于引用的候选集", 403);
-                            devicesById.put(id, member);
+                            devicesById.put(id, current);
                         }
                     }
                     List<DeviceCapabilityInspection.DeviceCapability> capabilities = request.candidateSets().stream()
                             .flatMap(selection -> selection.deviceIds().stream())
-                            .map(devicesById::get).map(this::capability).toList();
+                            .map(devicesById::get).map(DeviceCapabilities::describe).toList();
                     return new DeviceCapabilityInspection(request.candidateSets().stream()
                             .map(DeviceCapabilityRequest.DeviceCapabilitySelection::candidateSetId).toList(), capabilities);
                 }));
@@ -753,17 +800,8 @@ public final class WebClientIotAdapter implements IotAdapter {
         return scope.retain(device -> device.officeIds().contains(regionId));
     }
 
-    private DeviceCandidateRecord requiredCandidateSet(RequestIdentity identity, String candidateSetId,
-                                                       String conversationId) {
-        DeviceCandidateRecord set = candidateStore.find(candidateSetId, conversationId)
-                .orElseThrow(() -> new BusinessException("CANDIDATE_SET_NOT_FOUND", "设备候选集不存在", 404));
-        if (!identity.tenantCode().equals(set.tenantCode())
-                || !identity.ownerKey().equals(set.ownerKey())
-                || identity.source() != set.source()
-                || !conversationId.equals(set.conversationId())) {
-            throw new BusinessException("CANDIDATE_SET_NOT_FOUND", "设备候选集不存在", 404);
-        }
-        return set;
+    private DeviceCandidateRecord requiredCandidateSet(RequestIdentity identity, String candidateSetId, String conversationId) {
+        return DeviceCandidates.require(candidateStore, identity, candidateSetId, conversationId);
     }
 
     @Override
@@ -862,6 +900,20 @@ public final class WebClientIotAdapter implements IotAdapter {
     }
 
     private Mono<AuthorizedDeviceScope> loadOfficeScope(RequestIdentity identity) {
+        return collectOfficeDirectory(identity).map(ltd.qianc.iotagent.iot.DeviceDirectoryBatch::scope);
+    }
+
+    @Override
+    public Mono<ltd.qianc.iotagent.iot.DeviceDirectoryBatch> collectDirectory(RequestIdentity identity) {
+        if (identity.source() == IotSourceEnum.OFFICE) {
+            if (!routes.hasOfficeDirectoryRoutes()) return Mono.error(new UpstreamUnavailableException("Office 完整目录采集未配置"));
+            return execute("collect complete Office directory", collectOfficeDirectory(identity));
+        }
+        return loadAuthorizedDeviceScope(identity).map(scope ->
+                new ltd.qianc.iotagent.iot.DeviceDirectoryBatch(scope, List.of()));
+    }
+
+    private Mono<ltd.qianc.iotagent.iot.DeviceDirectoryBatch> collectOfficeDirectory(RequestIdentity identity) {
         return readOfficeMembers(identity).flatMap(offices -> {
             List<Mono<List<AuthorizedDevice>>> jobs = new ArrayList<>();
             for (OfficeDeviceSource source : routes.officeDeviceSources()) {
@@ -882,7 +934,9 @@ public final class WebClientIotAdapter implements IotAdapter {
             // keeping the merge order identical to the serial concat shape.
             return Flux.fromIterable(jobs)
                     .flatMapSequential(job -> job, DIRECTORY_FANOUT_CONCURRENCY)
-                    .collectList().map(groups -> mergeScope(identity, groups));
+                    .collectList().map(groups -> new ltd.qianc.iotagent.iot.DeviceDirectoryBatch(mergeScope(identity, groups),
+                            offices.stream().map(office -> new OfficeRegion(text(office, "elementId", "id"),
+                                    text(office, "elementName", "name"))).toList()));
         });
     }
 
@@ -1004,17 +1058,11 @@ public final class WebClientIotAdapter implements IotAdapter {
     }
 
     private static List<JsonNode> areaRows(JsonNode body) {
-        if (body.isArray()) return toList(body);
-        if (body.path("code").asInt() == 204) return List.of();
-        JsonNode content = body.get("content");
-        if (content != null && content.isArray()) return toList(content);
-        if (content == null || !content.isObject()) throw new UpstreamUnavailableException("智慧设备区域响应格式无效");
-        JsonNode rows = content.get("content");
-        if (rows == null || !rows.isArray() || !content.path("last").isBoolean()) {
-            throw new UpstreamUnavailableException("智慧设备区域分页格式无效");
+        CatalogPage page = catalogPage(body, 0);
+        if (!page.last() || page.total() >= 0 && page.total() != page.records().size()) {
+            throw new UpstreamUnavailableException("智慧设备区域分页未完成");
         }
-        if (!content.path("last").asBoolean()) throw new UpstreamUnavailableException("智慧设备区域分页未完成");
-        return toList(rows);
+        return page.records();
     }
 
     private Mono<List<AuthorizedDevice>> collectCompanyAc(RequestIdentity identity) {
@@ -1151,7 +1199,7 @@ public final class WebClientIotAdapter implements IotAdapter {
                     ? Mono.error(new UpstreamUnavailableException("视频取流上游请求失败"))
                     : Mono.empty());
         }
-        return response.bodyToMono(JsonNode.class)
+        return GatewayJson.read(response)
                 .switchIfEmpty(Mono.empty())
                 .flatMap(body -> {
                     if (body == null || !body.isObject()) return failOnError
@@ -1441,46 +1489,65 @@ public final class WebClientIotAdapter implements IotAdapter {
     }
 
     private Mono<List<JsonNode>> page(String path, Map<String, String> params, RequestIdentity identity) {
-        return Flux.range(0, 1000).concatMap(page -> getJson(path, withPage(params, page), identity).map(body -> {
-            if (body.isArray()) return new PageResult(toList(body), true);
-            if (body.path("code").asInt() == 204) return PageResult.empty();
-            JsonNode content = body.get("content");
-            if (content == null || content.isNull()) throw new UpstreamUnavailableException("读取授权设备目录响应");
-            if (content.isArray()) return new PageResult(toList(content), true);
-            JsonNode rows = content.get("content");
-            if (rows == null || !rows.isArray()) throw new UpstreamUnavailableException("读取授权设备目录响应");
-            boolean last = content.path("last").isBoolean() && content.path("last").asBoolean();
-            return new PageResult(toList(rows), last || !content.has("last"));
-        })).takeUntil(PageResult::last).collectList().flatMap(pages -> {
-            if (pages.isEmpty() || !pages.get(pages.size() - 1).last()) {
+        return page(path, params, identity, 1000);
+    }
+
+    private Mono<List<JsonNode>> page(String path, Map<String, String> params, RequestIdentity identity, int maximumPages) {
+        return Flux.range(0, maximumPages).concatMap(page -> getJson(path, withPage(params, page), identity)
+                .map(body -> catalogPage(body, page)))
+                .takeUntil(CatalogPage::last).collectList().flatMap(pages -> {
+            if (pages.isEmpty() || !pages.getLast().last()) {
                 return Mono.error(new UpstreamUnavailableException("读取授权设备目录分页未完成"));
             }
+            long expected = -1;
+            long count = 0;
+            java.util.Set<List<JsonNode>> seen = new java.util.HashSet<>();
+            java.util.Set<String> seenIds = new java.util.HashSet<>();
+            for (CatalogPage page : pages) {
+                if (page.total() >= 0) {
+                    if (expected >= 0 && expected != page.total()) return Mono.error(new UpstreamUnavailableException("读取授权设备目录分页变化"));
+                    expected = page.total();
+                }
+                if (!page.records().isEmpty() && !seen.add(page.records())) {
+                    return Mono.error(new UpstreamUnavailableException("读取授权设备目录重复分页"));
+                }
+                for (JsonNode row : page.records()) {
+                    String id = text(row, "id", "deviceId", "elementId");
+                    if (id != null && !seenIds.add(id)) return Mono.error(new UpstreamUnavailableException("读取授权设备目录记录重复"));
+                }
+                count += page.records().size();
+            }
+            if (expected >= 0 && count != expected) return Mono.error(new UpstreamUnavailableException("读取授权设备目录数量不完整"));
             return Mono.just(pages.stream().flatMap(result -> result.records().stream()).toList());
         });
     }
 
-    private Mono<List<JsonNode>> pageAcBinding(String path, RequestIdentity identity) {
-        return Flux.range(0, 10)
-                .concatMap(page -> getJson(path, withPage(Map.of("modelCode", "YQ_AIR_CONDITION"), page), identity).map(WebClientIotAdapter::acBindingPage))
-                .takeUntil(PageResult::last)
-                .collectList()
-                .flatMap(pages -> {
-                    if (pages.isEmpty() || !pages.get(pages.size() - 1).last()) {
-                        return Mono.error(new UpstreamUnavailableException("读取空调绑定分页未完成"));
-                    }
-                    return Mono.just(pages.stream().flatMap(result -> result.records().stream()).toList());
-                });
+    private static CatalogPage catalogPage(JsonNode body, int page) {
+        if (body.isArray()) return new CatalogPage(toList(body), true, body.size());
+        if (body.path("code").asInt() == 204) return new CatalogPage(List.of(), true, -1);
+        JsonNode content = body.get("content");
+        if (content != null && content.isArray()) return new CatalogPage(toList(content), true, content.size());
+        if (content == null || !content.isObject() || !content.path("content").isArray()
+                || !content.path("last").isBoolean()) throw new UpstreamUnavailableException("读取授权设备目录分页标志");
+        if (content.has("number") && (!content.path("number").isIntegralNumber() || content.path("number").asInt(-1) != page)) {
+            throw new UpstreamUnavailableException("读取授权设备目录页号变化");
+        }
+        List<JsonNode> rows = toList(content.get("content"));
+        boolean last = content.get("last").booleanValue();
+        if (rows.isEmpty() && !last) throw new UpstreamUnavailableException("读取授权设备目录空中间页");
+        long total = -1;
+        if (content.has("totalElements")) {
+            if (!content.path("totalElements").isIntegralNumber() || !content.path("totalElements").canConvertToLong()
+                    || content.path("totalElements").longValue() < 0) throw new UpstreamUnavailableException("读取授权设备目录总数");
+            total = content.path("totalElements").longValue();
+        }
+        return new CatalogPage(rows, last, total);
     }
 
-    private static PageResult acBindingPage(JsonNode body) {
-        if (body.path("code").asInt() == 204) return PageResult.empty();
-        JsonNode content = body.get("content");
-        if (content == null || !content.isObject()) throw new UpstreamUnavailableException("读取空调绑定响应");
-        JsonNode rowsNode = content.get("content");
-        if (rowsNode == null || !rowsNode.isArray()) throw new UpstreamUnavailableException("读取空调绑定响应");
-        List<JsonNode> rows = toList(rowsNode);
-        boolean last = content.path("last").isBoolean() ? content.path("last").asBoolean() : rows.size() < 100;
-        return new PageResult(rows, last);
+    private record CatalogPage(List<JsonNode> records, boolean last, long total) { }
+
+    private Mono<List<JsonNode>> pageAcBinding(String path, RequestIdentity identity) {
+        return page(path, Map.of("modelCode", "YQ_AIR_CONDITION"), identity, 10);
     }
 
     private Mono<JsonNode> getJson(String path, Map<String, String> params, RequestIdentity identity) {
@@ -1497,7 +1564,7 @@ public final class WebClientIotAdapter implements IotAdapter {
         HttpStatusCode status = response.statusCode();
         if (status.value() == 401 || status.value() == 403) return response.releaseBody().then(Mono.error(new GatewayAuthorizationException(status.value())));
         if (!status.is2xxSuccessful()) return response.releaseBody().then(Mono.error(new UpstreamUnavailableException(operation)));
-        return response.bodyToMono(JsonNode.class).switchIfEmpty(Mono.error(new UpstreamUnavailableException(operation))).flatMap(body -> {
+        return GatewayJson.read(response).switchIfEmpty(Mono.error(new UpstreamUnavailableException(operation))).flatMap(body -> {
             if (body == null || (!body.isObject() && !body.isArray())) return Mono.error(new UpstreamUnavailableException(operation + "响应"));
             if (body.isArray()) return Mono.just(body);
             if (!body.path("code").isNumber()) return Mono.error(new UpstreamUnavailableException(operation + "响应"));
@@ -1549,33 +1616,41 @@ public final class WebClientIotAdapter implements IotAdapter {
                 text(record, "smartAreaCode"), List.of(), officeId == null ? List.of() : List.of(officeId), metadata);
     }
 
-    private DeviceCapabilityInspection.DeviceCapability capability(AuthorizedDevice device) {
-        List<Map<String, Object>> commands = new ArrayList<>();
-        if ("lighting".equalsIgnoreCase(device.kind())) {
-            commands.add(Map.<String, Object>of("closeOrOpen", 0));
-            commands.add(Map.<String, Object>of("closeOrOpen", 1));
-        } else if ("access".equalsIgnoreCase(device.kind())) {
-            commands.add(Map.<String, Object>of("controlType", 2));
-        }
-        DeviceCapabilityInspection.MapParameters params = "ac".equalsIgnoreCase(device.kind()) && !device.observationOnly()
-                ? AcCommandCapabilities.parameters() : null;
-        return new DeviceCapabilityInspection.DeviceCapability(device.id(), device.kind(), commands, params);
-    }
-
     private Object stateOf(AuthorizedDevice device, JsonNode record) {
         if (record == null || device.observationOnly() && !"video".equalsIgnoreCase(device.kind())) return null;
         return switch (device.kind().toLowerCase()) {
-            case "lighting" -> record.has("switchStatus") && !record.get("switchStatus").isNull() ? record.get("switchStatus").asBoolean() : null;
+            case "lighting" -> booleanValue(record.get("switchStatus"));
             case "video" -> record.has("netStatus") ? "ON_LINE".equals(record.get("netStatus").asText()) ? Boolean.TRUE : "OFF_LINE".equals(record.get("netStatus").asText()) ? Boolean.FALSE : null : null;
             case "ac" -> {
                 Map<String, Object> state = new LinkedHashMap<>();
-                if (record.has("switchStatus") && !record.get("switchStatus").isNull()) state.put("power", record.get("switchStatus").asBoolean() ? "on" : "off");
-                if (record.has("temperature") && !record.get("temperature").isNull()) state.put("temperature", record.get("temperature").numberValue());
-                if (record.has("targetTemperature") && !record.get("targetTemperature").isNull()) state.put("targetTemperature", record.get("targetTemperature").numberValue());
+                Boolean power = booleanValue(record.get("switchStatus"));
+                if (power != null) state.put("power", power ? "on" : "off");
+                java.math.BigDecimal temperature = numberValue(record.get("temperature"));
+                java.math.BigDecimal target = numberValue(record.get("targetTemperature"));
+                if (temperature != null) state.put("temperature", temperature);
+                if (target != null) state.put("targetTemperature", target);
                 yield state.isEmpty() ? null : state;
             }
             default -> null;
         };
+    }
+
+    private static Boolean booleanValue(JsonNode value) {
+        if (value == null || value.isNull()) return null;
+        if (value.isBoolean()) return value.booleanValue();
+        String text = value.asText();
+        return "true".equalsIgnoreCase(text) || "1".equals(text) ? Boolean.TRUE
+                : "false".equalsIgnoreCase(text) || "0".equals(text) ? Boolean.FALSE : null;
+    }
+
+    private static String sampleTime(JsonNode value) {
+        return value == null ? null : sampleTime(text(value, "observedAt", "readTime", "reportedAt", "sampleTime"));
+    }
+
+    private static String sampleTime(String value) {
+        if (value == null || value.isBlank()) return null;
+        try { return Instant.parse(localDateTimeIso(value)).toString(); }
+        catch (java.time.DateTimeException invalid) { return null; }
     }
 
     private static Map<String, String> withPage(Map<String, String> params, int page) {

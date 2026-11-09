@@ -77,6 +77,9 @@ class SafetyReviewToolContractTest {
         assertThat(playback).containsEntry("deviceId", "cam-1")
                 .containsEntry("beginTime", BEGIN).containsEntry("endTime", END);
         assertThat(map(playback.get("safetyContext"))).containsEntry("eventId", "alarm-1");
+        Map<String, Object> model = new ObjectMapper().convertValue(result.get("modelResult"), Map.class);
+        assertThat(model).containsEntry("videoReady", true).containsEntry("candidatesCount", 1);
+        assertThat(model.toString()).doesNotContain("大堂监控", "cam-1");
 
         AgentRunPolicy policy = policy(conversations, iot, observations);
         List<AgentEngineEvent> projected = policy.projection().apply(new AgentEngineEvent(

@@ -51,9 +51,6 @@ class ActionDraftReadbackContractTest {
                 action("action-1", "device-1"), MAPPER.writeValueAsString(Map.of(
                         "id", "action-2", "deviceId", "device-2", "kind", "ac",
                         "command", Map.of("temperature", 24)))), readbacks());
-        Map<String, Object> preparing = facade.deviceStates(PRINCIPAL, "draft-2");
-        assertThat(preparing.get("status")).isEqualTo("preparing");
-        while (!snapshotJobs.isEmpty()) snapshotJobs.remove(0).run();
         Map<String, Object> response = facade.deviceStates(PRINCIPAL, "draft-2");
 
         assertThat(response.get("states")).isEqualTo(Map.of(
@@ -100,7 +97,7 @@ class ActionDraftReadbackContractTest {
             public ActionDraftFact update(String id, long revision, ActionDraftFact replacement) { return replacement; }
         };
         IotAdapter iot = mock(IotAdapter.class);
-        when(iot.loadAuthorizedDeviceScope(any())).thenAnswer(call -> {
+        when(iot.revalidateAuthorizedDeviceScope(any())).thenAnswer(call -> {
             if (scopeUnavailable) return Mono.error(new ltd.qianc.iotagent.iot.UpstreamUnavailableException("scope unavailable"));
             ltd.qianc.iotagent.iot.RequestIdentity identity = call.getArgument(0);
             return Mono.just(new ltd.qianc.iotagent.iot.AuthorizedDeviceScope() {

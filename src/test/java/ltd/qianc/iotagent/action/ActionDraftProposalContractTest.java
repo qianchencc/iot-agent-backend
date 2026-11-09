@@ -203,20 +203,13 @@ class ActionDraftProposalContractTest {
     }
 
     @Test
-    void rejectsStaleOrCrossConversationCandidateSets() throws Exception {
+    void rejectsCrossConversationCandidateSets() throws Exception {
         TestIotAdapter iot = new TestIotAdapter(LIGHTS, identity -> states);
         String payload = payload(Map.of(
                 "candidateSetIds", List.of("set-lighting"),
                 "summary", "灯",
                 "actions", List.of(Map.of("deviceId", "light-2", "kind", "lighting",
                         "closeOrOpen", 1, "selected", true))));
-        DeviceCandidateRecord stale = new DeviceCandidateRecord("set-lighting", CONVERSATION, PRINCIPAL.tenantCode(), PRINCIPAL.ownerKey(), IotSourceEnum.OFFICE, "stale", new DeviceCandidateQuery("lighting", List.of(), null, List.of(), List.of(), null, null), LIGHTS.subList(0, 3), true, 3, CLOCK.instant().toString(), "exact", null);
-        ActionDraftFacade staleFacade = facade(new InMemoryActionDraftStore(),
-                new InMemoryCandidateStore(stale), iot);
-        assertThatThrownBy(() -> staleFacade.propose(PRINCIPAL, "office", CONVERSATION, "turn-1", payload, "idem"))
-                .isInstanceOf(BusinessException.class)
-                .satisfies(error -> assertThat(((BusinessException) error).code()).isEqualTo("CANDIDATE_SET_STALE"));
-
         DeviceCandidateRecord foreign = set("set-lighting", "lighting", LIGHTS.subList(0, 3), iot,
                 "another-conversation");
         ActionDraftFacade foreignFacade = facade(new InMemoryActionDraftStore(),
@@ -307,26 +300,25 @@ class ActionDraftProposalContractTest {
     }
 
     @Test
-    void exclusionSourceStillRequiresTheSameIdentityConversationCatalogAndExactScope() throws Exception {
+    void exclusionSourceStillRequiresTheSameIdentityConversationAndExactScope() throws Exception {
         TestIotAdapter iot = new TestIotAdapter(LIGHTS, identity -> states);
         var included = handled(set("included", "lighting", LIGHTS.subList(0, 3), iot), "s7");
         var base = set("exclusion", "lighting", List.of(LIGHTS.get(2)), iot);
         String request = payload(Map.of("candidateSetIds", List.of(), "actions", List.of(),
                 "lighting", Map.of("candidateSetId", "s7",
                         "excludedDeviceIds", List.of("d8_1"), "closeOrOpen", 1)));
-        for (String failure : List.of("tenant", "owner", "source", "conversation", "catalog", "browse")) {
+        for (String failure : List.of("tenant", "owner", "source", "conversation", "browse")) {
             var excluded = new DeviceCandidateRecord(base.candidateSetId(),
                     "conversation".equals(failure) ? "foreign-conversation" : base.conversationId(),
                     "tenant".equals(failure) ? "OTHER" : base.tenantCode(),
                     "owner".equals(failure) ? "foreign-owner" : base.ownerKey(),
                     "source".equals(failure) ? IotSourceEnum.COMPANY : base.source(),
-                    "catalog".equals(failure) ? "stale" : base.catalogFingerprint(),
+                    base.catalogFingerprint(),
                     base.query(), base.members(), true, 1, base.createdAt(),
                     "browse".equals(failure) ? "browse" : "exact", "s8");
             var drafts = new InMemoryActionDraftStore();
             var facade = facade(drafts, new InMemoryCandidateStore(included, excluded), iot);
             String expected = switch (failure) {
-                case "catalog" -> "CANDIDATE_SET_STALE";
                 case "browse" -> "CANDIDATE_SCOPE_UNRESOLVED";
                 default -> "CANDIDATE_SET_NOT_FOUND";
             };
@@ -551,6 +543,68 @@ class ActionDraftProposalContractTest {
                 payload(Map.of("candidateSetIds", List.of("access-set"), "actions", List.of(
                         Map.of("deviceId", "door-1", "controlType", 2)))), "access-open");
         assertThat(actions(accessFacade.view(access)).get(0).get("command")).isEqualTo(Map.of("controlType", 2));
+    }
+
+    @Test
+    void staleOrUndatedLocalStatesCannotTurnARequestedControlIntoNoChange() throws Exception {
+        for (String sample : new String[] { null, CLOCK.instant().minusSeconds(61).toString(), CLOCK.instant().toString() }) {
+            TestIotAdapter iot = new TestIotAdapter(LIGHTS, identity -> states);
+            iot.observedAt = sample;
+            if (CLOCK.instant().toString().equals(sample)) iot.cache = Map.of("status", "stale");
+            var candidates = new InMemoryCandidateStore(set("fixture-set", "lighting", LIGHTS.subList(0, 1), iot));
+            ActionDraftFacade facade = facade(new InMemoryActionDraftStore(), candidates, iot);
+            ActionDraftFact draft = facade.propose(PRINCIPAL, "office", CONVERSATION, "fixture-turn",
+                    payload(Map.of("candidateSetIds", List.of("fixture-set"), "actions",
+                            List.of(Map.of("deviceId", "light-1", "closeOrOpen", 1)))), "fixture-state-quality");
+            assertThat(draft.status()).isEqualTo("PENDING_CONFIRMATION");
+            Map<?, ?> counts = (Map<?, ?>) facade.view(draft).get("counts");
+            assertThat(counts.get("operate")).isEqualTo(1);
+            assertThat(counts.get("satisfied")).isEqualTo(0);
+        }
+    }
+
+    @Test
+    void localPublicationGapHasItsOwnErrorAndStoredUndatedStateCanPrepareADraft() throws Exception {
+        try (var local = new ltd.qianc.iotagent.iot.EnergyHistoryFixture()) {
+            local.catalog = LIGHTS;
+            local.meters = List.of();
+            local.register(local.identity());
+            local.directory.synchronizeDue();
+            local.jdbc.update("DELETE FROM local_device_state_sync");
+            var principal = new PrincipalInfo(local.identity().authorization(), local.identity().tenantCode(),
+                    "fixture-principal", "fixture-realm");
+            var scope = local.directory.loadScope(local.identity());
+            var set = new DeviceCandidateRecord("fixture-local", CONVERSATION, principal.tenantCode(), principal.ownerKey(),
+                    IotSourceEnum.COMPANY, scope.catalogFingerprint(),
+                    new DeviceCandidateQuery("lighting", List.of(), null, List.of(), List.of(), null, null),
+                    LIGHTS.subList(0, 1), true, 1, local.clock.instant().toString(), "exact", null);
+            var candidates = new InMemoryCandidateStore(set);
+            var observations = ltd.qianc.iotagent.iot.DeviceObservations.jdbc(local.jdbc, local.transactions,
+                    local.mapper, local.directory, ltd.qianc.iotagent.iot.EnergyHistoryFixture.GATEWAY, local.clock);
+            var iot = ltd.qianc.iotagent.iot.IotAdapterFactory.localReads(local.gateway, () -> local.directory,
+                    () -> observations, candidates);
+            var drafts = new InMemoryActionDraftStore();
+            ActionCommandGateway noControl = (identity, authorized, commands) -> {
+                throw new AssertionError("Proposal must not dispatch controls");
+            };
+            var facade = new ActionDraftFacade(MAPPER, drafts, iot, candidates, noControl,
+                    null, null, null, null, org.mockito.Mockito.mock(ltd.qianc.iotagent.readmodel.ReadSnapshots.class),
+                    local.clock, Duration.ofSeconds(2), Duration.ofMinutes(10), null);
+            String request = payload(Map.of("lighting", Map.of("candidateSetId", "fixture-local", "closeOrOpen", 1)));
+            assertThatThrownBy(() -> facade.propose(principal, "company", CONVERSATION, "fixture-local-turn", request, "fixture-local"))
+                    .isInstanceOf(BusinessException.class)
+                    .satisfies(error -> assertThat(((BusinessException) error).code()).isEqualTo("DEVICE_STATE_PREPARING"));
+            assertThat(drafts.findByConversation(CONVERSATION)).isEmpty();
+            local.currentStates = new ltd.qianc.iotagent.iot.DeviceStateReadResult(Map.of("light-1", false), null);
+            local.clock.advance(61);
+            local.directory.synchronizeDue();
+            int calls = local.sourceCalls.get();
+            var draft = facade.propose(principal, "company", CONVERSATION, "fixture-local-turn", request, "fixture-local");
+            assertThat(draft.status()).isEqualTo("PENDING_CONFIRMATION");
+            assertThat(actions(facade.view(draft))).singleElement()
+                    .satisfies(row -> assertThat(row).containsEntry("deviceId", "light-1").containsEntry("beforeState", false));
+            assertThat(local.sourceCalls.get()).isEqualTo(calls);
+        }
     }
 
     private static DeviceCandidateRecord controlSet(String id, String conversationId,

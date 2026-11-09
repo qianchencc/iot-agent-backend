@@ -209,7 +209,7 @@ final class AgentBusinessEventProjection {
             case "create_energy_report" -> reportArtifact(result);
             case "prepare_video_playback" -> videoPlayback(result);
             case "review_safety_event" -> safetyVideo(result);
-            case "find_device_candidates" -> liveVideoCandidates(result);
+            case "find_device_candidates" -> stateObservation(map(result.get("videoObservation")));
             case "read_device_states" -> stateObservation(result);
             default -> List.of();
         };
@@ -284,8 +284,7 @@ final class AgentBusinessEventProjection {
         }
         Map<String, Object> fields = new LinkedHashMap<>();
         fields.put("type", "observation.reported");
-        fields.put("observedAt", observedAt == null || observedAt.isBlank()
-                ? Instant.now(clock).toString() : observedAt);
+        fields.put("observedAt", observedAt == null || observedAt.isBlank() ? null : observedAt);
         fields.put("blocks", List.of(block));
         return fields;
     }
@@ -303,26 +302,6 @@ final class AgentBusinessEventProjection {
         fields.put("type", "observation.reported");
         fields.put("observedAt", textOr(report, "generatedAt", Instant.now(clock).toString()));
         fields.put("blocks", List.of(Map.of("type", "report_artifact", "report", report)));
-        return List.of(fields);
-    }
-
-    private List<Map<String, Object>> liveVideoCandidates(Map<String, Object> result) {
-        List<Map<String, Object>> devices = new ArrayList<>();
-        for (Object item : list(result.get("devices"))) {
-            Map<String, Object> device = map(item);
-            if (!"video".equals(text(device, "kind"))) continue;
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("deviceId", textOr(device, "id", ""));
-            row.put("name", textOr(device, "name", ""));
-            row.put("location", textOr(device, "location", ""));
-            row.put("online", null);
-            devices.add(row);
-        }
-        if (devices.isEmpty()) return List.of();
-        Map<String, Object> fields = new LinkedHashMap<>();
-        fields.put("type", "observation.reported");
-        fields.put("observedAt", Instant.now(clock).toString());
-        fields.put("blocks", List.of(Map.of("type", "video", "devices", devices)));
         return List.of(fields);
     }
 
@@ -359,21 +338,20 @@ final class AgentBusinessEventProjection {
             if (!block.isEmpty()) suppliedBlocks.add(block);
         }
         if (!suppliedBlocks.isEmpty()) {
-            Map<String, Object> fields = new LinkedHashMap<>();
-            fields.put("type", "observation.reported");
-            fields.put("observedAt", textOr(result, "observedAt", Instant.now(clock).toString()));
-            fields.put("blocks", suppliedBlocks);
-            return List.of(fields);
+            return List.of(stateEvent(result, suppliedBlocks));
         }
         Map<String, Object> states = map(result.get("states"));
         if (states.isEmpty()) return List.of();
         List<Map<String, Object>> blocks = new ArrayList<>();
+        Map<String, Object> sampleTimes = map(result.get("observedAtByDevice"));
         for (String kind : List.of("video", "environment", "energy", "safety")) {
             List<Map<String, Object>> devices = new ArrayList<>();
             for (Map.Entry<String, Object> entry : states.entrySet()) {
                 Map<String, Object> device = devicesById.get(entry.getKey());
                 if (device == null || !kind.equals(text(device, "kind"))) continue;
-                devices.add(observationDevice(kind, device, entry.getValue()));
+                Map<String, Object> row = observationDevice(kind, device, entry.getValue());
+                row.put("observedAt", sampleTimes.getOrDefault(entry.getKey(), result.get("observedAt")));
+                devices.add(row);
             }
             if (!devices.isEmpty()) {
                 Map<String, Object> block = new LinkedHashMap<>();
@@ -383,11 +361,18 @@ final class AgentBusinessEventProjection {
             }
         }
         if (blocks.isEmpty()) return List.of();
+        return List.of(stateEvent(result, blocks));
+    }
+
+    private static Map<String, Object> stateEvent(Map<String, Object> result, List<Map<String, Object>> blocks) {
         Map<String, Object> fields = new LinkedHashMap<>();
         fields.put("type", "observation.reported");
-        fields.put("observedAt", textOr(result, "observedAt", Instant.now(clock).toString()));
+        fields.put("observedAt", result.get("observedAt"));
         fields.put("blocks", blocks);
-        return List.of(fields);
+        for (String key : List.of("observedAtByDevice", "status", "missingDeviceIds", "cache")) {
+            if (result.containsKey(key)) fields.put(key, result.get(key));
+        }
+        return fields;
     }
 
     private Map<String, Object> observationDevice(String kind, Map<String, Object> device, Object state) {

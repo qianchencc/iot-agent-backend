@@ -11,6 +11,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
+import ltd.qianc.iotagent.admin.AuditProposalProvider;
+import ltd.qianc.iotagent.admin.AuditProjections;
 import ltd.qianc.iotagent.audit.AuditEventFact;
 import ltd.qianc.iotagent.audit.AuditEventQuery;
 import ltd.qianc.iotagent.audit.AuditEventStore;
@@ -63,9 +65,6 @@ public final class AuditAdminController {
     private static final Pattern EVENT_TYPE_SYNTAX = Pattern.compile("[A-Za-z0-9._-]{1,128}");
     private static final Set<String> FREE_TEXT_FIELDS = Set.of(
             "summary", "question", "request", "reply", "message", "reason");
-    private static final List<String> ACTION_FIELDS = List.of(
-            "id", "deviceId", "kind", "name", "deviceName", "location", "regionId",
-            "roomName", "areaName", "satisfied", "command", "state");
     /** Raw payload statuses that derive to a filter result. */
     private static final Map<String, List<String>> RESULT_STATUSES = Map.ofEntries(
             Map.entry("STARTED", List.of("started")),
@@ -88,16 +87,15 @@ public final class AuditAdminController {
                     "TASK_PROPOSED", "TASK_CHANGE_PROPOSED", "TASK_CANCELLATION_PROPOSED")));
     private static final Set<String> RESULT_BEARING_TYPES = new LinkedHashSet<>(
             RESULT_EVENT_TYPES.values().stream().flatMap(List::stream).toList());
-    private static final Pattern BEARER_TEXT = Pattern.compile("(?i)bearer\\s+[A-Za-z0-9._~+/=-]{4,}");
-    private static final Pattern CREDENTIAL_TEXT = Pattern.compile(
-            "(?i)\\b(api[_-]?key|access[_-]?token|refresh[_-]?token|secret|password|passwd|"
-                    + "authorization|credential|token)\\b(['\"\\s:=]+)(\\S+)");
 
     private final AuditEventStore audit;
+    private final ObjectProvider<AuditProposalProvider> proposals;
     private final ObjectMapper mapper;
 
-    public AuditAdminController(ObjectProvider<AuditEventStore> auditProvider, ObjectMapper mapper) {
+    public AuditAdminController(ObjectProvider<AuditEventStore> auditProvider,
+            ObjectProvider<AuditProposalProvider> proposalProvider, ObjectMapper mapper) {
         this.audit = auditProvider.getIfAvailable();
+        this.proposals = proposalProvider;
         this.mapper = mapper;
     }
 
@@ -196,7 +194,7 @@ public final class AuditAdminController {
             view.put("eventType", event.eventType());
             for (String field : ROW_FIELDS) {
                 if (!payload.containsKey(field)) continue;
-                Object value = scalar(payload.get(field), MAX_TEXT);
+                Object value = AuditProjections.scalar(payload.get(field), MAX_TEXT);
                 if (value != null) view.put(field, value);
             }
             view.put("result", derivedResult(payload, event.eventType()));
@@ -230,6 +228,11 @@ public final class AuditAdminController {
             projected.put("payloadUnreadable", true);
         }
         view.put("payload", projected);
+        AuditProposalProvider provider = proposals == null ? null : proposals.getIfAvailable();
+        if (provider != null) {
+            Map<String, Object> proposal = provider.proposalDetail(event.eventType(), projected);
+            if (proposal != null) view.put("proposal", proposal);
+        }
         return ResponseEntity.ok(view);
     }
 
@@ -240,7 +243,7 @@ public final class AuditAdminController {
             Object value = payload.get(field);
             if (value == null) continue;
             if (value instanceof String text) {
-                String bounded = bound(redact(text), MAX_REQUEST_REPLY);
+                String bounded = AuditProjections.bound(AuditProjections.redact(text), MAX_REQUEST_REPLY);
                 if (!bounded.isBlank()) view.put(field, bounded);
             } else if (value instanceof Number || value instanceof Boolean) {
                 view.put(field, value);
@@ -258,7 +261,7 @@ public final class AuditAdminController {
         if (payload.get("selectedActionIds") instanceof List<?> ids) {
             List<Object> projected = new ArrayList<>();
             for (Object id : ids) {
-                Object value = scalar(id, MAX_TEXT);
+                Object value = AuditProjections.scalar(id, MAX_TEXT);
                 if (value != null) projected.add(value);
             }
             view.put("selectedActionIds", projected);
@@ -266,24 +269,8 @@ public final class AuditAdminController {
         if (payload.get("actions") instanceof List<?> actions) {
             List<Map<String, Object>> projected = new ArrayList<>();
             for (Object action : actions) {
-                if (!(action instanceof Map<?, ?> item)) continue;
-                Map<String, Object> row = new LinkedHashMap<>();
-                for (String field : ACTION_FIELDS) {
-                    Object value = item.get(field);
-                    if (value instanceof Map<?, ?> values && ("command".equals(field) || "state".equals(field))) {
-                        Map<String, Object> fields = new LinkedHashMap<>();
-                        for (String name : List.of("power", "mode", "temperature", "fanSpeed", "closeOrOpen",
-                                "openOrClose", "on", "targetTemperature", "reportedAt", "status")) {
-                            Object entry = scalar(values.get(name), MAX_TEXT);
-                            if (entry != null) fields.put(name, entry);
-                        }
-                        row.put(field, fields);
-                    } else {
-                        Object entry = scalar(value, MAX_TEXT);
-                        if (entry != null) row.put(field, entry);
-                    }
-                }
-                if (!row.isEmpty()) projected.add(row);
+                Map<String, Object> row = AuditProjections.projectAction(action);
+                if (row != null) projected.add(row);
             }
             view.put("actions", projected);
         }
@@ -293,13 +280,14 @@ public final class AuditAdminController {
         return view;
     }
 
+
     /** Execution result keeps statuses, messages and per-action outcomes; raw device state dumps do not pass. */
     private Map<String, Object> projectResult(Map<?, ?> result) {
         Map<String, Object> view = new LinkedHashMap<>();
         Object status = result.get("status");
-        if (status != null && scalar(status, MAX_TEXT) != null) view.put("status", scalar(status, MAX_TEXT));
+        if (status != null && AuditProjections.scalar(status, MAX_TEXT) != null) view.put("status", AuditProjections.scalar(status, MAX_TEXT));
         Object message = result.get("message");
-        if (message instanceof String text && !text.isBlank()) view.put("message", bound(redact(text), MAX_REQUEST_REPLY));
+        if (message instanceof String text && !text.isBlank()) view.put("message", AuditProjections.bound(AuditProjections.redact(text), MAX_REQUEST_REPLY));
         if (result.get("receipts") instanceof List<?> receipts) {
             List<Map<String, Object>> projected = new ArrayList<>();
             for (Object receipt : receipts) {
@@ -307,7 +295,7 @@ public final class AuditAdminController {
                 Map<String, Object> row = new LinkedHashMap<>();
                 for (String field : List.of("actionId", "outcome", "reason", "message")) {
                     Object value = item.get(field);
-                    Object entry = scalar(value, MAX_REQUEST_REPLY);
+                    Object entry = AuditProjections.scalar(value, MAX_REQUEST_REPLY);
                     if (entry != null) row.put(field, entry);
                 }
                 if (!row.isEmpty()) projected.add(row);
@@ -318,13 +306,14 @@ public final class AuditAdminController {
             Map<String, Object> projected = new LinkedHashMap<>();
             readback.forEach((key, value) -> {
                 if (key instanceof String name && (value instanceof String || value instanceof Number)) {
-                    projected.put(bound(redact(name), MAX_TEXT), scalar(value, MAX_TEXT));
+                    projected.put(AuditProjections.bound(AuditProjections.redact(name), MAX_TEXT), AuditProjections.scalar(value, MAX_TEXT));
                 }
             });
             view.put("readback", projected);
         }
         return view;
     }
+
 
     private static Set<String> resultStatuses(String resultFilter) {
         if (resultFilter == null || "UNKNOWN".equals(resultFilter)) return Set.of();
@@ -499,20 +488,6 @@ public final class AuditAdminController {
         return null;
     }
 
-    /** Credential-shaped text never passes through, even inside an otherwise public reply. */
-    private static String redact(String value) {
-        return CREDENTIAL_TEXT.matcher(BEARER_TEXT.matcher(value).replaceAll("Bearer ***"))
-                .replaceAll("$1$2***");
-    }
-
-    private static String bound(String value, int max) {
-        return value.length() <= max ? value : value.substring(0, max) + "…（已截断）";
-    }
-
-    private static Object scalar(Object value, int max) {
-        if (value instanceof String text) return bound(redact(text), max);
-        return value instanceof Number || value instanceof Boolean ? value : null;
-    }
 
     private Map<String, Object> parse(String json) {
         if (json == null || json.isBlank()) return Map.of();

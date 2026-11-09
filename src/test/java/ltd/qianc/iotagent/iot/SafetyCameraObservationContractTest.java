@@ -128,7 +128,7 @@ class SafetyCameraObservationContractTest {
                 return Mono.just(video);
             }
         };
-        return ObservationAdapterFactory.composed(upstream, iot, identity -> Mono.just(Map.of()), null,
+        return ObservationAdapterFactory.composed(upstream, iot, identity -> Mono.just(Map.of()), null, null,
                 Clock.fixed(NOW, ZoneOffset.UTC));
     }
 

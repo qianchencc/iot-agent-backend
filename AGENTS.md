@@ -4,6 +4,8 @@
 
 当前业务恢复入口：[规格与十六组闭环](.scratch/agent-business-recovery/README.md)；涉及 Java/Node 职责、智能体工具/指引、Runtime 对照或验收时先读。业务定义归 Java、Node 只提供通用 Agent Engine，见 [ADR 0004](docs/adr/0004-java-business-definition-generic-agent-engine.md)。
 
+本地数据／同步／普通读取改造先读[执行地图](.scratch/local-data-sync/README.md)和[同步契约门禁](.scratch/local-data-sync/issues/01-sync-contract.md)，按票据依赖推进；规划、实现、工程验证和真实微信验收分别记状态。主代理负责主要实现与整合，子代理仅作只读调研。模块职责变化同步维护对应层级AGENTS，详细契约集中在执行地图，不复制到各层。
+
 联调先配置独立端口、MySQL schema、Redis命名空间、Pi Session和Admin状态，不启用工具复制的旧 `var/` 或 Compose 卷，不重启/切换其他工作区服务。当前入口与冻结实例以 `.scratch/agent-business-recovery/local-preview.md` 为准。
 
 配置、启动、持久化或控制台变更前先读 [配置与数据治理规范](docs/configuration-governance.md) 和 [控制台实施与验证入口](.scratch/admin-console-governance/README.md)。部署为常规命令启动：Java `java -jar <backend.jar> --spring.config.additional-location=…`、Node `node dist/server.js --config …`、控制台在 `web/admin` 执行 `npm run dev`（见 [README 常规本地启动](README.md#常规本地启动)）；外置 YAML 显式指定，不加载 `.env`，无启动器脚本；MySQL 管可管理业务修订。历史盘点不作为当前运行证据。

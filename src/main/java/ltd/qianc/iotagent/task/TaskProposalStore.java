@@ -20,4 +20,9 @@ public interface TaskProposalStore {
             String ownerKey, String source) {
         throw new UnsupportedOperationException("Task proposal store is not configured");
     }
+
+    /** Read-only lookup by conversation + turn for audit correlation; never mutates state. */
+    default Optional<TaskProposalFact> findByConversationAndTurn(String conversationId, String turnId) {
+        throw new UnsupportedOperationException("Task proposal store is not configured");
+    }
 }

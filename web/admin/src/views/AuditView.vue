@@ -149,119 +149,18 @@
       </el-card>
     </div>
 
-    <el-drawer v-model="drawerOpen" title="操作详情" size="min(520px, 100vw)">
-      <div v-loading="detailLoading">
-        <el-alert v-if="detailError" :title="detailError" type="error" show-icon class="drawer-alert" />
-        <template v-if="detail">
-          <el-descriptions :column="1" bordered>
-            <el-descriptions-item label="时间">{{ formatTime(detail.createdAt ?? detail.payload?.at) }}</el-descriptions-item>
-            <el-descriptions-item label="成员">{{ detailMemberName(detail) }}</el-descriptions-item>
-            <el-descriptions-item label="操作者">{{ detail.payload?.actor || "成员本人（未另记操作者）" }}</el-descriptions-item>
-            <el-descriptions-item label="身份域">{{ detail.payload?.identityRealm || "未知" }}</el-descriptions-item>
-            <el-descriptions-item label="来源">{{ sourceLabel({ eventType: detail.eventType, source: detail.payload?.source }) }}</el-descriptions-item>
-            <el-descriptions-item label="操作">{{ eventLabel(detail.eventType, detail.payload?.action) }}</el-descriptions-item>
-            <el-descriptions-item label="结果">{{ statusLabel(detail.payload ? resultOf(detail.payload, detail.eventType) : "") }}</el-descriptions-item>
-            <el-descriptions-item v-if="detail.payload?.result" label="执行结果">{{ resultSummary }}</el-descriptions-item>
-            <el-descriptions-item label="创建者姓名">{{ detail.payload?.creatorName || "未记录" }}</el-descriptions-item>
-            <el-descriptions-item label="确认时间">{{ formatTime(detail.payload?.confirmedAt) === "—" ? "未记录" : formatTime(detail.payload?.confirmedAt) }}</el-descriptions-item>
-            <el-descriptions-item label="上游下发">{{ dispatchLabel(detail.payload?.dispatchStarted) }}</el-descriptions-item>
-            <el-descriptions-item label="记录 ID">{{ detail.eventId }}</el-descriptions-item>
-          </el-descriptions>
-
-          <el-alert
-            v-if="detail.payload?.payloadUnreadable"
-            title="原始终端载荷不可读取，仅显示可投影字段"
-            type="warning"
-            show-icon
-            class="drawer-alert"
-          />
-
-          <section v-if="detail.payload" class="detail-section">
-            <h4 class="detail-heading">关联业务事实（审计快照）</h4>
-            <el-descriptions :column="1" bordered size="small">
-              <el-descriptions-item
-                v-for="item in relatedFacts"
-                :key="item.label"
-                :label="item.label"
-              >
-                <span :class="{ muted: item.absent }">{{ item.value }}</span>
-              </el-descriptions-item>
-            </el-descriptions>
-            <p class="muted related-note">以上事实取自本条审计快照，仅作只读核对，不跳转成员业务页面。</p>
-          </section>
-
-          <template v-if="detail.payload">
-            <section v-if="detail.payload.request" class="detail-section">
-              <h4 class="detail-heading">成员请求</h4>
-              <p class="detail-text">{{ detail.payload.request }}</p>
-            </section>
-            <section v-if="detail.payload.reply" class="detail-section">
-              <h4 class="detail-heading">公开答复</h4>
-              <p class="detail-text">{{ detail.payload.reply }}</p>
-            </section>
-            <section v-if="detail.payload.question" class="detail-section">
-              <h4 class="detail-heading">待确认问题</h4>
-              <p class="detail-text">{{ detail.payload.question }}</p>
-            </section>
-            <section v-if="detail.payload.summary" class="detail-section">
-              <h4 class="detail-heading">摘要</h4>
-              <p class="detail-text">{{ detail.payload.summary }}</p>
-            </section>
-
-            <template v-if="detailActions.length">
-              <h4 class="detail-heading">动作（{{ detailActions.length }}）</h4>
-              <el-table :data="detailActions" size="small" class="detail-table">
-                <el-table-column label="设备" min-width="140" show-overflow-tooltip>
-                  <template #default="{ row }">{{ row.name || row.deviceName || row.deviceId || "—" }}</template>
-                </el-table-column>
-                <el-table-column label="位置" min-width="110" show-overflow-tooltip>
-                  <template #default="{ row }">{{ row.location || row.roomName || "—" }}</template>
-                </el-table-column>
-                <el-table-column label="指令" min-width="90">
-                  <template #default="{ row }">{{ commandLabel(row) }}</template>
-                </el-table-column>
-                <el-table-column label="结果" width="80">
-                  <template #default="{ row }">{{ actionOutcome(row) }}</template>
-                </el-table-column>
-              </el-table>
-            </template>
-
-            <section v-if="detail.payload?.result" class="detail-section">
-              <h4 class="detail-heading">上游受理回执</h4>
-              <el-table v-if="detailReceipts.length" :data="detailReceipts" size="small" class="detail-table">
-                <el-table-column label="动作 / 设备" min-width="180" show-overflow-tooltip>
-                  <template #default="{ row }">{{ deviceLabelOf(row.actionId) }}</template>
-                </el-table-column>
-                <el-table-column label="受理结果" width="110">
-                  <template #default="{ row }">{{ receiptOutcome(row.outcome) }}</template>
-                </el-table-column>
-                <el-table-column prop="reason" label="说明" min-width="140" show-overflow-tooltip />
-              </el-table>
-              <p v-else class="muted">无上游回执记录（上游未回执或未保留）</p>
-            </section>
-
-            <section v-if="detail.payload?.result" class="detail-section">
-              <h4 class="detail-heading">状态回读</h4>
-              <el-table v-if="readbackRows.length" :data="readbackRows" size="small" class="detail-table">
-                <el-table-column label="动作 / 设备" min-width="180" show-overflow-tooltip>
-                  <template #default="{ row }">{{ row.device }}</template>
-                </el-table-column>
-                <el-table-column label="回读值" min-width="140">
-                  <template #default="{ row }">{{ row.value }}</template>
-                </el-table-column>
-              </el-table>
-              <p v-else class="muted">无状态回读记录（未回读或未保留）</p>
-            </section>
-          </template>
-        </template>
-      </div>
-    </el-drawer>
+    <AuditDetailDrawer
+      v-model:detail="detail"
+      :member="selectedMember"
+      :event-type-options="eventTypeOptions"
+    />
   </div>
 </template>
 
 <script setup>
 import { computed, onMounted, reactive, ref } from "vue";
 import { adminApi, errorOf } from "../api/admin";
+import AuditDetailDrawer from "../components/AuditDetailDrawer.vue";
 
 const MEMBER_PAGE_SIZE = 20;
 const EVENT_PAGE_SIZE = 20;
@@ -343,10 +242,6 @@ const RESULT_OPTIONS = [
   { value: "UNKNOWN", label: "未知" }
 ];
 
-const OUTCOME_LABELS = {
-  SUCCESS: "成功", FAILED: "失败", REJECTED: "拒绝", UNKNOWN: "未知", SKIPPED: "跳过",
-  ALREADY_SATISFIED: "无需操作", ACCEPTED: "已受理"
-};
 
 const SOURCE_LABELS = { company: "公司 Agent", office: "办公助手" };
 const ADMIN_ORIGIN_EVENTS = new Set([
@@ -376,12 +271,6 @@ const cursorStack = ref([]);
 const currentCursor = ref(null);
 
 const detail = ref(null);
-const detailLoading = ref(false);
-const detailError = ref("");
-const drawerOpen = computed({
-  get: () => detail.value !== null,
-  set: (open) => { if (!open) detail.value = null; }
-});
 
 const visibleMembers = computed(() => members.value.map((member) => ({
   ...member,
@@ -395,79 +284,11 @@ const scopeTitle = computed(() => selectedMember.value
 const hasNext = computed(() => nextCursor.value !== null);
 const hasPrev = computed(() => cursorStack.value.length > 0);
 
-const detailActions = computed(() => {
-  const actions = detail.value?.payload?.actions;
-  return Array.isArray(actions) ? actions : [];
-});
-const detailReceipts = computed(() => {
-  const receipts = detail.value?.payload?.result?.receipts;
-  return Array.isArray(receipts) ? receipts : [];
-});
 const eventTypeLabels = computed(() => {
   const map = {};
   for (const item of eventTypeOptions.value) map[item.type] = item.label;
   return map;
 });
-const detailResult = computed(() => detail.value?.payload?.result ?? null);
-const READBACK_VALUE_LABELS = { confirmed: "已确认", unconfirmed: "未确认" };
-const readbackRows = computed(() => {
-  const readback = detailResult.value?.readback;
-  if (!readback || typeof readback !== "object") return [];
-  return Object.entries(readback).map(([actionId, value]) => ({
-    actionId,
-    device: deviceLabelOf(actionId),
-    value: value === null || value === undefined || value === ""
-      ? "—"
-      : (READBACK_VALUE_LABELS[value] ?? String(value))
-  }));
-});
-const resultSummary = computed(() => {
-  const result = detailResult.value;
-  if (!result) return "未记录";
-  const label = statusLabel(result.status);
-  return result.message ? `${label}（${result.message}）` : label;
-});
-const executionFinished = computed(() => Boolean(detailResult.value));
-const relatedFacts = computed(() => {
-  const payload = detail.value?.payload ?? {};
-  const fact = (label, value) => ({
-    label,
-    value: value === null || value === undefined || value === "" ? "未记录" : String(value),
-    absent: value === null || value === undefined || value === ""
-  });
-  return [
-    fact("草案 ID", payload.draftId),
-    fact("任务 ID", payload.taskId),
-    fact("提案 ID", payload.proposalId),
-    fact("计划 ID", payload.planId),
-    fact("阶段 ID", payload.phaseId),
-    fact("取消提案 ID", payload.cancellationId),
-    fact("报告 ID", payload.reportId),
-    fact("会话 ID", payload.conversationId),
-    fact("轮次 ID", payload.turnId),
-    fact("运行 ID", payload.runId),
-    fact("业务标签", payload.label),
-    fact("类别", payload.kind),
-    fact("操作类别", payload.operation),
-    fact("修订号", payload.revision),
-    fact("归属键（系统执行）", payload.ownerKey),
-    fact("到期时间", timeOrUnrecorded(payload.expiresAt)),
-    fact("结束时间", timeOrUnrecorded(payload.endedAt)),
-    fact("观察时间", timeOrUnrecorded(payload.observedAt)),
-    ...countFacts(payload.counts)
-  ];
-});
-
-const COUNT_LABELS = { devices: "设备数", verified: "已验证", unconfirmed: "未确认" };
-
-function countFacts(counts) {
-  if (!counts || typeof counts !== "object") return [];
-  return Object.entries(counts).map(([key, value]) => ({
-    label: COUNT_LABELS[key] ?? key,
-    value: typeof value === "number" || typeof value === "boolean" ? String(value) : "未记录",
-    absent: !(typeof value === "number" || typeof value === "boolean")
-  }));
-}
 
 function eventMemberName(row) {
   const member = selectedMember.value;
@@ -476,9 +297,6 @@ function eventMemberName(row) {
     || row.principalId || row.actor || "未识别主体";
 }
 
-function detailMemberName(detail) {
-  return eventMemberName(detail?.payload ?? {});
-}
 
 function memberName(member) {
   return member.displayName || member.mobileNumber
@@ -544,39 +362,6 @@ function resultOfEventType(eventType) {
   }
 }
 
-function commandLabel(row) {
-  const command = row.command;
-  if (!command || typeof command !== "object") return row.kind || "—";
-  if ("closeOrOpen" in command) return Number(command.closeOrOpen) === 1 ? "开" : "关";
-  return Object.entries(command).map(([key, value]) => `${key}=${value}`).join(" ");
-}
-
-function actionOutcome(row) {
-  const receipt = detailReceipts.value.find((item) => item.actionId === row.id);
-  if (receipt) return receiptOutcome(receipt.outcome);
-  if (executionFinished.value) return "无回执（未记录）";
-  return row.satisfied ? "无需操作" : "待执行";
-}
-
-function deviceLabelOf(actionId) {
-  const action = detailActions.value.find((item) => item.id === actionId);
-  const device = action ? (action.name || action.deviceName || action.deviceId) : null;
-  return device ? `${device}（${actionId}）` : actionId || "—";
-}
-
-function dispatchLabel(dispatchStarted) {
-  if (dispatchStarted === true) return "已开始下发";
-  if (dispatchStarted === false) return "未开始下发";
-  return "未记录";
-}
-
-function timeOrUnrecorded(value) {
-  return value ? formatTime(value) : null;
-}
-
-function receiptOutcome(outcome) {
-  return OUTCOME_LABELS[outcome] ?? outcome ?? "—";
-}
 
 const formatter = new Intl.DateTimeFormat("zh-CN", {
   year: "numeric", month: "2-digit", day: "2-digit",
@@ -723,15 +508,6 @@ async function prevPage() {
 
 async function openDetail(row) {
   detail.value = row;
-  detailError.value = "";
-  detailLoading.value = true;
-  try {
-    detail.value = (await adminApi.auditDetail(row.eventId)).data;
-  } catch (cause) {
-    detailError.value = errorOf(cause, "无法读取详情").message;
-  } finally {
-    detailLoading.value = false;
-  }
 }
 
 async function loadEventTypes() {
@@ -787,14 +563,7 @@ onMounted(async () => {
 .filters :deep(.filter-range) { width: 340px; max-width: 100%; min-width: 0; box-sizing: border-box; }
 .filter-type { width: 190px; }
 .muted { color: var(--text-muted); font-size: 12px; }
-.related-note { margin: 8px 0 0; }
 .summary-line { margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.drawer-alert { margin-bottom: 12px; }
-.detail-section { margin-top: 16px; }
-.detail-heading { margin: 16px 0 8px; color: var(--text-strong); font-size: 14px; }
-.detail-text { margin: 0; color: var(--text-strong); font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
-.detail-table { margin-bottom: 4px; }
-.audit-page :deep(.el-drawer) { max-width: 100vw; }
 @media (max-width: 900px) {
   .audit-page { padding: 16px; }
   .split { flex-direction: column; }

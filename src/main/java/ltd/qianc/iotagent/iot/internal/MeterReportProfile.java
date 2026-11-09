@@ -173,7 +173,8 @@ final class MeterReportProfile {
             var window = MeterReportWindows.difference(samples, from, to);
             boolean inSpan = samples.stream().anyMatch(sample -> sample.readTime().toEpochMilli() >= from && sample.readTime().toEpochMilli() <= to);
             boolean stale = window.to() == null || effectiveTo - window.to().readTime().toEpochMilli() > Math.max(HOUR, effectiveTo - from) / 2d;
-            String status = !inSpan ? "noData" : window.value() == null || stale ? "partial" : "ok";
+            String status = read == null || read.truncated() ? "partial"
+                    : !inSpan ? "noData" : window.value() == null || stale ? "partial" : "ok";
             Map<String, Object> row = new LinkedHashMap<>(); row.put("id", meter.id()); row.put("name", meter.name());
             row.put("areaName", meter.installAddress()); row.put("floor", floor(meter.installAddress()));
             row.put("status", status); row.put("value", "ok".equals(status) ? window.value() : null);

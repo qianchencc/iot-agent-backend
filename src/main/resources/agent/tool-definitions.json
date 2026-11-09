@@ -1791,7 +1791,7 @@
     "query_environment_history": {
       "name": "query_environment_history",
       "label": "查询环境趋势",
-      "description": "只读查询 Company 站点环境历史。起止时间必须带时区；温湿度和 PM 指标来自真实采样。deviceCode 缺失不归属具体房间，颗粒物单位未知，不判断达标。峰值仅代表本次读取样本；覆盖不完整时说明限制。追问同一趋势时沿用此前窗口。",
+      "description": "只读查询 Company 站点指定期间的完整环境历史，由后端一次读取并统计，无需模型翻页。起止时间必须带时区；温湿度和 PM 指标来自真实采样。deviceCode 缺失不归属具体房间，颗粒物单位未知，不判断达标。存在缺测或质量问题时说明限制。追问同一趋势时沿用此前窗口。",
       "parameters": {
         "type": "object",
         "required": [
@@ -1806,11 +1806,6 @@
           "to": {
             "type": "string",
             "description": "含时区 ISO 终点"
-          },
-          "page": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 10000
           }
         }
       }

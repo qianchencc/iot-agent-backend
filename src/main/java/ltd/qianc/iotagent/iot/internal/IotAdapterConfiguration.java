@@ -19,6 +19,8 @@ import org.springframework.web.reactive.function.client.WebClient;
 /** Missing gateway configuration is an explicit 503 boundary, never an in-memory fallback. */
 @Configuration(proxyBeanMethods = false)
 public class IotAdapterConfiguration {
+    /** Raw transport is injectable only through this collector-specific type. */
+    public record Source(IotAdapter adapter) { }
 
     @Bean(initMethod = "initialize")
     @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
@@ -47,8 +49,22 @@ public class IotAdapterConfiguration {
     }
 
     @Bean
+    @ConditionalOnProperty(name = "agent.control.mode", havingValue = "fixture")
+    Source fixtureIotSource(IotAdapter adapter) {
+        return new Source(adapter);
+    }
+
+    @Bean
     @ConditionalOnMissingBean(IotAdapter.class)
-    IotAdapter iotAdapter(
+    IotAdapter iotAdapter(Source source, DeviceCandidateSetStore candidateStore,
+            org.springframework.beans.factory.ObjectProvider<ltd.qianc.iotagent.iot.DeviceDirectory> directories,
+            org.springframework.beans.factory.ObjectProvider<ltd.qianc.iotagent.iot.DeviceObservations> observations) {
+        return IotAdapterFactory.localReads(source.adapter(), directories::getIfAvailable, observations::getIfAvailable, candidateStore);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(Source.class)
+    Source iotSource(
             WebClient.Builder builder,
             @Value("${iot.gateway.base-url:}") String baseUrl,
             @Value("${iot.gateway.office-scope-path:}") String officePath,
@@ -73,7 +89,7 @@ public class IotAdapterConfiguration {
             @Value("${iot.gateway.call-timeout-ms:30000}") long timeoutMs,
             DeviceCandidateSetStore candidateStore) {
         if (officePath == null || officePath.isBlank()) {
-            return IotAdapterFactory.failClosed("物联 Office 授权设备范围路径未配置");
+            return new Source(IotAdapterFactory.failClosed("物联 Office 授权设备范围路径未配置"));
         }
         if ((companyEnvironmentPath == null || companyEnvironmentPath.isBlank())
                 || (companyEnergyPath == null || companyEnergyPath.isBlank())
@@ -82,10 +98,10 @@ public class IotAdapterConfiguration {
                 || (companyAcAreaPath == null || companyAcAreaPath.isBlank())
                 || (companyAcDevicePath == null || companyAcDevicePath.isBlank())
                 || (companyAcBindingPath == null || companyAcBindingPath.isBlank())) {
-            return IotAdapterFactory.failClosed("物联 Company 授权设备目录路径未配置");
+            return new Source(IotAdapterFactory.failClosed("物联 Company 授权设备目录路径未配置"));
         }
         try {
-            return IotAdapterFactory.webClient(
+            return new Source(IotAdapterFactory.webClient(
                     builder.baseUrl(baseUrl).build(),
                     new IotGatewayRoutes(officePath, companyPath, membershipPath,
                             IotGatewayRoutes.runtimeOfficeSources(acPath, lightingPath, accessPath, videoPath,
@@ -94,9 +110,9 @@ public class IotAdapterConfiguration {
                             companySmartBasePath, companyAcAreaPath, companyAcDevicePath, companyAcBindingPath,
                             companyMonitorDownPath),
                     Duration.ofMillis(timeoutMs),
-                    IotCallPolicy.passThrough(), candidateStore);
+                    IotCallPolicy.passThrough(), candidateStore));
         } catch (RuntimeException invalidConfiguration) {
-            return IotAdapterFactory.failClosed("物联上游配置无效");
+            return new Source(IotAdapterFactory.failClosed("物联上游配置无效"));
         }
     }
 }

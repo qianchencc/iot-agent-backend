@@ -3,7 +3,6 @@ package ltd.qianc.iotagent.task;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.nullable;
@@ -15,75 +14,71 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
-import java.util.ArrayDeque;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Queue;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 import ltd.qianc.iotagent.auth.PrincipalInfo;
 import ltd.qianc.iotagent.error.BusinessException;
 import ltd.qianc.iotagent.iot.AuthorizedDevice;
 import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
+import ltd.qianc.iotagent.iot.DeviceDirectory;
+import ltd.qianc.iotagent.iot.DeviceDirectoryBatch;
 import ltd.qianc.iotagent.iot.IotAdapter;
+import ltd.qianc.iotagent.iot.IotSourceEnum;
+import ltd.qianc.iotagent.iot.OfficeRegion;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.readmodel.ReadSnapshots;
+import ltd.qianc.iotagent.schema.SchemaMigrations;
+import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.Test;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import reactor.core.publisher.Mono;
 
 class TaskReadLatencyContractTest {
     private static final Instant NOW = Instant.parse("2026-11-04T08:00:00Z");
-    private static final PrincipalInfo PRINCIPAL = new PrincipalInfo("Bearer center-reader", "TENANT", "member", "gateway");
+    private static final PrincipalInfo PRINCIPAL = new PrincipalInfo("Bearer fixture-reader", "TENANT", "member", "gateway");
 
     @Test
-    void coldReadReportsPreparationAndHeldAuthorizationDoesNotDelayNewLocalNotifications() {
+    void coldLocalScopeDoesNotCrawlAndNewNotificationsRemainVisibleWithSourceDown() {
         try (Harness h = new Harness()) {
             assertThatThrownBy(() -> h.facade.notificationsView(PRINCIPAL, "company", 30, null))
-                    .isInstanceOfSatisfying(BusinessException.class, failure -> {
-                        assertThat(failure.code()).isEqualTo("TASK_READ_PREPARING");
-                        assertThat(failure.httpStatus()).isEqualTo(503);
-                    });
-            h.runUpstream();
+                    .isInstanceOfSatisfying(BusinessException.class,
+                            failure -> assertThat(failure.code()).isEqualTo("TASK_READ_PREPARING"));
+            assertThat(h.sourceReads).isZero();
+            h.directory.synchronizeDue();
+            h.upstreamAvailable = false;
             assertThat(rows(h.facade.notificationsView(PRINCIPAL, "company", 30, null)))
                     .extracting(row -> row.get("id")).containsExactly("notice-1");
-
-            // A new local result must be visible without waiting for another upstream crawl.
-            h.upstreamAvailable = false;
             h.inbox.set(List.of(h.notification("notice-2"), h.notification("notice-1")));
             assertThat(rows(h.facade.notificationsView(PRINCIPAL, "company", 30, null)))
                     .extracting(row -> row.get("id")).containsExactly("notice-2", "notice-1");
+            assertThat(h.sourceReads).isEqualTo(1);
         }
     }
 
     @Test
-    void failedScopeRenewalFailsClosedAndSuccessfulRenewalRemovesRevokedDevices() {
+    void publishedMemberRemovalImmediatelyChangesTheTaskReadScope() {
         try (Harness h = new Harness()) {
-            h.prepare();
+            h.prepare("company");
             h.clock.now = NOW.plusSeconds(61);
+            h.devices.set(List.of(new AuthorizedDevice("light-1", "lighting", "Fixture Light One", "Fixture Floor", false)));
+            h.directory.synchronizeDue();
             h.upstreamAvailable = false;
-            assertThat(rows(h.facade.notificationsView(PRINCIPAL, "company", 30, null)))
-                    .extracting(row -> row.get("id")).containsExactly("notice-1");
-            h.runUpstream();
-            assertThatThrownBy(() -> h.facade.notificationsView(PRINCIPAL, "company", 30, null))
-                    .isInstanceOfSatisfying(BusinessException.class,
-                            failure -> assertThat(failure.code()).isEqualTo("AUTHORIZED_SCOPE_UNAVAILABLE"));
-
-            h.clock.now = NOW.plusSeconds(122);
-            h.devices.set(List.of(new AuthorizedDevice("light-1", "lighting", "灯一", "26楼", false)));
-            h.upstreamAvailable = true;
-            assertThatThrownBy(() -> h.facade.scope(PRINCIPAL, "company"))
-                    .isInstanceOfSatisfying(BusinessException.class,
-                            failure -> assertThat(failure.code()).isEqualTo("AUTHORIZED_SCOPE_UNAVAILABLE"));
-            h.runUpstream();
             assertThat(h.facade.scope(PRINCIPAL, "company").deviceIds()).containsExactly("light-1");
+            assertThat(h.sourceReads).isEqualTo(2);
         }
     }
 
     @Test
-    void cancellationRechecksLiveAuthorizationInsteadOfTrustingTheHeldReadScope() {
+    void cancellationRechecksLiveAuthorizationInsteadOfTrustingTheLocalReadScope() {
         try (Harness h = new Harness()) {
-            h.prepare();
-            h.devices.set(List.of(new AuthorizedDevice("light-1", "lighting", "灯一", "26楼", false)));
+            h.prepare("company");
+            h.devices.set(List.of(new AuthorizedDevice("light-1", "lighting", "Fixture Light One", "Fixture Floor", false)));
             assertThatThrownBy(() -> h.facade.cancel(PRINCIPAL, "task-1", 1, "company"))
                     .isInstanceOfSatisfying(BusinessException.class, failure -> {
                         assertThat(failure.code()).isEqualTo("TASK_FORBIDDEN");
@@ -94,47 +89,26 @@ class TaskReadLatencyContractTest {
     }
 
     @Test
-    void heldReadAuthorizationIsIsolatedByCredentialAndSourceAndCannotSurviveRevocation() {
+    void liveCredentialDenialImmediatelyBlocksThePersistedReadScope() {
         try (Harness h = new Harness()) {
-            h.prepare();
-            PrincipalInfo rotated = new PrincipalInfo("Bearer rotated-reader", "TENANT", "member", "gateway");
-            assertThatThrownBy(() -> h.facade.scope(rotated, "company"))
-                    .isInstanceOfSatisfying(BusinessException.class,
-                            failure -> assertThat(failure.code()).isEqualTo("TASK_READ_PREPARING"));
-            assertThatThrownBy(() -> h.facade.scope(PRINCIPAL, "office"))
-                    .isInstanceOfSatisfying(BusinessException.class,
-                            failure -> assertThat(failure.code()).isEqualTo("TASK_READ_PREPARING"));
-            h.snapshots.revoke(new ReadSnapshots.Identity("TENANT", PRINCIPAL.authorization(), "COMPANY",
-                    PRINCIPAL.ownerKey()), new BusinessException("UNAUTHORIZED", "身份已失效", 401));
-            assertThatThrownBy(() -> h.facade.notificationsView(PRINCIPAL, "company", 30, null))
-                    .isInstanceOfSatisfying(BusinessException.class,
-                            failure -> assertThat(failure.httpStatus()).isEqualTo(401));
-        }
-    }
-
-    @Test
-    void liveCredentialDenialImmediatelyRevokesTheHeldReadScope() {
-        try (Harness h = new Harness()) {
-            h.prepare();
-            h.upstreamDenial = new BusinessException("UNAUTHORIZED", "上游身份已失效", 401);
+            h.prepare("company");
+            h.upstreamDenial = new BusinessException("UNAUTHORIZED", "Fixture credential denied", 401);
             assertThatThrownBy(() -> h.facade.cancel(PRINCIPAL, "task-1", 1, "company"))
-                    .isInstanceOfSatisfying(BusinessException.class,
-                            failure -> assertThat(failure.httpStatus()).isEqualTo(401));
+                    .isInstanceOfSatisfying(BusinessException.class, failure -> assertThat(failure.httpStatus()).isEqualTo(401));
             assertThatThrownBy(() -> h.facade.notificationsView(PRINCIPAL, "company", 30, null))
-                    .isInstanceOfSatisfying(BusinessException.class,
-                            failure -> assertThat(failure.httpStatus()).isEqualTo(401));
+                    .isInstanceOfSatisfying(BusinessException.class, failure -> assertThat(failure.httpStatus()).isEqualTo(401));
         }
     }
 
     @Test
-    void backgroundCompositionPreparesTheSameVerifiedScopeUsedByOrdinaryReads() {
+    void emptyAuthorizedOfficeRegionsSurviveWithoutInventingDeviceMembership() {
         try (Harness h = new Harness()) {
-            TaskReadScope scope = h.facade.loadScope(new RequestIdentity(PRINCIPAL.authorization(),
-                    PRINCIPAL.tenantCode(), ltd.qianc.iotagent.iot.IotSourceEnum.COMPANY, PRINCIPAL.ownerKey()));
-            assertThat(scope.deviceIds()).containsExactlyInAnyOrder("light-1", "light-2");
+            h.prepare("office");
             h.upstreamAvailable = false;
-            assertThat(rows(h.facade.notificationsView(PRINCIPAL, "company", 30, null)))
-                    .extracting(row -> row.get("id")).containsExactly("notice-1");
+            TaskReadScope scope = h.facade.scope(PRINCIPAL, "office");
+            assertThat(scope.regionIds()).containsExactly("fixture-empty-region");
+            assertThat(scope.deviceIds()).isEmpty();
+            assertThat(h.sourceReads).isEqualTo(1);
         }
     }
 
@@ -145,66 +119,76 @@ class TaskReadLatencyContractTest {
 
     private static final class Harness implements AutoCloseable {
         final MutableClock clock = new MutableClock();
-        final Queue<Runnable> upstream = new ArrayDeque<>();
-        final Queue<Runnable> storage = new ArrayDeque<>();
+        final ObjectMapper mapper = new ObjectMapper();
         final AtomicReference<List<TaskNotificationFact>> inbox = new AtomicReference<>();
         final AtomicReference<List<AuthorizedDevice>> devices = new AtomicReference<>(List.of(
-                new AuthorizedDevice("light-1", "lighting", "灯一", "26楼", false),
-                new AuthorizedDevice("light-2", "lighting", "灯二", "26楼", false)));
+                new AuthorizedDevice("light-1", "lighting", "Fixture Light One", "Fixture Floor", false),
+                new AuthorizedDevice("light-2", "lighting", "Fixture Light Two", "Fixture Floor", false)));
         final TaskFactStore tasks = mock(TaskFactStore.class);
-        final AtomicReference<TaskFact> task = new AtomicReference<>();
-        final ReadSnapshots snapshots = ReadSnapshots.create(clock, upstream::add, storage::add,
-                null, null, new ObjectMapper(), ReadSnapshots.Settings.defaults());
+        final MemoryBarrier barrier = new MemoryBarrier();
+        final ReadSnapshots snapshots = ReadSnapshots.create(clock, Runnable::run, Runnable::run,
+                null, barrier, mapper, ReadSnapshots.Settings.defaults());
+        final JdbcTemplate jdbc;
+        final DeviceDirectory directory;
         final TaskFacade facade;
         boolean upstreamAvailable = true;
         BusinessException upstreamDenial;
+        int sourceReads;
 
         Harness() {
-            IotAdapter iot = identity -> {
-                if (upstreamDenial != null) return Mono.error(upstreamDenial);
-                return upstreamAvailable
-                        ? Mono.just(AuthorizedDeviceScope.of(identity, identity.source(), devices.get()))
-                        : Mono.error(new IllegalStateException("upstream unavailable"));
+            JdbcDataSource database = new JdbcDataSource();
+            database.setURL("jdbc:h2:mem:task_directory_" + UUID.randomUUID() + ";MODE=MySQL;DB_CLOSE_DELAY=-1");
+            jdbc = new JdbcTemplate(database);
+            new SchemaMigrations(database).ensureLocalCompanyDirectory();
+            // H2 wraps bound JSON strings; the isolated MySQL smoke covers the real JSON column.
+            jdbc.execute("ALTER TABLE local_company_devices ALTER COLUMN metadata_json VARCHAR(1000000) NOT NULL");
+            IotAdapter iot = new IotAdapter() {
+                @Override public Mono<AuthorizedDeviceScope> loadAuthorizedDeviceScope(RequestIdentity identity) {
+                    sourceReads++;
+                    if (upstreamDenial != null) return Mono.error(upstreamDenial);
+                    if (!upstreamAvailable) return Mono.error(new IllegalStateException("Fixture source offline"));
+                    return Mono.just(AuthorizedDeviceScope.of(identity, identity.source(),
+                            identity.source() == IotSourceEnum.OFFICE ? List.of() : devices.get()));
+                }
+                @Override public Mono<DeviceDirectoryBatch> collectDirectory(RequestIdentity identity) {
+                    return loadAuthorizedDeviceScope(identity).map(scope -> new DeviceDirectoryBatch(scope,
+                            identity.source() == IotSourceEnum.OFFICE
+                                    ? List.of(new OfficeRegion("fixture-empty-region", "Fixture Empty Region")) : List.of()));
+                }
+                @Override public Mono<AuthorizedDeviceScope> loadAuthorizedEnergyScope(RequestIdentity identity) {
+                    return Mono.just(AuthorizedDeviceScope.of(identity, identity.source(), List.of()));
+                }
+                @Override public Mono<DeviceDirectoryBatch> readDirectory(RequestIdentity identity) {
+                    return Mono.fromCallable(() -> directory.loadBatch(identity));
+                }
             };
+            directory = DeviceDirectory.jdbc(jdbc, new TransactionTemplate(new DataSourceTransactionManager(database)),
+                    mapper, iot, ltd.qianc.iotagent.iot.ObservationAdapterFactory.failClosed("fixture history unavailable"),
+                    presented -> new PrincipalInfo(presented.authorization(), presented.tenantCode(), "member", "gateway"),
+                    snapshots, barrier, "https://gateway.example.invalid", "45".repeat(32), clock);
             String payload = "{\"source\":\"company\",\"tenantCode\":\"TENANT\",\"ownerKey\":\""
-                    + PRINCIPAL.ownerKey() + "\",\"label\":\"关灯任务\",\"phases\":[{\"actions\":["
+                    + PRINCIPAL.ownerKey() + "\",\"label\":\"Fixture task\",\"phases\":[{\"actions\":["
                     + "{\"deviceId\":\"light-1\",\"kind\":\"lighting\"},{\"deviceId\":\"light-2\",\"kind\":\"lighting\"}]}]}";
-            task.set(new TaskFact("task-1", 1, "SCHEDULED", payload, "task-key"));
-            when(tasks.find("task-1")).thenAnswer(invocation -> Optional.of(task.get()));
-            when(tasks.updateIfVersion(any(TaskFact.class), anyLong())).thenAnswer(invocation -> {
-                TaskFact next = invocation.getArgument(0);
-                long expected = invocation.getArgument(1);
-                TaskFact current = task.get();
-                return current.version() == expected && task.compareAndSet(current, next)
-                        ? Optional.of(next) : Optional.empty();
-            });
+            when(tasks.find("task-1")).thenReturn(Optional.of(new TaskFact("task-1", 1, "SCHEDULED", payload, "task-key")));
             TaskNotificationStore notifications = mock(TaskNotificationStore.class);
             inbox.set(List.of(notification("notice-1")));
             when(notifications.list(anyString(), anyString(), anyString(), anyInt(), nullable(String.class)))
                     .thenAnswer(invocation -> inbox.get());
             when(notifications.unread(anyString(), anyString(), anyString())).thenAnswer(invocation -> inbox.get());
-            facade = new TaskFacade(new ObjectMapper(), tasks, mock(TaskProposalStore.class),
-                    mock(TaskPlanStore.class), notifications, mock(TaskScheduler.class), null, iot, snapshots, clock);
+            facade = new TaskFacade(mapper, tasks, mock(TaskProposalStore.class), mock(TaskPlanStore.class),
+                    notifications, mock(TaskScheduler.class), null, iot, snapshots, clock);
         }
 
         TaskNotificationFact notification(String id) {
             return new TaskNotificationFact(id, "task-1", "TENANT", PRINCIPAL.ownerKey(), "company",
                     "COMPLETED", NOW, null, "{\"outcome\":\"COMPLETED\"}");
         }
-
-        void prepare() {
-            try { facade.scope(PRINCIPAL, "company"); }
-            catch (BusinessException pending) {
-                if (!"TASK_READ_PREPARING".equals(pending.code())) throw pending;
-            }
-            runUpstream();
+        void prepare(String source) {
+            assertThatThrownBy(() -> facade.scope(PRINCIPAL, source)).isInstanceOfSatisfying(BusinessException.class,
+                    failure -> assertThat(failure.code()).isEqualTo("TASK_READ_PREPARING"));
+            directory.synchronizeDue();
         }
-
-        void runUpstream() {
-            while (!upstream.isEmpty()) upstream.remove().run();
-        }
-
-        @Override public void close() { snapshots.close(); }
+        @Override public void close() { directory.close(); snapshots.close(); jdbc.execute("SHUTDOWN"); }
     }
 
     private static final class MutableClock extends Clock {
@@ -212,5 +196,23 @@ class TaskReadLatencyContractTest {
         @Override public Instant instant() { return now; }
         @Override public ZoneId getZone() { return ZoneOffset.UTC; }
         @Override public Clock withZone(ZoneId zone) { return this; }
+    }
+
+    private static final class MemoryBarrier implements ReadSnapshots.Barrier {
+        private final Map<Key, State> values = new LinkedHashMap<>();
+        @Override public Checkpoint startInstance(String instance) { return new Checkpoint(true, "fixture-epoch"); }
+        @Override public boolean markClean(String instance) { return true; }
+        @Override public Optional<State> read(Key key) { return Optional.ofNullable(values.get(key)); }
+        @Override public boolean write(Key key, State state) {
+            State current = values.get(key);
+            if (current != null && current.issuedAt().isAfter(state.issuedAt())) return false;
+            values.put(key, state);
+            return true;
+        }
+        @Override public boolean writeIfCurrent(Key key, String expected, State state) {
+            State current = values.get(key);
+            if (expected == null ? current != null : current == null || !expected.equals(current.generation())) return false;
+            return write(key, state);
+        }
     }
 }

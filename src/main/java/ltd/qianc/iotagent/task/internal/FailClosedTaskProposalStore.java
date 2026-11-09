@@ -13,5 +13,6 @@ public final class FailClosedTaskProposalStore implements TaskProposalStore {
     @Override public Optional<TaskProposalFact> updateIfVersion(TaskProposalFact replacement, long expectedVersion) { throw unavailable(); }
     @Override public java.util.List<TaskProposalFact> retireForConversation(String conversationId, String tenantCode,
             String ownerKey, String source) { throw unavailable(); }
+    @Override public Optional<TaskProposalFact> findByConversationAndTurn(String conversationId, String turnId) { throw unavailable(); }
     private IllegalStateException unavailable() { return new IllegalStateException(reason); }
 }

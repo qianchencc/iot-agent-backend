@@ -127,9 +127,38 @@ class ObservationAdapterContractTest {
         assertThat(response.coverageComplete()).isFalse();
         Map<?, ?> sample = (Map<?, ?>) ((java.util.List<?>) response.payload().get("samples")).get(0);
         assertThat(sample.get("recordedAt")).isEqualTo("2026-10-09T00:00:00Z");
-        assertThat(((Map<?, ?>) sample.get("values")).get("temp")).isEqualTo(28.5d);
         assertThat(((Map<?, ?>) sample.get("values")).get("pm25")).isNull();
         assertThat(response.payload().get("nextPage")).isEqualTo(1);
+    }
+
+    @Test
+    void environmentHistoryRetainsUnknownTimeAndSourceQualityWithoutInventingASamplingTime() {
+        ExchangeFunction fixture = request -> Mono.just(ClientResponse.create(HttpStatus.OK)
+                .header("Content-Type",MediaType.APPLICATION_JSON_VALUE)
+                .body("""
+                        {"code":200,"content":{"number":0,"last":true,"totalElements":2,"totalPages":1,"content":[
+                          {"id":"fixture-undated","deviceCode":null,"createdAt":"invalid-time","tem":"26","quality":"unverified"},
+                          {"id":"fixture-known","deviceCode":"fixture-code","createdAt":"2020-01-01 08:00:00","tem":25.1234567890123456789,"pm101":20,"pm10":4}
+                        ]}}
+                        """).build());
+        ObservationAdapter adapter = ObservationAdapterFactory.webClient(
+                WebClient.builder().exchangeFunction(fixture).build(),
+                new ObservationGatewayRoutes(Map.of(ObservationOperationEnum.ENVIRONMENT_HISTORY,"/fixture/environment-history")),
+                Duration.ofSeconds(1),IotCallPolicy.passThrough());
+        ObservationResponse result = adapter.read(new ObservationRequest(COMPANY,ObservationOperationEnum.ENVIRONMENT_HISTORY,Map.of())).block();
+        assertThat(result.status()).isEqualTo(ObservationStatusEnum.PARTIAL);
+        assertThat(result.coverageComplete()).isFalse();
+        assertThat(result.payload().get("observedAt")).isNull();
+        var samples=(java.util.List<?>)result.payload().get("samples");
+        Map<?,?> known=(Map<?,?>)samples.get(0),undated=(Map<?,?>)samples.get(1);
+        assertThat(((Map<?,?>)known.get("values")).get("temp")).isEqualTo(new java.math.BigDecimal("25.1234567890123456789"));
+        assertThat(((Map<?,?>)known.get("values")).get("pm10")).isEqualTo(new java.math.BigDecimal("20"));
+        assertThat(((Map<?,?>)known.get("values")).get("pm1")).isEqualTo(new java.math.BigDecimal("4"));
+        assertThat(undated.get("id")).isEqualTo("fixture-undated");
+        assertThat(undated.get("recordedAt")).isNull();
+        assertThat(undated.get("originalRecordedAt")).isEqualTo("invalid-time");
+        assertThat(((Map<?,?>)undated.get("quality")).get("source")).isEqualTo("unverified");
+        assertThat(((Map<?,?>)result.payload().get("sourcePage")).get("returned")).isEqualTo(2);
     }
 
     @Test
