@@ -25,15 +25,16 @@ public class TaskCalendarProjectionTest {
     private final ObjectMapper mapper = new ObjectMapper();
     private final PrincipalInfo principal = new PrincipalInfo("Bearer fixture", "FIXTURE", "fixture-member", "fixture-realm");
     private TaskProjectionStore reader;
+    private org.springframework.jdbc.core.JdbcTemplate jdbc;
 
     @BeforeEach void setUp() throws Exception {
         var source = new JdbcDataSource();
         source.setURL("jdbc:h2:mem:calendar_" + System.nanoTime() + ";MODE=MySQL;DB_CLOSE_DELAY=-1");
-        var jdbc = new JdbcTemplate(source);
+        jdbc = new JdbcTemplate(source);
         jdbc.execute("CREATE ALIAS JSON_EXTRACT FOR 'ltd.qianc.iotagent.storage.TaskCalendarProjectionTest.extract'");
         jdbc.execute("CREATE ALIAS JSON_UNQUOTE FOR 'ltd.qianc.iotagent.storage.TaskCalendarProjectionTest.unquote'");
         jdbc.execute("CREATE TABLE task_facts(task_id VARCHAR(64),version BIGINT,status VARCHAR(32),payload_json VARCHAR(20000),create_time TIMESTAMP,update_time TIMESTAMP)");
-        jdbc.execute("CREATE TABLE task_phases(task_id VARCHAR(64),due_at TIMESTAMP)");
+        jdbc.execute("CREATE TABLE task_phases(id BIGINT AUTO_INCREMENT PRIMARY KEY,phase_id VARCHAR(64),task_id VARCHAR(64),due_at TIMESTAMP,status VARCHAR(32),definition_json VARCHAR(20000),payload_json VARCHAR(20000),result_json VARCHAR(20000),claimed_at TIMESTAMP,ended_at TIMESTAMP,failure_reason VARCHAR(1024))");
         jdbc.execute("CREATE TABLE task_plans(plan_id VARCHAR(64),version BIGINT,status VARCHAR(32),tenant_code VARCHAR(128),source VARCHAR(16),next_at TIMESTAMP,next_date DATE,payload_json VARCHAR(20000),create_time TIMESTAMP,update_time TIMESTAMP)");
         jdbc.execute("CREATE TABLE task_plan_occurrences(plan_id VARCHAR(64),occurrence_date DATE,task_id VARCHAR(64),status VARCHAR(32),override_payload_json VARCHAR(20000))");
         var identity = new RequestIdentity(principal.authorization(), principal.tenantCode(), IotSourceEnum.COMPANY, principal.ownerKey());
@@ -65,6 +66,58 @@ public class TaskCalendarProjectionTest {
         assertThat(dates("2027-01-10", "2027-01-14"))
                 .containsExactly("2027-01-11", "2027-01-12", "2027-01-13");
         assertThat(dates("2026-11-14", "2026-11-16")).isEmpty();
+    }
+
+    @Test void immediateHistoryBelongsOnlyToItsActualShanghaiDay() throws Exception {
+        insertOfficeFact("fixture-immediate", null, "2026-11-09T00:00:00+08:00");
+        var office = officeReader();
+        assertThat(office.regionTimeline(principal, "office", "fixture-region",
+                boundary("2026-11-08"), boundary("2026-11-09"))).isEmpty();
+        assertThat(office.regionTimeline(principal, "office", "fixture-region",
+                boundary("2026-11-09"), boundary("2026-11-10")))
+                .extracting(row -> row.get("id")).containsExactly("fixture-immediate");
+        assertThat(office.regionTimeline(principal, "office", "fixture-region",
+                boundary("2026-11-10"), boundary("2026-11-11"))).isEmpty();
+    }
+
+    @Test void spanningPhasesAndDeclaredIntervalsRemainVisibleAcrossTheirCoveredDays() throws Exception {
+        insertOfficeFact("fixture-phases", null,
+                "2026-11-08T23:30:00+08:00", "2026-11-10T00:30:00+08:00");
+        insertOfficeFact("fixture-interval",
+                "{\"startsAt\":\"2026-11-08T23:00:00+08:00\",\"endsAt\":\"2026-11-10T01:00:00+08:00\"}",
+                "2026-11-08T23:00:00+08:00");
+        var office = officeReader();
+        assertThat(office.regionTimeline(principal, "office", "fixture-region",
+                boundary("2026-11-09"), boundary("2026-11-10")))
+                .extracting(row -> row.get("id")).containsExactlyInAnyOrder("fixture-phases", "fixture-interval");
+        assertThat(office.regionTimeline(principal, "office", "fixture-region",
+                boundary("2026-11-11"), boundary("2026-11-12"))).isEmpty();
+    }
+
+    private TaskProjectionStore officeReader() {
+        var identity = new RequestIdentity(principal.authorization(), "FIXTURE", IotSourceEnum.OFFICE, principal.ownerKey());
+        var scope = TaskReadScope.of(AuthorizedDeviceScope.of(identity, IotSourceEnum.OFFICE, List.of(
+                new AuthorizedDevice("fixture-light", "lighting", "Fixture light", "Fixture room", false,
+                        null, null, null, null, List.of(), List.of("fixture-region"), Map.of()))));
+        return TaskFactStoresFactory.taskProjections(jdbc, mapper, (viewer, origin) -> scope);
+    }
+
+    private void insertOfficeFact(String id, String interval, String... times) throws Exception {
+        var payload = mapper.createObjectNode().put("tenantCode", "FIXTURE").put("ownerKey", principal.ownerKey())
+                .put("source", "office").put("sourceType", "immediate_draft").put("label", "Fixture operation");
+        payload.putArray("regionIds").add("fixture-region");
+        if (interval != null) payload.set("interval", mapper.readTree(interval));
+        var first = Timestamp.from(Instant.parse(times[0]));
+        jdbc.update("INSERT INTO task_facts VALUES (?,1,'COMPLETED',?,?,?)", id, payload.toString(), first, first);
+        for (int index = 0; index < times.length; index++) {
+            var definition = mapper.createObjectNode();
+            definition.putArray("actions").addObject().put("deviceId", "fixture-light").put("kind", "lighting")
+                    .putObject("command").put("power", "on");
+            jdbc.update("INSERT INTO task_phases(phase_id,task_id,due_at,status,definition_json,payload_json,result_json) "
+                            + "VALUES (?,?,?,'COMPLETED',?,?,'{}')",
+                    id + "-" + index, id, Timestamp.from(Instant.parse(times[index])),
+                    definition.toString(), definition.toString());
+        }
     }
 
     private List<String> dates(String from, String to) {

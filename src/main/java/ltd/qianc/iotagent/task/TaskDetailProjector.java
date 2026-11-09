@@ -86,7 +86,7 @@ public final class TaskDetailProjector {
         Map<String, Object> view = new LinkedHashMap<>(planMetadata);
         view.put("id", task.taskId());
         putIfValue(view, "agentSource", text(task.payload(), "source"));
-        view.put("label", firstText(task.payload(), "label", "title", "objective"));
+        view.put("label", labelOf(task.payload()));
         view.put("status", lowerStatus(task.status()));
         view.put("version", task.version());
         view.put("interval", interval(task.payload()));
@@ -758,6 +758,14 @@ public final class TaskDetailProjector {
     /** Immediate draft executions keep phases and device rows but never build a report. */
     public static boolean immediateDraft(JsonNode payload) {
         return "immediate_draft".equalsIgnoreCase(text(payload, "sourceType"));
+    }
+
+    /** Confirmed immediate history is a record, not a pending action draft. */
+    public static String labelOf(JsonNode payload) {
+        String label = firstText(payload, "label", "title", "objective");
+        return immediateDraft(payload) && label.endsWith("操作草案")
+                ? label.substring(0, label.length() - "操作草案".length()) + "操作记录"
+                : label;
     }
 
     private List<String> regionIds(JsonNode payload, TaskReadScope scope) {

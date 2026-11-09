@@ -102,9 +102,9 @@ public final class JdbcTaskProjectionStore implements TaskProjectionStore {
         Instant windowEnd = to == null ? Instant.parse("9999-12-31T23:59:59Z") : to;
         List<Map<String, Object>> rows = new ArrayList<>();
         for (TaskDetailProjector.TaskSource task : tenantTasks(tenantCode(principal), normalized)) {
-            if (!overlaps(task, windowStart, windowEnd)) continue;
+            if (!intervalMayOverlap(task, windowStart, windowEnd)) continue;
             Map<String, Object> detail = projector.detail(task, scope, principal.ownerKey(), planMetadata(task));
-            if (detail == null || !regionOf(detail, regionId)) continue;
+            if (detail == null || !regionOf(detail, regionId) || !inWindow(detail, windowStart, windowEnd)) continue;
             rows.add(detail);
         }
         for (TaskDetailProjector.PlanSource plan : planSources(tenantCode(principal), normalized)) {
@@ -151,7 +151,7 @@ public final class JdbcTaskProjectionStore implements TaskProjectionStore {
                     if (!device.id().equals(deviceId)) continue;
                     Map<String, Object> event = new LinkedHashMap<>(metadata);
                     event.put("taskId", task.taskId());
-                    event.put("taskLabel", detailLabel(task));
+                    event.put("taskLabel", TaskDetailProjector.labelOf(task.payload()));
                     event.put("taskStatus", TaskDetailProjector.lowerStatus(task.status()));
                     event.put("sourceType", TaskDetailProjector.sourceTypeOf(task.payload()));
                     event.put("creatorName", task.payload().path("creatorName").asText(""));
@@ -531,7 +531,7 @@ public final class JdbcTaskProjectionStore implements TaskProjectionStore {
         return first != null && last != null && first.isBefore(to) && !last.isBefore(from);
     }
 
-    private static boolean overlaps(TaskDetailProjector.TaskSource task, Instant from, Instant to) {
+    private static boolean intervalMayOverlap(TaskDetailProjector.TaskSource task, Instant from, Instant to) {
         JsonNode interval = projectorInterval(task);
         if (interval != null) {
             Instant startsAt = parseOr(interval.path("startsAt").asText(""), null);
@@ -549,6 +549,9 @@ public final class JdbcTaskProjectionStore implements TaskProjectionStore {
 
     private static Instant startOf(Map<String, Object> view) {
         Object interval = view.get("interval");
+        if (interval instanceof JsonNode span && span.hasNonNull("startsAt")) {
+            return parseOr(span.path("startsAt").asText(), null);
+        }
         if (interval instanceof Map<?, ?> span && span.get("startsAt") != null) {
             return parseOr(String.valueOf(span.get("startsAt")), null);
         }
@@ -562,6 +565,9 @@ public final class JdbcTaskProjectionStore implements TaskProjectionStore {
 
     private static Instant endOf(Map<String, Object> view) {
         Object interval = view.get("interval");
+        if (interval instanceof JsonNode span && span.hasNonNull("endsAt")) {
+            return parseOr(span.path("endsAt").asText(), null);
+        }
         if (interval instanceof Map<?, ?> span && span.get("endsAt") != null) {
             return parseOr(String.valueOf(span.get("endsAt")), null);
         }
@@ -593,13 +599,6 @@ public final class JdbcTaskProjectionStore implements TaskProjectionStore {
         catch (RuntimeException invalid) { return fallback; }
     }
 
-    private static String detailLabel(TaskDetailProjector.TaskSource task) {
-        for (String field : new String[]{"label", "title", "objective"}) {
-            String value = task.payload().path(field).asText("");
-            if (!value.isBlank()) return value;
-        }
-        return "";
-    }
 
     private static boolean hasSourcePlanId(TaskDetailProjector.TaskSource task) {
         return !task.payload().path("sourcePlanId").asText("").isBlank();
