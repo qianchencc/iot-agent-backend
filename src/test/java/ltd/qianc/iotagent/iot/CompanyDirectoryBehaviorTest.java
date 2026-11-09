@@ -34,6 +34,63 @@ class CompanyDirectoryBehaviorTest {
     private static final AuthorizedDevice SECOND = new AuthorizedDevice("fixture-meter-b", "energy", "测试电表乙", "测试位置乙", true);
     private static final RequestIdentity IDENTITY = identity("Bearer fixture-alpha", "fixture-tenant");
 
+    @Test void fullDisplayCatalogIsSharedWithinTenantButNeverExpandsAuthorizedMembers() {
+        try (Fixture f = new Fixture()) {
+            f.catalogDevices = List.of(
+                    new DeviceCatalogSource.Entry("fixture-display-ac", "测试空调", "ac", "测试会议室"),
+                    new DeviceCatalogSource.Entry("fixture-display-light", "测试照明", "lighting", ""));
+            assertPreparing(() -> f.directory.readCatalog(IDENTITY));
+            assertEquals(0, f.catalogCalls.get());
+            f.directory.synchronizeDue();
+            assertEquals(List.of("fixture-display-ac", "fixture-display-light"), ids(f.directory.readCatalog(IDENTITY)));
+            RequestIdentity colleague = identity("Bearer fixture-other", "fixture-tenant");
+            assertEquals(ids(f.directory.readCatalog(IDENTITY)), ids(f.directory.readCatalog(colleague)));
+            assertEquals(1, f.catalogCalls.get());
+            assertEquals(List.of("fixture-meter-a"), ids(f.directory.read(IDENTITY)));
+            assertEquals(List.of(FIRST), f.localGateway().loadAuthorizedDeviceScope(IDENTITY).block().devices());
+            assertPreparing(() -> f.directory.readCatalog(identity("Bearer fixture-alpha", "fixture-other-tenant")));
+            RequestIdentity forged = new RequestIdentity(IDENTITY.authorization(), IDENTITY.tenantCode(), IotSourceEnum.COMPANY, colleague.ownerKey());
+            assertEquals(403, assertThrows(BusinessException.class, () -> f.directory.readCatalog(forged)).httpStatus());
+            f.restart();
+            f.catalogFailure = new IllegalStateException("fixture source offline");
+            assertEquals(List.of("fixture-display-ac", "fixture-display-light"), ids(f.directory.readCatalog(IDENTITY)));
+            assertEquals(1, f.catalogCalls.get());
+        }
+    }
+
+    @Test void catalogBatchReplacementPreservesOldDataOnFailureAndCanPublishTrueEmpty() {
+        try (Fixture f = new Fixture()) {
+            f.catalogDevices = List.of(new DeviceCatalogSource.Entry("fixture-display-a", "测试设备甲", "ac", "旧位置"));
+            assertPreparing(() -> f.directory.readCatalog(IDENTITY));
+            f.catalogFailure = new IllegalStateException("fixture first collection failed");
+            f.directory.synchronizeDue();
+            assertEquals("IOT_SCOPE_UNAVAILABLE", assertThrows(BusinessException.class, () -> f.directory.readCatalog(IDENTITY)).code());
+            f.catalogFailure = null;
+            f.clock.advance(61);
+            f.directory.synchronizeDue();
+            Object synchronizedAt = f.directory.readCatalog(IDENTITY).get("synchronizedAt");
+            f.catalogDevices = List.of(new DeviceCatalogSource.Entry("fixture-display-b", "测试设备乙", "ac", "新位置"),
+                    new DeviceCatalogSource.Entry("fixture-invalid", "x".repeat(513), "ac", ""));
+            f.clock.advance(61);
+            f.directory.synchronizeDue();
+            Map<String, Object> stale = f.directory.readCatalog(IDENTITY);
+            assertEquals(List.of("fixture-display-a"), ids(stale));
+            assertEquals(synchronizedAt, stale.get("synchronizedAt"));
+            assertEquals("stale", ((Map<?, ?>) stale.get("cache")).get("status"));
+            f.catalogDevices = List.of(new DeviceCatalogSource.Entry("fixture-display-b", "测试设备乙", "ac", "新位置"));
+            f.clock.advance(61);
+            f.directory.synchronizeDue();
+            assertEquals(List.of("fixture-display-b"), ids(f.directory.readCatalog(IDENTITY)));
+            Map<?, ?> changed = (Map<?, ?>) ((List<?>) f.directory.readCatalog(IDENTITY).get("devices")).getFirst();
+            assertEquals("新位置", changed.get("location"));
+            f.catalogDevices = List.of();
+            f.clock.advance(61);
+            f.directory.synchronizeDue();
+            assertEquals(List.of(), ids(f.directory.readCatalog(IDENTITY)));
+            assertEquals("fresh", ((Map<?, ?>) f.directory.readCatalog(IDENTITY).get("cache")).get("status"));
+        }
+    }
+
     @Test void localReadsAndAgentRecoverFromCacheLossAndRestartWithoutCollecting() {
         try (Fixture f = new Fixture()) {
             assertPreparing(() -> f.directory.read(IDENTITY));
@@ -532,6 +589,9 @@ class CompanyDirectoryBehaviorTest {
         final MemoryBarrier barrier = new MemoryBarrier();
         final AtomicInteger calls = new AtomicInteger();
         final AtomicInteger stateCalls = new AtomicInteger();
+        final AtomicInteger catalogCalls = new AtomicInteger();
+        volatile List<DeviceCatalogSource.Entry> catalogDevices = List.of();
+        volatile RuntimeException catalogFailure;
         volatile DeviceStateReadResult stateResult = new DeviceStateReadResult(
                 Map.of(FIRST.id(), Map.of("totalActivePower", new java.math.BigDecimal("12345678901234567890.1234567890123456789"))),
                 clock.instant().toString());
@@ -592,7 +652,11 @@ class CompanyDirectoryBehaviorTest {
             snapshots = ReadSnapshots.create(clock, Runnable::run, Runnable::run, null, barrier, mapper, ReadSnapshots.Settings.defaults());
             directory = DeviceDirectory.jdbc(jdbc, transactions, mapper, upstream,
                     ObservationAdapterFactory.failClosed("fixture historical source unavailable"), verifier, snapshots, barrier,
-                    "https://gateway.example.invalid", KEY, clock);
+                    "https://gateway.example.invalid", KEY, clock, request -> {
+                        catalogCalls.incrementAndGet();
+                        if (catalogFailure != null) throw catalogFailure;
+                        return catalogDevices;
+                    });
             observations = DeviceObservations.jdbc(jdbc, transactions, mapper, directory, "https://gateway.example.invalid", clock);
         }
         void restart() { directory.close(); snapshots.close(); open(); }

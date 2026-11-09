@@ -45,6 +45,10 @@
 
 应用需重启；保持原根才能解密已有登记。轮换前备份数据库与原根，恢复须配对；无法解密的范围暂停发布并明确 `SYNC_CREDENTIAL_UNAVAILABLE`，不能回退明文或借用任务凭据。当前代码/验证范围及部署前置见[02公司目录票](../.scratch/local-data-sync/issues/02-company-catalog.md)，不据此认定现有固定实例已配置此键。
 
+### 完整设备展示目录（2026-11-09）
+
+`iot.gateway.device-catalog-path`：Java部署侧非秘密字符串，默认`/micro-api/api/iot-center/device/list`，由`CompanyDirectoryConfiguration.Gateway`与既有`base-url`、`call-timeout-ms`共同绑定；`DeviceCatalogSource`后台读取完整列表，修改需重启，不新增控制台配置。展示目录按上游实例＋核验租户共享，用户可见目录继续按主体隔离。新表、唯一键、整批替换及约60秒统一当前数据同步规则见[设备目录规格](../.scratch/device-catalog/README.md)。沿用已有独立同步凭据根和登记生命周期，不新增凭据类型；不把展示ID当作操作授权。
+
 
 ## 3. 保存、应用与运行快照
 

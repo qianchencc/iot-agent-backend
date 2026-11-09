@@ -118,6 +118,8 @@ iot:
     call-timeout-ms: 15000
     office-scope-path: /micro-api/api/office/device/page
     company-scope-path: /micro-api/api/iot-center/device/page
+    # Company-wide display list only; never replaces role-scoped business sources.
+    device-catalog-path: /micro-api/api/iot-center/device/list
   identity:
     verify: true
     verify-timeout-ms: 15000

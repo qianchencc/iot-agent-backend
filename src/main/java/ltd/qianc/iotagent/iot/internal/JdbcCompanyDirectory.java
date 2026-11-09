@@ -43,6 +43,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 /** One independently deployed backend owns its schema and cadence. Network work never holds a DB transaction. */
 public final class JdbcCompanyDirectory implements DeviceDirectory {
     private static final SecureRandom RANDOM = new SecureRandom();
+    private static final long SYNC_INTERVAL_SECONDS = 60;
+    private final JdbcDeviceCatalog catalog;
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
     private final ObjectMapper mapper;
@@ -67,7 +69,8 @@ public final class JdbcCompanyDirectory implements DeviceDirectory {
     public JdbcCompanyDirectory(JdbcTemplate jdbc, TransactionTemplate transactions, ObjectMapper mapper,
             IotAdapter upstream, java.util.function.Supplier<ltd.qianc.iotagent.iot.ObservationAdapter> historySource,
             AccountPrincipalVerifier verifier, ReadSnapshots snapshots,
-            ReadSnapshots.Barrier barrier, String gatewayInstance, String credentialKey, Clock clock) {
+            ReadSnapshots.Barrier barrier, String gatewayInstance, String credentialKey, Clock clock,
+            ltd.qianc.iotagent.iot.DeviceCatalogSource catalogSource) {
         this.jdbc = Objects.requireNonNull(jdbc);
         this.transactions = Objects.requireNonNull(transactions);
         this.mapper = Objects.requireNonNull(mapper);
@@ -83,6 +86,7 @@ public final class JdbcCompanyDirectory implements DeviceDirectory {
         }
         this.gateway = hash(gatewayInstance);
         this.key = HexFormat.of().parseHex(credentialKey);
+        this.catalog = new JdbcDeviceCatalog(jdbc, transactions, Objects.requireNonNull(catalogSource), this.gateway, clock, SYNC_INTERVAL_SECONDS);
         this.observations = new JdbcDeviceObservations(jdbc, transactions, mapper, this::loadBatch, this::scopeKey, clock);
         this.energyHistory = new JdbcEnergyHistory(jdbc, transactions, mapper, this::loadBatch, this::scopeKey, clock);
         this.environmentHistory = new JdbcEnvironmentHistory(jdbc, transactions, mapper, this::loadBatch, this::scopeKey, observations, clock);
@@ -99,6 +103,17 @@ public final class JdbcCompanyDirectory implements DeviceDirectory {
     @Override public ltd.qianc.iotagent.iot.EnergyHistory energyHistory() { return energyHistory; }
 
     @Override public ltd.qianc.iotagent.iot.EnvironmentHistory environmentHistory() { return environmentHistory; }
+
+    @Override public Map<String, Object> readCatalog(RequestIdentity identity) {
+        if (identity.source() != IotSourceEnum.COMPANY) throw new BusinessException("DEVICE_SOURCE_UNAVAILABLE", "设备目录仅支持公司来源", 404);
+        try {
+            verify(identity);
+            register(identity);
+            return catalog.read(identity);
+        } catch (DataAccessException unavailable) {
+            throw unavailable();
+        }
+    }
 
     @Override public Map<String, Object> read(RequestIdentity identity) {
         if (identity.source() != IotSourceEnum.COMPANY) throw new BusinessException("DEVICE_SOURCE_UNAVAILABLE", "公司目录投影仅支持公司来源", 404);
@@ -417,7 +432,7 @@ public final class JdbcCompanyDirectory implements DeviceDirectory {
         Instant attempted = clock.instant();
         if (jdbc.update("UPDATE local_sync_scopes SET last_attempt_at=?,next_due_at=?,update_time=? "
                         + "WHERE scope_key=? AND credential_generation=? AND batch_version=? AND next_due_at<=?",
-                Timestamp.from(attempted), Timestamp.from(attempted.plusSeconds(60)), Timestamp.from(attempted),
+                Timestamp.from(attempted), Timestamp.from(attempted.plusSeconds(SYNC_INTERVAL_SECONDS)), Timestamp.from(attempted),
                 scope.key(), scope.generation(), scope.version(), Timestamp.from(attempted)) != 1) return;
         try {
             identity = new RequestIdentity(decrypt(scope), scope.tenant(), scope.source(), scope.owner());
@@ -425,6 +440,14 @@ public final class JdbcCompanyDirectory implements DeviceDirectory {
             verify(identity);
             scope = register(identity, scope.generation());
             requireAuthorization(identity, scope);
+            if (identity.source() == IotSourceEnum.COMPANY) {
+                RequestIdentity catalogIdentity = identity;
+                Scope registration = scope;
+                catalog.synchronize(identity, () -> {
+                    verify(catalogIdentity);
+                    requireAuthorization(catalogIdentity, registration);
+                });
+            }
             DeviceDirectoryBatch batch = upstream.collectDirectory(identity).block();
             var collected = batch == null ? null : batch.scope();
             if (collected == null || !identity.equals(collected.identity()) || collected.source() != identity.source()) {
@@ -459,7 +482,7 @@ public final class JdbcCompanyDirectory implements DeviceDirectory {
                             + "next_due_at=?,update_time=? WHERE scope_key=? AND credential_generation=? AND batch_version=?",
                     denial == 0 ? "FAILED" : "DENIED", invalidCredential ? "SYNC_CREDENTIAL_UNAVAILABLE"
                             : denial == 0 ? "DIRECTORY_SYNC_UNAVAILABLE" : "DIRECTORY_SYNC_DENIED",
-                    denial, denial != 0 || invalidCredential ? 1 : 0, Timestamp.from(now.plusSeconds(60)), Timestamp.from(now),
+                    denial, denial != 0 || invalidCredential ? 1 : 0, Timestamp.from(now.plusSeconds(SYNC_INTERVAL_SECONDS)), Timestamp.from(now),
                     scope.key(), scope.generation(), scope.version());
             if (denial != 0 && identity != null) snapshots.revoke(snapshotIdentity(identity), new GatewayAuthorizationException(denial));
         }
@@ -519,7 +542,7 @@ public final class JdbcCompanyDirectory implements DeviceDirectory {
             }
             jdbc.update("UPDATE local_sync_scopes SET published_generation=credential_generation,batch_version=?,state='READY',"
                             + "denial_status=0,failure_code=NULL,last_success_at=?,next_due_at=?,update_time=? WHERE scope_key=?",
-                    version, now, Timestamp.from(now.toInstant().plusSeconds(60)), now, current.key());
+                    version, now, Timestamp.from(now.toInstant().plusSeconds(SYNC_INTERVAL_SECONDS)), now, current.key());
             return find(current.key(), false);
         });
     }

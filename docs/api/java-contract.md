@@ -26,6 +26,13 @@
 | `POST /{id}/messages` | 正文 `content`，可选 `focusRegionId`、对象 `reference`；`Idempotency-Key` 请求头 | `application/x-ndjson`；恢复、取消及终态遵循事件协议，HTTP 成功不代表控制成功 |
 | `POST /{id}/runs/cancel` | 可选查询 `source` | 当前运行取消结果；不重放设备副作用 |
 
+
+## 完整设备目录与用户可见目录
+
+- `GET /api/agent/device-catalog?source=company`：按已核验租户读取上游实例内共享的完整展示目录，返回`{source,devices:[{id,name,kind,location}],synchronizedAt,cache:{status,updatedAt,refreshing}}`；仅基础资料，不授予状态、控制、任务、能耗或视频权限。
+- 完整目录由客户`/iot-center/device/list`后台采集并在MySQL原子发布；普通请求只登记并读本地结果，不回源。首次没有完整批次时返回既有`status:preparing`协议；真实成功空目录才返回`devices:[]`。同步失败保留上次完整批次与成功时间，标`stale`。
+- `GET /api/agent/company-devices?source=company`及`DeviceDirectory.loadBatch/loadScope`仍表示当前身份的用户可见目录。Agent、候选、控制、任务和专用业务授权不切换至完整展示目录；两者设备ID域不可互换。
+
 ## 设备候选查询（Agent 工具）
 
 - Company `find_device_candidates` 的地点可省略；省略 `scopeText/scopeTerms` 且提供 `deviceText/nameHints` 时，按 `kind` 浏览当前身份在 Company 来源下的全部授权区域，例如 `{kind:"ac",deviceText:"空调"}`。

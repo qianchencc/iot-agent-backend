@@ -31,7 +31,9 @@ public class CompanyDirectoryConfiguration {
     }
 
     @ConfigurationProperties("iot.gateway")
-    public record Gateway(String baseUrl) { }
+    public record Gateway(String baseUrl,
+            @org.springframework.boot.context.properties.bind.DefaultValue("/micro-api/api/iot-center/device/list") String deviceCatalogPath,
+            @org.springframework.boot.context.properties.bind.DefaultValue("30000") long callTimeoutMs) { }
 
     @Bean(initMethod = "start", destroyMethod = "close")
     @DependsOn("storageSchemaInitializer")
@@ -39,10 +41,13 @@ public class CompanyDirectoryConfiguration {
     JdbcCompanyDirectory companyDirectory(DataSource dataSource, JdbcTemplate jdbc, TransactionTemplate transactions,
             ObjectMapper mapper, IotAdapterConfiguration.Source upstream, AccountPrincipalVerifier verifier,
             org.springframework.beans.factory.ObjectProvider<ObservationAdapterConfiguration.Source> sources,
-            ReadSnapshots snapshots, ReadSnapshots.Barrier barrier, Credentials credentials, Gateway gateway) {
+            ReadSnapshots snapshots, ReadSnapshots.Barrier barrier, Credentials credentials, Gateway gateway,
+            org.springframework.web.reactive.function.client.WebClient.Builder builder) {
         JdbcCompanyDirectory directory = new JdbcCompanyDirectory(jdbc, transactions, mapper, upstream.adapter(),
                 () -> sources.getObject().adapter(), verifier, snapshots, barrier,
-                gateway.baseUrl(), credentials.credentialKey(), Clock.systemUTC());
+                gateway.baseUrl(), credentials.credentialKey(), Clock.systemUTC(),
+                ltd.qianc.iotagent.iot.DeviceCatalogSource.http(builder.baseUrl(gateway.baseUrl()).build(),
+                        gateway.deviceCatalogPath(), java.time.Duration.ofMillis(gateway.callTimeoutMs())));
         try {
             new SchemaMigrations(dataSource).ensureLocalCompanyDirectory();
             return directory;

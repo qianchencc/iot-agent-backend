@@ -1,0 +1,152 @@
+{
+  "case": "CATALOG-01",
+  "date": "2026-11-09",
+  "status": "accepted-home-and-full-directory-in-real-WeChat-developer-tools",
+  "scope": "Company-wide display directory separated from principal-authorized user-visible directory",
+  "source": {
+    "path": "/micro-api/api/iot-center/device/list",
+    "observedRawRows": 333,
+    "excludedServiceRows": 1,
+    "persistedRows": 332,
+    "categoryCounts": {
+      "environment": 1,
+      "energy": 43,
+      "safety": 3,
+      "ac": 66,
+      "lighting": 136,
+      "access": 48,
+      "video": 35
+    }
+  },
+  "countReconciliation": {
+    "previousBusinessRecords": 334,
+    "physicalBindingComparison": {
+      "ac": {
+        "oldRecords": 49,
+        "oldDistinctHardware": 49,
+        "matchedInNewCatalog": 49,
+        "newAdditionalHardware": 17
+      },
+      "lighting": {
+        "oldRecords": 156,
+        "oldDistinctHardware": 136,
+        "matchedInNewCatalog": 136
+      },
+      "access": {
+        "oldRecords": 47,
+        "oldDistinctHardware": 45,
+        "matchedInNewCatalog": 45,
+        "newAdditionalHardware": 3
+      }
+    },
+    "explanation": "22 extra business-association records are replaced by 20 additional hardware records: net -2, not two missing devices. Energy provider IDs are a different domain and were not compared by equality."
+  },
+  "verification": {
+    "focusedCatalogBehavior": {
+      "tests": 25,
+      "failures": 0,
+      "errors": 0
+    },
+    "architecture": "passed",
+    "frontendRegression": {
+      "tests": 368,
+      "passed": 368
+    },
+    "frontendBoundaries": {
+      "sourceFiles": 186,
+      "result": "passed"
+    },
+    "miniappCompile": "HBuilderX compile succeeded; existing Vue/platform/uniCloud warnings retained",
+    "backendFullSuite": {
+      "tests": 736,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 29,
+      "failure": "SafetyReviewToolContractTest.singleCandidatePreparesRealPlaybackCardAndProjectsVideoPlaybackBlock",
+      "qualification": "Existing unrelated safety playback failure; not an unqualified full-suite pass. Final packaging used skipTests after focused verification."
+    },
+    "realIsolatedMySql": {
+      "mysqlMigration": true,
+      "sharedTenant": true,
+      "authorizedScopeUnchanged": true,
+      "failedBatchRollback": true,
+      "replacement": true,
+      "restartLocalReadWithoutSource": true
+    },
+    "redBeforeCorrections": {
+      "tests": 2,
+      "failures": 2,
+      "bugs": [
+        "First source failure incorrectly remained PREPARING",
+        "Null source row incorrectly produced a successful empty catalog"
+      ]
+    },
+    "native": {
+      "homeTotal": "332 台",
+      "categoryCards": [
+        "1 台",
+        "43 台",
+        "3 台",
+        "66 台",
+        "136 台",
+        "48 台",
+        "35 台"
+      ],
+      "fullDirectoryTitle": "设备目录",
+      "fullDirectoryCount": "332 台",
+      "locationAndTypeVisible": true,
+      "canControlLabelRemoved": true,
+      "syntheticStatusLampsRemoved": true,
+      "screenshots": [
+        "home.png",
+        "all-directory.png"
+      ],
+      "mockedResponsesOrInjectedCards": false,
+      "limits": "No per-category click screenshots or real-phone acceptance claimed."
+    }
+  },
+  "deployment": {
+    "port": 3381,
+    "pid": 74098,
+    "release": "var/device-catalog-final-20261109-162750/backend.jar",
+    "base": "var/task-creator-name-20261109-155111/backend.jar",
+    "sha256": "085cd2adaa2e0564c4a67ff0c5ce43234e8732c10a07131e241fa8e1b4525fd4",
+    "changedJarEntries": [
+      "BOOT-INF/classes/ltd/qianc/iotagent/iot/internal/JdbcCompanyDirectory.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/iot/internal/CompanyDirectoryConfiguration$Gateway.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/iot/internal/CompanyDirectoryConfiguration.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/iot/internal/controller/IotDeviceController.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/iot/internal/JdbcCompanyDirectory$Scope.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/iot/internal/JdbcCompanyDirectory$1.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/iot/DeviceDirectory.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/schema/internal/JdbcSchemaMigrations.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/schema/internal/JdbcSchemaMigrations$ColumnDefinition.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/schema/internal/JdbcSchemaMigrations$TableDefinition.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/iot/DeviceCatalogSource$Entry.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/iot/DeviceCatalogSource.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/iot/internal/WebClientDeviceCatalog.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/iot/internal/JdbcDeviceCatalog$Progress.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/iot/internal/JdbcDeviceCatalog.class",
+      "BOOT-INF/classes/db/mysql/local-device-catalog.sql"
+    ],
+    "allOtherJarMembersUnchanged": true,
+    "nodeConfigurationAndFrontendEndpointsUnchanged": true,
+    "privateDatabaseBackup": "var/device-catalog-20261109-161930/database-before.sql",
+    "businessFactCountsUnchanged": true,
+    "businessFactCounts": {
+      "tasks": "10",
+      "plans": "5",
+      "phases": "15",
+      "reports": "11",
+      "notifications": "7"
+    },
+    "automaticSyncObserved": "Published version advanced to 11 after page-independent cadence; read-only check showed READY"
+  },
+  "safety": {
+    "deviceControls": 0,
+    "createdTasksOrPlans": 0,
+    "sentNotifications": 0,
+    "productionRuntimeTouched": false,
+    "temporaryMySqlSchemaDropped": true
+  }
+}

@@ -129,6 +129,7 @@ public final class JdbcSchemaMigrations {
     public void ensureLocalCompanyDirectory() {
         ensureRegistry();
         runOnce("local-company-directory-v1", () -> runBaseline("db/mysql/local-company-directory.sql"));
+        runOnce("local-device-catalog-v1", () -> runBaseline("db/mysql/local-device-catalog.sql"));
         runOnce("local-office-directory-v1", () -> runBaseline("db/mysql/local-office-directory.sql"));
         runOnce("local-device-states-v1", () -> runBaseline("db/mysql/local-device-states.sql"));
         runOnce("local-energy-history-v1", () -> runBaseline("db/mysql/local-energy-history.sql"));

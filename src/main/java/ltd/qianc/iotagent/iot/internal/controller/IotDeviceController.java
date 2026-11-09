@@ -60,6 +60,24 @@ public final class IotDeviceController {
         }
     }
 
+    @GetMapping("/device-catalog")
+    public ResponseEntity<?> deviceCatalog(HttpServletRequest request) {
+        ResponseEntity<?> source = requireCompanySource(request);
+        if (source != null) return source;
+        if (companyDirectory == null) throw new BusinessException("IOT_SCOPE_UNAVAILABLE", "本地设备目录未配置", 503);
+        try {
+            return ResponseEntity.ok(companyDirectory.readCatalog(identity("company")));
+        } catch (BusinessException failure) {
+            if (!"IOT_SCOPE_PREPARING".equals(failure.code())) throw failure;
+            Map<String, Object> cache = new LinkedHashMap<>();
+            cache.put("status", "preparing");
+            cache.put("updatedAt", null);
+            cache.put("refreshing", true);
+            cache.put("retryAfterMs", 1000);
+            return ResponseEntity.ok(Map.of("status", "preparing", "message", failure.getMessage(), "cache", cache));
+        }
+    }
+
     @GetMapping("/company-devices/sync")
     public ResponseEntity<?> companyDirectorySync(HttpServletRequest request) {
         ResponseEntity<?> source = requireCompanySource(request);

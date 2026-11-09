@@ -14,6 +14,9 @@ public interface DeviceDirectory extends AutoCloseable {
     /** Registers verified credentials and reads the last complete, currently authorized local batch. */
     Map<String, Object> read(RequestIdentity identity);
 
+    /** Company-wide display directory; never use these records to authorize business operations. */
+    Map<String, Object> readCatalog(RequestIdentity identity);
+
     /** Full server-side catalog, including bindings and paths; never serialize as an HTTP response. */
     default AuthorizedDeviceScope loadScope(RequestIdentity identity) { return loadBatch(identity).scope(); }
 
@@ -42,8 +45,8 @@ public interface DeviceDirectory extends AutoCloseable {
 
     static DeviceDirectory jdbc(JdbcTemplate jdbc, TransactionTemplate transactions, ObjectMapper mapper,
             IotAdapter upstream, ObservationAdapter historySource, AccountPrincipalVerifier verifier, ReadSnapshots snapshots,
-            ReadSnapshots.Barrier barrier, String gatewayInstance, String credentialKey, Clock clock) {
+            ReadSnapshots.Barrier barrier, String gatewayInstance, String credentialKey, Clock clock, DeviceCatalogSource catalogSource) {
         return new JdbcCompanyDirectory(jdbc, transactions, mapper, upstream, () -> historySource, verifier, snapshots,
-                barrier, gatewayInstance, credentialKey, clock);
+                barrier, gatewayInstance, credentialKey, clock, catalogSource);
     }
 }
