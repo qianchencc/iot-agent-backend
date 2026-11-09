@@ -3,7 +3,7 @@
     "find_device_candidates": {
       "name": "find_device_candidates",
       "label": "查询设备候选",
-      "description": "查询当前Office授权目录中的照明、空调、门禁和监控；其他类型以本轮device_context为准。scopeText保留原位置说法，scopeTerms为共同满足的硬条件，deviceText/nameHints只排序注释。返回真实成员明细、分组与范围解析。complete表示明细是否齐全，membersComplete表示服务器固定成员是否齐全；整组引用需要已精确查明成员（exact，或服务器固定成员的browse）的完整照明集合，fuzzy或未解析的结果只是调查线索，已明确设备可用get_device_details补读成精确引用。建议或局部展示不能代表用户选择或全部范围。",
+      "description": "查询当前Office授权目录中的照明、空调、门禁和监控；其他类型以本轮device_context为准。scopeText保留原位置说法，scopeTerms为共同满足的硬条件，deviceText/nameHints只排序注释。返回真实成员明细、分组与范围解析。complete表示明细是否齐全，membersComplete表示服务器固定成员是否齐全；整组引用需要已精确查明成员（exact，或服务器固定成员的browse）的完整照明集合，fuzzy或未解析的结果只是调查线索，已明确设备可用get_device_details补读成精确引用。建议或局部展示不能代表用户选择或全部范围。视频检索只供选目标，不生成查看卡；确定单台目标后须用read_device_states生成入口。用户明确浏览某范围监控时，须对该范围调用read_device_states生成可点击的列表卡，不用纯文字名单代替；有歧义先澄清，不扩大最终范围。",
       "parameters": {
         "type": "object",
         "required": [
@@ -146,7 +146,7 @@
     "read_device_states": {
       "name": "read_device_states",
       "label": "查询设备状态",
-      "description": "批量读取当前 Office 候选设备状态及观测时间；照明返回开关、空调返回参数，Office 视频返回在线态。未知不是关闭，历史观测不代表当前状态，查询不产生控制或草案。读取视频会生成含查看画面入口的实时监控卡；用户要求查看实时画面或直播时读取目标摄像头即可，前端点击后现取短期流，无须录像时间。",
+      "description": "批量读取当前 Office 候选设备状态及观测时间；照明返回开关、空调返回参数，Office 视频返回在线态。未知不是关闭，历史观测不代表当前状态，查询不产生控制或草案。视频候选检索不生成画面卡，只有读取状态才生成查看入口；用户点名时只读取已核实的目标摄像头，明确浏览某范围时读取该范围并展示列表，有歧义先澄清。卡片只是查看入口，不能宣称已打开画面或播放成功；用户点击后在播放页现取流，无须录像时间。",
       "parameters": {
         "type": "object",
         "required": [
@@ -1530,7 +1530,7 @@
     "find_device_candidates": {
       "name": "find_device_candidates",
       "label": "查询设备候选",
-      "description": "查询Company微脑环境、能耗、安全及智慧空调、照明、门禁、监控目录；不含Office。地点可省略：省略scopeText/scopeTerms表示在当前身份的Company授权范围内按kind全量浏览，此时须提供deviceText或nameHints，例如查询公司有哪些空调用{kind:\"ac\",deviceText:\"空调\"}；不要只传kind。“公司/全部/授权范围”表示全授权范围，不作为物理地点过滤。具体地点放scopeText/scopeTerms，scopeText保留原位置说法，scopeTerms为共同满足的硬条件，deviceText/nameHints只排序注释。返回真实成员明细、分组与范围解析。complete表示明细是否齐全，membersComplete表示服务器固定成员是否齐全；整组引用需要已精确查明成员（exact，或服务器固定成员的browse）的完整照明集合，fuzzy或未解析的结果只是调查线索，已明确设备可用get_device_details补读成精确引用。建议或局部展示不能代表用户选择或全部范围。",
+      "description": "查询Company微脑环境、能耗、安全及智慧空调、照明、门禁、监控目录；不含Office。地点可省略：省略scopeText/scopeTerms表示在当前身份的Company授权范围内按kind全量浏览，此时须提供deviceText或nameHints，例如查询公司有哪些空调用{kind:\"ac\",deviceText:\"空调\"}；不要只传kind。“公司/全部/授权范围”表示全授权范围，不作为物理地点过滤。具体地点放scopeText/scopeTerms，scopeText保留原位置说法，scopeTerms为共同满足的硬条件，deviceText/nameHints只排序注释。返回真实成员明细、分组与范围解析。complete表示明细是否齐全，membersComplete表示服务器固定成员是否齐全；整组引用需要已精确查明成员（exact，或服务器固定成员的browse）的完整照明集合，fuzzy或未解析的结果只是调查线索，已明确设备可用get_device_details补读成精确引用。建议或局部展示不能代表用户选择或全部范围。视频检索只供选目标，不生成查看卡；确定单台目标后须用read_device_states生成入口。用户明确浏览某范围监控时，须对该范围调用read_device_states生成可点击的列表卡，不用纯文字名单代替；有歧义先澄清，不扩大最终范围。",
       "parameters": {
         "type": "object",
         "required": [
@@ -1633,7 +1633,7 @@
     "read_device_states": {
       "name": "read_device_states",
       "label": "查询设备状态",
-      "description": "批量读取 Company 候选中的环境、能耗、安全观察事实、视频在线态及智慧空调状态和观测时间。安全无实时报警状态；未知不是正常。读取只读、不产生控制或提案。读取视频会生成含查看画面入口的实时监控卡；用户要求查看实时画面或直播时读取目标摄像头即可，前端点击后现取短期流，无须录像时间。",
+      "description": "批量读取 Company 候选中的环境、能耗、安全观察事实、视频在线态及智慧空调状态和观测时间。安全无实时报警状态；未知不是正常。读取只读、不产生控制或提案。视频候选检索不生成画面卡，只有读取状态才生成查看入口；用户点名时只读取已核实的目标摄像头，明确浏览某范围时读取该范围并展示列表，有歧义先澄清。卡片只是查看入口，不能宣称已打开画面或播放成功；用户点击后在播放页现取流，无须录像时间。",
       "parameters": {
         "type": "object",
         "required": [

@@ -222,7 +222,7 @@ class AgentBusinessDefinitionContractTest {
 
     @ParameterizedTest
     @ValueSource(booleans={true,false})
-    void videoDiscoveryUsesPersistedStatesWithoutInventingSampleTime(boolean knownStates) {
+    void videoDiscoveryStaysInternalUntilTheRequestedRangeIsRead(boolean knownStates) {
         try(var fixture=new ltd.qianc.iotagent.iot.EnvironmentHistoryFixture()) {
             new ltd.qianc.iotagent.schema.SchemaMigrations(fixture.jdbc.getDataSource()).ensureDeviceCandidateSets();
             fixture.jdbc.execute("ALTER TABLE device_candidate_sets ALTER COLUMN payload_json VARCHAR(1000000) NOT NULL");
@@ -252,6 +252,14 @@ class AgentBusinessDefinitionContractTest {
                     "toolName","find_device_candidates","arguments",Map.of("kind","video","scopeText","测试区域")));
             var events=policy.projection().apply(event("tool.result",Map.of(
                     "tool","find_device_candidates","toolCallId","call-video","result",result)));
+            assertThat(events).isEmpty();
+            Map<String,Object> selected=bridge.execute(Map.of("runId","run-1","toolContextId","tool-video",
+                    "conversationId","conversation-1","turnId","turn-1","toolCallId","call-read-video",
+                    "toolName","read_device_states","arguments",Map.of("candidateSets",List.of(
+                            Map.of("candidateSetId",result.get("candidateSetId"),
+                                    "deviceIds",fixture.devices.stream().map(AuthorizedDevice::id).toList())))));
+            events=policy.projection().apply(event("tool.result",Map.of(
+                    "tool","read_device_states","toolCallId","call-read-video","result",selected)));
             assertThat(events).singleElement().satisfies(observation -> {
                 assertThat(observation.type()).isEqualTo("observation.reported");
                 assertThat(observation.fields()).containsEntry("observedAt",null);
@@ -628,12 +636,16 @@ class AgentBusinessDefinitionContractTest {
             });
         });
 
-        List<AgentEngineEvent> live = policy.projection().apply(event("tool.result", Map.of(
+        List<AgentEngineEvent> discovery = policy.projection().apply(event("tool.result", Map.of(
                 "tool", "find_device_candidates", "toolCallId", "call-find",
-                "result", Map.of("devices", List.of(Map.of("id", "camera-1", "kind", "video",
-                        "name", "大堂摄像头", "location", "一层大堂")),
-                        "videoObservation", Map.of("states", Map.of("camera-1", true),
-                                "observedAt", "2026-11-02T01:55:00Z")))));
+                "result", Map.of("devices", List.of(
+                        Map.of("id", "camera-1", "kind", "video", "name", "大堂摄像头", "location", "一层大堂"),
+                        Map.of("id", "camera-2", "kind", "video", "name", "走廊摄像头", "location", "一层走廊"))))));
+        assertThat(discovery).isEmpty();
+        List<AgentEngineEvent> live = policy.projection().apply(event("tool.result", Map.of(
+                "tool", "read_device_states", "toolCallId", "call-read",
+                "result", Map.of("states", Map.of("camera-1", true),
+                        "observedAt", "2026-11-02T01:55:00Z"))));
         assertThat(live).singleElement().satisfies(projected -> {
             List<Map<String, Object>> blocks = listOfMaps(projected.fields().get("blocks"));
             assertThat(blocks).singleElement().satisfies(block -> {
@@ -644,6 +656,30 @@ class AgentBusinessDefinitionContractTest {
                                 .containsEntry("name", "大堂摄像头"));
             });
         });
+        List<AgentEngineEvent> unknown = policy.projection().apply(event("tool.result", Map.of(
+                "tool", "read_device_states", "toolCallId", "call-unknown",
+                "result", Map.of("status", "unavailable",
+                        "states", java.util.Collections.singletonMap("camera-1", null)))));
+        assertThat(unknown).singleElement().satisfies(projected -> {
+            assertThat(projected.fields()).containsEntry("observedAt", null);
+            assertThat(listOfMaps(projected.fields().get("blocks"))).singleElement().satisfies(block ->
+                    assertThat(listOfMaps(block.get("devices"))).singleElement().satisfies(device ->
+                            assertThat(device).containsEntry("deviceId", "camera-1")
+                                    .containsEntry("online", null).containsEntry("observedAt", null)));
+        });
+        var snapshotBlock = Map.of("type", "video", "devices",
+                List.of(Map.of("deviceId", "camera-1", "name", "大堂摄像头", "online", true)));
+        for (Map<String, Object> failure : List.<Map<String, Object>>of(
+                Map.of("status", "failed", "blocks", List.of(snapshotBlock)),
+                Map.of("ok", false, "status", "unavailable", "blocks", List.of(snapshotBlock)),
+                Map.of("ok", false, "status", "unavailable",
+                        "states", java.util.Collections.singletonMap("camera-1", null)),
+                Map.of("status", "unavailable", "blocks", List.of()))) {
+            assertThat(policy.projection().apply(event("tool.result", Map.of(
+                    "tool", "read_device_states", "toolCallId", "call-failed",
+                    "result", failure)))).isEmpty();
+        }
+
 
         List<AgentEngineEvent> video = policy.projection().apply(event("tool.result", Map.of(
                 "tool", "prepare_video_playback", "toolCallId", "call-video",

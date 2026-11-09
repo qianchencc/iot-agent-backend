@@ -972,15 +972,6 @@ public final class AgentBusinessToolDispatcher implements AgentToolBridge {
         full.put("candidateSetId", candidates.candidateSetId());
         if (membership != null) full.put("candidateMembersFingerprint", membership);
         full.put("devices", candidates.devices().stream().map(AgentBusinessToolDispatcher::publicDevice).toList());
-        List<String> videoIds = candidates.devices().stream().filter(device -> "video".equals(device.kind()))
-                .map(AuthorizedDevice::id).toList();
-        if (!videoIds.isEmpty()) {
-            DeviceStateReadResult video = iot.readDeviceStates(identity(principal, source),
-                    new DeviceCapabilityRequest(List.of(new DeviceCapabilityRequest.DeviceCapabilitySelection(
-                            candidates.candidateSetId(), videoIds))), conversationId).block(TIMEOUT);
-            if (video == null) throw new BusinessException("DEVICE_STATE_UNAVAILABLE", "本地视频状态暂不可用", 503);
-            full.put("videoObservation", mapper.convertValue(video, Map.class));
-        }
         full.put("modelResult", result);
         return full;
     }

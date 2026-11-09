@@ -145,7 +145,14 @@ final class AgentBusinessEventProjection {
         Map<String, Object> result = stringMap(rawMap);
         if (callId != null) resultsByCall.put(callId, result);
         energy.completed(callId, tool, result);
-        if (isError(result)) return List.of();
+        boolean unavailableVideoState = "read_device_states".equals(tool)
+                && "unavailable".equalsIgnoreCase(text(result, "status"))
+                && !Boolean.FALSE.equals(result.get("ok"))
+                && (list(result.get("blocks")).stream().map(AgentBusinessEventProjection::map)
+                        .anyMatch(block -> "video".equals(text(block, "type")) && !list(block.get("devices")).isEmpty())
+                    || map(result.get("states")).keySet().stream().anyMatch(id ->
+                            "video".equals(text(devicesById.getOrDefault(id, Map.of()), "kind"))));
+        if (isError(result) && !unavailableVideoState) return List.of();
         rememberDevices(tool, result);
         AgentToolCatalog.Definition definition = AgentToolCatalog.definition(tool);
         if (definition == null) return List.of();
@@ -209,7 +216,6 @@ final class AgentBusinessEventProjection {
             case "create_energy_report" -> reportArtifact(result);
             case "prepare_video_playback" -> videoPlayback(result);
             case "review_safety_event" -> safetyVideo(result);
-            case "find_device_candidates" -> stateObservation(map(result.get("videoObservation")));
             case "read_device_states" -> stateObservation(result);
             default -> List.of();
         };
