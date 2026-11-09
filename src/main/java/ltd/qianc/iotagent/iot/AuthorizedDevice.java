@@ -1,5 +1,6 @@
 package ltd.qianc.iotagent.iot;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -88,6 +89,22 @@ public record AuthorizedDevice(
 
     private static String canonical(Object value) {
         if (value == null) return "null";
+        if (value instanceof JsonNode node) {
+            if (node.isObject()) {
+                return node.properties().stream().sorted(Map.Entry.comparingByKey())
+                        .map(entry -> quote(entry.getKey()) + ":" + canonical(entry.getValue()))
+                        .collect(java.util.stream.Collectors.joining(",", "{", "}"));
+            }
+            if (node.isArray()) {
+                return java.util.stream.StreamSupport.stream(node.spliterator(), false)
+                        .map(AuthorizedDevice::canonical)
+                        .collect(java.util.stream.Collectors.joining(",", "[", "]"));
+            }
+            if (node.isNull()) return "null";
+            if (node.isNumber()) return node.numberValue().toString();
+            if (node.isBoolean()) return Boolean.toString(node.booleanValue());
+            return quote(node.asText());
+        }
         if (value instanceof Map<?, ?> map) {
             Map<String, Object> sorted = new TreeMap<>();
             map.forEach((key, item) -> sorted.put(String.valueOf(key), item));

@@ -84,6 +84,70 @@ class TaskPublicParityFacadeBehaviorTest {
         phaseStore = TaskFactStoresFactory.taskPhases(jdbc, transactions, mapper);
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void recurringConfirmationSurvivesJsonStorageButRejectsChangedControlBindings(boolean changedBinding) throws Exception {
+        var identity = new RequestIdentity(PRINCIPAL.authorization(), "TENANT", IotSourceEnum.OFFICE, PRINCIPAL.ownerKey());
+        var light = new AuthorizedDevice("dev-1", "lighting", "Fixture light", "Fixture room", false);
+        var metadata = Map.<String, Object>of("actionList", mapper.readTree(
+                "[{\"id\":\"read-temperature\",\"enabled\":true,\"ratio\":1.25,\"optional\":null,\"flags\":[1,\"x\",false]}]"));
+        var persistedMetadata = mapper.readValue(mapper.writeValueAsString(metadata),
+                new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() { });
+        var sensor = new AuthorizedDevice("sensor", "environment", "Fixture sensor", "Fixture room", true,
+                null, "sensor", null, null, List.of(), List.of(), metadata);
+        var storedSensor = new AuthorizedDevice("sensor", "environment", "Fixture sensor", "Fixture room", true,
+                null, "sensor", null, null, List.of(), List.of(), persistedMetadata);
+        var stored = AuthorizedDeviceScope.of(identity, IotSourceEnum.OFFICE, List.of(light, storedSensor));
+        var currentLight = changedBinding
+                ? new AuthorizedDevice("dev-1", "lighting", "Fixture light", "Fixture room", false,
+                        "changed-control", null, null, null, List.of(), List.of(), Map.of())
+                : light;
+        var current = AuthorizedDeviceScope.of(identity, IotSourceEnum.OFFICE, List.of(currentLight, sensor));
+        var payload = (com.fasterxml.jackson.databind.node.ObjectNode) mapper.readTree(managedPlanPayload(PRINCIPAL.ownerKey()));
+        payload.put("catalogFingerprint", stored.catalogFingerprint()).put("bindingFingerprint", stored.bindingFingerprint());
+        proposals.save(new TaskProposalFact("json-confirmation", 1, "PENDING_CONFIRMATION", payload.toString(),
+                "json-confirmation-key", "TASK", "{}", "{}", payload.toString(), "create",
+                "TENANT", PRINCIPAL.ownerKey(), "office", NOW.plusSeconds(600)));
+        IotAdapter iot = ignored -> Mono.just(current);
+        var facade = new TaskFacade(mapper, tasks, proposals, plans, mock(TaskNotificationStore.class),
+                TaskSchedulerFactory.jdbc(jdbc, mapper), phaseStore, iot, null, null,
+                mock(ltd.qianc.iotagent.readmodel.ReadSnapshots.class), atomic, Clock.fixed(NOW, ZoneOffset.UTC));
+
+        if (changedBinding) {
+            assertThatThrownBy(() -> facade.confirmProposal(PRINCIPAL, "json-confirmation", 1, "office"))
+                    .isInstanceOfSatisfying(BusinessException.class, error -> {
+                        assertThat(error.code()).isEqualTo("TASK_DEVICE_AUTHORIZATION_UNAVAILABLE");
+                        assertThat(error.httpStatus()).isEqualTo(403);
+                    });
+            assertThat(proposals.find("json-confirmation").orElseThrow().status()).isEqualTo("PENDING_CONFIRMATION");
+            assertThat(plans.find("json-confirmation")).isEmpty();
+        } else {
+            var receipt = facade.confirmProposal(PRINCIPAL, "json-confirmation", 1, "office");
+            assertThat(receipt).containsEntry("planId", "json-confirmation").containsEntry("status", "scheduled");
+            assertThat(plans.find("json-confirmation").orElseThrow().status()).isEqualTo("ENABLED");
+            assertThat(proposals.find("json-confirmation").orElseThrow().status()).isEqualTo("CONFIRMED");
+            assertThat(facade.confirmProposal(PRINCIPAL, "json-confirmation", 1, "office")).isEqualTo(receipt);
+        }
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"PENDING_CONFIRMATION", "EXPIRED"})
+    void expiredUnconfirmedProposalCanBeDiscardedWithoutCreatingAPlan(String status) {
+        String payload = managedPlanPayload(PRINCIPAL.ownerKey());
+        proposals.save(new TaskProposalFact("expired-discard", 3, status, payload, "expired-discard-key",
+                "TASK", "{}", "{}", payload, "create", "TENANT", PRINCIPAL.ownerKey(), "office", NOW.minusSeconds(1)));
+        var facade = planFacade(mock(TaskNotificationStore.class), identityStore());
+
+        assertThatThrownBy(() -> facade.discard(PRINCIPAL, "expired-discard", 2, "office"))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        error -> assertThat(error.code()).isEqualTo("VERSION_CONFLICT"));
+        var discarded = facade.discard(PRINCIPAL, "expired-discard", 3, "office");
+        assertThat(discarded.status()).isEqualTo("CANCELLED");
+        assertThat(proposals.find("expired-discard").orElseThrow().status()).isEqualTo("CANCELLED");
+        assertThat(facade.discard(PRINCIPAL, "expired-discard", 3, "office")).isEqualTo(discarded);
+        assertThat(plans.find("expired-discard")).isEmpty();
+    }
+
     @Test
     void editingOnlyOneOccurrenceMovesThePersistedPointerWithoutChangingTheSeries() throws Exception {
         plans.save(new TaskPlanFact("fixture-pointer", 1, "ENABLED", planPayload(), "fixture-pointer-key"));

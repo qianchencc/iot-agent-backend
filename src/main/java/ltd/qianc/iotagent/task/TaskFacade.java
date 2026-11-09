@@ -699,8 +699,8 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
     public TaskProposalFact discard(PrincipalInfo principal, String proposalId, long expectedVersion, String requestedSource) {
         TaskProposalFact proposal = proposal(principal, proposalId, requestedSource);
         if (CANCELLED.equals(proposal.status())) return proposal;
-        if (!PENDING.equals(proposal.status())) throw conflict("TASK_PROPOSAL_NOT_PENDING", "任务提案已结束");
-        resolveExpiry(proposal);
+        if (!PENDING.equals(proposal.status()) && !"EXPIRED".equals(proposal.status()))
+            throw conflict("TASK_PROPOSAL_NOT_PENDING", "任务提案已结束");
         if (proposal.version() != expectedVersion) throw conflict("VERSION_CONFLICT", "任务提案已变化，请刷新后重试");
         return proposals.updateIfVersion(withStatus(proposal, CANCELLED), proposal.version())
                 .orElseThrow(() -> conflict("VERSION_CONFLICT", "任务提案已变化，请刷新后重试"));

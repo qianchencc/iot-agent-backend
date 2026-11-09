@@ -27,7 +27,9 @@
 - `mvn -q -DskipTests package` 打包成功；它不代表全套测试通过。
 - 自审：授权仍由请求方决定，数据域含网关／租户／来源；授权缩小、换证、换租户、换网关与发布失败仍由回归覆盖。事务内未增加上游调用；保留CAS、确定性任务ID和阶段ID。没有使用子代理审查。
 
-## 当前本地实例
+## 本轮本地实例（后续已替换）
+
+当前3381已由[确认与放弃修复](../task-confirmation-reliability/README.md)更新；以下保留本轮部署及回退来源，不作为现行进程信息。
 
 - 3381：`var/energy-weekday-final-20261109-143028/backend.jar`，PID 28662，LAN监听；SHA256 `798311f0ccf665a302250483dae73075a0a341bce0f977aa1d6a81766a82eb67`。
 - 以原 `var/video-scope-fix-20261109-010346/backend.jar` 为单向运行基线，仅覆盖上述6个实现模块的25个class；其余JAR成员逐项零字节差异。原包保持原样用于回退。
