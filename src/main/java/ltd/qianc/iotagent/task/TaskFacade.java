@@ -193,11 +193,12 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
     }
 
     /**
-     * Runtime creator display name: read from the SSO account server for Office
-     * ("成员" when the metadata call fails), empty for Company; the model never
-     * authors this field.
+     * Creator display metadata comes from the verified account for both sources.
+     * Legacy Office callers may still use the existing account metadata fallback.
      */
     private String creatorName(PrincipalInfo principal, String normalizedSource) {
+        String verifiedName = principal.displayName();
+        if (principal.verified() && verifiedName != null && !verifiedName.isBlank()) return verifiedName.trim();
         if (iot == null || !"office".equals(normalizedSource)) return "";
         try {
             String name = iot.readCreatorDisplayName(new RequestIdentity(

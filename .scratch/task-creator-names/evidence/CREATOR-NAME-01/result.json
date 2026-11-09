@@ -1,0 +1,62 @@
+{
+  "case": "CREATOR-NAME-01",
+  "status": "accepted-in-real-WeChat-developer-tools",
+  "rootCause": "TaskFacade.creatorName returned an empty name for Company before consulting verified account displayName; the UI correctly fell back to generic member text.",
+  "sourceChange": "Both sources first use trimmed displayName from a verified PrincipalInfo; the existing legacy Office metadata fallback remains unchanged.",
+  "red": {
+    "tests": 2,
+    "failures": 2,
+    "errors": 0,
+    "companyActual": "",
+    "officeActual": "成员",
+    "expected": "示例创建者"
+  },
+  "focusedRegression": {"tests": 78, "failures": 0, "errors": 0, "skipped": 0},
+  "broadRegression": {
+    "tests": 729,
+    "passed": 700,
+    "skipped": 29,
+    "failures": 0,
+    "errors": 0,
+    "excludedKnownUnrelatedFailures": [
+      "AgentToolBridgeContractTest#aggregatesRequestedAlertTypesWithoutMaskingMissingTotals",
+      "AgentToolBridgeContractTest#prepareVideoPlaybackUsesBoundCompanySourceAndNormalizesWindow",
+      "SafetyReviewToolContractTest#singleCandidatePreparesRealPlaybackCardAndProjectsVideoPlaybackBlock"
+    ],
+    "build": "package succeeded with the stated exclusions; not an unqualified full-suite pass"
+  },
+  "historicalMetadataRepair": {
+    "plans": 2,
+    "materializedTasks": 5,
+    "verifiedCreators": 2,
+    "unresolvedCandidates": 0,
+    "identityEvidence": "Live SSO verification of registered credentials, tenant and identity realm, exact recomputation and comparison of the canonical owner key; existing principalId and identityRealm also checked when present. Missing historical principal IDs were not invented or written.",
+    "onlyChangedField": "payload_json.creatorName",
+    "preserved": ["version", "status", "next_at", "next_date", "owner", "tenant", "source", "all other JSON values", "create_time", "update_time"],
+    "transaction": "Single transaction; row locks, conditional writes and field-by-field invariants before commit",
+    "privateBackup": "var/task-creator-name-20261109-155111/creator-metadata-before.json",
+    "privateBackupMode": "0600"
+  },
+  "deployment": {
+    "javaPort": 3381,
+    "pid": 60375,
+    "release": "var/task-creator-name-20261109-155111/backend.jar",
+    "base": "var/region-timeline-fix-20261109-155030/backend.jar",
+    "sha256": "47fc9ed6fdd6b24715d0f10d0c2b4b11330daaf27e0b97a5fea481cb70475c28",
+    "onlyChangedJarEntry": "BOOT-INF/classes/ltd/qianc/iotagent/task/TaskFacade.class",
+    "nodeAndConfigurationUnchanged": true,
+    "safeSwitch": "No active Agent runs or executing phases before graceful Java switch"
+  },
+  "nativeAcceptance": {
+    "surface": "Existing signed-in WeChat developer-tools miniapp, Company dashboard -> task management -> recurring plans -> existing plan details",
+    "observedCreators": ["马云飞", "刘志龙"],
+    "screenshots": ["before.png", "after-ma.png", "after-liu.png"],
+    "responsesOrCardsMocked": false,
+    "frontendChanged": false,
+    "taskStatusControlsUsed": false,
+    "newTasksOrPlansCreated": 0,
+    "deviceControlsOrNotificationsSent": 0,
+    "automationDisconnected": true,
+    "limits": "No newly created real task was confirmed; new-name behavior is covered at the public proposal boundary. User phone not separately accepted."
+  }
+}

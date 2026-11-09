@@ -32,6 +32,31 @@ class TaskProposalNormalizationContractTest {
     private static final PrincipalInfo PRINCIPAL = new PrincipalInfo("Bearer fixture", "LOCAL");
     private final ObjectMapper mapper = new ObjectMapper();
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"company", "office"})
+    void verifiedCreatorNameOverridesSuggestedNameEvenWhenMetadataReadIsUnavailable(String source) throws Exception {
+        PrincipalInfo verified = new PrincipalInfo("Bearer verified-fixture", "LOCAL",
+                "fixture-creator", "https://identity.example", "  示例创建者  ", null);
+        TaskProposalStore proposals = mock(TaskProposalStore.class);
+        when(proposals.findByIdempotencyKey(anyString())).thenReturn(Optional.empty());
+        when(proposals.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+        IotAdapter sourceAware = identity -> adapter().loadAuthorizedDeviceScope(identity)
+                .map(scope -> AuthorizedDeviceScope.of(identity, identity.source(), scope.devices()));
+        TaskFacade facade = new TaskFacade(mapper, mock(TaskFactStore.class), proposals, mock(TaskPlanStore.class),
+                mock(TaskNotificationStore.class), mock(TaskScheduler.class), null, sourceAware, null, null,
+                mock(ltd.qianc.iotagent.readmodel.ReadSnapshots.class), Clock.fixed(NOW, ZoneOffset.UTC));
+        var request = (com.fasterxml.jackson.databind.node.ObjectNode) mapper.readTree(
+                acPayload(30, "2026-11-02T06:00:00Z", "2026-11-02T08:00:00Z"));
+        request.put("creatorName", "未经核验的建议姓名").put("principalId", "suggested-person");
+
+        JsonNode saved = mapper.readTree(facade.propose(verified, source, "conversation", "turn",
+                request.toString(), "creator-name").payloadJson());
+
+        assertThat(saved.path("creatorName").asText()).isEqualTo("示例创建者");
+        assertThat(saved.path("principalId").asText()).isEqualTo("fixture-creator");
+        assertThat(saved.path("identityRealm").asText()).isEqualTo("https://identity.example");
+    }
+
     @Test
     void relativeTaskNamesUseTheScheduledShanghaiDateWithoutMovingExecution() throws Exception {
         String base = acPayload(30, "2026-11-02T17:00:00Z", "2026-11-02T18:00:00Z");
