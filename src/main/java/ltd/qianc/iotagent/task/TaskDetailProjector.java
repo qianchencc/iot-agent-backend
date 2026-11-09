@@ -414,6 +414,10 @@ public final class TaskDetailProjector {
         JsonNode payload = plan.payload();
         if ((!inspectDisabled && (!"ENABLED".equalsIgnoreCase(plan.status()) || plan.nextDate() == null))
                 || date == null) return null;
+        if (!matchesRepeat(payload, date)) return null;
+        OccurrenceState state = plan.occurrences().get(date);
+        if (!inspectDisabled && state != null
+                && (state.taskId() != null || Set.of("CLAIMED", "MATERIALIZED").contains(state.status()))) return null;
         JsonNode effective = effectiveTemplate(plan, date);
         if (effective == null) return null;
         Instant effectiveAnchor = anchor(effective);
@@ -531,6 +535,26 @@ public final class TaskDetailProjector {
         view.put("source", source);
         view.put("canCancel", false);
         return view;
+    }
+
+    private boolean matchesRepeat(JsonNode payload, LocalDate date) {
+        try {
+            Instant start = anchor(payload);
+            if (start == null || date.isBefore(TaskRecurrence.localDate(start))) return false;
+            JsonNode repeat = payload.path("repeat");
+            String frequency = repeat.path("frequency").asText("");
+            Set<Integer> weekdays = Set.of();
+            if ("weekly".equals(frequency)) {
+                List<Integer> days = new ArrayList<>();
+                for (JsonNode day : repeat.path("weekdays")) days.add(day.intValue());
+                weekdays = TaskRecurrence.weekdays(days);
+            }
+            Integer day = repeat.has("dayOfMonth") ? repeat.get("dayOfMonth").intValue() : null;
+            LocalDate until = repeat.has("until") ? LocalDate.parse(repeat.get("until").asText()) : null;
+            return TaskRecurrence.matches(new TaskRecurrence.RepeatRule(frequency, weekdays, day, until), date);
+        } catch (RuntimeException invalid) {
+            return false;
+        }
     }
 
     /** Effective template for a date: override payload, else the anchor-shifted template. */

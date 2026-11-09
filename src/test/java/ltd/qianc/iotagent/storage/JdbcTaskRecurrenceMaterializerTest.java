@@ -170,15 +170,58 @@ class JdbcTaskRecurrenceMaterializerTest {
     }
 
     @Test
-    void staleOccurrenceWithNoCheckpointLeftIsSkippedAndPointerAdvances() {
-        insertPlan("plan-stale-done", "office", "owner-3", "2026-11-01T08:00:00Z");
+    void elapsedOccurrenceRetainsMissedPhaseHistoryWithoutDispatchingItAgain() {
+        insertPlan("plan-missed", "office", "fixture-owner", "2026-11-01T08:00:00Z");
+        var recovered = materializer(Clock.fixed(Instant.parse("2026-11-01T09:00:00Z"), ZoneOffset.UTC));
+        assertThat(recovered.materializeOnce()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT status FROM task_phases", String.class)).isEqualTo("MISSED");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM task_phases WHERE status='PENDING'", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT status FROM task_plan_occurrences WHERE plan_id='plan-missed'", String.class))
+                .isEqualTo("MATERIALIZED");
+        assertThat(nextDate("plan-missed")).isEqualTo("2026-11-02");
+        recovered.materializeOnce();
+        assertThat(count("task_facts")).isEqualTo(1);
+    }
 
-        assertThat(materializer(Clock.fixed(Instant.parse("2026-11-01T09:00:00Z"), ZoneOffset.UTC)).materializeOnce()).isEqualTo(1);
-        assertThat(count("task_facts")).isZero();
-        assertThat(count("task_phases")).isZero();
-        assertThat(jdbc.queryForObject("SELECT status FROM task_plan_occurrences WHERE plan_id='plan-stale-done'", String.class))
-                .isEqualTo("SKIPPED");
-        assertThat(nextDate("plan-stale-done")).isEqualTo("2026-11-02");
+    @Test
+    void changedOccurrenceUsesItsEffectiveTimeForTheLateExecutionGrace() {
+        insertPlan("plan-effective-time", "company", "fixture-owner", "2026-11-01T02:26:00Z");
+        String override = "{\"source\":\"company\",\"phases\":[{\"at\":\"2026-11-01T13:30:00+08:00\",\"actions\":[]}]}";
+        jdbc.update("INSERT INTO task_plan_occurrences(plan_id,occurrence_date,status,override_payload_json,version,create_time,update_time) VALUES (?,?,?,?,1,?,?)",
+                "plan-effective-time", "2026-11-01", "OVERRIDDEN", override, java.sql.Timestamp.from(NOW), java.sql.Timestamp.from(NOW));
+        assertThat(materializer(Clock.fixed(Instant.parse("2026-11-01T05:32:52Z"), ZoneOffset.UTC)).materializeOnce()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT status FROM task_phases", String.class)).isEqualTo("PENDING");
+        assertThat(jdbc.queryForObject("SELECT due_at FROM task_phases", java.sql.Timestamp.class).toInstant())
+                .isEqualTo(Instant.parse("2026-11-01T05:30:00Z"));
+        assertThat(nextDate("plan-effective-time")).isEqualTo("2026-11-02");
+    }
+
+    @Test
+    void nextPointerKeepsTheFollowingDatesSingleOccurrenceOverrideTime() {
+        insertPlan("plan-next-override", "company", "fixture-owner", "2026-11-01T01:00:00Z");
+        String override = "{\"source\":\"company\",\"phases\":[{\"at\":\"2026-11-02T05:30:00Z\",\"actions\":[]}]}";
+        jdbc.update("INSERT INTO task_plan_occurrences(plan_id,occurrence_date,status,override_payload_json,version,create_time,update_time) VALUES (?,?,?,?,1,?,?)",
+                "plan-next-override", "2026-11-02", "OVERRIDDEN", override, java.sql.Timestamp.from(NOW), java.sql.Timestamp.from(NOW));
+        materializer().materializeOnce();
+        assertThat(jdbc.queryForObject("SELECT next_at FROM task_plans WHERE plan_id='plan-next-override'", java.sql.Timestamp.class).toInstant())
+                .isEqualTo(Instant.parse("2026-11-02T05:30:00Z"));
+    }
+
+    @Test
+    void previouslyAbandonedOverrideGetsMissedHistoryWithoutRewindingTheFuturePointer() {
+        String id = "plan-orphaned-override";
+        insertPlan(id, "company", "fixture-owner", "2026-11-01T02:26:00Z");
+        jdbc.update("UPDATE task_plans SET next_at=?,next_date='2026-11-02' WHERE plan_id=?",
+                java.sql.Timestamp.from(Instant.parse("2026-11-02T02:26:00Z")), id);
+        String override = "{\"source\":\"company\",\"phases\":[{\"at\":\"2026-11-01T05:30:00Z\",\"actions\":[]}]}";
+        jdbc.update("INSERT INTO task_plan_occurrences(plan_id,occurrence_date,status,override_payload_json,version,create_time,update_time) VALUES (?,?,?,?,1,?,?)",
+                id, "2026-11-01", "OVERRIDDEN", override, java.sql.Timestamp.from(NOW), java.sql.Timestamp.from(NOW));
+        var recovered = materializer(Clock.fixed(Instant.parse("2026-11-01T06:00:00Z"), ZoneOffset.UTC));
+        recovered.materializeOnce();
+        assertThat(jdbc.queryForList("SELECT status FROM task_phases", String.class)).containsExactly("MISSED");
+        assertThat(nextDate(id)).isEqualTo("2026-11-02");
+        recovered.materializeOnce();
+        assertThat(count("task_facts")).isEqualTo(1);
     }
 
     private TaskOccurrenceMaterializer materializer() {

@@ -74,21 +74,13 @@ public final class JdbcTaskProjectionStore implements TaskProjectionStore {
             if (detail != null) rows.add(projector.listSummary(detail));
         }
         for (TaskDetailProjector.PlanSource plan : planSources(tenantCode, source)) {
-            Map<String, Object> nearest = null;
-            Instant nearestStart = null;
             for (LocalDate date : occurrenceDates(plan, windowStart, windowEnd)) {
                 Map<String, Object> candidate = projector.virtualOccurrence(plan, date, scope, viewerKey, false);
                 if (candidate == null || !inWindow(candidate, windowStart, windowEnd)) continue;
-                Instant start = startOf(candidate);
-                if (start == null) continue;
-                if (nearest == null || start.isBefore(nearestStart)) {
-                    nearest = candidate;
-                    nearestStart = start;
-                }
-                if (rows.size() >= ROW_LIMIT) throw occurrenceLimit();
+                if (startOf(candidate) == null) continue;
+                rows.add(projector.listSummary(candidate));
+                if (rows.size() > ROW_LIMIT) throw occurrenceLimit();
             }
-            if (nearest != null) rows.add(nearest);
-            if (rows.size() > ROW_LIMIT) throw occurrenceLimit();
         }
         rows.sort((left, right) -> {
             Instant a = startOf(left), b = startOf(right);

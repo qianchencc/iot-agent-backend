@@ -219,7 +219,7 @@ public final class JdbcTaskPlanStore extends AbstractJdbcFactSupport implements 
             if (occurrence != null && (occurrence.taskId() != null || Set.of("CLAIMED", "MATERIALIZED", "SKIPPED").contains(occurrence.status()))) continue;
             JsonNode effective = occurrence != null && occurrence.overridePayloadJson() != null
                     ? readPayload(occurrence.overridePayloadJson()) : shifted(payload, date, anchorDate);
-            Instant at = firstFutureAt(effective, now, anchor, date);
+            Instant at = firstFutureAt(effective, now, effectiveAt(effective));
             if (!at.isAfter(now)) continue;
             if (candidateAt == null || at.isBefore(candidateAt) || (at.equals(candidateAt) && date.isBefore(candidateDate))) {
                 candidateAt = at; candidateDate = date;
@@ -227,8 +227,7 @@ public final class JdbcTaskPlanStore extends AbstractJdbcFactSupport implements 
         }
         return new Pointer(candidateAt, candidateDate);
     }
-    private Instant firstFutureAt(JsonNode effective, Instant now, Instant anchor, LocalDate date) {
-        Instant fallback = TaskRecurrence.occurrenceAt(anchor, date);
+    private Instant firstFutureAt(JsonNode effective, Instant now, Instant fallback) {
         JsonNode interval = effective.path("interval");
         JsonNode phases = effective.path("phases");
         if (!interval.isObject() || !phases.isArray() || phases.size() <= 1) return fallback;
@@ -323,7 +322,7 @@ public final class JdbcTaskPlanStore extends AbstractJdbcFactSupport implements 
             Instant now = Instant.now();
             LocalDate date = TaskRecurrence.next(rule, anchor, now.minusNanos(1));
             if (date == null) throw new IllegalArgumentException("截止日前没有未来发生");
-            Instant checkpoint = firstFutureAt(body, now, anchor, date);
+            Instant checkpoint = firstFutureAt(body, now, TaskRecurrence.occurrenceAt(anchor, date));
             if (checkpoint != null && !checkpoint.equals(TaskRecurrence.occurrenceAt(anchor, date))) {
                 return new Pointer(checkpoint, TaskRecurrence.localDate(now));
             }

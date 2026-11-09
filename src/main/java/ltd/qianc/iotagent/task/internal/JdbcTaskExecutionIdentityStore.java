@@ -71,7 +71,7 @@ public final class JdbcTaskExecutionIdentityStore implements TaskExecutionIdenti
         jdbc.update("INSERT INTO task_execution_identities(owner_id,owner_kind,tenant_code,owner_key,payload,create_time,update_time) "
                         + "SELECT ?, 'TASK', tenant_code, owner_key, payload, ?, ? FROM task_execution_identities "
                         + "WHERE owner_id=? AND owner_kind='PLAN' "
-                        + "ON DUPLICATE KEY UPDATE owner_id=owner_id",
+                        + "ON DUPLICATE KEY UPDATE owner_id=VALUES(owner_id)",
                 taskId, now, now, planId);
     }
 

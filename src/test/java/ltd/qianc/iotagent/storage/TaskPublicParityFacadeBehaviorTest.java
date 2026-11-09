@@ -85,6 +85,19 @@ class TaskPublicParityFacadeBehaviorTest {
     }
 
     @Test
+    void editingOnlyOneOccurrenceMovesThePersistedPointerWithoutChangingTheSeries() throws Exception {
+        plans.save(new TaskPlanFact("fixture-pointer", 1, "ENABLED", planPayload(), "fixture-pointer-key"));
+        var original = plans.find("fixture-pointer").orElseThrow();
+        var changed = (com.fasterxml.jackson.databind.node.ObjectNode) mapper.readTree(original.payloadJson());
+        ((com.fasterxml.jackson.databind.node.ObjectNode) changed.path("phases").get(0)).put("at", "2030-01-02T13:30:00Z");
+        var outcome = plans.overrideOccurrenceIfVersion("fixture-pointer", java.time.LocalDate.parse("2030-01-02"),
+                1, changed.toString(), NOW);
+        assertThat(outcome).isPresent();
+        assertThat(plans.pointer("fixture-pointer").orElseThrow().nextAt()).isEqualTo(Instant.parse("2030-01-02T13:30:00Z"));
+        assertThat(plans.find("fixture-pointer").orElseThrow().payloadJson()).isEqualTo(original.payloadJson());
+    }
+
+    @Test
     void confirmedTaskKeepsVerifiedCreatorBindingInsteadOfSuggestedIdentity() throws Exception {
         PrincipalInfo verified = new PrincipalInfo("Bearer verified", "TENANT", "creator-1", "https://identity.example/");
         String payload = oneTimePayload().replace(PRINCIPAL.ownerKey(), verified.ownerKey());

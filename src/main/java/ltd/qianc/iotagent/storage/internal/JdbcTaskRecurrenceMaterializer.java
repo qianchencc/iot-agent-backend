@@ -60,11 +60,13 @@ public final class JdbcTaskRecurrenceMaterializer implements TaskOccurrenceMater
     public int materializeOnce() {
         Instant now = clock.instant();
         List<PlanRow> due = jdbc.query("SELECT plan_id,version,status,next_at,next_date,repeat_json,payload_json "
-                        + "FROM task_plans WHERE status='ENABLED' AND next_at IS NOT NULL AND next_at <= ? "
+                        + "FROM task_plans p WHERE status='ENABLED' AND next_at IS NOT NULL AND (next_at <= ? "
+                        + "OR EXISTS (SELECT 1 FROM task_plan_occurrences o WHERE o.plan_id=p.plan_id "
+                        + "AND o.status='OVERRIDDEN' AND o.task_id IS NULL AND o.occurrence_date<p.next_date AND o.occurrence_date<=?)) "
                         + "ORDER BY next_at, plan_id LIMIT ?",
                 (rs, row) -> new PlanRow(rs.getString(1), rs.getLong(2), rs.getString(3),
                         rs.getTimestamp(4).toInstant(), rs.getString(5), rs.getString(6), rs.getString(7)),
-                Timestamp.from(now), batchSize);
+                Timestamp.from(now), TaskRecurrence.localDate(now).toString(), batchSize);
         int materialized = 0;
         for (PlanRow candidate : due) if (Boolean.TRUE.equals(materialize(candidate.planId(), now))) materialized++;
         return materialized;
@@ -77,8 +79,13 @@ public final class JdbcTaskRecurrenceMaterializer implements TaskOccurrenceMater
                     (rs, index) -> new PlanRow(rs.getString(1), rs.getLong(2), rs.getString(3),
                             rs.getTimestamp(4).toInstant(), rs.getString(5), rs.getString(6), rs.getString(7)), planId)
                     .stream().findFirst().orElse(null);
-            if (row == null || !"ENABLED".equals(row.status()) || row.nextAt().isAfter(now) || row.nextDate() == null) return false;
-            LocalDate date = LocalDate.parse(row.nextDate());
+            if (row == null || !"ENABLED".equals(row.status()) || row.nextDate() == null) return false;
+            List<LocalDate> abandoned = jdbc.query("SELECT occurrence_date FROM task_plan_occurrences WHERE plan_id=? "
+                            + "AND status='OVERRIDDEN' AND task_id IS NULL AND occurrence_date<? AND occurrence_date<=? ORDER BY occurrence_date LIMIT 1",
+                    (rs, index) -> rs.getDate(1).toLocalDate(), planId, row.nextDate(), TaskRecurrence.localDate(now).toString());
+            boolean historicalRepair = !abandoned.isEmpty();
+            if (!historicalRepair && row.nextAt().isAfter(now)) return false;
+            LocalDate date = historicalRepair ? abandoned.getFirst() : LocalDate.parse(row.nextDate());
             try {
                 JsonNode payload = readPayload(row.payloadJson());
                 Instant anchor = anchor(payload);
@@ -87,22 +94,13 @@ public final class JdbcTaskRecurrenceMaterializer implements TaskOccurrenceMater
                 OverrideRow override = jdbc.query("SELECT status,override_payload_json,task_id FROM task_plan_occurrences WHERE plan_id=? AND occurrence_date=?",
                         (rs, index) -> new OverrideRow(rs.getString(1), rs.getString(2), rs.getString(3)), row.planId(), date)
                         .stream().findFirst().orElse(null);
-                // The scheduler polls within seconds, so a plan pointer older than the
-                // bounded grace window means restart recovery. Recovery is decided on
-                // the effective occurrence — date-shifted template or override payload —
-                // because the raw template is anchored at plan creation and would wrongly
-                // declare every later occurrence fully elapsed.
-                boolean recovery = row.nextAt().isBefore(now.minus(LATE_OCCURRENCE_GRACE));
                 JsonNode effective = override != null && override.overridePayloadJson() != null
                         ? readPayload(override.overridePayloadJson())
                         : shifted(payload, date, anchorDate, TaskRecurrence.occurrenceId(row.planId(), date));
-                if (recovery && !hasActionablePhase(effective, now)) {
-                    jdbc.update("INSERT IGNORE INTO task_plan_occurrences(plan_id,occurrence_date,status,create_time,update_time) "
-                                    + "VALUES (?,?, 'SKIPPED',?,?)",
-                            row.planId(), date.toString(), Timestamp.from(now), Timestamp.from(now));
-                    Pointer pointer = nextPointer(row, repeat, anchor, date, now);
-                    return advance(row, pointer, now, status);
-                }
+                // The confirmed single-occurrence time, not the original plan pointer, owns lateness.
+                // Fully elapsed occurrences still materialize MISSED phases so their history is retained.
+                Instant occurrenceAt = effectiveAt(effective);
+                boolean recovery = historicalRepair || occurrenceAt.isBefore(now.minus(LATE_OCCURRENCE_GRACE));
                 if (date.isBefore(anchorDate) || !TaskRecurrence.matches(repeat, date)) return false;
 
                 if (override != null && override.taskId() != null) {
@@ -118,8 +116,7 @@ public final class JdbcTaskRecurrenceMaterializer implements TaskOccurrenceMater
                     status.setRollbackOnly();
                     return false;
                 }
-                Instant occurrenceAt = override != null && override.overridePayloadJson() != null
-                        ? effectiveAt(readPayload(override.overridePayloadJson())) : TaskRecurrence.occurrenceAt(anchor, date);
+                // An override may postpone an occurrence beyond the stored pointer.
                 if (occurrenceAt.isAfter(now)) return false;
 
                 if (override != null && "SKIPPED".equals(override.status())) {
@@ -130,8 +127,7 @@ public final class JdbcTaskRecurrenceMaterializer implements TaskOccurrenceMater
                 String occurrenceId = TaskRecurrence.occurrenceId(row.planId(), date);
                 String taskId = deterministicId("task\0" + occurrenceId);
                 JsonNode snapshot = override != null && override.overridePayloadJson() != null
-                        ? withPlanIdentity(payload, readPayload(override.overridePayloadJson()))
-                        : shifted(payload, date, anchorDate, occurrenceId);
+                        ? withPlanIdentity(payload, effective) : effective;
                 if (!snapshot.isObject()) throw new IllegalArgumentException("周期任务内容无效");
                 ((ObjectNode) snapshot).put("sourcePlanId", row.planId()).put("occurrenceDate", date.toString());
                 // The occurrence snapshot keeps every checkpoint: an on-time poll leaves
@@ -157,6 +153,8 @@ public final class JdbcTaskRecurrenceMaterializer implements TaskOccurrenceMater
                             taskId, Timestamp.from(now), row.planId(), date.toString());
                 }
 
+                // Repair only the missing fact of an explicit override; never rewind or replay the series.
+                if (historicalRepair) return true;
                 Pointer pointer = nextPointer(row, repeat, anchor, date, now);
                 return advance(row, pointer, now, status);
             } catch (RuntimeException malformed) {
@@ -185,10 +183,9 @@ public final class JdbcTaskRecurrenceMaterializer implements TaskOccurrenceMater
             if (state != null && (state.taskId() != null
                     || Set.of("SKIPPED", "CLAIMED", "MATERIALIZED").contains(state.status()))) continue;
             Instant at = state != null && "OVERRIDDEN".equals(state.status())
-                    ? firstFutureAt(readPayload(requiredOverride(state)), now, anchor, date)
+                    ? firstFutureAt(readPayload(requiredOverride(state)), now)
                     : firstFutureAt(shifted(readPayload(row.payloadJson()), date,
-                            TaskRecurrence.localDate(anchor), TaskRecurrence.occurrenceId(row.planId(), date)),
-                            now, anchor, date);
+                            TaskRecurrence.localDate(anchor), TaskRecurrence.occurrenceId(row.planId(), date)), now);
             selected = new Pointer(at, date);
             break;
         }
@@ -197,7 +194,7 @@ public final class JdbcTaskRecurrenceMaterializer implements TaskOccurrenceMater
             OccurrenceState state = entry.getValue();
             if (!"OVERRIDDEN".equals(state.status()) || state.taskId() != null
                     || !entry.getKey().isAfter(completedDate) || !TaskRecurrence.matches(repeat, entry.getKey())) continue;
-            Instant at = firstFutureAt(readPayload(requiredOverride(state)), now, anchor, entry.getKey());
+            Instant at = firstFutureAt(readPayload(requiredOverride(state)), now);
             if (selected == null || at.isBefore(selected.at())
                     || at.equals(selected.at()) && entry.getKey().isBefore(selected.date())) {
                 selected = new Pointer(at, entry.getKey());
@@ -206,8 +203,8 @@ public final class JdbcTaskRecurrenceMaterializer implements TaskOccurrenceMater
         return selected == null ? new Pointer(null, null) : selected;
     }
 
-    private Instant firstFutureAt(JsonNode effective, Instant now, Instant anchor, LocalDate date) {
-        Instant fallback = TaskRecurrence.occurrenceAt(anchor, date);
+    private Instant firstFutureAt(JsonNode effective, Instant now) {
+        Instant fallback = effectiveAt(effective);
         JsonNode interval = effective.path("interval");
         JsonNode phases = effective.path("phases");
         if (!interval.isObject() || !phases.isArray() || phases.size() <= 1) return fallback;
@@ -277,18 +274,6 @@ public final class JdbcTaskRecurrenceMaterializer implements TaskOccurrenceMater
         }
     }
 
-    private boolean hasActionablePhase(JsonNode payload, Instant now) {
-        JsonNode phases = payload.path("phases");
-        if (!phases.isArray()) return false;
-        for (JsonNode phase : phases) {
-            try {
-                if (!Instant.parse(phase.path("at").asText()).isBefore(now)) return true;
-            } catch (RuntimeException invalid) {
-                throw new IllegalStateException("周期任务阶段时间无效", invalid);
-            }
-        }
-        return false;
-    }
 
 
     private JsonNode readPayload(String value) {
