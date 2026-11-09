@@ -64,6 +64,7 @@ class RealTaskExecutionGatewayBehaviorTest {
         assertThat(payload.path("adjustedDevices").asInt()).isZero();
         assertThat(payload.path("devices").path("ac-1").path("disposition").asText()).isEqualTo("unconfirmed");
         assertThat(payload.path("devices").path("ac-1").path("outcome").asText()).isEqualTo("unconfirmed");
+        assertThat(payload.path("devices").path("ac-1").has("reason")).isFalse();
         assertThat(payload.path("energyEstimate").isMissingNode()).isTrue();
         assertThat(actions.dispatchedDeviceIds).containsExactly(List.of("ac-1"));
     }

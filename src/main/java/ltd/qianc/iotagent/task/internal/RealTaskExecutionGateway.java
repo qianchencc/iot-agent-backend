@@ -347,7 +347,6 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
                 outcome = "verified";
             } else if ("ACCEPTED".equals(receiptOutcome)) {
                 outcome = "unconfirmed";
-                reason = "指令已受理，尚未取得平台实测回读";
             } else {
                 outcome = "unknown";
                 reason = "设备指令结果未知";
@@ -894,7 +893,7 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
             return;
         }
         if (!"adjustable".equals(current.disposition())) {
-            decisions.put(id, new Decision("satisfied", "当前无需调整", "satisfied"));
+            decisions.put(id, new Decision("satisfied", null, "satisfied"));
             guard.yield(request.taskId(), request.phaseId(), id, clock.instant());
             return;
         }
@@ -1038,7 +1037,7 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
             }
             Decision previous = decisions.get(deviceId);
             if ("ALREADY_SATISFIED".equals(receipt)) {
-                decisions.put(deviceId, new Decision("satisfied", "当前无需调整", "satisfied"));
+                decisions.put(deviceId, new Decision("satisfied", null, "satisfied"));
             } else if ("REJECTED".equals(receipt)) {
                 decisions.put(deviceId, new Decision("not_dispatched", "上游拒绝调温指令", "rejected"));
             } else if ("PARTIALLY_ACCEPTED".equals(receipt)) {
@@ -1047,7 +1046,7 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
                 decisions.put(deviceId, new Decision("adjusted", null, "verified", after));
                 if (previous.initialSetpoint() != null) baseline.put(deviceId, previous.initialSetpoint());
             } else if ("ACCEPTED".equals(receipt)) {
-                decisions.put(deviceId, new Decision("unconfirmed", "指令已受理，尚未取得平台实测回读", "unconfirmed"));
+                decisions.put(deviceId, new Decision("unconfirmed", null, "unconfirmed"));
             } else {
                 decisions.put(deviceId, new Decision("not_dispatched", "调温指令结果未知", "unknown"));
             }
