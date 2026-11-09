@@ -593,7 +593,11 @@ public final class AgentBusinessToolDispatcher implements AgentToolBridge {
             }
             if (!result.failures().isEmpty()) body.put("failures", result.failures());
             if (!result.coverageComplete()) body.put("coverageComplete", false);
-            if ("meter-report".equals(body.get("type"))) body.put("modelResult", AgentEnergyRunFacts.modelFacts(body));
+            if ("meter-report".equals(body.get("type"))) {
+                Map<String, Object> facts = AgentEnergyRunFacts.modelFacts(body);
+                body.put("dataProvenance", facts.get("dataProvenance"));
+                body.put("modelResult", facts);
+            }
             return body;
         } catch (BusinessException error) {
             if (source == IotSourceEnum.COMPANY && operation == ObservationOperationEnum.COMPANY_METER_REPORT

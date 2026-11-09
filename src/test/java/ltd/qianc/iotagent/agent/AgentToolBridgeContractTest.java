@@ -382,6 +382,49 @@ class AgentToolBridgeContractTest {
         assertThat(model.toString()).doesNotContain("27楼总办公室");
     }
 
+    @Test
+    void weeklyEnergyFactsKeepRealSegmentsMetricsAndLocationEvidenceForTheModel() {
+        ConversationFacade conversations = mock(ConversationFacade.class);
+        bind(conversations, "company", null);
+        var start = java.time.LocalDate.of(2026, 8, 1);
+        List<Map<String, Object>> weeks = java.util.stream.IntStream.range(0, 9).mapToObj(index -> {
+            int days = index == 8 ? 5 : 7;
+            return Map.<String, Object>of("from", start.plusDays(index * 7L) + "T00:00:00+08:00",
+                    "to", start.plusDays(index * 7L + days) + "T00:00:00+08:00",
+                    "days", days, "value", days * 10.0, "partial", index == 8);
+        }).toList();
+        Map<String, Object> report = new LinkedHashMap<>(Map.of(
+                "type", "meter-report", "kind", "statistics", "reportId", "weekly-report",
+                "params", Map.of("grain", "week", "span", Map.of("requested", Map.of(
+                        "from", "2026-08-01T00:00:00+08:00", "to", "2026-10-01T00:00:00+08:00"))),
+                "total", Map.of("value", 610.0, "unit", "度"),
+                "coverage", Map.of("meters", 1, "dataMeters", 1),
+                "buckets", Map.of("grain", "week", "items", weeks),
+                "metrics", List.of(Map.of("key", "dailyAvg", "value", 10.0, "unit", "度/日")),
+                "composition", Map.of("kind", "ranking", "rows", List.of(
+                        Map.of("label", "测试位置甲", "value", 400.0),
+                        Map.of("label", "测试位置乙", "value", 210.0)))));
+        ObservationAdapter observations = query -> Mono.just(ObservationResponse.available(report));
+        AgentToolBridge bridge = AgentToolBridgeFactory.local(conversations, mock(IotAdapter.class),
+                observations, mock(TaskProjectionStore.class), mock(ActionDraftFacade.class),
+                mock(TaskFacade.class), mapper, null);
+
+        Map<String, Object> result = bridge.execute(request("summarize_energy", Map.of(
+                "scope", Map.of("level", "all"), "grain", "week",
+                "from", "2026-08-01T00:00:00+08:00", "to", "2026-10-01T00:00:00+08:00")));
+        var model = mapper.valueToTree(result.get("modelResult"));
+        assertThat(model.path("buckets").path("count").asInt()).isEqualTo(9);
+        assertThat(model.path("dataProvenance").asText()).isEqualTo("upstream-simulated-backfill");
+        assertThat(result.get("dataProvenance")).isEqualTo("upstream-simulated-backfill");
+        assertThat(model.path("buckets").path("grain").asText()).isEqualTo("week");
+        assertThat(model.path("buckets").path("items").get(8).path("days").asInt()).isEqualTo(5);
+        assertThat(model.path("buckets").path("items").get(8).path("value").asDouble()).isEqualTo(50.0);
+        assertThat(model.path("metrics").get(0).path("value").asDouble()).isEqualTo(10.0);
+        assertThat(model.path("composition").path("rows").get(0).path("label").asText()).isEqualTo("测试位置甲");
+        assertThat(model.path("composition").path("rows").get(0).path("value").asDouble()).isEqualTo(400.0);
+        assertThat(mapper.valueToTree(result).path("buckets").has("count")).isFalse();
+    }
+
 
     @Test
     void truncatedCandidateDisplayDoesNotMeanStoredMembersAreIncomplete() {

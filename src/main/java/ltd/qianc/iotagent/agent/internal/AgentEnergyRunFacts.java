@@ -81,7 +81,7 @@ final class AgentEnergyRunFacts {
     static Map<String, Object> modelFacts(Map<String, Object> report) {
         Map<String, Object> facts = new LinkedHashMap<>();
         boolean comparison = "comparison".equals(report.get("kind"));
-        List<String> fields = comparison ? List.of("reportId", "kind", "params", "diff", "sides", "metrics", "overlapMeterIds", "contribution", "context", "coverage", "authorizationMeterIds", "cache")
+        List<String> fields = comparison ? List.of("reportId", "kind", "params", "diff", "sides", "metrics", "periodComparisons", "overlapMeterIds", "contribution", "context", "coverage", "authorizationMeterIds", "cache")
                 : List.of("reportId", "kind", "params", "total", "buckets", "shape24", "metrics", "context", "peer", "composition", "coverage", "windowSummary", "authorizationMeterIds", "cache");
         for (String field : fields) if (report.containsKey(field)) facts.put(field, report.get(field));
         compact(facts);
@@ -90,13 +90,13 @@ final class AgentEnergyRunFacts {
         boolean simulated = false;
         try { simulated = OffsetDateTime.parse(String.valueOf(requested.get("to"))).isAfter(OffsetDateTime.parse("2025-01-01T00:00:00+08:00")); }
         catch (java.time.format.DateTimeParseException ignored) { }
-        facts.put("interpretationNote", "数值和图表已由卡片承载，正文只简要概括各项结果与覆盖限制；用户未问建议时，不追加建议、排查或跟踪安排。"
-                + (simulated ? "所选期间包含2024年之后的上游模拟补数，仅可展示已计算数值与覆盖，不能据恒定增量推断真实用电模式、基础负荷、节能空间或设备异常。" : ""));
+        facts.put("interpretationNote", "数值和图表已由卡片承载，正文按用户要求引用已计算结果与覆盖限制；用户未问建议时，不追加建议、排查或跟踪安排。"
+                + (simulated ? "所选期间包含2024年之后的上游模拟补数，只能引用已计算数值与覆盖，不能据此认定负荷偏高、季节性空调用电、浪费、基础负荷、节能空间、设备异常或需整改的位置。历史答复中的此类判断也不是证据，不能沿用。用户明确要求节能计划时，仅给与这些数值和位置无因果关联、标明通用且未验证的建议；没有经核验的部门映射时明确无法确定需注意部门，位置数值排行不等于部门或整改名单。" : ""));
+        facts.put("dataProvenance", simulated ? "upstream-simulated-backfill" : "upstream-history");
         facts.put("metricDefinitions", Map.of("nightBase", Map.of("label", "夜间负荷", "meaning", "20:00至次日08:00完整窗口用电量除以12小时", "unit", "度/时", "window", "20:00-08:00"),
                 "nightShare", Map.of("label", "夜间用电占比", "meaning", "完整计量日夜间用电量占全天用电量的比例", "unit", "%")));
         if (!comparison && params.containsKey("dailyWindow")) {
             facts.put("rankingBasis", "每日20:00至次日08:00已取得的完整窗口用电量；逐表有效天数见night，覆盖不等不能直接归因或据排名认定浪费");
-            facts.put("dataProvenance", simulated ? "upstream-simulated-backfill" : "upstream-history");
         }
         if (!hasData(report)) {
             facts.put("cardEmitted", false);
@@ -116,19 +116,23 @@ final class AgentEnergyRunFacts {
         }
         if (facts.get("composition") instanceof Map<?, ?> composition) {
             Map<String, Object> value = new LinkedHashMap<>();
-            copy(composition, value, "kind", "unit", "total");
+            copy(composition, value, "kind", "unit", "total", "rows", "rest", "excluded", "topShare");
             value.put("rowCount", size(composition.get("rows")));
             facts.put("composition", value);
         }
         if (facts.get("contribution") instanceof Map<?, ?> contribution) {
             Map<String, Object> value = new LinkedHashMap<>();
-            copy(contribution, value, "unit", "rest");
+            copy(contribution, value, "unit", "rows", "rest", "excluded");
             value.put("rowCount", size(contribution.get("rows")));
             facts.put("contribution", value);
         }
-        compactCount(facts, "metrics", "metricCount");
-        compactCount(facts, "buckets", "bucketCount");
-        compactCount(facts, "shape24", "shapeCount");
+        if (facts.get("buckets") instanceof Map<?, ?> buckets) {
+            Map<String, Object> value = new LinkedHashMap<>();
+            copy(buckets, value, "grain", "items");
+            value.put("count", size(buckets.get("items")));
+            facts.put("buckets", value);
+        }
+        if (facts.get("shape24") instanceof List<?> points) facts.put("shape24", Map.of("count", points.size()));
     }
 
     private static Map<String, Object> sideSummary(Map<?, ?> side) {
@@ -146,9 +150,6 @@ final class AgentEnergyRunFacts {
         return value;
     }
 
-    private static void compactCount(Map<String, Object> facts, String key, String countKey) {
-        if (facts.containsKey(key)) facts.put(key, Map.of("count", size(facts.get(key))));
-    }
 
     private static void copy(Map<?, ?> source, Map<String, Object> target, String... keys) {
         for (String key : keys) if (source.containsKey(key)) target.put(key, source.get(key));

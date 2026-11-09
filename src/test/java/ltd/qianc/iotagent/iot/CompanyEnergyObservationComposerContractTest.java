@@ -112,6 +112,37 @@ class CompanyEnergyObservationComposerContractTest {
     }
 
     @Test
+    void weeklyComparisonUsesTheSameCohortAndKeepsTheShortFinalSegmentExplicit() {
+        List<Map<String, Object>> samples = new java.util.ArrayList<>();
+        for (int year : List.of(2025, 2026)) {
+            var start = java.time.LocalDate.of(year, 8, 1);
+            for (int day = 0; day <= 61; day++) {
+                samples.add(row(year + "-" + day, start.plusDays(day) + "T00:00:00+08:00",
+                        100 + day * (year == 2026 ? 10 : 5)));
+            }
+        }
+        CompanyEnergyObservationComposer composer = composer((request, pageNumber) ->
+                Mono.just(ObservationResponse.available(page(samples, true))));
+        var report = new com.fasterxml.jackson.databind.ObjectMapper().valueToTree(composer.read(
+                new ObservationRequest(COMPANY, ObservationOperationEnum.COMPANY_METER_REPORT,
+                        Map.of("kind", "comparison", "scopeLevel", "all",
+                                "from", "2026-08-01T00:00:00+08:00", "to", "2026-10-01T00:00:00+08:00",
+                                "baseFrom", "2025-08-01T00:00:00+08:00", "baseTo", "2025-10-01T00:00:00+08:00")))
+                .block().payload());
+        var weeks = report.path("periodComparisons").path("items");
+        assertThat(weeks.size()).isEqualTo(9);
+        assertThat(weeks.get(0).path("a").path("value").asDouble()).isEqualTo(70.0);
+        assertThat(weeks.get(0).path("b").path("value").asDouble()).isEqualTo(35.0);
+        assertThat(weeks.get(0).path("diff").path("pct").asDouble()).isEqualTo(100.0);
+        assertThat(weeks.get(8).path("a").path("days").asInt()).isEqualTo(5);
+        assertThat(weeks.get(8).path("b").path("days").asInt()).isEqualTo(5);
+        assertThat(weeks.get(8).path("a").path("partial").asBoolean()).isTrue();
+        assertThat(weeks.get(8).path("a").path("value").asDouble()).isEqualTo(50.0);
+        assertThat(weeks.get(8).path("diff").path("pct").isNull()).isTrue();
+        assertThat(report.path("sides").path("a").path("total").path("value").asDouble()).isEqualTo(610.0);
+    }
+
+    @Test
     void regionComparisonKeepsOneTimeWindowAndTwoAuthorizedScopes() {
         AuthorizedDevice second = new AuthorizedDevice("meter-2", "energy", "二号表", "27楼展厅", true);
         ObservationAdapter raw = raw((request, pageNumber) -> {

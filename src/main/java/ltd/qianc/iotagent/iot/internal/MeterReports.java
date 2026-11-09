@@ -135,6 +135,7 @@ final class MeterReports {
         String missing = countedA.isEmpty() && !countedB.isEmpty() ? "本期无有效采样" : !countedA.isEmpty() && countedB.isEmpty() ? "基期无有效采样" : "数据不足";
         report.put("diff", diff(unequal ? totalA / daysA : totalA, unequal ? totalB / daysB : totalB, !cohortA.isEmpty(), "基期为零", missing, unequal));
         report.put("sides", Map.of("a", pa.side(), "b", pb.side()));
+        if (!day) report.put("periodComparisons", weeklyComparisons(pa, pb, !cohortA.isEmpty()));
         Map<String, Object> da = pa.derived(), db = pb.derived(); List<Map<String, Object>> metrics = new ArrayList<>();
         metrics.add(metricPair(day ? "dayTotal" : "dailyAvg", day ? "度" : "度/日", da.get(day ? "dayTotal" : "dailyAvg"), db.get(day ? "dayTotal" : "dailyAvg")));
         if (!day) metrics.add(metricPair("weekdayDailyAvg", "度/日", da.get("weekdayDailyAvg"), db.get("weekdayDailyAvg")));
@@ -158,6 +159,20 @@ final class MeterReports {
         params.put("relation", timeRelation(from, to, baseFrom, baseTo));
         params.put("span", span(from, to, countedA)); params.put("baseline", span(baseFrom, baseTo, countedB));
         report.put("params", params); report.put("meters", rows); report.put("coverage", coverage(statuses, truncated(reads))); report.put("authorizationMeterIds", ids(reads)); return enrich(report, reads, from, to);
+    }
+    private static Map<String, Object> weeklyComparisons(MeterReportProfile current, MeterReportProfile baseline, boolean commonCohort) {
+        List<Map<String, Object>> a = current.buckets("week"), b = baseline.buckets("week");
+        List<Map<String, Object>> items = new ArrayList<>(Math.max(a.size(), b.size()));
+        for (int index = 0; index < Math.max(a.size(), b.size()); index++) {
+            Map<String, Object> left = index < a.size() ? a.get(index) : Map.of();
+            Map<String, Object> right = index < b.size() ? b.get(index) : Map.of();
+            boolean comparable = commonCohort && left.get("value") instanceof Number && right.get("value") instanceof Number
+                    && !Boolean.TRUE.equals(left.get("partial")) && !Boolean.TRUE.equals(right.get("partial"))
+                    && Objects.equals(left.get("days"), right.get("days"));
+            items.add(Map.of("a", left, "b", right, "diff",
+                    diff(value(left), value(right), comparable, "基期为零", "非完整可比周", false)));
+        }
+        return Map.of("grain", "week", "count", items.size(), "items", items);
     }
     private static Map<String, Object> contributions(List<Map<String, Object>> rows, boolean unequal, double daysA, double daysB, String highlight) {
         List<Map<String, Object>> deltas = new ArrayList<>();

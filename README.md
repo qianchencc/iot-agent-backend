@@ -12,6 +12,8 @@ Java public backend plus an independent Node `agent-sidecar`: Spring Boot 3.5 / 
 
 2026-11-06 21:22固定Java3381已更新为`var/fixed-energy-20261106-212234/backend.jar`，修复正常刷新误判授权变化、同主体合法换证重拉已有电表历史及本地统计逐表查询；Node3382仍使用`var/fixed-latest-20261106-194349/agent-sidecar/`，原外置YAML、控制台、MySQL、Redis和管理设置保持。定向42/42及打包通过；全量701项中670通过、28跳过，原有3项告警／视频断言失败仍在。重启后43台/237624条样本及全量覆盖保持，真实小程序日统计约0.89–1.76秒并正常展示；未备份或下发控制。[当前运行及验证边界](.scratch/agent-business-recovery/local-preview.md)；[此前任务命名部署证据](.scratch/task-title-naming/evidence/TITLE-02/deployment.json)及[18:46启动清理记录](.scratch/local-data-sync/evidence/fixed-latest-20261106.json)保留。
 
+2026-11-09 历史能耗答复修正：模型摘要按 `buckets.items` 计数并保留分段、指标和位置排行；时间对比复用既有同表集和周分段计算 `periodComparisons`，不足完整可比周不计算比例。沿用既有补数规则，将 `dataProvenance` 同时交给卡片和模型，不改变采样或总量算法。固定3381仅替换原运行包中的三个能耗相关类及公司指引，运行配置22只更新能耗段落，Node3382、模型、凭据与其他设置不变。前端371项、186文件边界及微信编译通过；后端737项（708通过、29跳过）通过，明确排除原有一个视频回放失败。真实小程序结果及未验边界见[AG-080验证记录](../mp/.scratch/huly-test-execution/evidence/AG-080/20261109-fix-verification.json)。
+
 ```sh
 # 0. 构建（首次先安装依赖：agent-sidecar 与 web/admin 各执行一次 npm ci）
 mvn package
