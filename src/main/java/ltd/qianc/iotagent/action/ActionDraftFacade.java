@@ -36,7 +36,6 @@ import ltd.qianc.iotagent.iot.AuthorizedDevice;
 import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
 import ltd.qianc.iotagent.iot.GatewayAuthorizationException;
 import ltd.qianc.iotagent.iot.IotAdapter;
-import ltd.qianc.iotagent.iot.OfficeRegion;
 import ltd.qianc.iotagent.iot.IotSourceEnum;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.iot.UpstreamUnavailableException;
@@ -139,13 +138,11 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
             }
         }
         ObjectNode payload = object(payloadJson);
-        AuthorizedDeviceScope catalogScope = loadScope(principal, iotSource);
-        AuthorizedDeviceScope scope = catalogScope;
+        AuthorizedDeviceScope scope = loadScope(principal, iotSource);
         if (iotSource == IotSourceEnum.OFFICE && focusRegionId != null && !focusRegionId.isBlank()) {
-            scope = focusScope(principal, iotSource, scope, focusRegionId);
             payload.put("focusRegionId", focusRegionId);
         }
-        Page page = materialize(payload, scope, catalogScope, principal, conversationId, iotSource);
+        Page page = materialize(payload, scope, principal, conversationId, iotSource);
         Instant now = clock.instant();
         payload.put("source", iotSource.wireValue());
         payload.put("tenantCode", principal.tenantCode());
@@ -191,23 +188,6 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
         emit(created, "action.proposed");
         audit(created, "ACTION_DRAFT_PROPOSED");
         return created;
-    }
-
-    private AuthorizedDeviceScope focusScope(PrincipalInfo principal, IotSourceEnum source,
-                                             AuthorizedDeviceScope scope, String focusRegionId) {
-        RequestIdentity identity = new RequestIdentity(principal.authorization(), principal.tenantCode(), source, ownerKey(principal));
-        List<OfficeRegion> regions;
-        try {
-            regions = iot.loadOfficeRegions(identity).block(scopeTimeout);
-        } catch (GatewayAuthorizationException error) {
-            throw error;
-        } catch (RuntimeException error) {
-            throw new ActionDraftUnavailableException("当前关注区域暂不可用", error);
-        }
-        if (regions == null || regions.stream().noneMatch(region -> region.id().equals(focusRegionId))) {
-            throw new BusinessException("FOCUS_REGION_UNAVAILABLE", "当前关注区域不在用户授权范围内", 403);
-        }
-        return scope.retain(device -> device.officeIds().contains(focusRegionId));
     }
 
     public ActionDraftFact current(PrincipalInfo principal, String draftId) {
@@ -453,10 +433,6 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
             }
         }
         AuthorizedDeviceScope scope = loadScope(principal, source);
-        String focusRegionId = body.path("focusRegionId").asText("");
-        if (source == IotSourceEnum.OFFICE && !focusRegionId.isBlank()) {
-            scope = focusScope(principal, source, scope, focusRegionId);
-        }
         ArrayNode previousActions = array(body, "actions");
         Map<String, Object> previousSelected = new LinkedHashMap<>();
         actionIds(array(body, "selectedActionIds")).forEach(id -> previousSelected.put(id, Boolean.TRUE));
@@ -609,13 +585,8 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
         try {
             body.put("confirmedAt", clock.instant().toString());
             if (history != null && source == IotSourceEnum.OFFICE) {
-                try {
-                    String name = iot.readCreatorDisplayName(new RequestIdentity(principal.authorization(),
-                            principal.tenantCode(), source, ownerKey(principal))).block(scopeTimeout);
-                    body.put("creatorName", name == null || name.isBlank() ? "成员" : name.trim());
-                } catch (RuntimeException unavailable) {
-                    body.put("creatorName", "成员");
-                }
+                String name = principal.displayName();
+                body.put("creatorName", name == null || name.isBlank() ? "成员" : name.trim());
             }
             RequestIdentity identity = new RequestIdentity(principal.authorization(), principal.tenantCode(), source, ownerKey(principal));
             DeviceStateReadResult fresh = readFreshStates(identity, selectedActions);
@@ -1038,10 +1009,6 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
     private AuthorizedDeviceScope verifyScope(PrincipalInfo principal, ObjectNode body) {
         IotSourceEnum source = parseSource(body.path("source").asText(null));
         AuthorizedDeviceScope scope = loadScope(principal, source);
-        String focusRegionId = body.path("focusRegionId").asText("");
-        if (source == IotSourceEnum.OFFICE && !focusRegionId.isBlank()) {
-            scope = scope.retain(device -> device.officeIds().contains(focusRegionId));
-        }
         verifyActions(body, scope);
         return scope;
     }
@@ -1105,16 +1072,16 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
      * or already-satisfied. The model's list of ids is never treated as the final set.
      */
     private Page materialize(ObjectNode payload, AuthorizedDeviceScope scope,
-                             AuthorizedDeviceScope catalogScope, PrincipalInfo principal,
+                             PrincipalInfo principal,
                              String conversationId, IotSourceEnum source) {
         Map<String, String> handleIndex = new LinkedHashMap<>();
         List<CandidateView> sets = payload.path("lighting").isObject() && payload.path("candidateSetIds").isEmpty()
                 ? new ArrayList<>() : new ArrayList<>(resolveCandidateSets(payload, "candidateSetIds",
-                        scope, catalogScope, principal, conversationId, source, handleIndex));
-        Map<String, String> exclusionRefs = resolveExcludedReferences(payload, scope, catalogScope,
+                        scope, principal, conversationId, source, handleIndex));
+        Map<String, String> exclusionRefs = resolveExcludedReferences(payload, scope,
                 principal, conversationId, source);
         if (payload.path("lighting").isObject()) {
-            expandLighting(payload, sets, scope, catalogScope, principal, conversationId, source,
+            expandLighting(payload, sets, scope, principal, conversationId, source,
                     handleIndex, exclusionRefs);
         }
         if (sets.isEmpty()) {
@@ -1133,7 +1100,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
         Set<String> excluded = excludedIds(payload, universe, exclusionRefs);
         if (payload.has("excludeCandidateSetIds")) {
             for (CandidateView exclusion : resolveCandidateSets(payload, "excludeCandidateSetIds", scope,
-                    catalogScope, principal, conversationId, source, handleIndex)) {
+                    principal, conversationId, source, handleIndex)) {
                 if (exclusion.members().isEmpty()) {
                     throw new BusinessException("INVALID_ACTION_DRAFT", "排除子集为空，尚未查明真实排除范围");
                 }
@@ -1238,7 +1205,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
 
     /** Runtime resolveExcludedDevice: verify the source set without expanding the operation universe. */
     private Map<String, String> resolveExcludedReferences(ObjectNode payload, AuthorizedDeviceScope scope,
-            AuthorizedDeviceScope catalogScope, PrincipalInfo principal, String conversationId, IotSourceEnum source) {
+            PrincipalInfo principal, String conversationId, IotSourceEnum source) {
         Set<String> sources = new LinkedHashSet<>();
         collectExclusionSources(payload.path("excludedDeviceIds"), sources);
         collectExclusionSources(payload.path("lighting").path("excludedDeviceIds"), sources);
@@ -1249,7 +1216,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
         Map<String, String> resolved = new LinkedHashMap<>();
         // Exclusions require exact sets even when inclusion permits browse.
         // Keep this index separate: exclusion sources must not authorize action references.
-        resolveCandidateSets(request, "excludeCandidateSetIds", scope, catalogScope,
+        resolveCandidateSets(request, "excludeCandidateSetIds", scope,
                 principal, conversationId, source, resolved);
         return resolved;
     }
@@ -1265,14 +1232,14 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
 
     /** Original expandLightingScope: fixed union minus exact subsets, without a model-sized action limit. */
     private void expandLighting(ObjectNode payload, List<CandidateView> sets, AuthorizedDeviceScope scope,
-            AuthorizedDeviceScope catalogScope, PrincipalInfo principal, String conversationId, IotSourceEnum source,
+            PrincipalInfo principal, String conversationId, IotSourceEnum source,
             Map<String, String> handleIndex, Map<String, String> exclusionRefs) {
         ObjectNode lighting = (ObjectNode) payload.path("lighting").deepCopy();
         boolean single = lighting.path("candidateSetId").isTextual() && !lighting.path("candidateSetId").asText().isBlank();
         boolean multiple = lighting.path("candidateSetIds").isArray() && !lighting.path("candidateSetIds").isEmpty();
         if (single == multiple) throw new BusinessException("INVALID_ACTION_DRAFT", "包含范围需提供单集合或多个集合，二选一");
         if (single) lighting.putArray("candidateSetIds").add(lighting.path("candidateSetId").asText());
-        List<CandidateView> included = resolveCandidateSets(lighting, "candidateSetIds", scope, catalogScope,
+        List<CandidateView> included = resolveCandidateSets(lighting, "candidateSetIds", scope,
                 principal, conversationId, source, handleIndex);
         Map<String, AuthorizedDevice> members = new LinkedHashMap<>();
         for (CandidateView set : included) {
@@ -1283,7 +1250,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
             if (sets.stream().noneMatch(existing -> existing.candidateSetId().equals(set.candidateSetId()))) sets.add(set);
         }
         Set<String> excluded = excludedIds(lighting, members, exclusionRefs);
-        for (CandidateView subset : resolveCandidateSets(lighting, "excludeCandidateSetIds", scope, catalogScope,
+        for (CandidateView subset : resolveCandidateSets(lighting, "excludeCandidateSetIds", scope,
                 principal, conversationId, source, handleIndex)) {
             if (!"lighting".equals(subset.kind()) || subset.members().isEmpty()) {
                 throw new BusinessException("INVALID_ACTION_DRAFT", "排除项尚未完整识别");
@@ -1325,7 +1292,6 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
     }
 
     private List<CandidateView> resolveCandidateSets(ObjectNode payload, String field, AuthorizedDeviceScope scope,
-                                                     AuthorizedDeviceScope catalogScope,
                                                      PrincipalInfo principal, String conversationId,
                                                      IotSourceEnum source, Map<String, String> handleIndex) {
         JsonNode raw = payload.get(field);
@@ -1362,7 +1328,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
             // Presentation may be bounded, but the persisted member list is complete:
             // server-side expansion is exactly what prevents the model from owning the
             // final id list.
-            AuthorizedDeviceScope candidateScope = candidateScope(catalogScope, record);
+            AuthorizedDeviceScope candidateScope = candidateScope(scope, record);
             List<AuthorizedDevice> members = new ArrayList<>();
             for (AuthorizedDevice member : record.members()) {
                 AuthorizedDevice current = scope.device(member.id())

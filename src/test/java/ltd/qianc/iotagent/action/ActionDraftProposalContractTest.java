@@ -437,56 +437,59 @@ class ActionDraftProposalContractTest {
     }
 
     @Test
-    void focusRegionIsMembershipCheckedAndNarrowsTheScope() throws Exception {
-        List<OfficeRegion> regions = List.of(new OfficeRegion("region-1", "运营办公区"));
-        TestIotAdapter iot = new TestIotAdapter(LIGHTS, identity -> states, regions);
-        RequestIdentity identity = new RequestIdentity(PRINCIPAL.authorization(), PRINCIPAL.tenantCode(),
-                IotSourceEnum.OFFICE, PRINCIPAL.ownerKey());
-        String filteredFingerprint = AuthorizedDeviceScope.of(identity, IotSourceEnum.OFFICE, LIGHTS)
-                .retain(device -> device.officeIds().contains("region-1")).catalogFingerprint();
-        DeviceCandidateRecord focusSet = candidateSet("set-focus", CONVERSATION, filteredFingerprint,
-                LIGHTS.subList(0, 3));
-        DeviceCandidateRecord outsideSet = candidateSet("set-outside", "conversation-2", filteredFingerprint,
-                List.of(LIGHTS.get(3)));
-        ActionDraftFacade facade = facade(new InMemoryActionDraftStore(),
-                new InMemoryCandidateStore(focusSet, outsideSet), iot);
-
-        String payload = payload(Map.of("candidateSetIds", List.of("set-focus"), "summary", "灯",
-                "actions", List.of(Map.of("deviceId", "light-2", "kind", "lighting",
-                        "closeOrOpen", 1, "selected", true))));
-        ActionDraftFact draft = facade.propose(PRINCIPAL, "office", CONVERSATION, "turn-1", payload, "idem", "region-1");
-        assertThat(facade.view(draft)).containsEntry("focusRegionId", "region-1");
-
-        String outside = payload(Map.of("candidateSetIds", List.of("set-outside"), "summary", "灯",
-                "actions", List.of(Map.of("deviceId", "other-region", "kind", "lighting",
-                        "closeOrOpen", 1, "selected", true))));
-        assertThatThrownBy(() -> facade.propose(PRINCIPAL, "office", "conversation-2", "turn-2", outside, "idem2", "region-1"))
-                .isInstanceOf(ActionDraftScopeChangedException.class);
-        assertThatThrownBy(() -> facade.propose(PRINCIPAL, "office", "conversation-3", "turn-3", outside, "idem3", "region-x"))
-                .isInstanceOf(BusinessException.class)
-                .satisfies(error -> assertThat(((BusinessException) error).code()).isEqualTo("FOCUS_REGION_UNAVAILABLE"));
+    void explicitTargetsAcrossAuthorizedOfficesIgnoreTheFocusCeiling() throws Exception {
+        TestIotAdapter iot = new TestIotAdapter(LIGHTS, identity -> states,
+                List.of(new OfficeRegion("region-1", "测试办公室甲"), new OfficeRegion("region-2", "测试办公室乙")));
+        var facade = facade(new InMemoryActionDraftStore(),
+                new InMemoryCandidateStore(set("office-a", "lighting", List.of(LIGHTS.get(1)), iot),
+                        set("office-b", "lighting", List.of(LIGHTS.get(3)), iot)), iot);
+        var draft = facade.propose(PRINCIPAL, "office", CONVERSATION, "turn-cross-office",
+                payload(Map.of("candidateSetIds", List.of("office-a", "office-b"),
+                        "summary", "打开两个办公室明确选中的灯",
+                        "actions", List.of(Map.of("deviceId", "light-2", "closeOrOpen", 1),
+                                Map.of("deviceId", "other-region", "closeOrOpen", 1)))),
+                "cross-office", "region-1");
+        assertThat(draft.status()).isEqualTo("PENDING_CONFIRMATION");
+        assertThat(actions(facade.view(draft))).extracting(row -> row.get("deviceId"))
+                .containsExactly("light-2", "other-region");
+        assertThat(actions(facade.view(draft))).extracting(row -> row.get("location"))
+                .containsExactly("26楼运营办公区", "25楼");
     }
 
     @Test
-    void namedRegionCandidateKeepsCatalogVersionWhileExecutionRemainsFocused() throws Exception {
-        TestIotAdapter iot = new TestIotAdapter(LIGHTS, identity -> states,
-                List.of(new OfficeRegion("region-1", "运营办公区")));
-        DeviceCandidateRecord named = set("named-region", "lighting", LIGHTS.subList(0, 3), iot);
-        ActionDraftFacade facade = facade(new InMemoryActionDraftStore(), new InMemoryCandidateStore(named), iot);
-        String request = payload(Map.of("candidateSetIds", List.of("named-region"),
-                "expandCandidates", true,
-                "actions", List.of(Map.of("deviceId", "light-2", "kind", "lighting", "closeOrOpen", 1))));
-        ActionDraftFact fact = facade.propose(PRINCIPAL, "office", CONVERSATION, "turn-1",
-                request, "named-region-proposal", "region-1");
-        assertThat(actions(facade.view(fact))).extracting(row -> row.get("deviceId"))
-                .containsExactly("light-1", "light-2", "corridor");
+    void confirmsExplicitOtherOfficeTargetsWithoutRetargetingToTheFocus() throws Exception {
+        TestIotAdapter iot = org.mockito.Mockito.spy(new TestIotAdapter(LIGHTS, identity -> states,
+                List.of(new OfficeRegion("region-1", "测试办公室甲"), new OfficeRegion("region-2", "测试办公室乙"))));
+        org.mockito.Mockito.doThrow(new AssertionError("确认不得向来源查询创建人姓名"))
+                .when(iot).readCreatorDisplayName(org.mockito.ArgumentMatchers.any());
+        var facade = new ActionDraftFacade(MAPPER, new InMemoryActionDraftStore(), iot,
+                new InMemoryCandidateStore(set("office-b", "lighting", List.of(LIGHTS.get(3)), iot)),
+                (identity, authorized, commands) -> new ActionDispatchResult(ActionDraftStatusEnum.ACCEPTED, "{}", true),
+                null, null, null, null, org.mockito.Mockito.mock(ltd.qianc.iotagent.readmodel.ReadSnapshots.class),
+                CLOCK, Duration.ofSeconds(2), Duration.ofMinutes(10), org.mockito.Mockito.mock(ImmediateActionHistory.class));
+        var proposed = facade.propose(PRINCIPAL, "office", CONVERSATION, "turn-other-office",
+                payload(Map.of("candidateSetIds", List.of("office-b"),
+                        "actions", List.of(Map.of("deviceId", "other-region", "closeOrOpen", 1)))),
+                "other-office-confirmation", "region-1");
+        var confirmed = facade.confirm(PRINCIPAL, proposed.draftId(), proposed.revision());
+        assertThat(confirmed.status()).isEqualTo("ACCEPTED");
+        assertThat(actions(facade.view(confirmed))).extracting(row -> row.get("deviceId"))
+                .containsExactly("other-region");
+    }
 
-        DeviceCandidateRecord outside = set("outside-focus", "lighting", List.of(LIGHTS.get(3)), iot, "other-conversation");
-        ActionDraftFacade outsideFacade = facade(new InMemoryActionDraftStore(), new InMemoryCandidateStore(outside), iot);
-        String outsideRequest = payload(Map.of("candidateSetIds", List.of("outside-focus"),
-                "actions", List.of(Map.of("deviceId", "other-region", "kind", "lighting", "closeOrOpen", 1))));
-        assertThatThrownBy(() -> outsideFacade.propose(PRINCIPAL, "office", "other-conversation", "turn-2",
-                outsideRequest, "outside-proposal", "region-1")).isInstanceOf(ActionDraftScopeChangedException.class);
+    @Test
+    void losingTheOtherOfficesGrantStillRejectsConfirmationAndKeepsTheDraftPending() throws Exception {
+        var drafts = new InMemoryActionDraftStore();
+        var all = new TestIotAdapter(LIGHTS, identity -> states);
+        var candidates = new InMemoryCandidateStore(set("office-b", "lighting", List.of(LIGHTS.get(3)), all));
+        var proposed = facade(drafts, candidates, all).propose(PRINCIPAL, "office", CONVERSATION, "turn-revoked",
+                payload(Map.of("candidateSetIds", List.of("office-b"),
+                        "actions", List.of(Map.of("deviceId", "other-region", "closeOrOpen", 1)))),
+                "revoked-other-office", "region-1");
+        var current = facade(drafts, candidates, new TestIotAdapter(LIGHTS.subList(0, 3), identity -> states));
+        assertThatThrownBy(() -> current.confirm(PRINCIPAL, proposed.draftId(), proposed.revision()))
+                .isInstanceOf(ActionDraftScopeChangedException.class);
+        assertThat(current.current(PRINCIPAL, proposed.draftId()).status()).isEqualTo("PENDING_CONFIRMATION");
     }
 
     @Test
@@ -613,11 +616,6 @@ class ActionDraftProposalContractTest {
                 IotSourceEnum.OFFICE, fingerprint,
                 new DeviceCandidateQuery("lighting", List.of(), null, List.of(), List.of(), null, null),
                 devices, true, devices.size(), CLOCK.instant().toString(), "exact", null);
-    }
-
-    private static DeviceCandidateRecord candidateSet(String id, String conversationId, String fingerprint,
-                                                      List<AuthorizedDevice> members) {
-        return new DeviceCandidateRecord(id, conversationId, PRINCIPAL.tenantCode(), PRINCIPAL.ownerKey(), IotSourceEnum.OFFICE, fingerprint, new DeviceCandidateQuery("lighting", List.of(), null, List.of(), List.of(), null, "region-1"), members, true, members.size(), CLOCK.instant().toString(), "exact", null);
     }
 
     private static ActionDraftFacade facade(InMemoryActionDraftStore drafts,

@@ -191,6 +191,27 @@ class ActionDraftEditRevalidationContractTest {
                 .isInstanceOf(ActionDraftExpiredException.class);
     }
 
+    @Test
+    void expiredOtherOfficeDraftRevalidatesItsPinnedTargetsNotTheSavedFocus() throws Exception {
+        ObjectNode payload = basePayload("EXPIRED", "2026-10-30T08:00:00Z");
+        payload.put("focusRegionId", "region-1");
+        payload.putArray("actions").add(action("old-other-light", "other-light", "测试办公室乙照明", 1));
+        payload.putArray("selectedActionIds").add("old-other-light");
+        payload.set("inventory", MAPPER.valueToTree(List.of(Map.of("deviceId", "other-light", "kind", "lighting",
+                "state", false, "command", Map.of("closeOrOpen", 1), "disposition", "operate", "satisfied", false))));
+        var old = fact("expired-other-office", 1, payload);
+        var device = new AuthorizedDevice("other-light", "lighting", "测试办公室乙照明", "测试办公室乙", false,
+                "control-other", "other-light", "hub-other", null, List.of(), List.of("region-2"), Map.of());
+        var iot = new TestIotAdapter(List.of(device), identity -> Map.of("other-light", false),
+                List.of(new ltd.qianc.iotagent.iot.OfficeRegion("region-1", "测试办公室甲"),
+                        new ltd.qianc.iotagent.iot.OfficeRegion("region-2", "测试办公室乙")));
+        var facade = facade(new InMemoryActionDraftStore(old), iot);
+        var refreshed = facade.revalidate(PRINCIPAL, old.draftId(), old.revision());
+        assertThat(refreshed.status()).isEqualTo("PENDING_CONFIRMATION");
+        assertThat(MAPPER.readTree(refreshed.payloadJson()).path("actions")).singleElement()
+                .satisfies(row -> assertThat(row.path("deviceId").asText()).isEqualTo("other-light"));
+    }
+
     private static ActionDraftFacade facade(InMemoryActionDraftStore store, TestIotAdapter iot) {
         ActionCommandGateway gateway = new ActionCommandGateway() {
             @Override
