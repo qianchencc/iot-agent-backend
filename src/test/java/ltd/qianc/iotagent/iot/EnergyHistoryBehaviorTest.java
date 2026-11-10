@@ -391,6 +391,76 @@ class EnergyHistoryBehaviorTest {
         }
     }
 
+    @Test void directoryRefreshDoesNotRepeatedlyDiscardAnInFlightCurrentObservation() {
+        try (var f = new EnergyHistoryFixture()) {
+            f.currentStates = new DeviceStateReadResult(Map.of(METER, Map.of("totalActivePower", BigDecimal.ONE)), f.clock.instant().toString());
+            f.publish();
+            f.clock.advance(61);
+            String sampledAt = f.clock.instant().toString();
+            f.currentStates = new DeviceStateReadResult(Map.of(METER, Map.of("totalActivePower", BigDecimal.TEN)), sampledAt);
+            f.beforeStateRead = () -> {
+                f.beforeStateRead = null;
+                f.clock.advance(61);
+                Thread metadata = new Thread(f.directory::synchronizeDue, "fixture-concurrent-directory-refresh");
+                metadata.start();
+                try { metadata.join(5000); }
+                catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(interrupted);
+                }
+                assertFalse(metadata.isAlive(), "metadata refresh should not wait for unrelated collection");
+            };
+            f.directory.synchronizeDue();
+            var observations = DeviceObservations.jdbc(f.jdbc, f.transactions, f.mapper, f.directory, EnergyHistoryFixture.GATEWAY, f.clock);
+            var result = observations.read(f.identity(), List.of(METER));
+            assertEquals(0, BigDecimal.TEN.compareTo((BigDecimal) ((Map<?, ?>) result.states().get(METER)).get("totalActivePower")));
+            assertEquals(sampledAt, result.observedAt());
+        }
+    }
+
+    @Test void newOwnerCanReadSharedHistoryWhileAnExistingOwnersStateCollectionIsBlocked() throws Exception {
+        try (var f = new EnergyHistoryFixture()) {
+            f.rows = List.of(EnergyHistoryFixture.row(METER, "retained", "2020-01-01T00:00:00Z", "100"));
+            f.publish();
+            var original = window(f);
+            int calls = f.sourceCalls.get();
+            f.clock.advance(61);
+            var entered = new java.util.concurrent.CountDownLatch(1);
+            var release = new java.util.concurrent.CountDownLatch(1);
+            var failure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            f.beforeStateRead = () -> {
+                entered.countDown();
+                try {
+                    if (!release.await(10, java.util.concurrent.TimeUnit.SECONDS)) throw new AssertionError("fixture hold expired");
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(interrupted);
+                }
+            };
+            Thread worker = new Thread(() -> {
+                try { f.directory.synchronizeDue(); }
+                catch (Throwable error) { failure.set(error); }
+            }, "fixture-existing-owner-collection");
+            worker.start();
+            try {
+                assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS));
+                var newcomer = f.identity("Bearer fixture-other", "fixture-tenant");
+                f.register(newcomer);
+                f.directory.synchronizeDue();
+                assertEquals(List.of(EnergyHistoryFixture.METER), f.directory.loadBatch(newcomer).scope().devices());
+                assertEquals(List.of(EnergyHistoryFixture.METER), f.history().authorizedScope(newcomer).devices());
+                assertEquals(original.samples(), f.history().window(newcomer, List.of(METER), FROM, TO, false).samples());
+                assertEquals(calls, f.sourceCalls.get(), "新账号授权准备不应等待或重新采集已有历史");
+            } finally {
+                f.beforeStateRead = null;
+                release.countDown();
+                worker.join(5000);
+            }
+            assertFalse(worker.isAlive(), "fixture worker did not drain");
+            if (failure.get() != null) throw new AssertionError("fixture synchronization failed", failure.get());
+        }
+    }
+
     @Test void newlyAuthorizedOwnerReusesCompleteHistoryWithoutAnotherFullScan() {
         try (var f = new EnergyHistoryFixture()) {
             f.rows = denseRows(501, "100");

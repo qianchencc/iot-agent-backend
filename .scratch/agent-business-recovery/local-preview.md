@@ -2,6 +2,8 @@
 
 > 固定开发后端的最新入口为 Java `3381` / Node `3382` / 控制台 `5185`；2026-11-06 起以常规命令启动（Java `java -jar … --spring.config.additional-location`、Node `node dist/server.js --config`、`web/admin` 内 `npm run dev`），见[仓根常规本地启动](../../README.md#常规本地启动)；Python／tmux 统一启动器与 launch-YAML 已随 `tools/` 退役。下文3217、13215等端口及 `tools/start-sidecar.py` 等命令为历史独立验收环境记录，不应据此启动或覆盖当前固定后端。
 
+> 2026-11-10 13:44：固定Java`3381`已更新新账号首访修复，PID`93530`，监听`0.0.0.0`，开发版继续使用`http://192.168.102.15:3381/api`。冻结包`var/cold-account-bootstrap-20261110-1343/backend.jar`，SHA256=`a05462a608f1b36a7eb59d9114748470ff74c42a6176fa67b2aae4a77365e978`；仅替换目录同步器及其内部类3项，其他832项字节保持。回退包`var/plan-local-authorization-20261110-1128/backend.jar`保留；Node3382、管理台5185及私有配置不变。742项工程回归中713通过、29跳过，排除既有单项视频回放失败；隔离实际调度的新账号授权约5秒、0次新增历史采集。指定测试账号个人数据已准确匹配并备份后清理，备份位于私有`var/cold-account-bootstrap-20261110-133612/requested-user-backup.json.gz`（0600）。局域网健康正常，不代替真实开发版首访验收。
+
 > 2026-11-08 23:28 视频接入修复：保留同一冻结视频状态 jar（SHA256 不变），仅把外置 `agent.video.allowed-origin` 改为客户播放页的精确来源 `https://ncim.577119.com`，优雅重启 Java `3381` 为 PID `21777`；Node `3382`／PID `32963` 不动。小程序客户播放页的取流 API 已改回本地 `http://127.0.0.1:3381/api`，没有新建公网隧道。真实微信同账号、同摄像头、同期间已到达本地取流链路，但客户上游录像查询返回 `code:200, content:{result:true,url:null}`，无录像首帧，业务仍未验收；不推断录像不存在，不换窗口冒充通过。详见[视频票09](issues/09-real-video-live-playback.md)。
 
 > 2026-11-08 23:12：固定Java`3381`更新视频候选卡本地在线状态及真实采样时间修复，冻结产物`var/fixed-video-state-20261108-231135/backend.jar`，SHA256=`46816a507a345a7981713f9e6e8350c85b2e27368254a719c8c38f9054b996f3`。23:28 原PID`15433`收到SIGTERM优雅退出（非崩溃），外部守护/手动于23:28:38重启同jar为PID`21777`，3381健康恢复；Node`3382`/PID`32963`及原配置、表结构、业务记录数保持；回退产物为下条环境完整窗口jar。66项定向通过；真实13台本地状态只读投影通过，未申请视频流，微信/播放未验收。[工程与发布证据](../local-data-sync/evidence/video-candidate-state-20261108.json)。

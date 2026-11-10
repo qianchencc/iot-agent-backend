@@ -61,10 +61,12 @@ public final class JdbcCompanyDirectory implements DeviceDirectory {
     private final java.util.function.Supplier<ltd.qianc.iotagent.iot.ObservationAdapter> historySource;
     private final ReentrantLock historyLock = new ReentrantLock();
     private final ReentrantLock syncLock = new ReentrantLock();
+    private final ReentrantLock currentLock = new ReentrantLock();
     private final ScheduledThreadPoolExecutor cadence;
     private boolean started;
     private volatile boolean closed;
     private volatile String activeScope;
+    private volatile Scope activeStateScope;
 
     public JdbcCompanyDirectory(JdbcTemplate jdbc, TransactionTemplate transactions, ObjectMapper mapper,
             IotAdapter upstream, java.util.function.Supplier<ltd.qianc.iotagent.iot.ObservationAdapter> historySource,
@@ -90,7 +92,7 @@ public final class JdbcCompanyDirectory implements DeviceDirectory {
         this.observations = new JdbcDeviceObservations(jdbc, transactions, mapper, this::loadBatch, this::scopeKey, clock);
         this.energyHistory = new JdbcEnergyHistory(jdbc, transactions, mapper, this::loadBatch, this::scopeKey, clock);
         this.environmentHistory = new JdbcEnvironmentHistory(jdbc, transactions, mapper, this::loadBatch, this::scopeKey, observations, clock);
-        this.cadence = new ScheduledThreadPoolExecutor(2, task -> {
+        this.cadence = new ScheduledThreadPoolExecutor(3, task -> {
             Thread thread = new Thread(task, "local-company-sync");
             thread.setDaemon(true);
             return thread;
@@ -315,10 +317,17 @@ public final class JdbcCompanyDirectory implements DeviceDirectory {
         if (started || closed) return;
         started = true;
         cadence.scheduleWithFixedDelay(() -> {
-            try { synchronizeDue(); }
+            try { synchronizeDirectoriesDue(); }
             catch (RuntimeException unavailable) {
                 System.getLogger(JdbcCompanyDirectory.class.getName()).log(System.Logger.Level.WARNING,
                         "Local company synchronization unavailable; persisted progress retained");
+            }
+        }, 0, 5, TimeUnit.SECONDS);
+        cadence.scheduleWithFixedDelay(() -> {
+            try { synchronizeCurrentDue(); }
+            catch (RuntimeException unavailable) {
+                System.getLogger(JdbcCompanyDirectory.class.getName()).log(System.Logger.Level.WARNING,
+                        "Local current-data synchronization unavailable; persisted progress retained");
             }
         }, 0, 5, TimeUnit.SECONDS);
         cadence.scheduleWithFixedDelay(() -> {
@@ -331,19 +340,70 @@ public final class JdbcCompanyDirectory implements DeviceDirectory {
     }
 
     @Override public void synchronizeDue() {
+        synchronizeDirectoriesDue();
+        synchronizeCurrentDue();
+    }
+
+    private void synchronizeDirectoriesDue() {
         if (closed || !syncLock.tryLock()) return;
         try {
             List<Scope> due = jdbc.query("SELECT * FROM local_sync_scopes WHERE gateway_instance=? "
-                            + "AND data_kind IN ('COMPANY_DIRECTORY','OFFICE_DIRECTORY') AND next_due_at<=? ORDER BY next_due_at,id",
+                            + "AND data_kind IN ('COMPANY_DIRECTORY','OFFICE_DIRECTORY') AND next_due_at<=? "
+                            + "ORDER BY CASE WHEN published_generation IS NULL OR published_generation<>credential_generation THEN 0 ELSE 1 END,next_due_at,id",
                     JdbcCompanyDirectory::scope, gateway, Timestamp.from(clock.instant()));
             for (Scope scope : due) {
                 if (closed) break;
+                // Keep version fencing without letting routine refresh discard every slow state sample.
+                Scope sampling = activeStateScope;
+                if (sampling != null && sampling.key().equals(scope.key()) && sampling.generation().equals(scope.generation())) continue;
                 activeScope = scope.key();
                 try { synchronize(scope); }
                 finally { activeScope = null; }
             }
         } finally {
             syncLock.unlock();
+        }
+    }
+
+    private void synchronizeCurrentDue() {
+        if (closed || !currentLock.tryLock()) return;
+        try {
+            List<Scope> due = jdbc.query("SELECT s.* FROM local_sync_scopes s LEFT JOIN local_device_state_sync p "
+                            + "ON p.scope_key=s.scope_key AND p.credential_generation=s.credential_generation "
+                            + "WHERE s.gateway_instance=? AND s.data_kind IN ('COMPANY_DIRECTORY','OFFICE_DIRECTORY') "
+                            + "AND s.published_generation=s.credential_generation AND s.denial_status=0 AND s.state='READY' "
+                            + "AND (p.last_attempt_at IS NULL OR p.last_attempt_at<=?) "
+                            + "ORDER BY COALESCE(p.last_attempt_at,s.create_time),s.id",
+                    JdbcCompanyDirectory::scope, gateway, Timestamp.from(clock.instant().minusSeconds(SYNC_INTERVAL_SECONDS)));
+            for (Scope candidate : due) {
+                if (closed) break;
+                Scope scope = find(candidate.key(), false);
+                RequestIdentity identity = null;
+                try {
+                    requireReadable(scope);
+                    if (!"READY".equals(scope.state())) continue;
+                    identity = new RequestIdentity(decrypt(scope), scope.tenant(), scope.source(), scope.owner());
+                    verify(identity);
+                    requireAuthorization(identity, scope);
+                    AuthorizedDeviceScope devices = loadBatch(identity).scope();
+                    synchronizeStates(scope, identity, devices);
+                    if (identity.source() == IotSourceEnum.COMPANY) {
+                        synchronizeEnergy(scope, identity, false);
+                        if (devices.devices().stream().anyMatch(device -> "environment".equals(device.kind())))
+                            synchronizeEnvironment(scope, identity, false);
+                    }
+                } catch (RuntimeException failure) {
+                    if (scope != null && failure instanceof BusinessException business
+                            && (business.httpStatus() == 401 || business.httpStatus() == 403)) {
+                        jdbc.update("UPDATE local_sync_scopes SET state='DENIED',published_generation=NULL,denial_status=?,"
+                                        + "failure_code='DIRECTORY_SYNC_DENIED',update_time=? WHERE scope_key=? AND credential_generation=?",
+                                business.httpStatus(), Timestamp.from(clock.instant()), scope.key(), scope.generation());
+                        if (identity != null) snapshots.revoke(snapshotIdentity(identity), business);
+                    }
+                }
+            }
+        } finally {
+            currentLock.unlock();
         }
     }
 
@@ -402,11 +462,11 @@ public final class JdbcCompanyDirectory implements DeviceDirectory {
             if (identity == null) identity = new RequestIdentity(decrypt(scope), scope.tenant(), scope.source(), scope.owner());
             verify(identity);
             requireAuthorization(identity, scope);
-            AuthorizedDeviceScope grant = upstream.loadAuthorizedEnergyScope(identity).block();
-            if (grant == null || !identity.equals(grant.identity()) || grant.source() != IotSourceEnum.COMPANY)
-                throw new IllegalStateException("Invalid dedicated energy scope");
+            if (!full && jdbc.queryForObject("SELECT COUNT(*) FROM local_energy_sync e JOIN local_sync_scopes s ON s.scope_key=e.scope_key "
+                            + "WHERE e.scope_key=? AND e.credential_generation=? AND e.grants_published_at>=s.last_success_at",
+                    Integer.class, scope.key(), scope.generation()) == 0) return;
+            AuthorizedDeviceScope grant = full ? synchronizeEnergyGrants(scope, identity) : energyHistory.authorizedScope(identity);
             RequestIdentity captured = identity;
-            energyHistory.publishGrants(scope.key(), scope.generation(), grant, () -> requireAuthorization(captured, scope));
             if (!energyHistory.begin(scope.key(), scope.generation(), full, attempt)) return;
             java.util.Set<String> ids = new java.util.LinkedHashSet<>();
             for (AuthorizedDevice meter : grant.devices()) ids.add(meter.id());
@@ -463,12 +523,12 @@ public final class JdbcCompanyDirectory implements DeviceDirectory {
             verify(identity);
             requireAuthorization(identity, scope);
             scope = publish(scope, unique, batch.regions());
-            if (scope != null) {
-                synchronizeStates(scope, identity, collected);
-                if (identity.source() == IotSourceEnum.COMPANY) {
-                    synchronizeEnergy(scope, identity, false);
-                    if (collected.devices().stream().anyMatch(device -> "environment".equals(device.kind())))
-                        synchronizeEnvironment(scope, identity, false);
+            if (scope != null && identity.source() == IotSourceEnum.COMPANY) {
+                try { synchronizeEnergyGrants(scope, identity); }
+                catch (RuntimeException failure) {
+                    energyHistory.failed(scope.key(), scope.generation(), false, clock.instant());
+                    if (failure instanceof BusinessException business
+                            && (business.httpStatus() == 401 || business.httpStatus() == 403)) throw failure;
                 }
             }
         } catch (RuntimeException failure) {
@@ -488,9 +548,27 @@ public final class JdbcCompanyDirectory implements DeviceDirectory {
         }
     }
 
+    private AuthorizedDeviceScope synchronizeEnergyGrants(Scope scope, RequestIdentity identity) {
+        AuthorizedDeviceScope grant = upstream.loadAuthorizedEnergyScope(identity).block();
+        if (grant == null || !identity.equals(grant.identity()) || grant.source() != IotSourceEnum.COMPANY)
+            throw new IllegalStateException("Invalid dedicated energy scope");
+        verify(identity);
+        energyHistory.publishGrants(scope.key(), scope.generation(), grant, () -> requireAuthorization(identity, scope));
+        return grant;
+    }
+
     private void synchronizeStates(Scope scope, RequestIdentity identity, AuthorizedDeviceScope collected) {
-        Instant attempt = observations.begin(scope.key(), scope.generation(), scope.version());
-        if (attempt == null) return;
+        Instant attempt;
+        if (!syncLock.tryLock()) return;
+        try {
+            Scope sampling = activeStateScope;
+            if (sampling != null && sampling.key().equals(scope.key()) && sampling.generation().equals(scope.generation())) return;
+            attempt = observations.begin(scope.key(), scope.generation(), scope.version());
+            if (attempt == null) return;
+            activeStateScope = scope;
+        } finally {
+            syncLock.unlock();
+        }
         try {
             var states = upstream.collectCurrentStates(identity, collected).block();
             verify(identity);
@@ -500,6 +578,8 @@ public final class JdbcCompanyDirectory implements DeviceDirectory {
         } catch (RuntimeException failure) {
             observations.failed(scope.key(), scope.generation(), attempt);
             if (failure instanceof BusinessException business && (business.httpStatus() == 401 || business.httpStatus() == 403)) throw failure;
+        } finally {
+            if (activeStateScope == scope) activeStateScope = null;
         }
     }
 

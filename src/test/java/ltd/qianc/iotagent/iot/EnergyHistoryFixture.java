@@ -46,6 +46,7 @@ public final class EnergyHistoryFixture implements AutoCloseable {
     public volatile GatewayAuthorizationException denied;
     public volatile java.util.function.IntFunction<String> pageOverride;
     public Runnable beforeSampleRead;
+    public volatile Runnable beforeStateRead;
     public Runnable beforeMeterRead;
     public Runnable afterSampleRead;
     private final MemoryBarrier barrier = new MemoryBarrier();
@@ -62,6 +63,8 @@ public final class EnergyHistoryFixture implements AutoCloseable {
             return Mono.just(AuthorizedDeviceScope.of(identity,identity.source(),meters));
         }
         @Override public Mono<DeviceStateReadResult> collectCurrentStates(RequestIdentity identity,AuthorizedDeviceScope scope) {
+            Runnable hook = beforeStateRead;
+            if (hook != null) hook.run();
             return Mono.just(currentStates);
         }
     };
