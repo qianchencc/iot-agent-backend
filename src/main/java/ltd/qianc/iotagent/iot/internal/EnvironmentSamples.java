@@ -71,11 +71,16 @@ final class EnvironmentSamples {
 
     static Map<String,Object> payload(List<Sample> samples, String from, String to, boolean scannedComplete,
                                      Integer nextPage, Map<String,Object> cache) {
+        return payload(samples, from, to, scannedComplete, nextPage, cache, true);
+    }
+
+    static Map<String,Object> payload(List<Sample> samples, String from, String to, boolean scannedComplete,
+                                     Integer nextPage, Map<String,Object> cache, boolean includeSamples) {
         int unknown = 0, invalid = 0, missing = 0, conflicts = 0, unverified = 0;
         Instant first = null, last = null;
-        List<Map<String,Object>> rows = new ArrayList<>(samples.size());
+        List<Map<String,Object>> rows = new ArrayList<>(includeSamples ? samples.size() : 0);
         for (Sample sample : samples) {
-            rows.add(publicSample(sample));
+            if (includeSamples) rows.add(publicSample(sample));
             if (sample.recordedAt() == null) unknown++;
             else {
                 if (first == null || sample.recordedAt().isBefore(first)) first = sample.recordedAt();
@@ -88,7 +93,7 @@ final class EnvironmentSamples {
         }
         boolean complete = scannedComplete && nextPage == null && unknown + invalid + missing + conflicts + unverified == 0;
         Map<String,Object> coverage = new LinkedHashMap<>();
-        coverage.put("complete",complete); coverage.put("readSamples",rows.size());
+        coverage.put("complete",complete); coverage.put("readSamples",samples.size());
         coverage.put("from",first == null ? null : first.toString()); coverage.put("to",last == null ? null : last.toString());
         coverage.put("truncated",nextPage != null); coverage.put("unknownTimeSamples",unknown);
         coverage.put("invalidValueSamples",invalid); coverage.put("conflictedSamples",conflicts);
@@ -106,7 +111,7 @@ final class EnvironmentSamples {
     static ObservationResponse response(Map<String,Object> payload) {
         Map<?,?> coverage = (Map<?,?>)payload.get("coverage");
         if (Boolean.TRUE.equals(coverage.get("complete"))) {
-            return ((List<?>)payload.get("samples")).isEmpty() ? ObservationResponse.empty(payload) : ObservationResponse.available(payload);
+            return ((Number)coverage.get("readSamples")).intValue() == 0 ? ObservationResponse.empty(payload) : ObservationResponse.available(payload);
         }
         List<ObservationFailure> failures = new ArrayList<>();
         if (payload.get("nextPage") != null) failures.add(new ObservationFailure("environment","HISTORY_PARTIAL","环境历史仅读取到当前页"));

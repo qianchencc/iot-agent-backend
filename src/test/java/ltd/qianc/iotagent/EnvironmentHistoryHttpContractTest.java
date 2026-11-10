@@ -49,6 +49,15 @@ class EnvironmentHistoryHttpContractTest {
         assertThat(window.path("metrics").get(0).path("peak").path("value").asInt()).isEqualTo(35);
         assertThat(window.path("metrics").get(0).path("peak").path("at").asText()).isEqualTo("2020-01-01T00:00:00Z");
 
+        JsonNode trend = read(query().param("resolution", "auto"));
+        assertThat(trend.path("resolution").asText()).isEqualTo("3h");
+        assertThat(trend.path("samples").size()).isZero();
+        assertThat(trend.path("buckets").size()).isLessThanOrEqualTo(64);
+        assertThat(trend.path("coverage").path("readSamples").asInt()).isEqualTo(165);
+        assertThat(trend.path("metrics").get(0).path("peak")).isEqualTo(window.path("metrics").get(0).path("peak"));
+        http.perform(query().param("resolution", "auto").param("to", "2021-01-01T00:00:00Z"))
+                .andExpect(status().isBadRequest());
+
         JsonNode first = read(query().param("page", "0"));
         assertThat(first.path("samples").size()).isEqualTo(100);
         assertThat(first.path("coverage").path("complete").asText()).isEqualTo("false");

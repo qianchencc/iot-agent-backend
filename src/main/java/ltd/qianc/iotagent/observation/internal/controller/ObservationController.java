@@ -77,7 +77,7 @@ public final class ObservationController {
     public ResponseEntity<?> environmentHistory(HttpServletRequest request) {
         ResponseEntity<?> source = requireCompanySource(request, "HISTORY_SOURCE_UNAVAILABLE", "环境历史仅支持公司来源");
         if (source != null) return source;
-        ResponseEntity<?> duplicate = rejectDuplicates(request, "INVALID_HISTORY_WINDOW", "查询参数不可重复", "from", "to", "page");
+        ResponseEntity<?> duplicate = rejectDuplicates(request, "INVALID_HISTORY_WINDOW", "查询参数不可重复", "from", "to", "page", "resolution");
         if (duplicate != null) return duplicate;
         return read(request, ObservationOperationEnum.ENVIRONMENT_HISTORY,
                 request.getParameter("page") == null ? Map.of("fullWindow", "true") : Map.of());
@@ -481,7 +481,7 @@ public final class ObservationController {
             HttpServletRequest request, ObservationOperationEnum operation, Map<String, String> extras) {
         Set<String> allowed = switch (operation) {
             case DASHBOARD -> Set.of("section");
-            case ENVIRONMENT_HISTORY -> Set.of("from", "to", "page");
+            case ENVIRONMENT_HISTORY -> Set.of("from", "to", "page", "resolution");
             case SAFETY_EVENTS -> Set.of("type", "from", "to", "limit", "cursor");
             case SAFETY_EVENT, SAFETY_EVENT_CAMERAS -> Set.of("ledger", "deviceId");
             case REGION_LIST -> Set.of("section");

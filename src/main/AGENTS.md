@@ -20,7 +20,7 @@
 - 动作确认结果与授权代次分离：成功、拒绝、中断及重复确认均不因HTTP响应清除本地目录或轮换共享授权屏障；现态沿既有后台同步更新，执行结果沿真实回读保存。真实401/403撤销与凭据轮换仍按原授权规则封闭读取。
 - 能耗普通读统一经`iot.EnergyHistory`取得MySQL样本与覆盖；同网关、租户、来源按当前用户的专用电表授权复用已发布历史，授权隔离不等于每用户重采。六类HTTP/Agent统计沿既有Composer；未覆盖保持preparing/partial。采样、同步成功、尝试时间分列，读取不能刷新历史采样时间。
 - `IotAdapterConfiguration.Source`与`ObservationAdapterConfiguration.Source`只供后台采集注入；同步器不能注入普通本地读取包装器，否则专用授权会依赖尚未发布的自身数据。原始数字从来源字节直接按BigDecimal解析，再以DECIMAL(65,30)持久化；只在既有统计公式边界转换，禁止先经Double解码。
-- 环境历史普通读统一经`iot.EnvironmentHistory`，当前值复用`DeviceObservations`；Agent查询与环境期间引用由服务端设置内部`fullWindow=true`，一次读取窗口内全部本地样本并统一统计，模型工具不再接受page；HTTP原始明细仍每页100条。原始历史的deviceCode没有已证明的设备/楼层关联，不能从当前目录拼造历史归属。未知采样时间保留null与原文，缺值不补零；未知时间、冲突或来源质量未经核实的样本不得参与区间峰值。HTTP、Agent事件与环境引用透传partial/覆盖，不以当前时间补observedAt。
+- 环境历史普通读统一经`iot.EnvironmentHistory`，当前值复用`DeviceObservations`；Agent查询与环境期间引用由服务端设置内部`fullWindow=true`，一次读取窗口内全部本地样本并统一统计，模型工具不再接受page；HTTP显式page的原始明细每页100条，不传page读取完整窗口。趋势请求`resolution=auto`最多180个上海自然日，按1–2天原始、3–14天3小时均值、15–180天日均分组；聚合只投影已授权本地事实，保留原始latest/peak与readSamples，空桶及各指标缺测不能补零，原始历史读取不套用趋势上限。原始历史的deviceCode没有已证明的设备/楼层关联，不能从当前目录拼造历史归属。未知采样时间保留null与原文，缺值不补零；未知时间、冲突或来源质量未经核实的样本不得参与区间峰值。HTTP、Agent事件与环境引用透传partial/覆盖，不以当前时间补observedAt。
 - 共享环境历史按同网关／租户／来源与完全相同的授权物理测点集合划分；不凭未证实的deviceCode关联混用不同集合。后台按设备／测点集合领取到期采集，账号调度游标DISPATCHED不代表采集成功；同一采集失败不得因新增同权限账号绕过等待期。迁移和保留遵循ADR0009。
 - 通过公开模块入口／HTTP 契约验证版本冲突、失败不发布、身份隔离和真实应用；不以源码字段存在、表有数据或类型通过替代端到端证据。
 - admin 的远端观测采用判断归内部 `AdminObservabilityStatus`，Controller 只映射 HTTP；任务公开构造签名不得接受 internal 类型，ArchUnit 同时检查完整依赖、公开泛型签名与全部测试产物。

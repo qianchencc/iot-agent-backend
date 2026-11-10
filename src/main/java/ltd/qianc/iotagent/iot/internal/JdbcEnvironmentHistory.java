@@ -76,7 +76,11 @@ public final class JdbcEnvironmentHistory implements EnvironmentHistory {
         Map<String,String> parameters=request.parameters();
         Instant from=parse(parameters.getOrDefault("from","1970-01-01T00:00:00Z"));
         Instant to=parameters.containsKey("to")?parse(parameters.get("to")):clock.instant();
-        boolean fullWindow=Boolean.parseBoolean(parameters.get("fullWindow"));
+        String resolution=parameters.get("resolution");
+        boolean trend="auto".equals(resolution);
+        if(resolution!=null && !trend || trend && (parameters.containsKey("page") || !parameters.containsKey("from") || !parameters.containsKey("to"))) throw invalidWindow();
+        if(trend) EnvironmentTrendProjection.validate(from,to);
+        boolean fullWindow=trend || Boolean.parseBoolean(parameters.get("fullWindow"));
         int page=fullWindow?0:page(parameters.get("page"));
         if(from.isAfter(to)) throw invalidWindow();
         try {
@@ -98,7 +102,8 @@ public final class JdbcEnvironmentHistory implements EnvironmentHistory {
                     access.dataKey(),Timestamp.from(from),Timestamp.from(to));
             samples.sort(EnvironmentSamples.ORDER);
             Integer next=!fullWindow && (long)(page+1)*PAGE_SIZE<total?page+1:null;
-            Map<String,Object> payload=EnvironmentSamples.payload(samples,from.toString(),to.toString(),true,next,null);
+            Map<String,Object> payload=trend ? EnvironmentTrendProjection.payload(samples,from,to)
+                    : EnvironmentSamples.payload(samples,from.toString(),to.toString(),true,next,null);
             payload.put("totalElements",total);
             Access current=authorize(request.identity());
             Progress latest=progress(current.dataKey());

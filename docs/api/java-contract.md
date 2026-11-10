@@ -92,6 +92,14 @@
 | `GET /notifications` | source、limit（默认30）、可选 before | 当前身份可见通知；不能从任务执行成功推断投递成功 |
 | `POST /notifications/{id}/seen`、`POST /notifications/seen-all` | source，默认 office | 当前身份的已读结果 |
 
+## 环境历史趋势
+
+- `GET /api/agent/environment-history` 保留原始明细与显式 `page` 的分页语义；新增 `resolution=auto` 时须提供 `from/to`，不得同时传 `page`。
+- 自适应趋势按上海自然日计数，含起止日，最多180天；非法窗口返回400 `INVALID_HISTORY_WINDOW`。1–2天返回 `resolution:raw` 和原始 `samples`，3–14天返回 `3h`，15–180天返回 `day`。
+- 聚合响应不重复返回原始明细：`samples:[]`，`buckets` 按上海日界或3小时界分组，含窗口内的空时段。每桶含 `from/to`（左闭右开）、中点 `at`、`values` 均值及各指标 `metrics:{mean,min,max,count}`；不足整桶的首尾按请求边界裁剪。
+- 每项指标只统计有有效时间且该指标非空的采样；空桶均值为null、计数为0，不补零或插值。`latest` 为逐指标最新原始有效采样，顶层 `metrics.peak` 仍为原始峰值；`coverage.readSamples` 仍统计读取的原始记录数，不是桶数。
+- 普通读取只投影当前授权的本地采样事实，不因长区间查询触发上游请求；原始历史接口及 Agent 原有读取口径不变。
+
 ## 独立管理端
 
 前缀 `/api/admin`。管理身份独立于业务 Bearer；登录后使用 HttpOnly Cookie。所有非 GET 请求须有匹配配置的 `Origin`，除登录外还须发送会话提供的 `X-Admin-CSRF`。读取不回传模型密钥、桥接 Token、数据库口令或历史密文。
