@@ -1,0 +1,40 @@
+{
+  "date": "2026-11-10",
+  "scope": "Temporarily disable model interpretation for company scheduled meter reports (read.agent.output=report)",
+  "implementation": {
+    "entry": "DefaultAgentCheckpointBridge.execute",
+    "behavior": "Prepare server statistics from the confirmed meter scope and structured period/comparisons, then persist the report without starting an Agent Engine run",
+    "preserved": ["server statistics and comparisons", "report ownership and bound checkpoint time", "existing data completeness and cancellation checks", "interactive energy analysis", "output=result checkpoints", "historical report content"],
+    "missingStructuredSpecification": "Fails explicitly; does not ask the model to guess the period"
+  },
+  "regression": {
+    "command": "mvn -q -Dtest=AgentCheckpointContractTest,ReportGenerationContractTest,ReportExportRendererTest,ReportFactProducerContractTest test",
+    "tests": 29,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "covered": ["model is not called for scheduled reports", "scheduled reports can run without model configuration", "cancellation prevents report persistence", "missing structured report requirements are rejected", "non-report checkpoint behavior", "report generation and PDF/XLSX export contracts"]
+  },
+  "isolatedExecution": {
+    "kind": "Standalone Java process using public module factories, a synthetic observation fixture, in-memory report storage and a dedicated loopback model-request counter",
+    "outcome": "COMPLETED",
+    "savedReports": 1,
+    "modelRequests": 0,
+    "serverTotal": 10.0,
+    "checkpointAt": "2026-11-02T01:00:00Z",
+    "reportPeriodFrom": "2026-11-01T08:00:00+08:00",
+    "reportPeriodTo": "2026-11-02T08:00:00+08:00",
+    "comparison": "Previous period comparison retained as comparable",
+    "reportBlocks": ["meter_report", "meter_report"],
+    "syntheticData": true,
+    "customerUpstreamRequests": 0,
+    "temporaryProgramRemoved": true
+  },
+  "delivery": {
+    "fixed3381Updated": false,
+    "servicesRestarted": false,
+    "realTasksCreated": false,
+    "notificationsSent": false,
+    "frontendAcceptance": "Not performed; no real scheduled occurrence or UI report acceptance claimed"
+  }
+}

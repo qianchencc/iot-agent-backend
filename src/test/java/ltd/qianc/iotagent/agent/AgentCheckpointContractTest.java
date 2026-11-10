@@ -61,14 +61,11 @@ class AgentCheckpointContractTest {
     }
 
     @Test
-    void forgedFactIndexCannotBecomeReportAndActualReportUsesServerNumbers() throws Exception {
-        try (Fixture fixture = new Fixture((bridge, binding) -> {
-            assertThatThrownBy(() -> bridge.executeTool(call(binding, "publish_report", Map.of("title", "用电报告", "summary", "解读", "sections", List.of(Map.of("type", "meter", "index", 99))))))
-                    .isInstanceOf(BusinessException.class);
-            bridge.executeTool(call(binding, "publish_report", Map.of("title", "用电报告", "summary", "解读", "sections", List.of(Map.of("type", "meter", "index", 1)))));
-        })) {
+    void scheduledReportPersistsServerFactsWithoutStartingModelInterpretation() throws Exception {
+        try (Fixture fixture = new Fixture((bridge, binding) -> { })) {
             var executed = fixture.bridge.execute(IDENTITY, REQUEST, List.of("meter-1", "meter-2"), assignment("report"), () -> true);
             assertThat(executed.outcome()).isEqualTo("COMPLETED");
+            assertThat(fixture.lastBinding.get()).as("scheduled reports must not invoke the model").isNull();
             assertThat(fixture.saved).hasSize(1);
             var stored = MAPPER.readTree(fixture.saved.get(0).payloadJson());
             assertThat(stored.path("blocks").get(0).path("report").path("total").path("value").asDouble()).isEqualTo(10);
@@ -81,14 +78,39 @@ class AgentCheckpointContractTest {
     @Test
     void ordinaryModelCompletionWithoutSubmissionIsPartialAndCancelledInvocationCannotPublish() throws Exception {
         try (Fixture fixture = new Fixture((bridge, binding) -> { })) {
-            var executed = fixture.bridge.execute(IDENTITY, REQUEST, List.of("meter-1"), assignment("report"), () -> true);
+            var executed = fixture.bridge.execute(IDENTITY, REQUEST, List.of("meter-1"), assignment("result"), () -> true);
             assertThat(executed.outcome()).isEqualTo("PARTIAL");
-            assertThat(MAPPER.readTree(fixture.saved.get(0).payloadJson()).path("status").asText()).isEqualTo("partial");
+            assertThat(fixture.saved).isEmpty();
         }
         AtomicBoolean active = new AtomicBoolean(true);
         try (Fixture fixture = new Fixture((bridge, binding) -> active.set(false))) {
-            assertThatThrownBy(() -> fixture.bridge.execute(IDENTITY, REQUEST, List.of("meter-1"), assignment("report"), active::get))
+            assertThatThrownBy(() -> fixture.bridge.execute(IDENTITY, REQUEST, List.of("meter-1"), assignment("result"), active::get))
                     .isInstanceOf(BusinessException.class);
+            assertThat(fixture.saved).isEmpty();
+        }
+    }
+
+    @Test
+    void scheduledReportDoesNotRequireModelConfiguration() throws Exception {
+        try (Fixture fixture = new Fixture((bridge, binding) -> { }, false)) {
+            var executed = fixture.bridge.execute(IDENTITY, REQUEST, List.of("meter-1"), assignment("report"), () -> true);
+            assertThat(executed.outcome()).isEqualTo("COMPLETED");
+            assertThat(fixture.lastBinding.get()).isNull();
+            assertThat(fixture.saved).hasSize(1);
+        }
+    }
+
+    @Test
+    void scheduledReportRequiresStructuredEvidenceAndCannotSaveAfterCancellation() throws Exception {
+        AtomicBoolean active = new AtomicBoolean(true);
+        try (Fixture fixture = new Fixture((bridge, binding) -> { })) {
+            assertThatThrownBy(() -> fixture.bridge.execute(IDENTITY, REQUEST, List.of("meter-1"),
+                    Map.of("objective", "昨日用电", "output", "report"), () -> true))
+                    .isInstanceOf(BusinessException.class);
+            fixture.afterQuery = () -> active.set(false);
+            assertThatThrownBy(() -> fixture.bridge.execute(IDENTITY, REQUEST, List.of("meter-1"),
+                    assignment("report"), active::get)).isInstanceOf(BusinessException.class);
+            assertThat(fixture.lastBinding.get()).isNull();
             assertThat(fixture.saved).isEmpty();
         }
     }
@@ -108,7 +130,11 @@ class AgentCheckpointContractTest {
         final AtomicReference<Map<String, Object>> lastBinding = new AtomicReference<>();
         final HttpServer server;
         final AgentCheckpointBridge bridge;
+        Runnable afterQuery = () -> { };
         Fixture(BiConsumer<AgentCheckpointBridge, Map<String, Object>> script) throws Exception {
+            this(script, true);
+        }
+        Fixture(BiConsumer<AgentCheckpointBridge, Map<String, Object>> script, boolean engineConfigured) throws Exception {
             server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
             AtomicReference<AgentCheckpointBridge> reference = new AtomicReference<>();
             server.createContext("/run", exchange -> {
@@ -129,14 +155,18 @@ class AgentCheckpointContractTest {
                             new AuthorizedDevice("meter-2", "energy", "电表2", "27楼", true))));
                 }
             };
-            ObservationAdapter observations = request -> { queries.add(request); return ReportEvidenceFixture.evidence().read(request); };
+            ObservationAdapter observations = request -> {
+                queries.add(request);
+                return ReportEvidenceFixture.evidence().read(request).doOnNext(ignored -> afterQuery.run());
+            };
             ReportFactStore reports = new ReportFactStore() {
                 @Override public ReportFact save(ReportFact report) { saved.add(report); return report; }
                 @Override public Optional<ReportFact> find(String id) { return saved.stream().filter(fact -> fact.reportId().equals(id)).findFirst(); }
             };
             bridge = AgentBusinessEngineFactory.checkpointBridge(MAPPER, observations,
                     ReportGenerationServiceFactory.evidence(iot, observations, CLOCK), reports, () -> null,
-                    "http://127.0.0.1:" + server.getAddress().getPort(), "fixture", CLOCK);
+                    engineConfigured ? "http://127.0.0.1:" + server.getAddress().getPort() : "",
+                    engineConfigured ? "fixture" : "", CLOCK);
             reference.set(bridge);
         }
         @Override public void close() { server.stop(0); }

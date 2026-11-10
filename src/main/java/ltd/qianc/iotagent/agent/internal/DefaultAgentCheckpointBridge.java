@@ -79,12 +79,15 @@ public final class DefaultAgentCheckpointBridge implements AgentCheckpointBridge
     public TaskExecutionResult execute(RequestIdentity identity, TaskExecutionRequest request,
             List<String> meterIds, Map<String, Object> assignment, BooleanSupplier active) {
         if (identity.source() != IotSourceEnum.COMPANY || meterIds.isEmpty()) throw invalid("用电检查点缺少已确认的公司电表范围");
-        if (baseUrl.isBlank() || token == null || token.isBlank()) throw unavailable("检查点 Agent Engine 未配置");
         String output = text(assignment, "output", 6);
         if (!Set.of("result", "report").contains(output)) throw invalid("检查点输出类型无效");
+        if (!"report".equals(output) && (baseUrl.isBlank() || token == null || token.isBlank())) {
+            throw unavailable("检查点 Agent Engine 未配置");
+        }
         Checkpoint state = new Checkpoint(identity, request, List.copyOf(meterIds), assignment, active);
         state.checkActive();
         Map<String, Object> spec = object(assignment.get("spec"));
+        if ("report".equals(output) && spec.isEmpty()) throw invalid("定时电表报告缺少明确的统计期间与比较要求");
         if (!spec.isEmpty()) {
             Map<String, Object> intent = new LinkedHashMap<>(spec);
             intent.put("kind", "energy");
@@ -95,6 +98,11 @@ public final class DefaultAgentCheckpointBridge implements AgentCheckpointBridge
                 if ("meter_report".equals(block.get("type"))) state.facts.add(object(block.get("report")));
             }
             if (!state.hasData()) throw unavailable("所选统计期间没有有效电表采样；没有更改日期或生成空报告");
+        }
+        // 暂停电表定时报告的模型解读；直接保存按确认范围和期间准备的服务端统计事实。
+        if ("report".equals(output)) {
+            state.submittedReport = state.prepared;
+            return state.result(true);
         }
         running.put(state.contextId, state);
         boolean finished = false;
