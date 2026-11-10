@@ -16,7 +16,7 @@ Java public backend plus an independent Node `agent-sidecar`: Spring Boot 3.5 / 
 
 2026-11-10 环境趋势 HTTP 完整窗口修复：`GET /api/agent/environment-history` 未传 `page` 时读取完整所选窗口，显式传页号仍保留原始明细分页；修补此前只覆盖 Agent 工具／引用、仪表盘仍停在最近100条的遗漏。前端不再传页号或要求手动续读，不补造缺测。35项相关后端回归、371项前端回归及微信编译通过，用户已确认通过；固定3381只替换HTTP控制器，Node、私有配置和既有业务实现不变。[修复与确认记录](../mp/.scratch/agent-business-recovery/evidence/environment-http-window-20261110.json)。
 
-2026-11-10 周期任务核验改为后端本地事实：暂停、恢复、取消及草案确认不再实时拉取客户设备目录；移除实时核验／状态读取旁路，恢复与执行仅校验计划目标的本地授权及控制绑定，不受其他设备整体指纹变化影响。草案与任务预检复用既有60秒采样有效性，过期、未来、无时间或已标陈旧的状态不作NO_CHANGE／成功依据；下发后核验仍要求真实采样不早于指令。上游访问底线已同步根与`src/main/AGENTS.md`。隔离H2实跑连续启停0次上游访问，列表／详情／工作日日历一致，本地未就绪保持原计划且不补拉；运行中的3381尚未替换，真实计划写入／真机未验收。[工程证据](../mp/.scratch/plan-local-authorization/evidence/PLAN-TOGGLE-LOCAL/result.json)。
+2026-11-10 周期任务核验改为后端本地事实：暂停、恢复、取消及草案确认不再实时拉取客户设备目录；移除实时核验／状态读取旁路，恢复与执行仅校验计划目标的本地授权及控制绑定，不受其他设备整体指纹变化影响。草案与任务预检复用既有60秒采样有效性，过期、未来、无时间或已标陈旧的状态不作NO_CHANGE依据；下发后核验仍要求真实采样不早于指令。上游读取底线已同步根与`src/main/AGENTS.md`，真实控制下发按用户决定保持原样。740项回归（711通过、29跳过，另排除既有一个视频回放失败）；隔离H2实跑连续启停0次上游访问，列表／详情／工作日日历一致，本地未就绪不补拉。固定3381已更新冻结修复包并通过局域网健康检查，Node／外置配置不变；真实计划写入／真机未验收。[工程证据](../mp/.scratch/plan-local-authorization/evidence/PLAN-TOGGLE-LOCAL/result.json)。
 
 ```sh
 # 0. 构建（首次先安装依赖：agent-sidecar 与 web/admin 各执行一次 npm ci）
