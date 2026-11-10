@@ -372,8 +372,7 @@ public final class JdbcCompanyDirectory implements DeviceDirectory {
                             + "ON p.scope_key=s.scope_key AND p.credential_generation=s.credential_generation "
                             + "WHERE s.gateway_instance=? AND s.data_kind IN ('COMPANY_DIRECTORY','OFFICE_DIRECTORY') "
                             + "AND s.published_generation=s.credential_generation AND s.denial_status=0 AND s.state='READY' "
-                            + "AND (p.last_attempt_at IS NULL OR p.last_attempt_at<=?) "
-                            + "ORDER BY COALESCE(p.last_attempt_at,s.create_time),s.id",
+                            + "AND (p.last_attempt_at IS NULL OR p.last_attempt_at<=?) ORDER BY s.id",
                     JdbcCompanyDirectory::scope, gateway, Timestamp.from(clock.instant().minusSeconds(SYNC_INTERVAL_SECONDS)));
             for (Scope candidate : due) {
                 if (closed) break;
@@ -386,7 +385,12 @@ public final class JdbcCompanyDirectory implements DeviceDirectory {
                     verify(identity);
                     requireAuthorization(identity, scope);
                     AuthorizedDeviceScope devices = loadBatch(identity).scope();
-                    synchronizeStates(scope, identity, devices);
+                    Timestamp dispatched = Timestamp.from(clock.instant());
+                    if (!synchronizeStates(scope, identity, devices)) continue;
+                    jdbc.update("INSERT INTO local_device_state_sync(scope_key,state,credential_generation,last_attempt_at,create_time,update_time) "
+                                    + "VALUES (?,'DISPATCHED',?,?,?,?) ON DUPLICATE KEY UPDATE state='DISPATCHED',credential_generation=VALUES(credential_generation),"
+                                    + "last_attempt_at=VALUES(last_attempt_at),update_time=VALUES(update_time)",
+                            scope.key(), scope.generation(), dispatched, dispatched, dispatched);
                     if (identity.source() == IotSourceEnum.COMPANY) {
                         synchronizeEnergy(scope, identity, false);
                         if (devices.devices().stream().anyMatch(device -> "environment".equals(device.kind())))
@@ -427,22 +431,24 @@ public final class JdbcCompanyDirectory implements DeviceDirectory {
         RequestIdentity identity = currentIdentity;
         Instant attempt = clock.instant().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
         String run = UUID.randomUUID().toString();
+        String dataKey = null;
         try {
             if (identity == null) identity = new RequestIdentity(decrypt(scope), scope.tenant(), scope.source(), scope.owner());
             verify(identity);
             requireAuthorization(identity, scope);
             environmentHistory.revalidate(identity);
-            if (!environmentHistory.begin(scope.key(), scope.generation(), full, attempt)) return;
-            new EnvironmentHistoryCollector(historySource.get(), environmentHistory).collect(identity, run, scope.key(),
-                    full ? null : environmentHistory.currentCutoff(scope.key(), scope.generation()), full);
+            dataKey = environmentHistory.begin(scope.key(), scope.generation(), full, attempt);
+            if (dataKey == null) return;
+            new EnvironmentHistoryCollector(historySource.get(), environmentHistory).collect(identity, run, dataKey,
+                    full ? null : environmentHistory.currentCutoff(dataKey), full);
             verify(identity);
             RequestIdentity captured = identity;
-            environmentHistory.publish(run, scope.key(), scope.generation(), full, attempt, () -> {
+            environmentHistory.publish(run, scope.key(), scope.generation(), dataKey, full, attempt, () -> {
                 requireAuthorization(captured, scope);
                 environmentHistory.revalidate(captured);
             });
         } catch (RuntimeException failure) {
-            environmentHistory.failed(scope.key(), scope.generation(), full, attempt);
+            environmentHistory.failed(dataKey, full, attempt);
             if (failure instanceof BusinessException business && (business.httpStatus() == 401 || business.httpStatus() == 403)
                     && (failure instanceof GatewayAuthorizationException || !"FORBIDDEN".equals(business.code()))) {
                 jdbc.update("UPDATE local_sync_scopes SET state='DENIED',published_generation=NULL,denial_status=?,failure_code='DIRECTORY_SYNC_DENIED',update_time=? "
@@ -470,7 +476,7 @@ public final class JdbcCompanyDirectory implements DeviceDirectory {
             if (!energyHistory.begin(scope.key(), scope.generation(), full, attempt)) return;
             java.util.Set<String> ids = new java.util.LinkedHashSet<>();
             for (AuthorizedDevice meter : grant.devices()) ids.add(meter.id());
-            new EnergyHistoryCollector(historySource.get(), energyHistory).collect(identity, run, scope.key(), ids,
+            if (!ids.isEmpty()) new EnergyHistoryCollector(historySource.get(), energyHistory).collect(identity, run, scope.key(), ids,
                     full ? null : energyHistory.currentCutoff(scope.key(), scope.generation()), full);
             verify(identity);
             energyHistory.publish(run, scope.key(), scope.generation(), List.copyOf(ids), full, attempt,
@@ -557,30 +563,34 @@ public final class JdbcCompanyDirectory implements DeviceDirectory {
         return grant;
     }
 
-    private void synchronizeStates(Scope scope, RequestIdentity identity, AuthorizedDeviceScope collected) {
-        Instant attempt;
-        if (!syncLock.tryLock()) return;
+    private boolean synchronizeStates(Scope scope, RequestIdentity identity, AuthorizedDeviceScope collected) {
+        JdbcDeviceObservations.CollectionRun attempt;
+        if (!syncLock.tryLock()) return false;
         try {
             Scope sampling = activeStateScope;
-            if (sampling != null && sampling.key().equals(scope.key()) && sampling.generation().equals(scope.generation())) return;
-            attempt = observations.begin(scope.key(), scope.generation(), scope.version());
-            if (attempt == null) return;
+            if (sampling != null && sampling.key().equals(scope.key()) && sampling.generation().equals(scope.generation())) return false;
+            Scope latest = find(scope.key(), false);
+            if (latest == null || latest.version() != scope.version() || !latest.generation().equals(scope.generation())) return false;
+            attempt = observations.begin(scope.key(), scope.generation(), scope.version(), collected);
+            if (attempt == null) return true;
             activeStateScope = scope;
         } finally {
             syncLock.unlock();
         }
         try {
-            var states = upstream.collectCurrentStates(identity, collected).block();
+            var requested = AuthorizedDeviceScope.of(identity, identity.source(), attempt.devices());
+            var states = upstream.collectCurrentStates(identity, requested).block();
             verify(identity);
             requireAuthorization(identity, scope);
-            observations.publish(scope.key(), scope.generation(), scope.version(), attempt, collected, states,
+            observations.publish(scope.key(), scope.generation(), scope.version(), attempt, states,
                     () -> requireAuthorization(identity, scope));
         } catch (RuntimeException failure) {
-            observations.failed(scope.key(), scope.generation(), attempt);
+            observations.failed(scope.generation(), attempt);
             if (failure instanceof BusinessException business && (business.httpStatus() == 401 || business.httpStatus() == 403)) throw failure;
         } finally {
             if (activeStateScope == scope) activeStateScope = null;
         }
+        return true;
     }
 
     private Scope publish(Scope expected, Map<String, AuthorizedDevice> devices, List<OfficeRegion> regions) {

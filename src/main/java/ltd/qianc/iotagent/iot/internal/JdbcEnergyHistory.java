@@ -275,6 +275,7 @@ public final class JdbcEnergyHistory implements EnergyHistory {
                     + "credential_generation,grant_version,create_time,update_time) VALUES (?,?,?,?,?,?,?,?,?,?,?)", meters);
             jdbc.update("UPDATE local_energy_sync SET credential_generation=?,grant_version=?,grants_published_at=?,update_time=? WHERE scope_key=?",
                     generation,version,now,now,key);
+            if (membershipChanged) jdbc.update("UPDATE local_energy_sync SET current_attempt_at=NULL WHERE scope_key=?", key);
             // A verified credential renewal fences writers, not the owner's retained history.
             if (!oldIds.containsAll(nextIds)) jdbc.update("UPDATE local_energy_sync SET full_next_due_at=? WHERE scope_key=? AND full_state<>'RUNNING'",now,key);
             authorize.run();
@@ -286,8 +287,8 @@ public final class JdbcEnergyHistory implements EnergyHistory {
     }
 
     public boolean begin(String key, String generation, boolean full, Instant attempt) {
-        SharedCoverage shared = sharedCoverage(key, generation, true);
-        if (!full && shared != null && clock.instant().isBefore(shared.synchronizedAt().plusSeconds(60))) return false;
+        SharedCoverage shared = sharedCoverage(key, generation, full);
+        if (!full && (shared == null || clock.instant().isBefore(shared.synchronizedAt().plusSeconds(60)))) return false;
         if (full) {
             if (shared != null && !shared.coveredUntil().isBefore(nextNight(attempt).minusSeconds(86400))) {
                 jdbc.update("UPDATE local_energy_sync SET full_state='READY',full_success_at=?,full_covered_until=?,"
@@ -298,6 +299,12 @@ public final class JdbcEnergyHistory implements EnergyHistory {
                 return false;
             }
         }
+        Instant deferred = equivalentAttempt(key, generation, full);
+        if (deferred != null) {
+            if (full) jdbc.update("UPDATE local_energy_sync SET full_next_due_at=? WHERE scope_key=? AND credential_generation=?",
+                    Timestamp.from(deferred), key, generation);
+            return false;
+        }
         String next = full ? ",full_state='RUNNING',full_next_due_at=?" : "";
         List<Object> args = new ArrayList<>(); args.add(Timestamp.from(attempt));
         if (full) args.add(Timestamp.from(nextNight(attempt)));
@@ -305,6 +312,27 @@ public final class JdbcEnergyHistory implements EnergyHistory {
         if (full) args.add(Timestamp.from(attempt));
         return jdbc.update("UPDATE local_energy_sync SET " + (full ? "full_attempt_at" : "current_attempt_at") + "=?" + next
                 + ",update_time=? WHERE scope_key=? AND credential_generation=?" + (full ? " AND full_next_due_at<=?" : ""),args.toArray()) == 1;
+    }
+
+    /** Equivalent grants share a stream attempt, including its failure cooldown; partial grants stay distinct. */
+    private Instant equivalentAttempt(String key, String generation, boolean full) {
+        String column = full ? "full_attempt_at" : "current_attempt_at";
+        String condition = full ? "(e.full_attempt_at>? OR (e.full_failure_code IS NOT NULL AND e.full_next_due_at>?)) AND e.scope_key<>?"
+                : "e.current_attempt_at>?";
+        String sql = "WITH " + SOURCES + ", requested AS (SELECT meter_key FROM local_energy_meters WHERE scope_key=? AND credential_generation=?) "
+                + "SELECT e." + column + ",e.full_failure_code,e.full_next_due_at FROM local_energy_sync e JOIN sources s ON s.scope_key=e.scope_key WHERE " + condition
+                + " AND NOT EXISTS (SELECT 1 FROM requested r WHERE NOT EXISTS (SELECT 1 FROM local_energy_meters m "
+                + "WHERE m.scope_key=e.scope_key AND m.credential_generation=e.credential_generation AND m.meter_key=r.meter_key)) "
+                + "AND NOT EXISTS (SELECT 1 FROM local_energy_meters m WHERE m.scope_key=e.scope_key AND m.credential_generation=e.credential_generation "
+                + "AND NOT EXISTS (SELECT 1 FROM requested r WHERE r.meter_key=m.meter_key)) ORDER BY e." + column + " DESC LIMIT 1";
+        List<Object> parameters = new ArrayList<>(List.of(key, key, generation, Timestamp.from(clock.instant().minusSeconds(60))));
+        if (full) { parameters.add(Timestamp.from(clock.instant())); parameters.add(key); }
+        List<Instant> attempts = jdbc.query(sql, (rs, row) -> {
+            Instant due = instant(rs, column).plusSeconds(60);
+            Instant retry = instant(rs, "full_next_due_at");
+            return full && rs.getString("full_failure_code") != null && retry != null && retry.isAfter(due) ? retry : due;
+        }, parameters.toArray());
+        return attempts.isEmpty() ? null : attempts.getFirst();
     }
 
     public void stage(String run, String key, List<Sample> samples) {

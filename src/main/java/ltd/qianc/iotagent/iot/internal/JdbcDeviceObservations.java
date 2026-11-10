@@ -66,57 +66,87 @@ public final class JdbcDeviceObservations implements DeviceObservations {
                 + String.join(",", Collections.nCopies(columns.size(), "?")) + ") ON DUPLICATE KEY UPDATE " + String.join(",", updates);
     }
 
-    /** Called only by the directory's independent current-data synchronization run. */
-    public Instant begin(String key, String generation, long directoryVersion) {
+    public record CollectionRun(Instant at, String realm, List<AuthorizedDevice> devices) { }
+
+    /** Claims only due physical devices. A second viewer never creates another sampling cycle. */
+    public CollectionRun begin(String key, String generation, long directoryVersion, AuthorizedDeviceScope scope) {
         Instant attempt = clock.instant().truncatedTo(ChronoUnit.MICROS);
         return transactions.execute(tx -> {
             if (!current(key, generation, directoryVersion)) return null;
+            String realm = realm(key);
+            Map<String, AuthorizedDevice> candidates = new java.util.TreeMap<>();
+            for (AuthorizedDevice device : scope.devices()) {
+                candidates.put(LocalDataKeys.observationProgress(realm, LocalDataKeys.observation(device)), device);
+            }
+            if (candidates.isEmpty()) return null;
+            Map<String, Progress> held = progress(List.copyOf(candidates.keySet()), true);
             Timestamp now = Timestamp.from(attempt);
-            jdbc.update("INSERT INTO local_device_state_sync(scope_key,state,credential_generation,last_attempt_at,create_time,update_time) "
-                            + "VALUES (?,'PREPARING',?,?,?,?) ON DUPLICATE KEY UPDATE state='PREPARING',"
-                            + "last_success_at=CASE WHEN credential_generation=VALUES(credential_generation) THEN last_success_at ELSE NULL END,"
-                            + "credential_generation=VALUES(credential_generation),"
-                            + "last_attempt_at=VALUES(last_attempt_at),failure_code=NULL,update_time=VALUES(update_time)",
-                    key, generation, now, now, now);
-            return attempt;
+            Instant boundary = attempt.minusSeconds(60);
+            List<AuthorizedDevice> due = new ArrayList<>();
+            for (var candidate : candidates.entrySet()) {
+                Progress previous = held.get(candidate.getKey());
+                if (previous != null && previous.attempt().isAfter(boundary)) continue;
+                if (previous == null) {
+                    jdbc.update("INSERT IGNORE INTO local_device_state_sync(scope_key,state,credential_generation,last_attempt_at,create_time,update_time) "
+                                    + "VALUES (?,'PREPARING',?,?,?,?)",
+                            candidate.getKey(), generation, Timestamp.from(boundary), now, now);
+                }
+                int claimed = jdbc.update("UPDATE local_device_state_sync SET state='PREPARING',credential_generation=?,"
+                                + "last_attempt_at=?,failure_code=NULL,update_time=? WHERE scope_key=? AND last_attempt_at<=?",
+                        generation, now, now, candidate.getKey(), Timestamp.from(boundary));
+                if (claimed == 1) due.add(candidate.getValue());
+            }
+            return due.isEmpty() ? null : new CollectionRun(attempt, realm, List.copyOf(due));
         });
     }
 
-    public void publish(String key, String generation, long directoryVersion, Instant attempt,
-            AuthorizedDeviceScope scope, DeviceStateReadResult collected, Runnable checkAuthorization) {
+    public void publish(String key, String generation, long directoryVersion, CollectionRun run,
+            DeviceStateReadResult collected, Runnable checkAuthorization) {
         if (collected == null) throw unavailable();
         transactions.executeWithoutResult(tx -> {
-            if (!current(key, generation, directoryVersion) || !currentAttempt(key, generation, attempt)) return;
+            if (!current(key, generation, directoryVersion)) return;
+            for (AuthorizedDevice device : run.devices()) {
+                if (!currentAttempt(LocalDataKeys.observationProgress(run.realm(), LocalDataKeys.observation(device)), generation, run.at())) return;
+            }
             checkAuthorization.run();
             Map<String, Instant> prior = new LinkedHashMap<>();
-            jdbc.query("SELECT device_key,observed_at FROM local_device_states WHERE scope_key=? AND credential_generation=?", rs -> {
+            List<Object> priorParameters = new ArrayList<>(run.devices().size() + 1);
+            priorParameters.add(run.realm());
+            for (AuthorizedDevice device : run.devices()) priorParameters.add(LocalDataKeys.observation(device));
+            jdbc.query("SELECT device_key,observed_at FROM local_device_states WHERE scope_key=? AND device_key IN ("
+                    + String.join(",", Collections.nCopies(run.devices().size(), "?")) + ")", rs -> {
                 prior.put(rs.getString("device_key"), instant(rs, "observed_at"));
-            }, key, generation);
+            }, priorParameters.toArray());
             Instant committed = clock.instant().truncatedTo(ChronoUnit.MICROS);
             List<Object[]> rows = new ArrayList<>();
-            for (AuthorizedDevice device : scope.devices()) {
-                String deviceKey = LocalDataKeys.device(device);
+            for (AuthorizedDevice device : run.devices()) {
+                String deviceKey = LocalDataKeys.observation(device);
                 Object value = collected.states().get(device.id());
                 Instant observed = value == null ? null
                         : parseTime(collected.observedAtByDevice().getOrDefault(device.id(), collected.observedAt()));
                 Instant old = prior.get(deviceKey);
-                // Older source samples cannot overwrite a newer retained observation or refresh its collection time.
                 if (old != null && (observed == null || observed.isBefore(old))) continue;
-                rows.add(values(key, deviceKey, generation, device, value, observed, committed));
+                rows.add(values(run.realm(), deviceKey, generation, device, value, observed, committed));
             }
             if (!rows.isEmpty()) jdbc.batchUpdate(upsert, rows);
             checkAuthorization.run();
-            jdbc.update("UPDATE local_device_state_sync SET state='READY',batch_version=batch_version+1,last_success_at=?,"
-                            + "failure_code=NULL,update_time=? WHERE scope_key=? AND credential_generation=? AND last_attempt_at=?",
-                    Timestamp.from(committed), Timestamp.from(committed), key, generation, Timestamp.from(attempt));
+            for (AuthorizedDevice device : run.devices()) {
+                jdbc.update("UPDATE local_device_state_sync SET state='READY',batch_version=batch_version+1,last_success_at=?,"
+                                + "failure_code=NULL,update_time=? WHERE scope_key=? AND credential_generation=? AND last_attempt_at=?",
+                        Timestamp.from(committed), Timestamp.from(committed),
+                        LocalDataKeys.observationProgress(run.realm(), LocalDataKeys.observation(device)), generation, Timestamp.from(run.at()));
+            }
         });
     }
 
-    public void failed(String key, String generation, Instant attempt) {
-        if (attempt == null) return;
-        jdbc.update("UPDATE local_device_state_sync SET state='FAILED',failure_code='DEVICE_STATE_SYNC_UNAVAILABLE',update_time=? "
-                        + "WHERE scope_key=? AND credential_generation=? AND last_attempt_at=?",
-                Timestamp.from(clock.instant()), key, generation, Timestamp.from(attempt));
+    public void failed(String generation, CollectionRun run) {
+        if (run == null) return;
+        for (AuthorizedDevice device : run.devices()) {
+            jdbc.update("UPDATE local_device_state_sync SET state='FAILED',failure_code='DEVICE_STATE_SYNC_UNAVAILABLE',update_time=? "
+                            + "WHERE scope_key=? AND credential_generation=? AND last_attempt_at=?",
+                    Timestamp.from(clock.instant()), LocalDataKeys.observationProgress(run.realm(), LocalDataKeys.observation(device)),
+                    generation, Timestamp.from(run.at()));
+        }
     }
 
     @Override public DeviceStateReadResult read(RequestIdentity identity, List<String> deviceIds) {
@@ -129,50 +159,52 @@ public final class JdbcDeviceObservations implements DeviceObservations {
             List<AuthorizedDevice> requested = requested(batch.scope(), deviceIds);
             String key = scopeKey.apply(identity);
             String generation = publishedGeneration(key);
-            List<Progress> progressRows = jdbc.query(
-                    "SELECT state,last_success_at FROM local_device_state_sync WHERE scope_key=? AND credential_generation=?",
-                    (rs, row) -> new Progress(rs.getString("state"), instant(rs, "last_success_at")), key, generation);
-            if (progressRows.isEmpty()) throw preparing();
-            Progress progress = progressRows.getFirst();
-            Instant success = progress.success();
+            String realm = realm(key);
+            List<String> keys = requested.stream().map(LocalDataKeys::observation).toList();
+            List<String> checkpoints = keys.stream().map(device -> LocalDataKeys.observationProgress(realm, device)).toList();
+            Map<String, Progress> progress = progress(checkpoints, false);
+            Instant success = progress.values().stream().map(Progress::success).filter(java.util.Objects::nonNull)
+                    .min(Instant::compareTo).orElse(null);
             if (success == null) {
-                if ("FAILED".equals(progress.state())) throw unavailable();
+                if (progress.values().stream().anyMatch(value -> "FAILED".equals(value.state()))) throw unavailable();
                 throw preparing();
             }
             List<Object> parameters = new ArrayList<>();
-            parameters.add(key);
-            parameters.add(generation);
-            List<String> keys = requested.stream().map(LocalDataKeys::device).toList();
+            parameters.add(realm);
             parameters.addAll(keys);
             Map<String, Stored> records = new LinkedHashMap<>();
-            jdbc.query("SELECT * FROM local_device_states WHERE scope_key=? AND credential_generation=? AND device_key IN ("
+            jdbc.query("SELECT * FROM local_device_states WHERE scope_key=? AND device_key IN ("
                             + String.join(",", Collections.nCopies(requested.size(), "?")) + ")", rs -> {
-                        Stored stored = stored(rs);
-                        records.put(rs.getString("device_key"), stored);
+                        records.put(rs.getString("device_key"), stored(rs));
                     }, parameters.toArray());
             List<AuthorizedDevice> current = requested(directory.apply(identity).scope(), deviceIds);
             for (int index = 0; index < current.size(); index++) {
-                if (!current.get(index).kind().equals(requested.get(index).kind())) throw outsideScope();
+                if (!keys.get(index).equals(LocalDataKeys.observation(current.get(index)))) throw preparing();
             }
             if (!generation.equals(publishedGeneration(key))) throw preparing();
             Map<String, Object> states = new LinkedHashMap<>();
             Map<String, String> times = new LinkedHashMap<>();
             List<String> missing = new ArrayList<>();
             Instant freshnessBoundary = clock.instant().minusSeconds(60);
-            boolean stale = !"READY".equals(progress.state()) || !success.isAfter(freshnessBoundary);
+            boolean stale = false;
             Instant oldest = null;
             for (int index = 0; index < requested.size(); index++) {
                 AuthorizedDevice device = requested.get(index);
                 Stored stored = records.get(keys.get(index));
+                Progress checkpoint = progress.get(checkpoints.get(index));
+                Instant synchronizedAt = checkpoint == null ? null : checkpoint.success();
                 states.put(device.id(), stored == null ? null : stored.value());
-                if (stored == null || stored.value() == null || stored.synchronizedAt().isBefore(success)) missing.add(device.id());
+                boolean superseded = stored != null && synchronizedAt != null && stored.synchronizedAt().isBefore(synchronizedAt);
+                if (stored == null || stored.value() == null || synchronizedAt == null || superseded) missing.add(device.id());
+                stale |= checkpoint == null || !"READY".equals(checkpoint.state())
+                        || synchronizedAt == null || !synchronizedAt.isAfter(freshnessBoundary) || superseded;
                 if (stored == null) continue;
                 if (stored.observed() != null) {
                     times.put(device.id(), stored.observed().toString());
                     if (oldest == null || stored.observed().isBefore(oldest)) oldest = stored.observed();
                     stale |= !stored.observed().isAfter(freshnessBoundary);
                 }
-                stale |= !stored.synchronizedAt().isAfter(freshnessBoundary) || stored.synchronizedAt().isBefore(success);
+                stale |= !stored.synchronizedAt().isAfter(freshnessBoundary);
             }
             String observedAt = times.size() == requested.size() && oldest != null ? oldest.toString() : null;
             ObservationStatusEnum status = states.values().stream().allMatch(java.util.Objects::isNull)
@@ -183,6 +215,25 @@ public final class JdbcDeviceObservations implements DeviceObservations {
         } catch (DataAccessException failure) {
             throw unavailable();
         }
+    }
+
+    private String realm(String key) {
+        List<String> realms = jdbc.query("SELECT gateway_instance,tenant_code,source FROM local_sync_scopes WHERE scope_key=?",
+                (rs, row) -> LocalDataKeys.observations(rs.getString(1), rs.getString(2), rs.getString(3)), key);
+        if (realms.isEmpty()) throw preparing();
+        return realms.getFirst();
+    }
+
+    private Map<String, Progress> progress(List<String> keys, boolean lock) {
+        if (keys.isEmpty()) return Map.of();
+        Map<String, Progress> result = new LinkedHashMap<>();
+        jdbc.query("SELECT scope_key,state,last_attempt_at,last_success_at FROM local_device_state_sync WHERE scope_key IN ("
+                        + String.join(",", Collections.nCopies(keys.size(), "?")) + ") ORDER BY scope_key" + (lock ? " FOR UPDATE" : ""),
+                rs -> {
+                    result.put(rs.getString("scope_key"), new Progress(rs.getString("state"),
+                            instant(rs, "last_attempt_at"), instant(rs, "last_success_at")));
+                }, keys.toArray());
+        return result;
     }
 
     private String publishedGeneration(String key) {
@@ -291,5 +342,5 @@ public final class JdbcDeviceObservations implements DeviceObservations {
     private static BusinessException unavailable() { return new BusinessException("DEVICE_STATE_UNAVAILABLE", "本地设备状态暂不可用", 503); }
     private static BusinessException outsideScope() { return new BusinessException("DEVICE_OUTSIDE_SCOPE", "设备不在当前授权范围内", 403); }
     private record Stored(Object value, Instant observed, Instant synchronizedAt) { }
-    private record Progress(String state, Instant success) { }
+    private record Progress(String state, Instant attempt, Instant success) { }
 }

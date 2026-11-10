@@ -30,10 +30,13 @@ public final class EnvironmentHistoryFixture implements AutoCloseable {
     public final TransactionTemplate transactions;
     public final ObjectMapper mapper=new ObjectMapper();
     public final AtomicInteger sourceCalls=new AtomicInteger();
+    public final AtomicInteger stateCalls=new AtomicInteger();
+    public String gatewayBase=GATEWAY;
     public volatile List<AuthorizedDevice> devices=List.of(SENSOR);
     public volatile List<Map<String,Object>> rows=List.of();
     public volatile DeviceStateReadResult currentResult;
     public volatile boolean unavailable;
+    public volatile boolean currentUnavailable;
     public volatile int failPage=-1;
     public volatile GatewayAuthorizationException denied;
     public volatile java.util.function.IntFunction<String> pageOverride;
@@ -51,7 +54,8 @@ public final class EnvironmentHistoryFixture implements AutoCloseable {
             return Mono.just(AuthorizedDeviceScope.of(identity,identity.source(),List.of()));
         }
         @Override public Mono<DeviceStateReadResult> collectCurrentStates(RequestIdentity identity,AuthorizedDeviceScope scope) {
-            if(unavailable) return Mono.error(new IllegalStateException("synthetic current source offline"));
+            stateCalls.incrementAndGet();
+            if(unavailable || currentUnavailable) return Mono.error(new IllegalStateException("synthetic current source offline"));
             if(currentResult!=null) return Mono.just(currentResult);
             Map<String,Object> states=new LinkedHashMap<>();
             if(scope.devices().stream().anyMatch(device -> device.id().equals(SENSOR.id()))) states.put(SENSOR.id(),
@@ -81,30 +85,37 @@ public final class EnvironmentHistoryFixture implements AutoCloseable {
             }).build(),new ObservationGatewayRoutes(Map.of(ObservationOperationEnum.ENVIRONMENT_HISTORY,"/environment-history",
                     ObservationOperationEnum.ENERGY_HISTORY,"/energy-history")),java.time.Duration.ofSeconds(1),IotCallPolicy.passThrough());
 
-    public EnvironmentHistoryFixture() {
-        var database=new JdbcDataSource();
-        database.setURL("jdbc:h2:mem:environment_history_"+UUID.randomUUID()+";MODE=MySQL;DB_CLOSE_DELAY=-1");
+    public EnvironmentHistoryFixture() { this(database()); }
+    public EnvironmentHistoryFixture(javax.sql.DataSource database) {
         jdbc=new JdbcTemplate(database);
         transactions=new TransactionTemplate(new DataSourceTransactionManager(database));
         new SchemaMigrations(database).ensureLocalCompanyDirectory();
         // H2 quotes bound JSON strings; MySQL parses them. Use text only inside this H2 fixture.
-        jdbc.execute("ALTER TABLE local_company_devices ALTER COLUMN metadata_json VARCHAR(1000000) NOT NULL");
-        jdbc.execute("ALTER TABLE local_device_states ALTER COLUMN extensions_json VARCHAR(1000000) NOT NULL");
-        jdbc.execute("ALTER TABLE local_environment_samples ALTER COLUMN source_quality_json VARCHAR(1000000) NULL");
-        jdbc.execute("ALTER TABLE local_environment_sample_batches ALTER COLUMN source_quality_json VARCHAR(1000000) NULL");
+        if(database instanceof JdbcDataSource) {
+            jdbc.execute("ALTER TABLE local_company_devices ALTER COLUMN metadata_json VARCHAR(1000000) NOT NULL");
+            jdbc.execute("ALTER TABLE local_device_states ALTER COLUMN extensions_json VARCHAR(1000000) NOT NULL");
+            jdbc.execute("ALTER TABLE local_environment_samples ALTER COLUMN source_quality_json VARCHAR(1000000) NULL");
+            jdbc.execute("ALTER TABLE local_environment_sample_batches ALTER COLUMN source_quality_json VARCHAR(1000000) NULL");
+        }
         open();
+    }
+    private static JdbcDataSource database() {
+        var database=new JdbcDataSource();
+        database.setURL("jdbc:h2:mem:environment_history_"+UUID.randomUUID()+";MODE=MySQL;DB_CLOSE_DELAY=-1");
+        return database;
     }
     private void open() {
         snapshots=ReadSnapshots.create(clock,Runnable::run,Runnable::run,null,barrier,mapper,ReadSnapshots.Settings.defaults());
         directory=DeviceDirectory.jdbc(jdbc,transactions,mapper,gateway,source,
-                presented -> principal(presented.authorization(),presented.tenantCode()),snapshots,barrier,GATEWAY,"cd".repeat(32),clock, request -> List.of());
-        DeviceObservations observations=DeviceObservations.jdbc(jdbc,transactions,mapper,directory,GATEWAY,clock);
+                presented -> principal(presented.authorization(),presented.tenantCode()),snapshots,barrier,gatewayBase,"cd".repeat(32),clock, request -> List.of());
+        DeviceObservations observations=DeviceObservations.jdbc(jdbc,transactions,mapper,directory,gatewayBase,clock);
         ordinary=IotAdapterFactory.localReads(gateway,()->directory,()->observations,IotAdapterFactory.candidateSets(jdbc,mapper));
     }
     public RequestIdentity identity() { return identity("Bearer fixture-environment","fixture-tenant"); }
     public RequestIdentity identity(String token,String tenant) { return new RequestIdentity(token,tenant,IotSourceEnum.COMPANY,principal(token,tenant).ownerKey()); }
     private static PrincipalInfo principal(String token,String tenant) {
-        return new PrincipalInfo(token,tenant,token.endsWith("other")?"fixture-other-principal":"fixture-principal","fixture-realm");
+        String principal=token.startsWith("Bearer fixture-member-")?token:token.endsWith("other")?"fixture-other-principal":"fixture-principal";
+        return new PrincipalInfo(token,tenant,principal,"fixture-realm");
     }
     public EnvironmentHistory history() { return directory.environmentHistory(); }
     public ObservationAdapter composed() {
@@ -132,7 +143,10 @@ public final class EnvironmentHistoryFixture implements AutoCloseable {
         return Mono.just(org.springframework.web.reactive.function.client.ClientResponse.create(org.springframework.http.HttpStatus.OK)
                 .header("Content-Type","application/json").body(json).build());
     }
-    @Override public void close() { directory.close(); snapshots.close(); jdbc.execute("SHUTDOWN"); }
+    @Override public void close() {
+        directory.close(); snapshots.close();
+        if(jdbc.getDataSource() instanceof JdbcDataSource) jdbc.execute("SHUTDOWN");
+    }
     private static final class MemoryBarrier implements ReadSnapshots.Barrier {
         private final Map<Key,State> states=new LinkedHashMap<>();
         @Override public Checkpoint startInstance(String instance) { return new Checkpoint(true,"fixture-epoch"); }

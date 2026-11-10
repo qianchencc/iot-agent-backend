@@ -113,7 +113,7 @@ class EnergyHistoryBehaviorTest {
         }
     }
 
-    @Test void dedicatedGrantsStaySeparateAndVerifiedCredentialRenewalReusesLocalHistory() {
+    @Test void dedicatedGrantsStaySeparateAndCredentialRenewalPreservesPhysicalHistoryTimes() {
         try(var f = new EnergyHistoryFixture()) {
             AuthorizedDevice other=new AuthorizedDevice("fixture-other-meter","energy","测试电表乙","测试位置乙",true);
             f.catalog=List.of(EnergyHistoryFixture.METER,other);
@@ -122,12 +122,13 @@ class EnergyHistoryBehaviorTest {
             assertTrue(f.directory.loadScope(f.identity()).device(other.id()).isPresent());
             assertTrue(f.history().authorizedScope(f.identity()).device(other.id()).isEmpty());
             assertEquals(403,assertThrows(BusinessException.class,() -> f.history().window(f.identity(),List.of(other.id()),FROM,TO,false)).httpStatus());
+            var original = f.history().window(f.identity(),List.of(METER),FROM,TO,false);
             var rotated=f.identity("Bearer fixture-rotated","fixture-tenant");
             f.register(rotated);f.unavailable=true;f.directory.synchronizeDue();
             var retained = f.history().window(rotated,List.of(METER),FROM,TO,false);
             assertEquals(new BigDecimal("100").setScale(30), retained.samples().getFirst().epf());
             assertTrue(retained.missingCoverageMeterIds().isEmpty());
-            assertEquals("stale", retained.cache().get("status"));
+            assertEquals(original.cache().get("updatedAt"), retained.cache().get("updatedAt"));
             int calls = f.sourceCalls.get();
             f.unavailable=false;f.directory.synchronizeHistoryDue();
             assertEquals(calls, f.sourceCalls.get(), "同主体换证不应重新扫描已经完整保存的历史");
@@ -388,6 +389,46 @@ class EnergyHistoryBehaviorTest {
             assertTrue(rotated.get());
             assertEquals(new BigDecimal("200").setScale(30),
                     f.history().window(renewed, List.of(METER), FROM, TO, false).samples().getFirst().epf());
+        }
+    }
+
+    @Test void equivalentViewersShareFailedCurrentCollectionCooldownAndKeepPublishedHistory() {
+        try (var f = new EnergyHistoryFixture()) {
+            f.rows = List.of(EnergyHistoryFixture.row(METER, "retained", "2020-01-01T00:00:00Z", "100"));
+            f.publish();
+            var original = window(f);
+            var newcomer = f.identity("Bearer fixture-other", "fixture-tenant");
+            f.register(newcomer);
+            f.directory.synchronizeDue();
+            int calls = f.sourceCalls.get();
+            f.clock.advance(61);
+            f.unavailable = true;
+            f.directory.synchronizeDue();
+            assertEquals(calls + 1, f.sourceCalls.get(), "同一电表集合的采集失败不应由每个账号重复请求");
+            var retained = f.history().window(newcomer, List.of(METER), FROM, TO, false);
+            assertEquals(original.samples(), retained.samples());
+            assertEquals("stale", retained.cache().get("status"));
+        }
+    }
+
+    @Test void equivalentViewersShareInitialFullScanFailureAndResumeOnceAfterCooldown() {
+        try (var f = new EnergyHistoryFixture()) {
+            f.rows = List.of(EnergyHistoryFixture.row(METER, "retained", "2020-01-01T00:00:00Z", "100"));
+            f.unavailable = true;
+            f.publish();
+            assertEquals(1, f.sourceCalls.get());
+            var newcomer = f.identity("Bearer fixture-other", "fixture-tenant");
+            f.register(newcomer);
+            f.synchronize();
+            assertEquals(1, f.sourceCalls.get(), "同权限的新账号不得绕过既有全量失败的等待期");
+            assertEquals("ENERGY_HISTORY_PREPARING", assertThrows(BusinessException.class,
+                    () -> f.history().window(newcomer, List.of(METER), FROM, TO, false)).code());
+            f.clock.advance(61);
+            f.unavailable = false;
+            f.directory.synchronizeHistoryDue();
+            assertEquals(2, f.sourceCalls.get());
+            assertEquals(new BigDecimal("100").setScale(30),
+                    f.history().window(newcomer, List.of(METER), FROM, TO, false).samples().getFirst().epf());
         }
     }
 

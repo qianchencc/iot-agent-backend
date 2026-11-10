@@ -2,8 +2,8 @@
 -- Directory authorization remains authoritative; retained observations never grant visibility.
 CREATE TABLE IF NOT EXISTS local_device_states (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '代理主键',
-    scope_key CHAR(64) NOT NULL COMMENT '来源实例及已核验主体来源隔离域',
-    device_key CHAR(64) NOT NULL COMMENT '设备类型与来源ID摘要',
+    scope_key CHAR(64) NOT NULL COMMENT '网关实例租户来源的共享设备事实域',
+    device_key CHAR(64) NOT NULL COMMENT '设备类型来源ID与实际采集绑定摘要',
     source_device_id VARCHAR(255) NOT NULL COMMENT '来源设备ID',
     device_kind VARCHAR(64) NOT NULL COMMENT '来源设备类型',
     value_shape VARCHAR(16) NOT NULL COMMENT 'UNKNOWN或BOOLEAN或OBJECT',
@@ -31,16 +31,16 @@ CREATE TABLE IF NOT EXISTS local_device_states (
     update_time DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '本地事实更新时刻',
     PRIMARY KEY (id),
     UNIQUE KEY uk_local_device_state (scope_key,device_key)
-) ENGINE=InnoDB COMMENT='主体隔离的当前设备观测；旧观测不作真实控制证据';
+) ENGINE=InnoDB COMMENT='共享设备当前观测；每次读取仍核验用户自身授权';
 
 CREATE TABLE IF NOT EXISTS local_device_state_sync (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '代理主键',
-    scope_key CHAR(64) NOT NULL COMMENT '已核验主体来源隔离域',
-    state VARCHAR(24) NOT NULL COMMENT 'PREPARING或READY或FAILED',
-    batch_version BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '完整采集提交版本',
-    credential_generation CHAR(36) NOT NULL COMMENT '最近尝试的凭据代次',
-    last_attempt_at DATETIME(6) NOT NULL COMMENT '最近采集尝试时间',
-    last_success_at DATETIME(6) NULL COMMENT '最近完整采集提交时间',
+    scope_key CHAR(64) NOT NULL COMMENT '共享设备进度键或主体调度游标',
+    state VARCHAR(24) NOT NULL COMMENT 'PREPARING或READY或FAILED；主体游标为DISPATCHED',
+    batch_version BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '设备采集提交版本',
+    credential_generation CHAR(36) NOT NULL COMMENT '采集者或调度者的凭据代次，不授予读取权限',
+    last_attempt_at DATETIME(6) NOT NULL COMMENT '设备采集尝试或主体派发时间',
+    last_success_at DATETIME(6) NULL COMMENT '设备采集成功时间，主体调度游标为null',
     failure_code VARCHAR(64) NULL COMMENT '脱敏失败类别，不保存上游正文',
     create_time DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '状态登记时间',
     update_time DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT '进度更新时刻',

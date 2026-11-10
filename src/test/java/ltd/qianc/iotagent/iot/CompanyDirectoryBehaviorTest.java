@@ -488,40 +488,39 @@ class CompanyDirectoryBehaviorTest {
         }
     }
 
-    @Test void credentialRotationCannotReuseOldStatesEvenWhenDirectoryMembershipIsUnchanged() {
+    @Test void credentialRotationRequiresNewAuthorizationButReusesTheSamePhysicalFacts() {
         try (Fixture f = new Fixture()) {
             f.publishInitial();
+            var original = f.observations.read(IDENTITY, List.of(FIRST.id()));
             RequestIdentity rotated = identity("Bearer fixture-narrow", IDENTITY.tenantCode());
-            assertPreparing(() -> f.directory.loadBatch(rotated));
-            f.stateFailure = new IllegalStateException("fixture collection failed after credential rotation");
+            assertPreparing(() -> f.observations.read(rotated, List.of(FIRST.id())));
+            f.stateFailure = new IllegalStateException("a new credential must not force a new physical sample");
             f.directory.synchronizeDue();
-            assertEquals("READY", f.directory.status(rotated).get("state"));
-            assertEquals("DEVICE_STATE_UNAVAILABLE", assertThrows(BusinessException.class,
-                    () -> f.observations.read(rotated, List.of(FIRST.id()))).code());
-            f.stateFailure = null;
-            f.stateResult = new DeviceStateReadResult(Map.of(FIRST.id(), Map.of("totalActivePower", java.math.BigDecimal.ONE)),
-                    f.clock.instant().minusSeconds(10).toString());
-            f.clock.advance(61);
-            f.directory.synchronizeDue();
-            assertEquals(java.math.BigDecimal.ONE, ((Map<?, ?>) f.observations.read(rotated, List.of(FIRST.id()))
-                    .states().get(FIRST.id())).get("totalActivePower"));
+            var reused = f.observations.read(rotated, List.of(FIRST.id()));
+            assertEquals(original.states(), reused.states());
+            assertEquals(original.cache(), reused.cache());
+            assertEquals(1, f.stateCalls.get());
         }
     }
 
-    @Test void currentStatesAreTenantAndOwnerScopedAndRevocationBlocksRetainedRows() {
+    @Test void sharedFactsNeverReplaceTheViewersOwnDeviceGrantOrTenantBoundary() {
         try (Fixture f = new Fixture()) {
             f.publishInitial();
-            Object original = f.observations.read(IDENTITY, List.of(FIRST.id())).states().get(FIRST.id());
-            for (RequestIdentity other : List.of(identity("Bearer fixture-other", IDENTITY.tenantCode()),
-                    identity(IDENTITY.authorization(), "fixture-other-tenant"))) {
-                assertPreparing(() -> f.observations.read(other, List.of(FIRST.id())));
-                f.stateResult = new DeviceStateReadResult(Map.of(FIRST.id(), Map.of("totalActivePower", java.math.BigDecimal.ONE)),
-                        f.clock.instant().toString());
-                f.directory.synchronizeDue();
-                assertEquals(java.math.BigDecimal.ONE, ((Map<?, ?>) f.observations.read(other, List.of(FIRST.id()))
-                        .states().get(FIRST.id())).get("totalActivePower"));
-                assertEquals(original, f.observations.read(IDENTITY, List.of(FIRST.id())).states().get(FIRST.id()));
-            }
+            var original = f.observations.read(IDENTITY, List.of(FIRST.id()));
+            RequestIdentity colleague = identity("Bearer fixture-other", IDENTITY.tenantCode());
+            f.devices = List.of(SECOND);
+            assertPreparing(() -> f.directory.loadBatch(colleague));
+            f.directory.synchronizeDue();
+            assertEquals(403, assertThrows(BusinessException.class,
+                    () -> f.observations.read(colleague, List.of(FIRST.id()))).httpStatus());
+            assertEquals(original.states(), f.observations.read(IDENTITY, List.of(FIRST.id())).states());
+            f.devices = List.of(FIRST);
+            f.stateFailure = new IllegalStateException("other tenant has not published a sample");
+            RequestIdentity otherTenant = identity("Bearer fixture-other", "fixture-other-tenant");
+            assertPreparing(() -> f.directory.loadBatch(otherTenant));
+            f.directory.synchronizeDue();
+            assertEquals("DEVICE_STATE_UNAVAILABLE", assertThrows(BusinessException.class,
+                    () -> f.observations.read(otherTenant, List.of(FIRST.id()))).code());
             f.stateFailure = new GatewayAuthorizationException(403);
             f.clock.advance(61);
             f.directory.synchronizeDue();
@@ -561,7 +560,6 @@ class CompanyDirectoryBehaviorTest {
             assertEquals("IOT_SCOPE_UNAVAILABLE", assertThrows(BusinessException.class,
                     () -> gateway.readDeviceStates(IDENTITY, List.of(light.id())).block()).code());
             assertEquals(2, f.calls.get());
-            assertEquals(2, f.stateCalls.get());
         }
     }
 

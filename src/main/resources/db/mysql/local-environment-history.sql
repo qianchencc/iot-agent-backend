@@ -1,3 +1,6 @@
+-- v2 scope_key identifies gateway/tenant/source plus the exact authorized physical sensor set.
+-- Fact credential_generation records the collector, never the reader's permission.
+-- Requests retain the requesting credential generation; user grants stay in local_company_devices.
 CREATE TABLE IF NOT EXISTS local_environment_sync (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
     scope_key CHAR(64) NOT NULL,

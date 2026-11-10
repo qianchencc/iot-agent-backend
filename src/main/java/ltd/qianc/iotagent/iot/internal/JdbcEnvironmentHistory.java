@@ -30,7 +30,7 @@ import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 
-/** Principal-isolated site history. Current values remain the independently collected 04 observations. */
+/** Site history shared only by identical authorized physical sensor sets; grants remain principal-local. */
 public final class JdbcEnvironmentHistory implements EnvironmentHistory {
     private static final int PAGE_SIZE = 100;
     private static final String FACT_FIELDS = "source_record_id,source_id_missing,device_code,original_recorded_at,recorded_at,temp,humidity,pm25,pm10,pm1,invalid_values,source_quality_json,conflicted";
@@ -39,10 +39,11 @@ public final class JdbcEnvironmentHistory implements EnvironmentHistory {
     private static final String PUBLISH = "INSERT INTO local_environment_samples(scope_key,sample_key," + FACT_FIELDS
             + ",credential_generation,synchronized_at,create_time,update_time) SELECT scope_key,sample_key," + FACT_FIELDS
             + ",?,?,?,? FROM local_environment_sample_batches WHERE run_id=? AND scope_key=? ON DUPLICATE KEY UPDATE "
+            + "credential_generation=CASE WHEN local_environment_samples.synchronized_at>? "
+            + "THEN local_environment_samples.credential_generation ELSE VALUES(credential_generation) END,"
             + String.join(",",UPDATED_FIELDS.stream().map(field -> field
-                    + "=CASE WHEN local_environment_samples.credential_generation=VALUES(credential_generation) AND local_environment_samples.synchronized_at>? "
-                    + "THEN local_environment_samples." + field + " ELSE VALUES(" + field + ") END").toList())
-            + ",credential_generation=VALUES(credential_generation)";
+                    + "=CASE WHEN local_environment_samples.synchronized_at>? "
+                    + "THEN local_environment_samples." + field + " ELSE VALUES(" + field + ") END").toList());
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
     private final ObjectMapper mapper;
@@ -80,28 +81,29 @@ public final class JdbcEnvironmentHistory implements EnvironmentHistory {
         if(from.isAfter(to)) throw invalidWindow();
         try {
             Access access=authorize(request.identity());
-            Progress progress=progress(access.key(),access.generation());
+            Progress progress=progress(access.dataKey());
             if(progress==null || progress.fullSuccess()==null) {
                 request(access,from,to);
                 throw preparing();
             }
-            String predicate="scope_key=? AND credential_generation=? AND (recorded_at IS NULL OR (recorded_at>=? AND recorded_at<=?))";
+            String predicate="scope_key=? AND (recorded_at IS NULL OR (recorded_at>=? AND recorded_at<=?))";
             String sql="SELECT * FROM local_environment_samples WHERE "+predicate
                     +" ORDER BY CASE WHEN recorded_at IS NULL THEN 1 ELSE 0 END,recorded_at DESC,sample_key DESC";
             List<Sample> samples=fullWindow
-                    ?jdbc.query(sql,this::sample,access.key(),access.generation(),Timestamp.from(from),Timestamp.from(to))
+                    ?jdbc.query(sql,this::sample,access.dataKey(),Timestamp.from(from),Timestamp.from(to))
                     :jdbc.query(sql+" LIMIT 100 OFFSET ?",this::sample,
-                            access.key(),access.generation(),Timestamp.from(from),Timestamp.from(to),(long)page*PAGE_SIZE);
+                            access.dataKey(),Timestamp.from(from),Timestamp.from(to),(long)page*PAGE_SIZE);
             Long total=fullWindow?(long)samples.size():jdbc.queryForObject(
                     "SELECT COUNT(*) FROM local_environment_samples WHERE "+predicate,Long.class,
-                    access.key(),access.generation(),Timestamp.from(from),Timestamp.from(to));
+                    access.dataKey(),Timestamp.from(from),Timestamp.from(to));
             samples.sort(EnvironmentSamples.ORDER);
             Integer next=!fullWindow && (long)(page+1)*PAGE_SIZE<total?page+1:null;
             Map<String,Object> payload=EnvironmentSamples.payload(samples,from.toString(),to.toString(),true,next,null);
             payload.put("totalElements",total);
             Access current=authorize(request.identity());
-            Progress latest=progress(current.key(),current.generation());
-            if(!access.generation().equals(current.generation()) || latest==null || latest.version()!=progress.version()) throw preparing();
+            Progress latest=progress(current.dataKey());
+            if(!access.generation().equals(current.generation()) || !access.dataKey().equals(current.dataKey())
+                    || latest==null || latest.version()!=progress.version()) throw preparing();
             payload.put("cache",cache(latest));
             return EnvironmentSamples.response(payload);
         } catch(DataAccessException failure) { throw unavailable(); }
@@ -118,7 +120,9 @@ public final class JdbcEnvironmentHistory implements EnvironmentHistory {
         List<String> generations=jdbc.query("SELECT credential_generation FROM local_sync_scopes WHERE scope_key=? AND published_generation=credential_generation AND denial_status=0",
                 (rs,row)->rs.getString(1),key);
         if(generations.isEmpty()) throw preparing();
-        return new Access(key,generations.getFirst(),batch.scope());
+        String dataKey=sharedKey(key,generations.getFirst());
+        if(dataKey==null) throw preparing();
+        return new Access(key,generations.getFirst(),dataKey,batch.scope());
     }
 
     private static java.util.Set<String> environmentIds(Access access) {
@@ -127,17 +131,17 @@ public final class JdbcEnvironmentHistory implements EnvironmentHistory {
         return ids;
     }
 
-    private Progress progress(String key,String generation) {
-        List<Progress> rows=jdbc.query("SELECT * FROM local_environment_sync WHERE scope_key=? AND credential_generation=?",
+    private Progress progress(String key) {
+        List<Progress> rows=jdbc.query("SELECT * FROM local_environment_sync WHERE scope_key=?",
                 (rs,row)->new Progress(rs.getLong("publication_version"),instant(rs,"current_success_at"),instant(rs,"full_success_at"),
-                        rs.getString("current_failure_code")!=null || rs.getString("full_failure_code")!=null),key,generation);
+                        rs.getString("current_failure_code")!=null || rs.getString("full_failure_code")!=null),key);
         return rows.isEmpty()?null:rows.getFirst();
     }
 
     private void request(Access access,Instant from,Instant to) {
         Timestamp now=Timestamp.from(clock.instant());
         jdbc.update("INSERT IGNORE INTO local_environment_requests(scope_key,credential_generation,request_key,range_from,range_to,create_time,update_time) VALUES (?,?,?,?,?,?,?)",
-                access.key(),access.generation(),LocalDataKeys.hash(from+"\u0000"+to),Timestamp.from(from),Timestamp.from(to),now,now);
+                access.dataKey(),access.generation(),LocalDataKeys.hash(from+"\u0000"+to),Timestamp.from(from),Timestamp.from(to),now,now);
     }
 
     private Map<String,Object> cache(Progress progress) {
@@ -151,31 +155,58 @@ public final class JdbcEnvironmentHistory implements EnvironmentHistory {
     }
 
     boolean fullDue(String key,String generation) {
-        if(jdbc.queryForList("SELECT id FROM local_company_devices WHERE scope_key=? AND device_kind='environment' LIMIT 1",key).isEmpty()) return false;
-        return jdbc.queryForList("SELECT id FROM local_environment_sync WHERE scope_key=? AND credential_generation=? AND full_next_due_at>?",
-                key,generation,Timestamp.from(clock.instant())).isEmpty();
+        String shared=sharedKey(key,generation);
+        return shared!=null && jdbc.queryForList("SELECT id FROM local_environment_sync WHERE scope_key=? AND full_next_due_at>?",
+                shared,Timestamp.from(clock.instant())).isEmpty();
     }
 
-    boolean begin(String key,String generation,boolean full,Instant attempt) {
-        return Boolean.TRUE.equals(transactions.execute(tx -> {
+    String begin(String key,String generation,boolean full,Instant attempt) {
+        return transactions.execute(tx -> {
             lockScope(key,generation);
+            String shared=sharedKey(key,generation);
+            if(shared==null) return null;
             Timestamp now=Timestamp.from(clock.instant());
             jdbc.update("INSERT IGNORE INTO local_environment_sync(scope_key,credential_generation,full_next_due_at,create_time,update_time) VALUES (?,?,?,?,?)",
-                    key,generation,now,now,now);
-            Map<String,Object> previous=jdbc.queryForMap("SELECT credential_generation FROM local_environment_sync WHERE scope_key=? FOR UPDATE",key);
-            if(!generation.equals(previous.get("credential_generation"))) jdbc.update("UPDATE local_environment_sync SET credential_generation=?,publication_version=publication_version+1,"
-                    +"current_attempt_at=NULL,current_success_at=NULL,current_failure_code=NULL,full_attempt_at=NULL,full_success_at=NULL,full_covered_until=NULL,full_state='PREPARING',full_failure_code=NULL,full_next_due_at=? WHERE scope_key=?",generation,now,key);
-            if(full) return jdbc.update("UPDATE local_environment_sync SET full_attempt_at=?,full_state='RUNNING',full_failure_code=NULL,full_next_due_at=?,update_time=? WHERE scope_key=? AND credential_generation=? AND full_next_due_at<=?",
-                    Timestamp.from(attempt),Timestamp.from(JdbcEnergyHistory.nextNight(clock.instant())),now,key,generation,now)==1;
-            return jdbc.update("UPDATE local_environment_sync SET current_attempt_at=?,current_failure_code=NULL,update_time=? WHERE scope_key=? AND credential_generation=?",
-                    Timestamp.from(attempt),now,key,generation)==1;
-        }));
+                    shared,generation,now,now,now);
+            Map<String,Object> previous=jdbc.queryForMap("SELECT * FROM local_environment_sync WHERE scope_key=? FOR UPDATE",shared);
+            if(full) {
+                int claimed=jdbc.update("UPDATE local_environment_sync SET credential_generation=?,full_attempt_at=?,full_state='RUNNING',"
+                                +"full_failure_code=NULL,full_next_due_at=?,update_time=? WHERE scope_key=? AND full_next_due_at<=?",
+                        generation,Timestamp.from(attempt),Timestamp.from(JdbcEnergyHistory.nextNight(clock.instant())),now,shared,now);
+                return claimed==1?shared:null;
+            }
+            if(previous.get("full_success_at")==null) return null;
+            Timestamp boundary=Timestamp.from(clock.instant().minusSeconds(60));
+            int claimed=jdbc.update("UPDATE local_environment_sync SET credential_generation=?,current_attempt_at=?,current_failure_code=NULL,update_time=? "
+                            +"WHERE scope_key=? AND (current_attempt_at IS NULL OR current_attempt_at<=?) "
+                            +"AND (current_success_at IS NULL OR current_success_at<=?) AND full_success_at<=?",
+                    generation,Timestamp.from(attempt),now,shared,boundary,boundary,boundary);
+            return claimed==1?shared:null;
+        });
     }
 
-    Instant currentCutoff(String key,String generation) {
-        List<Instant> rows=jdbc.query("SELECT full_covered_until FROM local_environment_sync WHERE scope_key=? AND credential_generation=?",
-                (rs,row)->instant(rs,"full_covered_until"),key,generation);
+    Instant currentCutoff(String shared) {
+        List<Instant> rows=jdbc.query("SELECT full_covered_until FROM local_environment_sync WHERE scope_key=?",
+                (rs,row)->instant(rs,"full_covered_until"),shared);
         return rows.isEmpty()?null:rows.getFirst();
+    }
+
+    private String sharedKey(String key,String generation) {
+        List<String> realms=new ArrayList<>();
+        List<ltd.qianc.iotagent.iot.AuthorizedDevice> sensors=jdbc.query(
+                "SELECT s.gateway_instance,s.tenant_code,s.source,d.* FROM local_sync_scopes s JOIN local_company_devices d ON d.scope_key=s.scope_key "
+                        +"WHERE s.scope_key=? AND s.credential_generation=? AND s.published_generation=? AND s.denial_status=0 AND d.device_kind='environment'",
+                (rs,row)->{
+                    realms.add(LocalDataKeys.observations(rs.getString("gateway_instance"),rs.getString("tenant_code"),rs.getString("source")));
+                    com.fasterxml.jackson.databind.JsonNode metadata;
+                    try { metadata=mapper.readTree(rs.getString("metadata_json")); }
+                    catch(java.io.IOException malformed) { throw unavailable(); }
+                    return new ltd.qianc.iotagent.iot.AuthorizedDevice(rs.getString("source_device_id"),rs.getString("device_kind"),
+                            rs.getString("device_name"),rs.getString("install_address"),true,rs.getString("control_ref"),
+                            rs.getString("office_device_ref"),rs.getString("hub_device_id"),rs.getString("smart_area_code"),List.of(),List.of(),
+                            Map.of("code",metadata.path("code").asText(""),"companyAcDetailActionId",metadata.path("companyAcDetailActionId").asText("")));
+                },key,generation,generation);
+        return sensors.isEmpty()?null:LocalDataKeys.environmentHistory(realms.getFirst(),sensors);
     }
 
     void stage(String run,String key,Map<String,Sample> samples) {
@@ -194,35 +225,38 @@ public final class JdbcEnvironmentHistory implements EnvironmentHistory {
                 +"VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE conflicted=TRUE,update_time=VALUES(update_time)",rows);
     }
 
-    void publish(String run,String key,String generation,boolean full,Instant attempt,Runnable authorize) {
+    void publish(String run,String key,String generation,String shared,boolean full,Instant attempt,Runnable authorize) {
         transactions.executeWithoutResult(tx -> {
             lockScope(key,generation);
+            if(!shared.equals(sharedKey(key,generation))) throw preparing();
             String attemptColumn=full?"full_attempt_at":"current_attempt_at";
-            List<Instant> attempts=jdbc.query("SELECT "+attemptColumn+" FROM local_environment_sync WHERE scope_key=? AND credential_generation=? FOR UPDATE",
-                    (rs,row)->instant(rs,attemptColumn),key,generation);
+            List<Instant> attempts=jdbc.query("SELECT "+attemptColumn+" FROM local_environment_sync WHERE scope_key=? FOR UPDATE",
+                    (rs,row)->instant(rs,attemptColumn),shared);
             if(attempts.isEmpty() || !attempt.equals(attempts.getFirst())) throw preparing();
             authorize.run();
             Timestamp now=Timestamp.from(clock.instant());
             List<Object> parameters=new ArrayList<>();
-            parameters.add(generation); parameters.add(now); parameters.add(now); parameters.add(now); parameters.add(run); parameters.add(key);
+            parameters.add(generation); parameters.add(now); parameters.add(now); parameters.add(now); parameters.add(run); parameters.add(shared);
+            parameters.add(Timestamp.from(attempt));
             for(String ignored:UPDATED_FIELDS) parameters.add(Timestamp.from(attempt));
             jdbc.update(PUBLISH,parameters.toArray());
             if(full) {
-                jdbc.update("UPDATE local_environment_sync SET publication_version=publication_version+1,full_success_at=?,full_covered_until=?,full_state='READY',full_failure_code=NULL,update_time=? WHERE scope_key=? AND credential_generation=?",
-                        now,Timestamp.from(attempt),now,key,generation);
-                jdbc.update("UPDATE local_environment_requests SET state='READY',applied_at=?,update_time=? WHERE scope_key=? AND credential_generation=?",now,now,key,generation);
-            } else jdbc.update("UPDATE local_environment_sync SET publication_version=publication_version+1,current_success_at=?,current_failure_code=NULL,update_time=? WHERE scope_key=? AND credential_generation=?",now,now,key,generation);
+                jdbc.update("UPDATE local_environment_sync SET publication_version=publication_version+1,full_success_at=?,full_covered_until=?,full_state='READY',full_failure_code=NULL,update_time=? WHERE scope_key=?",
+                        now,Timestamp.from(attempt),now,shared);
+                jdbc.update("UPDATE local_environment_requests SET state='READY',applied_at=?,update_time=? WHERE scope_key=?",now,now,shared);
+            } else jdbc.update("UPDATE local_environment_sync SET publication_version=publication_version+1,current_success_at=?,current_failure_code=NULL,update_time=? WHERE scope_key=?",now,now,shared);
             authorize.run();
         });
     }
 
-    void failed(String key,String generation,boolean full,Instant attempt) {
+    void failed(String key,boolean full,Instant attempt) {
+        if(key==null) return;
         Timestamp now=Timestamp.from(clock.instant()),started=Timestamp.from(attempt);
         if(full) jdbc.update("UPDATE local_environment_sync SET full_attempt_at=?,full_state='FAILED',full_failure_code='ENVIRONMENT_HISTORY_SYNC_UNAVAILABLE',full_next_due_at=?,update_time=? "
-                        +"WHERE scope_key=? AND credential_generation=? AND (full_attempt_at IS NULL OR full_attempt_at<=?)",
-                started,Timestamp.from(clock.instant().plusSeconds(60)),now,key,generation,started);
+                        +"WHERE scope_key=? AND (full_attempt_at IS NULL OR full_attempt_at<=?)",
+                started,Timestamp.from(clock.instant().plusSeconds(60)),now,key,started);
         else jdbc.update("UPDATE local_environment_sync SET current_attempt_at=?,current_failure_code='ENVIRONMENT_CURRENT_SYNC_UNAVAILABLE',update_time=? "
-                +"WHERE scope_key=? AND credential_generation=? AND (current_attempt_at IS NULL OR current_attempt_at<=?)",started,now,key,generation,started);
+                +"WHERE scope_key=? AND (current_attempt_at IS NULL OR current_attempt_at<=?)",started,now,key,started);
     }
 
     void discard(String run) { jdbc.update("DELETE FROM local_environment_sample_batches WHERE run_id=?",run); }
@@ -265,6 +299,6 @@ public final class JdbcEnvironmentHistory implements EnvironmentHistory {
     private static BusinessException invalidWindow() { return new BusinessException("INVALID_HISTORY_WINDOW","环境历史起止窗口或页号无效",400); }
     private static BusinessException preparing() { return new BusinessException("ENVIRONMENT_HISTORY_PREPARING","环境历史尚未完整同步，请稍后重试",503); }
     private static BusinessException unavailable() { return new BusinessException("ENVIRONMENT_HISTORY_UNAVAILABLE","本地环境数据当前不可用，请稍后重试",503); }
-    private record Access(String key,String generation,ltd.qianc.iotagent.iot.AuthorizedDeviceScope scope) { }
+    private record Access(String key,String generation,String dataKey,ltd.qianc.iotagent.iot.AuthorizedDeviceScope scope) { }
     private record Progress(long version,Instant currentSuccess,Instant fullSuccess,boolean failed) { }
 }

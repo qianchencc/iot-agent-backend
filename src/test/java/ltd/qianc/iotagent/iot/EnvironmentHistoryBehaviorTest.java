@@ -13,6 +13,139 @@ import ltd.qianc.iotagent.error.BusinessException;
 import org.junit.jupiter.api.Test;
 
 class EnvironmentHistoryBehaviorTest {
+    @Test void newlyAuthorizedViewerUsesExistingDeviceFactsWithoutResamplingOrRefreshingTheirTimes() {
+        try(var f=new EnvironmentHistoryFixture()) {
+            f.publish();
+            var original=f.history().current(f.identity(),List.of(EnvironmentHistoryFixture.SENSOR.id()));
+            f.currentResult=new DeviceStateReadResult(Map.of(EnvironmentHistoryFixture.SENSOR.id(),Map.of("temp",new BigDecimal("99"))),f.clock.instant().toString());
+            var colleague=f.identity("Bearer fixture-other","fixture-tenant");
+            f.register(colleague);
+            f.directory.synchronizeDue();
+            var reused=f.history().current(colleague,List.of(EnvironmentHistoryFixture.SENSOR.id()));
+            assertEquals(original.states(),reused.states());
+            assertEquals(original.observedAtByDevice(),reused.observedAtByDevice());
+            assertEquals(original.cache().get("updatedAt"),reused.cache().get("updatedAt"));
+            assertEquals(1,f.stateCalls.get(),"同一新鲜设备事实不应因另一个已授权用户而重采");
+        }
+    }
+
+    @Test void equivalentAuthorizedSensorScopesReusePublishedHistoryWithoutAnotherCollection() {
+        try(var f=new EnvironmentHistoryFixture()) {
+            f.rows=List.of(EnvironmentHistoryFixture.row("shared","fixture-env-code","2020-01-01T00:00:00Z","25"));
+            f.publish();
+            var original=f.history().read(f.request());
+            int calls=f.sourceCalls.get();
+            var colleague=f.identity("Bearer fixture-other","fixture-tenant");
+            f.register(colleague);
+            f.directory.synchronizeDue();
+            var reused=f.history().read(f.request(colleague,"2020-01-01T00:00:00Z","2020-01-02T00:00:00Z",0));
+            assertEquals(samples(original),samples(reused));
+            assertEquals(original.payload().get("cache"),reused.payload().get("cache"));
+            f.directory.synchronizeHistoryDue();
+            assertEquals(calls,f.sourceCalls.get(),"相同测点范围的已发布历史只同步一份");
+        }
+    }
+
+    @Test void aNewViewerCollectsOnlyUncoveredDevicesRatherThanRefreshingSharedOnes() {
+        try(var f=new EnvironmentHistoryFixture()) {
+            f.publish();
+            var extra=new AuthorizedDevice("fixture-additional-sensor","environment","额外测点","",true);
+            f.devices=List.of(EnvironmentHistoryFixture.SENSOR,extra);
+            f.currentResult=new DeviceStateReadResult(Map.of(EnvironmentHistoryFixture.SENSOR.id(),Map.of("temp",new BigDecimal("99")),
+                    extra.id(),Map.of("temp",new BigDecimal("35"))),f.clock.instant().toString());
+            var colleague=f.identity("Bearer fixture-other","fixture-tenant");
+            f.register(colleague); f.directory.synchronizeDue();
+            var result=f.history().current(colleague,List.of(EnvironmentHistoryFixture.SENSOR.id(),extra.id()));
+            assertEquals(0,new BigDecimal("26").compareTo((BigDecimal)((Map<?,?>)result.states().get(EnvironmentHistoryFixture.SENSOR.id())).get("temp")));
+            assertEquals(0,new BigDecimal("35").compareTo((BigDecimal)((Map<?,?>)result.states().get(extra.id())).get("temp")));
+        }
+    }
+
+    @Test void legacyFactsMigrateWithoutResamplingAndSurviveTheCollectorsRetirement() {
+        try(var f=new EnvironmentHistoryFixture()) {
+            f.rows=List.of(EnvironmentHistoryFixture.row("legacy","fixture-env-code","2020-01-01T00:00:00Z","25"));
+            f.register(f.identity()); f.directory.synchronizeDue();
+            assertThrows(BusinessException.class,()->f.history().read(f.request()));
+            f.directory.synchronizeHistoryDue();
+            var originalCurrent=f.history().current(f.identity(),List.of(EnvironmentHistoryFixture.SENSOR.id()));
+            var originalHistory=f.history().read(f.request());
+            int calls=f.sourceCalls.get();
+            String actor=f.jdbc.queryForObject("SELECT scope_key FROM local_sync_scopes",String.class);
+            String oldDevice=f.jdbc.queryForObject("SELECT device_key FROM local_company_devices",String.class);
+            f.jdbc.update("UPDATE local_device_states SET scope_key=?,device_key=?",actor,oldDevice);
+            f.jdbc.update("DELETE FROM local_device_state_sync WHERE state='DISPATCHED'");
+            f.jdbc.update("UPDATE local_device_state_sync SET scope_key=?",actor);
+            for(String table:List.of("local_environment_samples","local_environment_sync","local_environment_requests"))
+                f.jdbc.update("UPDATE "+table+" SET scope_key=?",actor);
+            f.jdbc.update("DELETE FROM storage_migrations WHERE migration_key='local-shared-observations-v2'");
+            f.clock.advance(10);
+            new ltd.qianc.iotagent.schema.SchemaMigrations(f.jdbc.getDataSource()).ensureLocalCompanyDirectory();
+            new ltd.qianc.iotagent.schema.SchemaMigrations(f.jdbc.getDataSource()).ensureLocalCompanyDirectory();
+            var colleague=f.identity("Bearer fixture-other","fixture-tenant");
+            f.register(colleague); f.directory.synchronizeDue();
+            f.jdbc.update("DELETE FROM local_sync_scopes WHERE scope_key=?",actor);
+            f.unavailable=true; f.restart();
+            var current=f.history().current(colleague,List.of(EnvironmentHistoryFixture.SENSOR.id()));
+            var history=f.history().read(f.request(colleague,"2020-01-01T00:00:00Z","2020-01-02T00:00:00Z",0));
+            assertEquals(originalCurrent.states(),current.states());
+            assertEquals(originalCurrent.cache().get("updatedAt"),current.cache().get("updatedAt"));
+            assertEquals(samples(originalHistory),samples(history));
+            assertEquals(originalHistory.payload().get("cache"),history.payload().get("cache"));
+            assertEquals(calls,f.sourceCalls.get());
+        }
+    }
+
+    @Test void legacyStateWithoutEvidenceOfTheCurrentBindingRemainsUnavailableRatherThanRelabeled() {
+        try(var f=new EnvironmentHistoryFixture()) {
+            f.publish();
+            String actor=f.jdbc.queryForObject("SELECT scope_key FROM local_sync_scopes",String.class);
+            String oldDevice=f.jdbc.queryForObject("SELECT device_key FROM local_company_devices",String.class);
+            f.jdbc.update("UPDATE local_device_states SET scope_key=?,device_key=?",actor,oldDevice);
+            f.jdbc.update("DELETE FROM local_device_state_sync WHERE state='DISPATCHED'");
+            f.jdbc.update("UPDATE local_device_state_sync SET scope_key=?",actor);
+            f.clock.advance(10);
+            f.jdbc.update("UPDATE local_company_devices SET hub_device_id='fixture-rebound-hub'");
+            f.jdbc.update("UPDATE local_sync_scopes SET last_success_at=?",java.sql.Timestamp.from(f.clock.instant()));
+            f.jdbc.update("DELETE FROM storage_migrations WHERE migration_key='local-shared-observations-v2'");
+            new ltd.qianc.iotagent.schema.SchemaMigrations(f.jdbc.getDataSource()).ensureLocalCompanyDirectory();
+            f.unavailable=true;
+            assertEquals(503,assertThrows(BusinessException.class,
+                    ()->f.history().current(f.identity(),List.of(EnvironmentHistoryFixture.SENSOR.id()))).httpStatus());
+            assertEquals(1,f.stateCalls.get(),"迁移与普通读取不允许现场补采设备");
+        }
+    }
+
+    @Test void changedPhysicalBindingCannotBorrowAnExistingSensorsObservation() {
+        try(var f=new EnvironmentHistoryFixture()) {
+            f.publish();
+            var original=f.history().current(f.identity(),List.of(EnvironmentHistoryFixture.SENSOR.id()));
+            f.devices=List.of(new AuthorizedDevice(EnvironmentHistoryFixture.SENSOR.id(),"environment","重绑定测点","",true,
+                    null,null,"fixture-different-hub",null,List.of(),List.of(),Map.of("code","fixture-different-code")));
+            f.currentUnavailable=true;
+            var colleague=f.identity("Bearer fixture-other","fixture-tenant");
+            f.register(colleague); f.directory.synchronizeDue();
+            assertEquals("DEVICE_STATE_UNAVAILABLE",assertThrows(BusinessException.class,
+                    ()->f.history().current(colleague,List.of(EnvironmentHistoryFixture.SENSOR.id()))).code());
+            assertEquals(original.states(),f.history().current(f.identity(),List.of(EnvironmentHistoryFixture.SENSOR.id())).states());
+        }
+    }
+
+    @Test void identicalDeviceIdsFromAnotherGatewayNeverShareMeasurements() {
+        try(var f=new EnvironmentHistoryFixture()) {
+            f.rows=List.of(EnvironmentHistoryFixture.row("original",null,"2020-01-01T00:00:00Z","25"));
+            f.publish();
+            f.gatewayBase="https://another-environment-fixture.example.invalid";
+            f.currentResult=new DeviceStateReadResult(Map.of(EnvironmentHistoryFixture.SENSOR.id(),Map.of("temp",new BigDecimal("99"))),f.clock.instant().toString());
+            f.restart(); f.register(f.identity()); f.directory.synchronizeDue();
+            var current=f.history().current(f.identity(),List.of(EnvironmentHistoryFixture.SENSOR.id()));
+            assertEquals(0,new BigDecimal("99").compareTo((BigDecimal)((Map<?,?>)current.states().get(EnvironmentHistoryFixture.SENSOR.id())).get("temp")));
+            assertEquals("ENVIRONMENT_HISTORY_PREPARING",assertThrows(BusinessException.class,()->f.history().read(f.request())).code());
+            f.gatewayBase=EnvironmentHistoryFixture.GATEWAY; f.restart();
+            var original=f.history().current(f.identity(),List.of(EnvironmentHistoryFixture.SENSOR.id()));
+            assertEquals(0,new BigDecimal("26").compareTo((BigDecimal)((Map<?,?>)original.states().get(EnvironmentHistoryFixture.SENSOR.id())).get("temp")));
+        }
+    }
+
     @Test void anUnvisitedAncientWindowSurvivesRestartAndSharesLocalCurrentReadingWithDashboard() {
         try(var f=new EnvironmentHistoryFixture()) {
             String exact="12345678901234567890.1234567890123456789";
@@ -150,21 +283,27 @@ class EnvironmentHistoryBehaviorTest {
         }
     }
 
-    @Test void principalTenantAndSourceIsolationAndCredentialRotationNeverReuseOldCoverage() {
+    @Test void sharedHistoryRetainsTenantSourceAndSensorSetIsolationAcrossCredentialRotation() {
         try(var f=new EnvironmentHistoryFixture()) {
             f.rows=List.of(EnvironmentHistoryFixture.row("original",null,"2020-01-01T00:00:00Z","25")); f.publish();
-            for(var identity:List.of(f.identity("Bearer fixture-other","fixture-tenant"),f.identity("Bearer fixture-environment","fixture-other-tenant"))) {
-                f.register(identity); f.directory.synchronizeDue();
-                var request=f.request(identity,"2020-01-01T00:00:00Z","2020-01-02T00:00:00Z",0);
-                assertEquals("ENVIRONMENT_HISTORY_PREPARING",assertThrows(BusinessException.class,()->f.history().read(request)).code());
-            }
+            var original=samples(f.history().read(f.request()));
+            var tenant=f.identity("Bearer fixture-other","fixture-other-tenant");
+            f.register(tenant); f.directory.synchronizeDue();
+            assertEquals("ENVIRONMENT_HISTORY_PREPARING",assertThrows(BusinessException.class,
+                    ()->f.history().read(f.request(tenant,"2020-01-01T00:00:00Z","2020-01-02T00:00:00Z",0))).code());
             var office=new RequestIdentity(f.identity().authorization(),f.identity().tenantCode(),IotSourceEnum.OFFICE,f.identity().ownerKey());
             assertEquals(404,assertThrows(BusinessException.class,()->f.history().read(f.request(office,"2020-01-01T00:00:00Z","2020-01-02T00:00:00Z",0))).httpStatus());
-            var rotated=f.identity("Bearer fixture-rotated","fixture-tenant"); f.register(rotated);
+            var rotated=f.identity("Bearer fixture-rotated","fixture-tenant");
+            f.register(rotated);
+            assertEquals("IOT_SCOPE_PREPARING",assertThrows(BusinessException.class,
+                    ()->f.history().read(f.request(rotated,"2020-01-01T00:00:00Z","2020-01-02T00:00:00Z",0))).code());
             f.directory.synchronizeDue();
-            assertEquals("ENVIRONMENT_HISTORY_PREPARING",assertThrows(BusinessException.class,()->f.history().read(f.request(rotated,"2020-01-01T00:00:00Z","2020-01-02T00:00:00Z",0))).code());
-            f.directory.synchronizeHistoryDue();
-            assertEquals(ObservationStatusEnum.AVAILABLE,f.history().read(f.request(rotated,"2020-01-01T00:00:00Z","2020-01-02T00:00:00Z",0)).status());
+            assertEquals(original,samples(f.history().read(f.request(rotated,"2020-01-01T00:00:00Z","2020-01-02T00:00:00Z",0))));
+            f.devices=List.of(new AuthorizedDevice("fixture-different-sensor","environment","其他授权测点","",true));
+            var restricted=f.identity("Bearer fixture-other","fixture-tenant");
+            f.register(restricted); f.directory.synchronizeDue();
+            assertEquals("ENVIRONMENT_HISTORY_PREPARING",assertThrows(BusinessException.class,
+                    ()->f.history().read(f.request(restricted,"2020-01-01T00:00:00Z","2020-01-02T00:00:00Z",0))).code());
         }
     }
 
