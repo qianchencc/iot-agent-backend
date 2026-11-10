@@ -77,7 +77,7 @@ curl -s http://127.0.0.1:3381/healthz
 | `agent/` | `agent` | Business Agent Definition、业务工具与上下文；通用 Pi 执行由 Node Agent Engine 提供 |
 | `tasks/` | `task` | 任务/周期/通知/提案/扫描执行 |
 | `energy/` | `energy` | 电表统计/对比/日报月报/报告快照 |
-| `reports/` | `report` | 报告事实落库 + PDF/XLSX 渲染 |
+| `reports/` | `report` | 报告事实落库；`MeterExportEvidence` 共用保存事实投影，PDF/XLSX不重新取数；不同统计口径分区，等价统计明细只保留一份 |
 | `safety/` | `safety` | 安全台账 |
 | `dashboard/` | `dashboard` | 公司仪表盘分区并发读 |
 | `regions/` | `region` | Office 区域浏览 |

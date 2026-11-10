@@ -1,0 +1,117 @@
+{
+  "date": "2026-11-10",
+  "scope": "Report PDF/XLSX only; no upstream reads, report regeneration or device control",
+  "originalReportId": "report-6cb78ec2-1ae4-3f3c-8f71-9c790964d02b",
+  "originalContentHash": "2af7fdff48fa4f3f7e9fd80b5b247f2ccd8dfb3311ca3858101bc4c813e39dbc",
+  "originalFactUnchanged": true,
+  "verification": {
+    "command": "mvn -q '-Dtest=Report*Test,ArchitectureTest' test",
+    "tests": 36,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 1,
+    "finalExportRegression": "7 passed after final metric-period display correction",
+    "uniqueMeterRows": 43,
+    "currentTotal": "913.04",
+    "baselineTotal": "908.81",
+    "delta": "4.23",
+    "savedSampleEvidenceRows": 86,
+    "savedMetrics": 8,
+    "sheets": [
+      [
+        "报告概览",
+        21
+      ],
+      [
+        "逐表对比",
+        43
+      ],
+      [
+        "采样依据",
+        86
+      ],
+      [
+        "指标明细",
+        8
+      ],
+      [
+        "分段用电",
+        194
+      ],
+      [
+        "用电构成与贡献",
+        18
+      ],
+      [
+        "分段对比",
+        1
+      ]
+    ],
+    "pdfPages": 11,
+    "pdfVisual": "All-page raster inspection, no text outside page bounds; metric section pagination corrected",
+    "xlsxVisual": "macOS Quick Look rendered summary; openpyxl independently checked all meter values and sample evidence",
+    "wechatDownloadRetest": "Not completed: existing automator timed out; native download adapter unchanged",
+    "noInternalMetricNamesInPeriodColumn": true
+  },
+  "runtime": {
+    "javaPort": 3381,
+    "javaPid": 19319,
+    "releaseJar": "var/report-export-20261110-activation/backend-final.jar",
+    "sha256": "22622552970c8ae22bc1c0aaf14bd9cdf82d9c14842340601be293537969677a",
+    "changedClassEntries": [
+      "BOOT-INF/classes/ltd/qianc/iotagent/report/internal/ReportXlsxRenderer$Row.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/report/internal/MeterExportEvidence.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/report/internal/ReportXlsxRenderer.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/report/internal/ReportPdfRenderer.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/report/internal/ReportPdfRenderer$Layout.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/report/internal/MeterExportEvidence$Section.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/report/internal/ReportXlsxRenderer$Sheet.class"
+    ],
+    "preservedEntries": 831,
+    "nodePidUnchanged": 4208,
+    "externalConfigurationChanged": false,
+    "businessCountsBefore": {
+      "task_facts": 17,
+      "task_phases": 23,
+      "task_plans": 6,
+      "report_facts": 13,
+      "task_notifications": 13
+    },
+    "businessCountsAfter": {
+      "task_facts": 17,
+      "task_phases": 23,
+      "task_plans": 6,
+      "report_facts": 13,
+      "task_notifications": 13
+    },
+    "health": {
+      "service": "iot-agent-backend",
+      "checks": {
+        "java": {
+          "status": "ok"
+        },
+        "nodeBridge": {
+          "status": "configured"
+        },
+        "mysql": {
+          "status": "ok"
+        },
+        "redis": {
+          "status": "ok"
+        },
+        "piSession": {
+          "status": "boundary",
+          "owner": "node-sidecar"
+        }
+      },
+      "status": "ok",
+      "version": "0.1.0"
+    },
+    "rollbackJar": "var/meter-report-no-interpretation-20261110-141810/backend.jar"
+  },
+  "samples": "/Users/qianchen/Downloads/新世纪/报告导出改进-20261110",
+  "artifacts": {
+    "用电报告-改进版.xlsx": "1d799382e68aabd500ceb7a972e8cf43024da08f2bafca8f41705bc43601d7b1",
+    "用电报告-改进版.pdf": "605692d66468863f186a33997b537b13188d9a39b1c12a2ee317a8d72adbec34"
+  }
+}

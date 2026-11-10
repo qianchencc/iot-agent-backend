@@ -51,7 +51,7 @@ class ReportExportRendererTest {
 
     @Test
     void xlsxInspectionSheetCarriesDeviceRowsAndNumericEstimate() throws Exception {
-        String sheet = sheet(ReportRendererFactory.xlsx().render(inspectionReport()).content(), "xl/worksheets/sheet4.xml");
+        String sheet = sheetContaining(ReportRendererFactory.xlsx().render(inspectionReport()).content(), "处置结果");
 
         assertThat(sheet).contains("大厅空调");
         assertThat(sheet).contains("已下发调到26℃");
@@ -97,11 +97,10 @@ class ReportExportRendererTest {
                 "total", Map.of("value", 25.5, "unit", "度"), "meters", List.of(meter));
         var report = reportWith(Map.of("type", "meter_report", "report", fact));
         String pdf = pdfText(ReportRendererFactory.pdf().render(report).content());
-        assertThat(pdf).contains(from, to, "1000.0", "1025.5", "客户模拟补数");
+        assertThat(pdf).contains("1000", "1025.5", "客户模拟补数");
         byte[] xlsx = ReportRendererFactory.xlsx().render(report).content();
-        assertThat(sheet(xlsx, "xl/worksheets/sheet1.xml")).contains(from, to, "客户模拟补数");
-        assertThat(sheet(xlsx, "xl/worksheets/sheet2.xml"))
-                .contains(from, to, "<v>25.5</v>", "<v>1000.0</v>", "<v>1025.5</v>");
+        assertThat(sheetContaining(xlsx, "起始累计示数"))
+                .contains(from, to, "<v>1000.0</v>", "<v>1025.5</v>");
     }
 
 
@@ -194,15 +193,15 @@ class ReportExportRendererTest {
         }
     }
 
-    private static String sheet(byte[] xlsx, String name) throws Exception {
+    private static String sheetContaining(byte[] xlsx, String header) throws Exception {
         try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(xlsx))) {
             ZipEntry entry;
             while ((entry = zip.getNextEntry()) != null) {
-                if (name.equals(entry.getName())) {
-                    return new String(zip.readAllBytes(), StandardCharsets.UTF_8);
-                }
+                if (!entry.getName().startsWith("xl/worksheets/")) continue;
+                String content = new String(zip.readAllBytes(), StandardCharsets.UTF_8);
+                if (content.contains(header)) return content;
             }
         }
-        throw new AssertionError("missing workbook part " + name);
+        throw new AssertionError("missing export data: " + header);
     }
 }

@@ -2,6 +2,9 @@
 
 > 固定开发后端的最新入口为 Java `3381` / Node `3382` / 控制台 `5185`；2026-11-06 起以常规命令启动（Java `java -jar … --spring.config.additional-location`、Node `node dist/server.js --config`、`web/admin` 内 `npm run dev`），见[仓根常规本地启动](../../README.md#常规本地启动)；Python／tmux 统一启动器与 launch-YAML 已随 `tools/` 退役。下文3217、13215等端口及 `tools/start-sidecar.py` 等命令为历史独立验收环境记录，不应据此启动或覆盖当前固定后端。
 
+> 2026-11-10 14:56：固定Java`3381`已采用报告导出改进，PID`19319`，冻结包`var/report-export-20261110-activation/backend-final.jar`，SHA256=`22622552970c8ae22bc1c0aaf14bd9cdf82d9c14842340601be293537969677a`。仅替换／新增7个报告渲染类，831项原有内容保持，Node3382／PID4208及外置配置不变；切换前无在途模型运行／执行阶段／待执行阶段，私有一致备份与上一包均保留。报告等业务数量不变，同一报告保存事实哈希不变；同一冻结包重导出43台逐表对比、完整采样与8项指标，PDF逐页与XLSX原生预览核对。35项报告／边界回归通过、1项跳过；微信内重新下载因automator超时未复验，不扩展为全业务验收。[证据](evidence/REPORT-EXPORT-20261110/result.json)。
+
+
 > 2026-11-10 14:19：固定Java`3381`已更新电表定时报告智能解读暂停改动（源码`5bfa3c5`），PID`5806`，继续监听`0.0.0.0`。冻结包`var/meter-report-no-interpretation-20261110-141810/backend.jar`，SHA256=`6267789a2bde2bb15b591bf4e09b015afbc4ba75903f9a845bcf6b65051789c1`；以原运行包为基线，仅替换检查点实现及内部类4项，其余831项内容保持。发布包字节码隔离执行确认报告生成不访问模型配置；重启前无在途模型调用或执行阶段，重启后局域网／本机健康、MySQL与Redis正常，任务13／阶段19／计划6／报告12／通知10数量不变。Node3382／PID4208与外置配置不动；回退包为下条新账号首访修复包。真实定时触发及微信报告展示仍未验收，未创建验收任务或通知。[更新证据](evidence/METER-REPORT-NO-INTERPRETATION/deployment.json)。
 
 > 2026-11-10 13:44：固定Java`3381`已更新新账号首访修复，PID`93530`，监听`0.0.0.0`，开发版继续使用`http://192.168.102.15:3381/api`。冻结包`var/cold-account-bootstrap-20261110-1343/backend.jar`，SHA256=`a05462a608f1b36a7eb59d9114748470ff74c42a6176fa67b2aae4a77365e978`；仅替换目录同步器及其内部类3项，其他832项字节保持。回退包`var/plan-local-authorization-20261110-1128/backend.jar`保留；Node3382、管理台5185及私有配置不变。742项工程回归中713通过、29跳过，排除既有单项视频回放失败；隔离实际调度的新账号授权约5秒、0次新增历史采集。指定测试账号个人数据已准确匹配并备份后清理，备份位于私有`var/cold-account-bootstrap-20261110-133612/requested-user-backup.json.gz`（0600）。局域网健康正常，不代替真实开发版首访验收。

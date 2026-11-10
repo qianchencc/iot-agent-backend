@@ -16,8 +16,8 @@ import org.apache.pdfbox.pdmodel.font.PDType0Font;
  * Chinese font. Rendering never recalculates the previewed measurements.
  */
 public final class ReportPdfRenderer {
-    private static final int LINES_PER_PAGE = 44;
     private static final int MAX_LINE_CHARS = 78;
+    private static final java.util.regex.Pattern NUMERIC = java.util.regex.Pattern.compile("-?\\d+(\\.\\d+)?%?");
 
     private ReportPdfRenderer() { }
 
@@ -27,21 +27,114 @@ public final class ReportPdfRenderer {
                 ByteArrayOutputStream out = new ByteArrayOutputStream()) {
             if (asset == null) throw new IllegalStateException("Report font asset is unavailable");
             PDType0Font font = PDType0Font.load(document, asset, true);
-            List<String> content = pageLines(lines(report), font);
-            for (int index = 0; index < content.size(); index += LINES_PER_PAGE) {
-                PDPage page = new PDPage(PDRectangle.A4);
-                document.addPage(page);
-                try (PDPageContentStream stream = new PDPageContentStream(document, page)) {
-                    stream.beginText();
-                    stream.setFont(font, 10.5f);
-                    stream.setLeading(17);
-                    stream.newLineAtOffset(42, 802);
-                    int end = Math.min(content.size(), index + LINES_PER_PAGE);
-                    for (int line = index; line < end; line++) {
-                        if (line > index) stream.newLine();
-                        stream.showText(content.get(line));
+            document.getDocumentInformation().setTitle(text(report.get("title"), "报告"));
+            document.getDocumentCatalog().setLanguage("zh-CN");
+            try (Layout layout = new Layout(document, font, text(report.get("title"), "报告"))) {
+                layout.heading(text(report.get("title"), "报告"));
+                layout.paragraph("生成 " + MeterExportEvidence.time(report.get("generatedAt")) + "（上海时间） · "
+                        + MeterExportEvidence.reportStatus(report.get("status")), 10);
+                String summary = text(report.get("summary"), "");
+                if (!summary.isBlank()) layout.paragraph(MeterExportEvidence.displayText(summary), 11);
+                for (String note : MeterExportEvidence.reportNotes(report)) layout.paragraph(MeterExportEvidence.displayText(note), 9);
+                var sections = MeterExportEvidence.sections(report);
+                var details = MeterExportEvidence.details(sections);
+                for (var section : details) {
+                    layout.section(section.label());
+                    layout.paragraph("本期：" + section.period("a"), 10);
+                    if (section.comparison()) layout.paragraph("基期：" + section.period("b"), 10);
+                    layout.metrics(section);
+                    if (section.comparison()) layout.chart(section);
+                    Map<?, ?> coverage = MeterExportEvidence.map(section.fact().get("coverage"));
+                    if (!coverage.isEmpty()) layout.paragraph("覆盖：" + text(coverage.get("dataMeters"), "未取得")
+                            + " / " + text(coverage.get("meters"), "未取得") + " 台有效；缺失："
+                            + MeterExportEvidence.missing(coverage.get("noData")) + "；部分数据："
+                            + MeterExportEvidence.missing(coverage.get("partial")), 9);
+                }
+                for (var section : details) {
+                    layout.newPage();
+                    layout.heading(section.comparison() ? "逐表用电对比" : "逐表用电明细");
+                    layout.paragraph(section.label() + " · 本期 " + section.period("a"), 9);
+                    if (section.comparison()) layout.paragraph("基期 " + section.period("b"), 9);
+                    List<List<String>> rows = new ArrayList<>();
+                    for (Map<?, ?> meter : section.meters()) {
+                        Map<?, ?> a = MeterExportEvidence.current(meter, "a"), b = MeterExportEvidence.current(meter, "b");
+                        String location = text(meter.get("areaName"), "");
+                        rows.add(List.of(text(meter.get("name"), text(meter.get("id"), "未知电表")) + (location.isBlank() ? "" : "\n" + location),
+                                MeterExportEvidence.number(a.get("value")), section.comparison() ? MeterExportEvidence.number(b.get("value")) : "—",
+                                MeterExportEvidence.number(MeterExportEvidence.change(meter)),
+                                MeterExportEvidence.rate(meter) == null ? "—" : MeterExportEvidence.number(MeterExportEvidence.rate(meter)) + "%",
+                                "本期 " + MeterExportEvidence.status(a.get("status")) + (section.comparison() ? "\n基期 "
+                                        + MeterExportEvidence.status(b.get("status")) + (MeterExportEvidence.comparisonNote(meter).isBlank()
+                                                ? "" : "\n" + MeterExportEvidence.comparisonNote(meter)) : "")));
                     }
-                    stream.endText();
+                    layout.table(List.of("电表 / 位置", "本期(度)", "基期(度)", "用量增减", "增减比例", "数据状态"),
+                            new float[]{165, 65, 65, 65, 65, 86}, rows);
+                }
+                // Keep derived facts even when identical statistics details are represented by a comparison.
+                for (var section : sections) {
+                    List<Map<?, ?>> metrics = MeterExportEvidence.maps(section.fact().get("metrics"));
+                    if (metrics.isEmpty()) continue;
+                    layout.ensure(90 + metrics.size() * 56);
+                    layout.section(section.label() + " · 指标");
+                    List<List<String>> rows = new ArrayList<>();
+                    for (Map<?, ?> metric : metrics) {
+                        Map<?, ?> a = metric.get("a") instanceof Map<?, ?> side ? side : metric;
+                        Map<?, ?> b = MeterExportEvidence.map(metric.get("b"));
+                        rows.add(List.of(MeterExportEvidence.metricName(metric.get("key")),
+                                MeterExportEvidence.number(a.get("value")), MeterExportEvidence.number(b.get("value")),
+                                text(metric.get("unit"), ""), MeterExportEvidence.metricPeriod(a)
+                                        + (MeterExportEvidence.metricPeriod(b).isBlank() ? "" : "\n基期 " + MeterExportEvidence.metricPeriod(b))));
+                    }
+                    layout.table(List.of("指标", "本期", "基期", "单位", "时段"), new float[]{145, 85, 85, 76, 120}, rows);
+                }
+                for (Map<?, ?> block : MeterExportEvidence.maps(report.get("blocks"))) {
+                    String type = text(block.get("type"), "");
+                    if ("text".equals(type)) {
+                        layout.section(text(block.get("title"), "说明"));
+                        layout.paragraph(text(block.get("text"), ""), 10);
+                    } else if ("ac_inspection".equals(type)) {
+                        layout.section("空调检查");
+                        for (String line : acInspectionLines(block)) layout.paragraph(line, 10);
+                    } else if ("safety_ledger".equals(type)) {
+                        layout.section("安全台账 · " + text(block.get("ledger"), ""));
+                        List<List<String>> rows = new ArrayList<>();
+                        for (Map<?, ?> event : MeterExportEvidence.maps(block.get("events"))) rows.add(List.of(
+                                text(event.get("deviceName"), text(event.get("deviceId"), "")),
+                                MeterExportEvidence.time(event.get("occurredAt")), Boolean.TRUE.equals(event.get("alarm")) ? "告警" : "记录"));
+                        layout.table(List.of("设备", "发生时间（上海时间）", "类型"), new float[]{240, 180, 91}, rows);
+                    }
+                }
+                if (!details.isEmpty()) {
+                    layout.newPage();
+                    layout.heading("附录 · 采样依据");
+                    layout.paragraph("累计示数用于追溯本报告，缺失值不补零。全部时间按上海时间展示。", 10);
+                    for (var section : details) {
+                        layout.section(section.label());
+                        List<List<String>> rows = new ArrayList<>();
+                        for (Map<?, ?> meter : section.meters()) {
+                            for (String side : section.comparison() ? List.of("a", "b") : List.of("a")) {
+                                List<Object> sample = MeterExportEvidence.samples(meter, side);
+                                rows.add(List.of(text(meter.get("name"), text(meter.get("id"), "")),
+                                        "a".equals(side) ? "本期" : "基期",
+                                        MeterExportEvidence.time(sample.get(0)) + "\n" + MeterExportEvidence.number(sample.get(1)),
+                                        MeterExportEvidence.time(sample.get(2)) + "\n" + MeterExportEvidence.number(sample.get(3))));
+                            }
+                        }
+                        layout.table(List.of("电表", "期间", "起始采样时间 / 累计示数", "结束采样时间 / 累计示数"),
+                                new float[]{145, 42, 162, 162}, rows);
+                    }
+                }
+                layout.section("报告信息");
+                layout.paragraph("报告标识：" + text(report.get("id"), ""), 9);
+                if (report.get("objective") != null) layout.paragraph("报告目标：" + report.get("objective"), 9);
+                if (report.get("contentHash") != null) layout.paragraph("内容标识：" + report.get("contentHash"), 8);
+                layout.paragraph("本报告使用生成时保存的授权范围与采样事实，重新下载不会重取或改写历史数据。", 9);
+            }
+            for (int i = 0; i < document.getNumberOfPages(); i++) {
+                try (var stream = new PDPageContentStream(document, document.getPage(i),
+                        PDPageContentStream.AppendMode.APPEND, true, true)) {
+                    stream.beginText(); stream.setFont(font, 8); stream.newLineAtOffset(454, 23);
+                    stream.showText("第 " + (i + 1) + " / " + document.getNumberOfPages() + " 页"); stream.endText();
                 }
             }
             document.save(out);
@@ -51,142 +144,130 @@ public final class ReportPdfRenderer {
         }
     }
 
-    private static List<String> pageLines(List<String> lines, PDType0Font font) throws java.io.IOException {
-        List<String> result = new ArrayList<>();
-        for (String source : lines) {
-            String line = source.replace('\n', ' ').replace('\r', ' ');
-            int start = 0;
-            float width = 0;
-            for (int offset = 0; offset < line.length();) {
-                int end = offset + Character.charCount(line.codePointAt(offset));
-                float characterWidth = font.getStringWidth(line.substring(offset, end)) * 10.5f / 1000;
-                if (width + characterWidth > 511 && offset > start) {
-                    result.add(line.substring(start, offset));
-                    start = offset;
-                    width = 0;
-                }
-                width += characterWidth;
-                offset = end;
-            }
-            result.add(line.substring(start));
-        }
-        return result;
-    }
+    private static final class Layout implements AutoCloseable {
+        private static final java.awt.Color INK = new java.awt.Color(32, 49, 62);
+        private static final java.awt.Color ACCENT = new java.awt.Color(40, 77, 105);
+        private static final java.awt.Color MUTED = new java.awt.Color(81, 96, 108);
+        private final PDDocument document;
+        private final PDType0Font font;
+        private final String title;
+        private final Map<Integer, Float> widths = new java.util.HashMap<>();
+        private PDPageContentStream stream;
+        private float y;
 
-    private static List<String> lines(Map<String, Object> report) {
-        List<String> lines = new ArrayList<>();
-        lines.add(text(report.get("title"), "报告"));
-        lines.add("报告标识：" + text(report.get("id"), ""));
-        lines.add("状态：" + text(report.get("status"), "unknown"));
-        lines.add("生成时间：" + text(report.get("generatedAt"), ""));
-        lines.add("目标：" + text(report.get("objective"), ""));
-        if (report.get("contentHash") != null) lines.add("内容标识：" + report.get("contentHash"));
-        String summary = text(report.get("summary"), "");
-        if (!summary.isBlank()) {
-            lines.add("");
-            lines.add("摘要");
-            lines.addAll(wrap(summary, MAX_LINE_CHARS));
+        Layout(PDDocument document, PDType0Font font, String title) throws java.io.IOException {
+            this.document = document; this.font = font; this.title = title; newPage();
         }
-        Object blocks = report.get("blocks");
-        if (blocks instanceof List<?> list) {
-            for (Object value : list) {
-                if (!(value instanceof Map<?, ?> block)) continue;
-                String type = text(block.get("type"), "");
-                if ("text".equals(type)) {
-                    lines.add("");
-                    lines.add(text(block.get("title"), "说明"));
-                    lines.addAll(wrap(text(block.get("text"), ""), MAX_LINE_CHARS));
-                } else if ("meter_report".equals(type) && block.get("report") instanceof Map<?, ?> fact) {
-                    lines.add("");
-                    lines.addAll(meterLines(fact));
-                } else if ("ac_inspection".equals(type)) {
-                    lines.add("");
-                    lines.addAll(acInspectionLines(block));
-                } else if ("safety_ledger".equals(type)) {
-                    lines.add("");
-                    lines.add("安全台账：" + text(block.get("ledger"), ""));
-                    Object events = block.get("events");
-                    lines.add("记录数：" + (events instanceof List<?> rows ? rows.size() : 0));
-                    if (events instanceof List<?> rows) {
-                        for (Object row : rows) {
-                            if (!(row instanceof Map<?, ?> event)) continue;
-                            lines.add("- " + text(event.get("ledger"), text(block.get("ledger"), ""))
-                                    + " / " + text(event.get("deviceName"), text(event.get("deviceId"), ""))
-                                    + " / " + text(event.get("occurredAt"), "") + " / "
-                                    + (Boolean.TRUE.equals(event.get("alarm")) ? "告警" : "记录"));
-                        }
-                    }
+        void newPage() throws java.io.IOException {
+            if (stream != null) stream.close();
+            PDPage page = new PDPage(PDRectangle.A4); document.addPage(page);
+            stream = new PDPageContentStream(document, page);
+            y = 779;
+            text(title, 42, 813, 8, MUTED);
+            stream.setStrokingColor(ACCENT); stream.setLineWidth(1); stream.moveTo(42, 800); stream.lineTo(553, 800); stream.stroke();
+        }
+        void ensure(float height) throws java.io.IOException { if (y - height < 48) newPage(); }
+        void heading(String value) throws java.io.IOException { paragraph(value, 22); y -= 10; }
+        void section(String value) throws java.io.IOException { ensure(70); y -= 12; paragraph(value, 14); y -= 4; }
+        void paragraph(String value, float size) throws java.io.IOException {
+            for (String line : wrapText(value, size, 511)) {
+                ensure(size * 1.65f);
+                text(line, 42, y, size, size < 10 ? MUTED : INK);
+                y -= size * 1.65f;
+            }
+            y -= 5;
+        }
+        void metrics(MeterExportEvidence.Section section) throws java.io.IOException {
+            ensure(86);
+            text("本期总量", 42, y, 9, MUTED);
+            Map<?, ?> coverage = MeterExportEvidence.map(section.fact().get("coverage"));
+            text(section.comparison() ? "基期总量" : "计量范围（台）", 217, y, 9, MUTED);
+            text(section.comparison() ? "增减（" + ReportPdfRenderer.text(section.diff().get("unit"), "度") + "）" : "有效电表（台）", 392, y, 9, MUTED);
+            y -= 29;
+            text(MeterExportEvidence.number(section.total("a")), 42, y, 23, ACCENT);
+            text(MeterExportEvidence.number(section.comparison() ? section.total("b") : coverage.get("meters")), 217, y, 23, ACCENT);
+            text(MeterExportEvidence.number(section.comparison() ? section.diff().get("value") : coverage.get("dataMeters")), 392, y, 23, ACCENT);
+            y -= 23;
+            String ratio = MeterExportEvidence.number(section.diff().get("pct"));
+            paragraph(section.comparison() ? "增减比例：" + ratio + ("—".equals(ratio) ? "" : "%") + "；"
+                    + ("dailyAvg".equals(section.diff().get("basis")) ? "两期时长不同，按日均比较。" : "按总用量比较。")
+                    + ReportPdfRenderer.text(section.diff().get("pctNote"), "") : "用量单位：度", 10);
+        }
+        void chart(MeterExportEvidence.Section section) throws java.io.IOException {
+            if (!(section.total("a") instanceof Number a) || !(section.total("b") instanceof Number b)
+                    || !(section.diff().get("value") instanceof Number) || a.doubleValue() < 0 || b.doubleValue() < 0) return;
+            ensure(110);
+            text("两期总用电量（度）", 42, y, 10, INK); y -= 26;
+            double max = Math.max(a.doubleValue(), b.doubleValue());
+            Number[] values = {a, b};
+            String[] labels = {"本期", "基期"};
+            for (int i = 0; i < 2; i++) {
+                text(labels[i], 42, y, 10, INK);
+                stream.setNonStrokingColor(i == 0 ? ACCENT : new java.awt.Color(111, 138, 156));
+                stream.addRect(84, y - 3, max == 0 ? 0 : (float) (values[i].doubleValue() / max * 350), 15); stream.fill();
+                text(MeterExportEvidence.number(values[i]), 445, y, 10, INK);
+                y -= 30;
+            }
+            y -= 10;
+        }
+        void table(List<String> header, float[] columns, List<List<String>> rows) throws java.io.IOException {
+            tableRow(header, columns, true);
+            int index = 0;
+            for (List<String> row : rows) {
+                float height = rowHeight(row, columns);
+                if (y - height < 48) { newPage(); tableRow(header, columns, true); }
+                tableRow(row, columns, false);
+                index++;
+            }
+            if (index == 0) paragraph("未取得明细", 10);
+            y -= 12;
+        }
+        float rowHeight(List<String> row, float[] columns) throws java.io.IOException {
+            int lines = 1;
+            for (int i = 0; i < columns.length; i++) lines = Math.max(lines, wrapText(row.get(i), 9, columns[i] - 12).size());
+            return lines * 14 + 14;
+        }
+        void tableRow(List<String> row, float[] columns, boolean header) throws java.io.IOException {
+            float height = rowHeight(row, columns);
+            ensure(height);
+            if (header) {
+                stream.setNonStrokingColor(ACCENT); stream.addRect(42, y - height + 7, 511, height); stream.fill();
+            }
+            float x = 42;
+            for (int i = 0; i < columns.length; i++) {
+                float top = y - 7;
+                for (String line : wrapText(row.get(i), 9, columns[i] - 12)) {
+                    float left = !header && NUMERIC.matcher(line).matches()
+                            ? x + columns[i] - 6 - font.getStringWidth(line) * 9 / 1000 : x + 6;
+                    text(line, left, top, 9, header ? java.awt.Color.WHITE : INK); top -= 14;
                 }
+                x += columns[i];
             }
+            y -= height;
+            stream.setStrokingColor(new java.awt.Color(220, 226, 231)); stream.setLineWidth(0.4f);
+            stream.moveTo(42, y + 7); stream.lineTo(553, y + 7); stream.stroke();
         }
-        Object coverage = report.get("coverage");
-        if (coverage instanceof Map<?, ?> map) {
-            lines.add("");
-            lines.add("覆盖与缺失：" + text(map.get("missing"), "无显式缺失"));
-            Object meters = map.get("meters");
-            Object dataMeters = map.get("dataMeters");
-            if (meters != null || dataMeters != null) {
-                lines.add("计量范围：" + text(meters, "") + " 台，取得有效数据 " + text(dataMeters, "") + " 台");
-            }
-        }
-        lines.add("");
-        lines.add("说明：本报告由服务端根据当前授权计量范围和已取得采样生成；缺失边界不以零补齐。");
-        return lines;
-    }
-
-    private static List<String> meterLines(Map<?, ?> fact) {
-        List<String> lines = new ArrayList<>();
-        String kind = text(fact.get("kind"), "");
-        lines.add("meter_report".equals(kind) ? "用电统计" : "用电报告");
-        Map<?, ?> params = fact.get("params") instanceof Map<?, ?> map ? map : Map.of();
-        Object span = params.get("span");
-        if (span instanceof Map<?, ?> spanMap && spanMap.get("requested") instanceof Map<?, ?> requested) {
-            lines.add("期间：" + text(requested.get("from"), "") + " 至 " + text(requested.get("to"), ""));
-        }
-        lines.addAll(MeterExportEvidence.notes(fact));
-        Object total = fact.get("total");
-        if (total instanceof Map<?, ?> totalMap) {
-            lines.add("总量：" + text(totalMap.get("value"), "—") + " " + text(totalMap.get("unit"), "度"));
-        }
-        Object diff = fact.get("diff");
-        if (diff instanceof Map<?, ?> diffMap) {
-            lines.add("增减：" + text(diffMap.get("value"), "—") + " " + text(diffMap.get("unit"), "度")
-                    + "（" + text(diffMap.get("pct"), "—") + "%）"
-                    + (diffMap.get("pctNote") == null ? "" : " " + diffMap.get("pctNote")));
-        }
-        Object meters = fact.get("meters");
-        if (meters instanceof List<?> rows) {
-            lines.add("逐表依据：");
-            for (Object value : rows) {
-                if (!(value instanceof Map<?, ?> meter)) continue;
-                Map<?, ?> coverage = meter.get("coverage") instanceof Map<?, ?> map ? map : null;
-                Object meterValue = meter.get("value");
-                if (meterValue == null && meter.get("a") instanceof Map<?, ?> a) meterValue = a.get("value");
-                Object status = meter.get("status");
-                if (status == null && meter.get("a") instanceof Map<?, ?> a) status = a.get("status");
-                lines.add("- " + text(meter.get("name"), text(meter.get("id"), ""))
-                        + " / " + text(meter.get("areaName"), "")
-                        + " / " + text(meterValue, "—") + " 度 / " + text(status, ""));
-                String currentSamples = MeterExportEvidence.sampleLine(meter, "a");
-                if (!currentSamples.isEmpty()) lines.add(currentSamples);
-                String baselineSamples = MeterExportEvidence.sampleLine(meter, "b");
-                if (!baselineSamples.isEmpty()) lines.add(baselineSamples);
-                if (coverage != null) {
-                    lines.add("  覆盖 " + text(coverage.get("dataMeters"), "") + "/" + text(coverage.get("meters"), "")
-                            + (Boolean.TRUE.equals(coverage.get("truncated")) ? "（读取截断）" : ""));
+        List<String> wrapText(String value, float size, float width) throws java.io.IOException {
+            List<String> result = new ArrayList<>();
+            for (String source : value.replace('\r', ' ').split("\n", -1)) {
+                StringBuilder line = new StringBuilder(); float used = 0;
+                for (int offset = 0; offset < source.length();) {
+                    int code = source.codePointAt(offset);
+                    Float unit = widths.get(code);
+                    if (unit == null) { unit = font.getStringWidth(new String(Character.toChars(code))) / 1000; widths.put(code, unit); }
+                    float next = unit * size;
+                    if (used + next > width && !line.isEmpty()) { result.add(line.toString()); line.setLength(0); used = 0; }
+                    line.appendCodePoint(code); used += next; offset += Character.charCount(code);
                 }
+                result.add(line.toString());
             }
+            return result;
         }
-        Object coverage = fact.get("coverage");
-        if (coverage instanceof Map<?, ?> map) {
-            lines.add("覆盖：表 " + text(map.get("meters"), "") + " 台，有效 " + text(map.get("dataMeters"), ""));
-            Object noData = map.get("noData");
-            Object partial = map.get("partial");
-            if (noData instanceof List<?> list && !list.isEmpty()) lines.add("缺失表：" + String.join("、", list.stream().map(String::valueOf).toList()));
-            if (partial instanceof List<?> list && !list.isEmpty()) lines.add("部分表：" + list.size() + " 台，详见明细");
-            if (Boolean.TRUE.equals(map.get("truncated"))) lines.add("读取预算不足：仅保留已取得采样，不补零。");
+        void text(String value, float x, float y, float size, java.awt.Color color) throws java.io.IOException {
+            stream.setNonStrokingColor(color); stream.beginText(); stream.setFont(font, size);
+            stream.newLineAtOffset(x, y); stream.showText(value); stream.endText();
         }
-        return lines;
+        @Override public void close() throws java.io.IOException { if (stream != null) stream.close(); }
     }
 
     /** Human-readable AC inspection projection: command facts stay commands, readback is labeled, estimates are never measured savings. */
