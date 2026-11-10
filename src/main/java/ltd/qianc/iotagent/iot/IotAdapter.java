@@ -6,17 +6,9 @@ import reactor.core.publisher.Mono;
 /** Gateway boundary used by Agent tools; callers own subscription cancellation. */
 public interface IotAdapter {
 
+    /** Business consumers receive the local adapter; raw transport is reserved for synchronization/monitoring. */
     Mono<AuthorizedDeviceScope> loadAuthorizedDeviceScope(RequestIdentity identity);
 
-    /** Explicit mutation/real-execution boundary, never for ordinary read authorization. */
-    default Mono<AuthorizedDeviceScope> revalidateAuthorizedDeviceScope(RequestIdentity identity) {
-        return loadAuthorizedDeviceScope(identity);
-    }
-
-    /** Explicit real preflight/readback; must not use retained local observations. */
-    default Mono<DeviceStateReadResult> readLiveDeviceStates(RequestIdentity identity, List<String> deviceIds) {
-        return readDeviceStates(identity, deviceIds);
-    }
 
     /** Background collection only; Office regions and devices must originate from the same complete run. */
     default Mono<DeviceDirectoryBatch> collectDirectory(RequestIdentity identity) {

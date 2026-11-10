@@ -97,7 +97,7 @@ class ActionDraftReadbackContractTest {
             public ActionDraftFact update(String id, long revision, ActionDraftFact replacement) { return replacement; }
         };
         IotAdapter iot = mock(IotAdapter.class);
-        when(iot.revalidateAuthorizedDeviceScope(any())).thenAnswer(call -> {
+        when(iot.loadAuthorizedDeviceScope(any())).thenAnswer(call -> {
             if (scopeUnavailable) return Mono.error(new ltd.qianc.iotagent.iot.UpstreamUnavailableException("scope unavailable"));
             ltd.qianc.iotagent.iot.RequestIdentity identity = call.getArgument(0);
             return Mono.just(new ltd.qianc.iotagent.iot.AuthorizedDeviceScope() {

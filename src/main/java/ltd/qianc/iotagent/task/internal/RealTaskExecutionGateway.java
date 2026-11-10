@@ -127,7 +127,7 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
         }
 
         AuthorizedDeviceScope scope = loadScope(gatewayIdentity);
-        validateTaskAuthorization(task, phase, scope);
+        validateControlBindings(phase, scope);
         if (read.path("agent").isObject()) {
             var checkpoint = checkpoints.get();
             if (checkpoint == null) throw new DispatchException("只读检查点 Agent Engine 未配置", false);
@@ -189,17 +189,13 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
                 missingDevices.add(action.path("deviceId").asText());
             }
         }
-        if (requiresVerification) {
-            for (JsonNode action : available) {
-                if (!bindingMatches(action, scope.device(action.path("deviceId").asText()).orElseThrow())) {
-                    throw new DispatchException("固定范围或控制绑定已变化，本阶段未下发", false,
-                            DispatchException.BINDING_CHANGED);
-                }
-            }
-        }
         DeviceStateReadResult before = readStates(identity,
                 available.stream().map(action -> action.path("deviceId").asText()).toList());
-        Map<String, Object> observed = new LinkedHashMap<>(before.states());
+        Map<String, Object> observed = new LinkedHashMap<>();
+        Instant preflightAt = clock.instant();
+        for (var state : before.states().entrySet()) {
+            if (before.currentForControl(state.getKey(), preflightAt)) observed.put(state.getKey(), state.getValue());
+        }
         Map<String, ObjectNode> receiptsByDevice = new ConcurrentHashMap<>();
         Map<String, JsonNode> readbackByDevice = new ConcurrentHashMap<>();
         AtomicBoolean dispatchStarted = new AtomicBoolean();
@@ -912,7 +908,7 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
         single.add(action);
         try {
             AuthorizedDeviceScope fresh = loadScope(identity);
-            validateTaskAuthorization(task, phase, fresh);
+            validateControlBindings(phase, fresh);
             Map<String, Object> observed = new LinkedHashMap<>();
             observed.put(id, latest.states().get(id));
             ActionDispatchResult dispatch = actions.dispatch(identity, fresh, single.toString(), observed);
@@ -1142,7 +1138,7 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
 
     private AuthorizedDeviceScope loadScope(RequestIdentity identity) {
         try {
-            AuthorizedDeviceScope scope = iot.revalidateAuthorizedDeviceScope(identity).block(scopeTimeout);
+            AuthorizedDeviceScope scope = iot.loadAuthorizedDeviceScope(identity).block(scopeTimeout);
             if (scope == null || scope.source() != identity.source()) {
                 throw new DispatchException("读取任务设备授权范围失败", false);
             }
@@ -1159,7 +1155,7 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
     private DeviceStateReadResult readStates(RequestIdentity identity, List<String> ids) {
         if (ids.isEmpty()) return new DeviceStateReadResult(Map.of(), clock.instant().toString());
         try {
-            DeviceStateReadResult result = iot.readLiveDeviceStates(identity, ids).block(scopeTimeout);
+            DeviceStateReadResult result = iot.readDeviceStates(identity, ids).block(scopeTimeout);
             if (result == null) throw new DispatchException("读取设备状态失败", false);
             return result;
         } catch (DispatchException failure) {
@@ -1171,16 +1167,13 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
         }
     }
 
-    private void validateTaskAuthorization(JsonNode task, JsonNode phase, AuthorizedDeviceScope scope) {
-        String catalog = task.path("catalogFingerprint").asText("");
-        String binding = task.path("bindingFingerprint").asText("");
-        if (!catalog.isBlank() && !catalog.equals(scope.catalogFingerprint())) {
-            throw new DispatchException("任务设备授权目录已变化，本阶段未执行", false,
-                    DispatchException.AUTHORIZATION_REVOKED);
-        }
-        if (!binding.isBlank() && !binding.equals(scope.bindingFingerprint())) {
-            throw new DispatchException("任务控制绑定已变化，本阶段未执行", false,
-                    DispatchException.BINDING_CHANGED);
+    private void validateControlBindings(JsonNode phase, AuthorizedDeviceScope scope) {
+        for (JsonNode action : phase.path("actions")) {
+            AuthorizedDevice device = scope.device(action.path("deviceId").asText()).orElse(null);
+            if (device != null && !bindingMatches(action, device)) {
+                throw new DispatchException("任务目标控制绑定已变化，本阶段未执行", false,
+                        DispatchException.BINDING_CHANGED);
+            }
         }
     }
     private static boolean bindingMatches(JsonNode value, AuthorizedDevice device) {

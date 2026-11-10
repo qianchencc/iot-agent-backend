@@ -139,7 +139,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
             }
         }
         ObjectNode payload = object(payloadJson);
-        AuthorizedDeviceScope catalogScope = loadScope(principal, iotSource, false);
+        AuthorizedDeviceScope catalogScope = loadScope(principal, iotSource);
         AuthorizedDeviceScope scope = catalogScope;
         if (iotSource == IotSourceEnum.OFFICE && focusRegionId != null && !focusRegionId.isBlank()) {
             scope = focusScope(principal, iotSource, scope, focusRegionId);
@@ -452,7 +452,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
                 throw new ActionDraftBusyException("请先处理当前待确认草案");
             }
         }
-        AuthorizedDeviceScope scope = loadScope(principal, source, false);
+        AuthorizedDeviceScope scope = loadScope(principal, source);
         String focusRegionId = body.path("focusRegionId").asText("");
         if (source == IotSourceEnum.OFFICE && !focusRegionId.isBlank()) {
             scope = focusScope(principal, source, scope, focusRegionId);
@@ -481,7 +481,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
             JsonNode command = action.path("command");
             validateCommand(device.kind(), command);
             Object state = states.get(deviceId);
-            if (usableForPreparation(fresh, deviceId) && commandSatisfied(command, state)) continue;
+            if (fresh.currentForControl(deviceId, clock.instant()) && commandSatisfied(command, state)) continue;
             ObjectNode next = action(device, command, state, false);
             actions.add(next);
             if (previousSelected.containsKey(action.path("id").asText())) selected.add(next.path("id").asText());
@@ -622,10 +622,14 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
             ArrayNode toDispatch = mapper.createArrayNode();
             ArrayNode satisfiedReceipts = mapper.createArrayNode();
             ArrayNode satisfiedReadbacks = mapper.createArrayNode();
+            Map<String, Object> currentStates = new LinkedHashMap<>();
+            Instant preflightAt = clock.instant();
             for (JsonNode action : selectedActions) {
-                Object state = fresh.states().get(action.path("deviceId").asText(""));
+                String deviceId = action.path("deviceId").asText("");
+                Object state = fresh.states().get(deviceId);
+                boolean currentState = fresh.currentForControl(deviceId, preflightAt);
                 if (!ActionResultProjector.noPhysicalConfirmation(action.path("kind").asText(""))
-                        && commandSatisfied(action.path("command"), state)) {
+                        && currentState && commandSatisfied(action.path("command"), state)) {
                     ObjectNode receipt = mapper.createObjectNode();
                     receipt.put("actionId", action.path("id").asText());
                     receipt.put("outcome", ActionReceiptOutcomeEnum.ALREADY_SATISFIED.name());
@@ -640,12 +644,13 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
                     satisfiedReadbacks.add(readback);
                 } else {
                     toDispatch.add(action);
+                    if (currentState) currentStates.put(deviceId, state);
                 }
             }
             ActionDispatchResult dispatched = toDispatch.isEmpty()
                     ? new ActionDispatchResult(ActionDraftStatusEnum.NO_CHANGE, resultJson("fixture", "ALREADY_SATISFIED",
                     mapper.createArrayNode(), mapper.createArrayNode()), false, ActionReceiptOutcomeEnum.ALREADY_SATISFIED)
-                    : gateway.dispatch(identity, scope, json(toDispatch), fresh.states());
+                    : gateway.dispatch(identity, scope, json(toDispatch), currentStates);
             ActionDispatchResult result = mergeDispatch(dispatched, satisfiedReceipts, satisfiedReadbacks, !toDispatch.isEmpty());
             body.put("status", result.status().name());
             ObjectNode resultBody = object(result.resultJson());
@@ -914,7 +919,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
                 .filter(id -> !id.isBlank()).distinct().toList();
         if (ids.isEmpty()) return new DeviceStateReadResult(Map.of(), clock.instant().toString());
         try {
-            DeviceStateReadResult states = iot.readLiveDeviceStates(identity, ids).block(scopeTimeout);
+            DeviceStateReadResult states = iot.readDeviceStates(identity, ids).block(scopeTimeout);
             if (states == null) throw new UpstreamUnavailableException("设备状态");
             return states;
         } catch (GatewayAuthorizationException error) {
@@ -1032,7 +1037,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
 
     private AuthorizedDeviceScope verifyScope(PrincipalInfo principal, ObjectNode body) {
         IotSourceEnum source = parseSource(body.path("source").asText(null));
-        AuthorizedDeviceScope scope = loadScope(principal, source, true);
+        AuthorizedDeviceScope scope = loadScope(principal, source);
         String focusRegionId = body.path("focusRegionId").asText("");
         if (source == IotSourceEnum.OFFICE && !focusRegionId.isBlank()) {
             scope = scope.retain(device -> device.officeIds().contains(focusRegionId));
@@ -1051,11 +1056,10 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
         }
     }
 
-    private AuthorizedDeviceScope loadScope(PrincipalInfo principal, IotSourceEnum source, boolean live) {
+    private AuthorizedDeviceScope loadScope(PrincipalInfo principal, IotSourceEnum source) {
         RequestIdentity identity = new RequestIdentity(principal.authorization(), principal.tenantCode(), source, ownerKey(principal));
         try {
-            AuthorizedDeviceScope scope = (live ? iot.revalidateAuthorizedDeviceScope(identity)
-                    : iot.loadAuthorizedDeviceScope(identity)).block(scopeTimeout);
+            AuthorizedDeviceScope scope = iot.loadAuthorizedDeviceScope(identity).block(scopeTimeout);
             if (scope == null || !identity.equals(scope.identity()) || source != scope.source()) {
                 throw new UpstreamUnavailableException("授权设备范围");
             }
@@ -1186,7 +1190,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
             }
             if (device.observationOnly()) throw new ActionDraftScopeChangedException();
             validateCommand(device.kind(), command);
-            boolean satisfied = usableForPreparation(read, device.id()) && commandSatisfied(command, state);
+            boolean satisfied = read.currentForControl(device.id(), clock.instant()) && commandSatisfied(command, state);
             ObjectNode action = action(device, command, state, satisfied);
             actions.add(action);
             boolean isSelected = !satisfied;
@@ -1231,18 +1235,6 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
         payload.set("stateObservedAtByDevice", mapper.valueToTree(observations.observedAtByDevice()));
     }
 
-    private boolean usableForPreparation(DeviceStateReadResult observations, String deviceId) {
-        if ("stale".equals(observations.cache().get("status"))) return false;
-        String observedAt = observations.observedAtByDevice().getOrDefault(deviceId, observations.observedAt());
-        if (observedAt == null) return false;
-        try {
-            Instant sample = Instant.parse(observedAt);
-            Instant now = clock.instant();
-            return !sample.isAfter(now) && !sample.isBefore(now.minusSeconds(60));
-        } catch (java.time.format.DateTimeParseException unknownTime) {
-            return false;
-        }
-    }
 
     /** Runtime resolveExcludedDevice: verify the source set without expanding the operation universe. */
     private Map<String, String> resolveExcludedReferences(ObjectNode payload, AuthorizedDeviceScope scope,

@@ -75,28 +75,35 @@ class TaskReadLatencyContractTest {
     }
 
     @Test
-    void cancellationRechecksLiveAuthorizationInsteadOfTrustingTheLocalReadScope() {
+    void cancellationUsesPublishedAuthorizationWithoutReachingTheUnavailableSource() {
         try (Harness h = new Harness()) {
             h.prepare("company");
+            h.clock.now = NOW.plusSeconds(61);
             h.devices.set(List.of(new AuthorizedDevice("light-1", "lighting", "Fixture Light One", "Fixture Floor", false)));
+            h.directory.synchronizeDue();
+            h.upstreamAvailable = false;
             assertThatThrownBy(() -> h.facade.cancel(PRINCIPAL, "task-1", 1, "company"))
                     .isInstanceOfSatisfying(BusinessException.class, failure -> {
                         assertThat(failure.code()).isEqualTo("TASK_FORBIDDEN");
                         assertThat(failure.httpStatus()).isEqualTo(403);
                     });
             assertThat(h.tasks.find("task-1").orElseThrow().status()).isEqualTo("SCHEDULED");
+            assertThat(h.sourceReads).isEqualTo(2);
         }
     }
 
     @Test
-    void liveCredentialDenialImmediatelyBlocksThePersistedReadScope() {
+    void synchronizedCredentialDenialBlocksThePersistedReadScopeWithoutInteractiveRevalidation() {
         try (Harness h = new Harness()) {
             h.prepare("company");
             h.upstreamDenial = new BusinessException("UNAUTHORIZED", "Fixture credential denied", 401);
+            h.clock.now = NOW.plusSeconds(61);
+            h.directory.synchronizeDue();
             assertThatThrownBy(() -> h.facade.cancel(PRINCIPAL, "task-1", 1, "company"))
                     .isInstanceOfSatisfying(BusinessException.class, failure -> assertThat(failure.httpStatus()).isEqualTo(401));
             assertThatThrownBy(() -> h.facade.notificationsView(PRINCIPAL, "company", 30, null))
                     .isInstanceOfSatisfying(BusinessException.class, failure -> assertThat(failure.httpStatus()).isEqualTo(401));
+            assertThat(h.sourceReads).isEqualTo(2);
         }
     }
 
@@ -175,8 +182,10 @@ class TaskReadLatencyContractTest {
             when(notifications.list(anyString(), anyString(), anyString(), anyInt(), nullable(String.class)))
                     .thenAnswer(invocation -> inbox.get());
             when(notifications.unread(anyString(), anyString(), anyString())).thenAnswer(invocation -> inbox.get());
+            IotAdapter local = ltd.qianc.iotagent.iot.IotAdapterFactory.localReads(iot, () -> directory,
+                    () -> mock(ltd.qianc.iotagent.iot.DeviceObservations.class), mock(ltd.qianc.iotagent.iot.DeviceCandidateSetStore.class));
             facade = new TaskFacade(mapper, tasks, mock(TaskProposalStore.class), mock(TaskPlanStore.class),
-                    notifications, mock(TaskScheduler.class), null, iot, snapshots, clock);
+                    notifications, mock(TaskScheduler.class), null, local, snapshots, clock);
         }
 
         TaskNotificationFact notification(String id) {

@@ -423,7 +423,7 @@ public final class WebClientActionCommandGateway implements ActionCommandGateway
                 .filter(id -> !id.isBlank()).distinct().toList();
         try {
             if (!readbackWait.isZero()) Thread.sleep(readbackWait.toMillis());
-            DeviceStateReadResult states = iot.readLiveDeviceStates(identity, ids).block(timeout);
+            DeviceStateReadResult states = iot.readDeviceStates(identity, ids).block(timeout);
             if (states == null) return unknownReadbacks(actions);
             for (JsonNode action : actions) {
                 String deviceId = action.path("deviceId").asText("");

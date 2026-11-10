@@ -118,10 +118,6 @@ public final class WebClientIotAdapter implements IotAdapter {
                 cachedReadScope(identity, scopeRequest(identity)));
     }
 
-    @Override public Mono<AuthorizedDeviceScope> revalidateAuthorizedDeviceScope(RequestIdentity identity) {
-        Objects.requireNonNull(identity, "identity");
-        return execute("revalidate live device authorization", scopeRequest(identity));
-    }
 
     private Mono<AuthorizedDeviceScope> scopeRequest(RequestIdentity identity) {
         if (identity.source() == IotSourceEnum.OFFICE && routes.hasOfficeDirectoryRoutes()) return loadOfficeScope(identity);
@@ -130,14 +126,6 @@ public final class WebClientIotAdapter implements IotAdapter {
         return Mono.error(new UpstreamUnavailableException("物联授权设备范围路径未配置"));
     }
 
-    @Override public Mono<DeviceStateReadResult> readLiveDeviceStates(RequestIdentity identity, List<String> ids) {
-        return revalidateAuthorizedDeviceScope(identity).flatMap(scope -> {
-            List<AuthorizedDevice> requested = ids.stream().map(id -> scope.device(id).orElseThrow(() ->
-                    new BusinessException("DEVICE_OUTSIDE_SCOPE", "设备不在当前授权范围内", 403))).toList();
-            if (identity.source() == IotSourceEnum.COMPANY) return readAuthorizedCompanyStates(identity, requested);
-            return readOfficeStateRecords(identity, requested).map(records -> officeStates(requested, records));
-        });
-    }
 
     private Mono<AuthorizedDeviceScope> cachedReadScope(
             RequestIdentity identity, Mono<AuthorizedDeviceScope> request) {

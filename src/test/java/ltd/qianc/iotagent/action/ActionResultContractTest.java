@@ -194,6 +194,28 @@ class ActionResultContractTest {
     }
 
     @Test
+    void confirmationDoesNotTreatOldUndatedOrStaleLocalSamplesAsSatisfied() throws Exception {
+        for (int sampleCase = 0; sampleCase < 4; sampleCase++) {
+            RecordingIotAdapter iot = new RecordingIotAdapter(Map.of("light-1", true));
+            iot.observedAt = switch (sampleCase) {
+                case 0 -> null;
+                case 1 -> CLOCK.instant().minusSeconds(61).toString();
+                case 2 -> CLOCK.instant().plusSeconds(1).toString();
+                default -> CLOCK.instant().toString();
+            };
+            if (sampleCase == 3) iot.cache = Map.of("status", "stale");
+            RecordingGateway gateway = new RecordingGateway();
+            String actionId = MAPPER.readTree(lightingCommand()).path("id").asText();
+            gateway.next = dispatch(ActionDraftStatusEnum.ACCEPTED, ActionReceiptOutcomeEnum.ACCEPTED,
+                    array(receipt(actionId, "ACCEPTED")), array());
+            ActionDraftFacade facade = facade(new InMemoryActionDraftStore(pendingDraft("local-sample", lightingCommand())), iot, gateway);
+            ActionDraftFact done = facade.confirm(PRINCIPAL, "local-sample", null);
+            assertThat(done.status()).isEqualTo("ACCEPTED");
+            assertThat(gateway.dispatches).hasSize(1);
+        }
+    }
+
+    @Test
     void partialAcceptanceIsNeitherSuccessNorFailureAtReceiptAndFieldLevel() throws Exception {
         assertProjectedMessage(Map.of("light-1", false, "light-2", false),
                 dispatch(ActionDraftStatusEnum.PARTIALLY_ACCEPTED, ActionReceiptOutcomeEnum.UNKNOWN,
@@ -580,6 +602,8 @@ class ActionResultContractTest {
     private static final class RecordingIotAdapter implements IotAdapter {
         private final Map<String, Object> states;
         final List<List<String>> stateReads = new ArrayList<>();
+        String observedAt = CLOCK.instant().toString();
+        Map<String, Object> cache = Map.of();
 
         RecordingIotAdapter(Map<String, Object> states) {
             this.states = states;
@@ -596,7 +620,7 @@ class ActionResultContractTest {
             stateReads.add(List.copyOf(deviceIds));
             Map<String, Object> selected = new LinkedHashMap<>();
             for (String id : deviceIds) selected.put(id, states.get(id));
-            return Mono.just(new DeviceStateReadResult(selected, CLOCK.instant().toString()));
+            return Mono.just(new DeviceStateReadResult(selected, observedAt, List.of(), Map.of(), null, null, cache));
         }
     }
 

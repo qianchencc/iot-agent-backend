@@ -2,8 +2,6 @@ package ltd.qianc.iotagent.task;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -42,7 +40,8 @@ class TaskAuthorizationFingerprintContractTest {
     @Test
     void resumeRejectsAStaleBindingFingerprint() {
         AuthorizedDevice current = device("hub-1", "control-current");
-        String payload = planPayload(scope(device("hub-1", "control-old")).bindingFingerprint());
+        AuthorizedDevice original = device("hub-1", "control-old");
+        String payload = planPayload(scope(original).bindingFingerprint(), original.bindingFingerprint());
         TaskPlanStore plans = mock(TaskPlanStore.class);
         when(plans.find("plan-1")).thenReturn(Optional.of(new TaskPlanFact("plan-1", 1, "PAUSED", payload, "plan-key")));
         IotAdapter iot = adapter(scope(current));
@@ -52,32 +51,17 @@ class TaskAuthorizationFingerprintContractTest {
 
         assertThatThrownBy(() -> facade.updatePlan(PRINCIPAL, "plan-1", 1, "resume", true, "office"))
                 .isInstanceOf(BusinessException.class)
-                .hasMessageContaining("授权目录已变化");
+                .hasMessageContaining("控制绑定已变化");
     }
 
-    @Test
-    void resumeAcceptsTheCurrentBindingFingerprintAndUsesPlanCas() {
-        AuthorizedDevice current = device("hub-1", "control-current");
-        String payload = planPayload(scope(current).bindingFingerprint());
-        TaskPlanStore plans = mock(TaskPlanStore.class);
-        TaskPlanFact paused = new TaskPlanFact("plan-1", 1, "PAUSED", payload, "plan-key");
-        when(plans.find("plan-1")).thenReturn(Optional.of(paused));
-        when(plans.updateIfVersion(any(), anyLong())).thenAnswer(invocation -> Optional.of(invocation.getArgument(0)));
-        TaskFacade facade = new TaskFacade(new ObjectMapper(), mock(TaskFactStore.class), mock(TaskProposalStore.class),
-                plans, mock(TaskNotificationStore.class), mock(TaskScheduler.class), null, adapter(scope(current)),
-                mock(ltd.qianc.iotagent.readmodel.ReadSnapshots.class), Clock.fixed(NOW, ZoneOffset.UTC));
-
-        Map<String, Object> resumed = facade.updatePlan(PRINCIPAL, "plan-1", 1, "resume", true, "office");
-
-        assertThat(resumed).containsKey("plan");
-        org.mockito.Mockito.verify(plans).updateIfVersion(org.mockito.ArgumentMatchers.argThat(
-                plan -> "ENABLED".equals(plan.status()) && plan.version() == 2), org.mockito.ArgumentMatchers.eq(1L));
-    }
     private static IotAdapter adapter(AuthorizedDeviceScope scope) {
         return new IotAdapter() {
             @Override
             public Mono<AuthorizedDeviceScope> loadAuthorizedDeviceScope(RequestIdentity identity) {
                 return Mono.just(scope);
+            }
+            @Override public Mono<ltd.qianc.iotagent.iot.DeviceDirectoryBatch> readDirectory(RequestIdentity identity) {
+                return Mono.just(new ltd.qianc.iotagent.iot.DeviceDirectoryBatch(scope, List.of()));
             }
         };
     }
@@ -96,9 +80,10 @@ class TaskAuthorizationFingerprintContractTest {
                 Map.of("sourceKeys", List.of("microbrain.lighting")));
     }
 
-    private static String planPayload(String bindingFingerprint) {
+    private static String planPayload(String bindingFingerprint, String targetBinding) {
         return "{\"source\":\"office\",\"tenantCode\":\"LOCAL\",\"ownerKey\":\""
                 + PRINCIPAL.ownerKey() + "\",\"bindingFingerprint\":\"" + bindingFingerprint
-                + "\",\"repeat\":{\"frequency\":\"daily\"},\"phases\":[{\"at\":\"2026-10-10T10:00:00Z\",\"actions\":[{\"deviceId\":\"device-1\",\"kind\":\"lighting\"}]}]}";
+                + "\",\"repeat\":{\"frequency\":\"daily\"},\"phases\":[{\"at\":\"2026-10-10T10:00:00Z\",\"actions\":[{\"deviceId\":\"device-1\",\"kind\":\"lighting\",\"bindingFingerprint\":\""
+                + targetBinding + "\"}]}]}";
     }
 }

@@ -33,7 +33,7 @@ class CompanyControlGatewayContractTest {
     void lightingUsesRuntimeCompanyEndpointAndAuthorizedBindingWithReadback() {
         AtomicReference<ClientRequest> request = new AtomicReference<>();
         IotAdapter iot = mock(IotAdapter.class);
-        when(iot.readLiveDeviceStates(IDENTITY, List.of("light-1")))
+        when(iot.readDeviceStates(IDENTITY, List.of("light-1")))
                 .thenReturn(Mono.just(new DeviceStateReadResult(Map.of("light-1", true), "2026-10-31T09:00:00Z")));
         ActionCommandGateway gateway = gateway(candidate -> {
             request.set(candidate);
@@ -55,7 +55,7 @@ class CompanyControlGatewayContractTest {
     void companyAcUsesVerifiedInteractiveBindingAndPowerOnType129() {
         AtomicReference<ClientRequest> request = new AtomicReference<>();
         IotAdapter iot = mock(IotAdapter.class);
-        when(iot.readLiveDeviceStates(IDENTITY, List.of("ac-1")))
+        when(iot.readDeviceStates(IDENTITY, List.of("ac-1")))
                 .thenReturn(Mono.just(new DeviceStateReadResult(Map.of("ac-1", Map.of("power", "on")), "2026-10-31T09:00:00Z")));
         ActionCommandGateway gateway = gateway(candidate -> {
             request.set(candidate);
@@ -94,7 +94,7 @@ class CompanyControlGatewayContractTest {
     @Test
     void readbackBeforeCommandAtIsUnconfirmedEvenWhenStateMatches() {
         IotAdapter iot = mock(IotAdapter.class);
-        when(iot.readLiveDeviceStates(IDENTITY, List.of("ac-1")))
+        when(iot.readDeviceStates(IDENTITY, List.of("ac-1")))
                 .thenReturn(Mono.just(new DeviceStateReadResult(Map.of("ac-1", Map.of("power", "on")),
                         "2020-01-01T00:00:00Z")));
         ActionCommandGateway gateway = ActionCommandGatewayFactory.webClient(new ObjectMapper(),

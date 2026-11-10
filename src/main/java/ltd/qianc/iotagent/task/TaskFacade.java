@@ -381,8 +381,6 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         if (!PENDING.equals(proposal.status())) throw conflict("CHANGE_NOT_PENDING", "修改提案已结束");
         if (proposal.version() != expectedVersion) throw conflict("VERSION_CONFLICT", "任务已变化，请重新提出修改");
         JsonNode target = readJson(proposal.targetJson());
-        assertCurrentCatalog(principal, proposal.source(), proposal.afterJson(),
-                "resume".equals(proposal.operation()));
         if ("edit".equals(proposal.operation())) {
             validatePlanStructure(readJson(proposal.afterJson()), proposal.beforeJson());
             validateFutureChange(readJson(proposal.beforeJson()), readJson(proposal.afterJson()), proposal.operation());
@@ -394,9 +392,18 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         boolean plan = "task_plan".equals(target.path("type").asText()) || "plan".equals(target.path("type").asText())
                 || occurrence != null;
         String planId = occurrence == null ? id : occurrence.planId();
+        if (!plan || !"resume".equals(proposal.operation())) {
+            assertCurrentCatalog(principal, proposal.source(), proposal.afterJson());
+        }
         if (plan) {
             TaskPlanFact current = plan(principal, planId, normalizedSource);
             if (current.version() != proposal.version()) throw conflict("VERSION_CONFLICT", "计划已变化，请重新提出修改");
+            if ("resume".equals(proposal.operation())) {
+                TaskReadScope currentScope = resumeScope(principal, normalizedSource, planSource(current));
+                if (!projector.allTargetsVisible(planSource(current), currentScope)) {
+                    throw conflict("PLAN_SCOPE_CHANGED", "计划目标范围或设备能力已变化，请重新确认");
+                }
+            }
             if (occurrence != null) {
                 String override = "skip".equals(proposal.operation()) ? null : safePayload(proposal.afterJson()).toString();
                 TaskPlanOccurrence changed;
@@ -1025,7 +1032,7 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         JsonNode payload = readJson(task.payloadJson());
         Set<String> devices = deviceReferences(payload);
         if (devices.isEmpty()) return;
-        Set<String> allowed = freshScope(principal, normalizedSource).deviceIds();
+        Set<String> allowed = scope(principal, normalizedSource).deviceIds();
         if (devices.stream().noneMatch(allowed::contains)) {
             throw notFound("TASK_NOT_FOUND", "任务不存在");
         }
@@ -1086,7 +1093,7 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
             throw new BusinessException("RESUME_CONFIRMATION_REQUIRED", "重新启用周期计划需要确认当前范围和控制绑定", 400);
         }
         TaskPlanFact current = plan(principal, planId, normalizedSource);
-        TaskReadScope scope = freshScope(principal, normalizedSource);
+        TaskReadScope scope = scope(principal, normalizedSource);
         Map<String, Object> view = planView(principal, planId, normalizedSource, scope);
         String desired = "pause".equals(requested) ? "PAUSED" : "ENABLED";
         if (current.version() == expectedVersion + 1 && desired.equals(current.status())
@@ -1111,7 +1118,7 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
             if (!Boolean.TRUE.equals(view.get("canResume"))) {
                 throw new BusinessException("PLAN_FORBIDDEN", "当前账号不能重新启用这个周期计划", 403);
             }
-            assertCurrentCatalog(principal, normalizedSource, current.payloadJson(), true);
+            scope = resumeScope(principal, normalizedSource, planSource(current));
             if (!projector.allTargetsVisible(planSource(current), scope)) {
                 throw conflict("PLAN_SCOPE_CHANGED", "计划目标范围或设备能力已变化，请重新确认");
             }
@@ -1149,7 +1156,7 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         }
         TaskPlanFact current = plan(principal, planId, normalizedSource);
         Map<String, Object> view = planView(principal, planId, normalizedSource,
-                freshScope(principal, normalizedSource));
+                scope(principal, normalizedSource));
         assertCurrentCatalog(principal, normalizedSource, current.payloadJson(), true);
         if ("all".equals(scope) && "DELETED".equals(current.status()) && current.version() == expectedVersion + 1
                 && Boolean.TRUE.equals(view.get("canManage"))) {
@@ -1999,15 +2006,25 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         }
     }
 
+    private TaskReadScope resumeScope(PrincipalInfo principal, String source, PlanSource plan) {
+        if (iot == null) throw new BusinessException("TASK_DEVICE_AUTHORIZATION_UNAVAILABLE", "当前设备授权范围暂不可用", 503);
+        AuthorizedDeviceScope current = readCatalog.authorized(scopeIdentity(principal, source));
+        assertTargetBindings(plan.payload(), current);
+        for (var occurrence : plan.occurrences().values()) {
+            if ("OVERRIDDEN".equalsIgnoreCase(occurrence.status()) && occurrence.overridePayload() != null) {
+                assertTargetBindings(occurrence.overridePayload(), current);
+            }
+        }
+        return TaskReadScope.of(current);
+    }
+
     private void assertCurrentCatalog(PrincipalInfo principal, String source, String payloadJson) {
         assertCurrentCatalog(principal, source, payloadJson, false);
     }
 
     private void assertCurrentCatalog(PrincipalInfo principal, String source, String payloadJson, boolean required) {
         JsonNode payload = safePayload(payloadJson);
-        String expectedCatalog = text(payload, "catalogFingerprint", "catalog_fingerprint", "deviceCatalogFingerprint");
-        String expectedBinding = text(payload, "bindingFingerprint", "binding_fingerprint", "deviceBindingFingerprint");
-        if (deviceReferences(payload).isEmpty() && expectedCatalog == null && expectedBinding == null) return;
+        if (deviceReferences(payload).isEmpty()) return;
         if (iot == null) {
             if (required) throw new BusinessException("TASK_DEVICE_AUTHORIZATION_UNAVAILABLE", "当前设备授权范围暂不可用", 503);
             return;
@@ -2020,7 +2037,7 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         }
         AuthorizedDeviceScope scope;
         try {
-            scope = readCatalog.fresh(new RequestIdentity(
+            scope = readCatalog.authorized(new RequestIdentity(
                     principal.authorization(), principal.tenantCode(), requested, principal.ownerKey()));
         } catch (BusinessException failure) {
             throw failure;
@@ -2030,10 +2047,10 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         if (scope == null || scope.source() != requested || scope.devices() == null) {
             throw new BusinessException("TASK_DEVICE_AUTHORIZATION_UNAVAILABLE", "当前设备授权范围暂不可用", 503);
         }
-        if ((expectedCatalog != null && !expectedCatalog.equals(scope.catalogFingerprint()))
-                || (expectedBinding != null && !expectedBinding.equals(scope.bindingFingerprint()))) {
-            throw new BusinessException("TASK_DEVICE_AUTHORIZATION_UNAVAILABLE", "任务设备授权目录已变化，请重新确认", 403);
-        }
+        assertTargetBindings(payload, scope);
+    }
+
+    private void assertTargetBindings(JsonNode payload, AuthorizedDeviceScope scope) {
         for (String id : deviceReferences(payload)) {
             AuthorizedDevice device = scope.device(id).orElse(null);
             if (device == null) {
@@ -2267,11 +2284,6 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         return readCatalog.load(identity);
     }
 
-    private TaskReadScope freshScope(PrincipalInfo principal, String source) {
-        checkPrincipal(principal);
-        if (iot == null) return TaskReadScope.empty();
-        return TaskReadScope.of(readCatalog.fresh(scopeIdentity(principal, source)));
-    }
 
     private RequestIdentity scopeIdentity(PrincipalInfo principal, String source) {
         IotSourceEnum requested;
@@ -2288,7 +2300,7 @@ public final class TaskFacade implements ltd.qianc.iotagent.conversation.Convers
         catch (RuntimeException invalid) { throw new BusinessException("INVALID_AGENT_SOURCE", "Agent 来源无效", 400); }
         AuthorizedDeviceScope scope;
         try {
-            scope = readCatalog.fresh(new RequestIdentity(
+            scope = readCatalog.authorized(new RequestIdentity(
                     principal.authorization(), principal.tenantCode(), requested, ownerKey(principal)));
         } catch (RuntimeException failure) {
             throw new BusinessException("TASK_DEVICE_AUTHORIZATION_UNAVAILABLE", "当前设备授权范围暂不可用", 503);

@@ -56,4 +56,17 @@ public record DeviceStateReadResult(Map<String, Object> states, String observedA
         }
         cache = Collections.unmodifiableMap(new LinkedHashMap<>(cache == null ? Map.of() : cache));
     }
+
+    /** Existing control-preparation freshness rule, also required by local-only execution preflight. */
+    public boolean currentForControl(String deviceId, java.time.Instant now) {
+        if ("stale".equals(cache.get("status"))) return false;
+        String at = observedAtByDevice.getOrDefault(deviceId, observedAt);
+        if (at == null) return false;
+        try {
+            java.time.Instant sample = java.time.Instant.parse(at);
+            return !sample.isAfter(now) && !sample.isBefore(now.minusSeconds(60));
+        } catch (java.time.format.DateTimeParseException unknownTime) {
+            return false;
+        }
+    }
 }

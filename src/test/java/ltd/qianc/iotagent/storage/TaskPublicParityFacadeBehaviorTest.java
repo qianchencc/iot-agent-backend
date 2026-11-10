@@ -84,27 +84,85 @@ class TaskPublicParityFacadeBehaviorTest {
         phaseStore = TaskFactStoresFactory.taskPhases(jdbc, transactions, mapper);
     }
 
+    @Test
+    void repeatedPlanSwitchesKeepAuthoritativeViewsAndFuturePointerWithoutUnrelatedBindings() throws Exception {
+        var light = new AuthorizedDevice("dev-1", "lighting", "Fixture light", "Fixture room", false);
+        var unrelated = new AuthorizedDevice("other-device", "ac", "Fixture AC", "Fixture room", false);
+        var identity = new RequestIdentity(PRINCIPAL.authorization(), "TENANT", IotSourceEnum.OFFICE, PRINCIPAL.ownerKey());
+        var original = AuthorizedDeviceScope.of(identity, IotSourceEnum.OFFICE, List.of(light, unrelated));
+        var changed = new AuthorizedDevice("other-device", "ac", "Fixture AC", "Fixture room", false,
+                "new-control", null, null, null, List.of(), List.of(), Map.of());
+        var current = AuthorizedDeviceScope.of(identity, IotSourceEnum.OFFICE, List.of(light, changed));
+        var payload = (com.fasterxml.jackson.databind.node.ObjectNode) mapper.readTree(managedPlanPayload(PRINCIPAL.ownerKey()));
+        payload.put("catalogFingerprint", original.catalogFingerprint()).put("bindingFingerprint", original.bindingFingerprint());
+        ((com.fasterxml.jackson.databind.node.ObjectNode) payload.path("phases").get(0).path("actions").get(0))
+                .put("bindingFingerprint", light.bindingFingerprint());
+        payload.set("repeat", mapper.readTree("{\"frequency\":\"weekdays\"}"));
+        plans.save(new TaskPlanFact("switch-plan", 1, "ENABLED", payload.toString(), "switch-key"));
+        var upstreamReads = new java.util.concurrent.atomic.AtomicInteger();
+        IotAdapter transport = request -> {
+            upstreamReads.incrementAndGet();
+            return Mono.error(new AssertionError("interactive upstream access is forbidden"));
+        };
+        var directory = mock(ltd.qianc.iotagent.iot.DeviceDirectory.class);
+        when(directory.loadBatch(any())).thenReturn(new ltd.qianc.iotagent.iot.DeviceDirectoryBatch(current, List.of()));
+        IotAdapter iot = ltd.qianc.iotagent.iot.IotAdapterFactory.localReads(transport, () -> directory,
+                () -> mock(ltd.qianc.iotagent.iot.DeviceObservations.class), mock(ltd.qianc.iotagent.iot.DeviceCandidateSetStore.class));
+        var facade = new TaskFacade(mapper, tasks, proposals, plans, mock(TaskNotificationStore.class),
+                TaskSchedulerFactory.jdbc(jdbc, mapper), phaseStore, iot, null, null,
+                mock(ltd.qianc.iotagent.readmodel.ReadSnapshots.class), atomic, Clock.fixed(NOW, ZoneOffset.UTC));
+        jdbc.execute("CREATE ALIAS JSON_EXTRACT FOR 'ltd.qianc.iotagent.storage.TaskCalendarProjectionTest.extract'");
+        jdbc.execute("CREATE ALIAS JSON_UNQUOTE FOR 'ltd.qianc.iotagent.storage.TaskCalendarProjectionTest.unquote'");
+        var projections = TaskFactStoresFactory.taskProjections(jdbc, mapper, facade);
+        var from = Instant.parse("2030-01-01T00:00:00Z");
+        var to = Instant.parse("2030-01-09T00:00:00Z");
+        var paused = mapper.valueToTree(facade.updatePlan(PRINCIPAL, "switch-plan", 1, "pause", false, "office")).path("plan");
+        assertThat(paused.path("status").asText()).isEqualTo("paused");
+        assertThat(plans.pointer("switch-plan").orElseThrow().nextAt()).isNull();
+        assertThat(projections.list(PRINCIPAL, "office", from, to)).isEmpty();
+        assertThat(projections.deviceCalendar(PRINCIPAL, "office", "dev-1", from, to)).isEmpty();
+        var resumed = mapper.valueToTree(facade.updatePlan(PRINCIPAL, "switch-plan", 2, "resume", true, "office")).path("plan");
+        assertThat(resumed.path("status").asText()).isEqualTo("enabled");
+        assertThat(resumed.path("version").asLong()).isEqualTo(3);
+        assertThat(resumed.path("nextAt").asText()).isEqualTo("2030-01-02T09:00:00Z");
+        assertThat(facade.planView(PRINCIPAL, "switch-plan", "office")).isEqualTo(facade.plans(PRINCIPAL, "office").getFirst());
+        assertThat(facade.planView(PRINCIPAL, "switch-plan", "office").get("nextAt"))
+                .isEqualTo(plans.pointer("switch-plan").orElseThrow().nextAt().toString());
+        assertThat(projections.list(PRINCIPAL, "office", from, to))
+                .extracting(row -> String.valueOf(((Map<?, ?>) row.get("occurrence")).get("date")))
+                .containsExactly("2030-01-02", "2030-01-03", "2030-01-04", "2030-01-07", "2030-01-08");
+        assertThat(projections.deviceCalendar(PRINCIPAL, "office", "dev-1", from, to))
+                .extracting(row -> row.get("date"))
+                .containsExactly("2030-01-02", "2030-01-03", "2030-01-04", "2030-01-07", "2030-01-08");
+        var pausedAgain = mapper.valueToTree(facade.updatePlan(PRINCIPAL, "switch-plan", 3, "pause", false, "office")).path("plan");
+        assertThat(pausedAgain.path("status").asText()).isEqualTo("paused");
+        assertThat(pausedAgain.path("version").asLong()).isEqualTo(4);
+        assertThat(pausedAgain.path("nextAt").isNull()).isTrue();
+        assertThat(plans.pointer("switch-plan").orElseThrow().nextAt()).isNull();
+        assertThat(facade.plans(PRINCIPAL, "office").getFirst().get("status")).isEqualTo("paused");
+        assertThat(projections.list(PRINCIPAL, "office", from, to)).isEmpty();
+        assertThat(projections.deviceCalendar(PRINCIPAL, "office", "dev-1", from, to)).isEmpty();
+        assertThat(upstreamReads.get()).isZero();
+    }
+
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
     void recurringConfirmationSurvivesJsonStorageButRejectsChangedControlBindings(boolean changedBinding) throws Exception {
         var identity = new RequestIdentity(PRINCIPAL.authorization(), "TENANT", IotSourceEnum.OFFICE, PRINCIPAL.ownerKey());
-        var light = new AuthorizedDevice("dev-1", "lighting", "Fixture light", "Fixture room", false);
         var metadata = Map.<String, Object>of("actionList", mapper.readTree(
                 "[{\"id\":\"read-temperature\",\"enabled\":true,\"ratio\":1.25,\"optional\":null,\"flags\":[1,\"x\",false]}]"));
         var persistedMetadata = mapper.readValue(mapper.writeValueAsString(metadata),
                 new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() { });
-        var sensor = new AuthorizedDevice("sensor", "environment", "Fixture sensor", "Fixture room", true,
-                null, "sensor", null, null, List.of(), List.of(), metadata);
-        var storedSensor = new AuthorizedDevice("sensor", "environment", "Fixture sensor", "Fixture room", true,
-                null, "sensor", null, null, List.of(), List.of(), persistedMetadata);
-        var stored = AuthorizedDeviceScope.of(identity, IotSourceEnum.OFFICE, List.of(light, storedSensor));
-        var currentLight = changedBinding
-                ? new AuthorizedDevice("dev-1", "lighting", "Fixture light", "Fixture room", false,
-                        "changed-control", null, null, null, List.of(), List.of(), Map.of())
-                : light;
-        var current = AuthorizedDeviceScope.of(identity, IotSourceEnum.OFFICE, List.of(currentLight, sensor));
+        var storedLight = new AuthorizedDevice("dev-1", "lighting", "Fixture light", "Fixture room", false,
+                "control-light", "dev-1", "hub-light", "room-light", List.of(), List.of(), persistedMetadata);
+        var currentLight = new AuthorizedDevice("dev-1", "lighting", "Fixture light", "Fixture room", false,
+                changedBinding ? "changed-control" : "control-light", "dev-1", "hub-light", "room-light", List.of(), List.of(), metadata);
+        var stored = AuthorizedDeviceScope.of(identity, IotSourceEnum.OFFICE, List.of(storedLight));
+        var current = AuthorizedDeviceScope.of(identity, IotSourceEnum.OFFICE, List.of(currentLight));
         var payload = (com.fasterxml.jackson.databind.node.ObjectNode) mapper.readTree(managedPlanPayload(PRINCIPAL.ownerKey()));
         payload.put("catalogFingerprint", stored.catalogFingerprint()).put("bindingFingerprint", stored.bindingFingerprint());
+        ((com.fasterxml.jackson.databind.node.ObjectNode) payload.path("phases").get(0).path("actions").get(0))
+                .put("bindingFingerprint", storedLight.bindingFingerprint());
         proposals.save(new TaskProposalFact("json-confirmation", 1, "PENDING_CONFIRMATION", payload.toString(),
                 "json-confirmation-key", "TASK", "{}", "{}", payload.toString(), "create",
                 "TENANT", PRINCIPAL.ownerKey(), "office", NOW.plusSeconds(600)));
@@ -284,30 +342,6 @@ class TaskPublicParityFacadeBehaviorTest {
                 .isEqualTo("CANCELLED");
     }
 
-    @Test
-    void cancellationChecksExternalAuthorizationBeforeOpeningTheWriteTransaction() {
-        tasks.save(new TaskFact("task-network-cancel", 1, "SCHEDULED", scopedPayload(), "network-cancel"));
-        proposals.save(new TaskProposalFact("network-cancel-proposal", 1, "PENDING_CONFIRMATION", "{}",
-                "network-cancel-proposal", "CANCELLATION",
-                "{\"type\":\"task\",\"taskId\":\"task-network-cancel\"}", "{}", "{}", "cancel",
-                "TENANT", PRINCIPAL.ownerKey(), "office", Instant.parse("2030-01-02T00:00:00Z")));
-        IotAdapter iot = identity -> {
-            assertThat(org.springframework.transaction.support.TransactionSynchronizationManager
-                    .isActualTransactionActive()).as("External authorization must not hold a DB transaction").isFalse();
-            return Mono.just(AuthorizedDeviceScope.of(identity, IotSourceEnum.OFFICE, List.of(
-                    new AuthorizedDevice("dev-1", "lighting", "灯一", "办公室", false),
-                    new AuthorizedDevice("dev-2", "lighting", "灯二", "办公室", false))));
-        };
-        TaskFacade facade = new TaskFacade(mapper, tasks, proposals, plans, mock(TaskNotificationStore.class),
-                TaskSchedulerFactory.jdbc(jdbc, mapper), allTerminalStore(false), iot, null, null,
-                mock(ltd.qianc.iotagent.readmodel.ReadSnapshots.class), atomic,
-                Clock.fixed(NOW, ZoneOffset.UTC));
-
-        assertThat(facade.confirmCancellation(PRINCIPAL, "network-cancel-proposal", 1, "office"))
-                .containsEntry("taskId", "task-network-cancel").containsEntry("status", "cancelled");
-        assertThat(tasks.find("task-network-cancel").orElseThrow().status()).isEqualTo("CANCELLED");
-        assertThat(proposals.find("network-cancel-proposal").orElseThrow().status()).isEqualTo("CONFIRMED");
-    }
 
     @Test
     void agentCancellationProposalCoversAnotherCreatorsTaskUnderCatalogScope() {
@@ -571,8 +605,15 @@ class TaskPublicParityFacadeBehaviorTest {
     private TaskFacade facadeWithScope(TaskFactStore factStore, TaskNotificationStore notices,
                                        List<String> deviceIds, boolean allTerminal,
                                        TaskExecutionIdentityStore identities) {
-        IotAdapter iot = identity -> Mono.just(AuthorizedDeviceScope.of(identity, IotSourceEnum.OFFICE,
-                deviceIds.stream().map(id -> new AuthorizedDevice(id, "lighting", "灯", "办公室", false)).toList()));
+        IotAdapter iot = new IotAdapter() {
+            @Override public Mono<AuthorizedDeviceScope> loadAuthorizedDeviceScope(RequestIdentity identity) {
+                return Mono.just(AuthorizedDeviceScope.of(identity, IotSourceEnum.OFFICE,
+                        deviceIds.stream().map(id -> new AuthorizedDevice(id, "lighting", "灯", "办公室", false)).toList()));
+            }
+            @Override public Mono<ltd.qianc.iotagent.iot.DeviceDirectoryBatch> readDirectory(RequestIdentity identity) {
+                return loadAuthorizedDeviceScope(identity).map(scope -> new ltd.qianc.iotagent.iot.DeviceDirectoryBatch(scope, List.of()));
+            }
+        };
         return new TaskFacade(mapper, factStore, proposals, plans, notices, mock(TaskScheduler.class),
                 allTerminalStore(allTerminal), iot, identities, null,
                 mock(ltd.qianc.iotagent.readmodel.ReadSnapshots.class),
@@ -608,8 +649,15 @@ class TaskPublicParityFacadeBehaviorTest {
     }
 
     private TaskFacade planFacade(TaskNotificationStore notices, TaskExecutionIdentityStore identities) {
-        IotAdapter iot = identity -> Mono.just(AuthorizedDeviceScope.of(identity, IotSourceEnum.OFFICE, List.of(
-                new AuthorizedDevice("dev-1", "lighting", "灯一", "办公室", false))));
+        IotAdapter iot = new IotAdapter() {
+            @Override public Mono<AuthorizedDeviceScope> loadAuthorizedDeviceScope(RequestIdentity identity) {
+                return Mono.just(AuthorizedDeviceScope.of(identity, IotSourceEnum.OFFICE, List.of(
+                        new AuthorizedDevice("dev-1", "lighting", "灯一", "办公室", false))));
+            }
+            @Override public Mono<ltd.qianc.iotagent.iot.DeviceDirectoryBatch> readDirectory(RequestIdentity identity) {
+                return loadAuthorizedDeviceScope(identity).map(scope -> new ltd.qianc.iotagent.iot.DeviceDirectoryBatch(scope, List.of()));
+            }
+        };
         return new TaskFacade(mapper, tasks, proposals, plans, notices, TaskSchedulerFactory.jdbc(jdbc, mapper),
                 phaseStore, iot, identities, null,
                 mock(ltd.qianc.iotagent.readmodel.ReadSnapshots.class), atomic,

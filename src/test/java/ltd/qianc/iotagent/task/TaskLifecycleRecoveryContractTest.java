@@ -115,6 +115,40 @@ class TaskLifecycleRecoveryContractTest {
     }
 
     @Test
+    void unrelatedCatalogChangesDoNotPreventAnAuthorizedTargetFromExecuting() {
+        States states = new States(IotSourceEnum.OFFICE);
+        states.script("light-1", Map.of("power", "off"));
+        Actions actions = new Actions();
+        actions.result = "{\"receipts\":[{\"actionId\":\"phase-1:light-1\",\"outcome\":\"ACCEPTED\"}],"
+                + "\"readbacks\":[{\"actionId\":\"phase-1:light-1\",\"outcome\":\"unconfirmed\"}]}";
+        var target = states.catalog.get("light-1");
+        var phase = (com.fasterxml.jackson.databind.node.ObjectNode) parse("{\"actions\":[" + action("light-1", "lighting") + "]}");
+        ((com.fasterxml.jackson.databind.node.ObjectNode) phase.path("actions").get(0))
+                .put("bindingFingerprint", target.bindingFingerprint());
+        var task = (com.fasterxml.jackson.databind.node.ObjectNode) parse(task("office", null));
+        task.put("catalogFingerprint", "older-unrelated-catalog").put("bindingFingerprint", "older-unrelated-bindings");
+        var result = gateway(states, actions, new Guard()).execute(request("office", phase.toString(), task.toString()));
+        assertThat(result.outcome()).isEqualTo("COMPLETED");
+        assertThat(actions.dispatchedDeviceIds).containsExactly(List.of("light-1"));
+    }
+
+    @Test
+    void changedTargetBindingPreventsDispatchEvenWithoutReadbackVerification() {
+        States states = new States(IotSourceEnum.OFFICE);
+        states.script("light-1", Map.of("power", "off"));
+        Actions actions = new Actions();
+        var phase = (com.fasterxml.jackson.databind.node.ObjectNode) parse("{\"requiresVerification\":false,\"actions\":[" + action("light-1", "lighting") + "]}");
+        ((com.fasterxml.jackson.databind.node.ObjectNode) phase.path("actions").get(0)).put("bindingFingerprint", "old-target-binding");
+        assertThatThrownBy(() -> gateway(states, actions, new Guard())
+                .execute(request("office", phase.toString(), task("office", null))))
+                .isInstanceOfSatisfying(TaskExecutionGateway.DispatchException.class, error -> {
+                    assertThat(error.reasonCode()).isEqualTo(TaskExecutionGateway.DispatchException.BINDING_CHANGED);
+                    assertThat(error.dispatchStarted()).isFalse();
+                });
+        assertThat(actions.dispatchedDeviceIds).isEmpty();
+    }
+
+    @Test
     void companyScopeLossFailsBeforeDispatchWithInvalidationKind() {
         States states = new States(IotSourceEnum.COMPANY);
         states.register("light-1", "lighting");

@@ -129,12 +129,6 @@ public final class LocalReadIotAdapter implements IotAdapter {
     @Override public Mono<DeviceStateReadResult> collectCurrentStates(RequestIdentity identity, AuthorizedDeviceScope scope) {
         return source.collectCurrentStates(identity, scope);
     }
-    @Override public Mono<AuthorizedDeviceScope> revalidateAuthorizedDeviceScope(RequestIdentity identity) {
-        return source.revalidateAuthorizedDeviceScope(identity);
-    }
-    @Override public Mono<DeviceStateReadResult> readLiveDeviceStates(RequestIdentity identity, List<String> ids) {
-        return source.readLiveDeviceStates(identity, ids);
-    }
     @Override public Mono<String> readCreatorDisplayName(RequestIdentity identity) { return source.readCreatorDisplayName(identity); }
     @Override public Mono<AuthorizedDeviceScope> loadAuthorizedSafetyScope(RequestIdentity identity) { return source.loadAuthorizedSafetyScope(identity); }
     @Override public Mono<AuthorizedDeviceScope> loadAuthorizedVideoScope(RequestIdentity identity) { return source.loadAuthorizedVideoScope(identity); }

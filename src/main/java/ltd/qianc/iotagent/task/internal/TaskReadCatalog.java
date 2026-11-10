@@ -13,7 +13,7 @@ import ltd.qianc.iotagent.iot.RequestIdentity;
 import ltd.qianc.iotagent.readmodel.ReadSnapshots;
 import ltd.qianc.iotagent.task.TaskReadScope;
 
-/** Read projections use the local directory; mutations retain live binding verification. */
+/** Task projections and mutation authorization both consume the existing local directory. */
 public final class TaskReadCatalog {
     private final IotAdapter iot;
     private final ReadSnapshots snapshots;
@@ -47,10 +47,10 @@ public final class TaskReadCatalog {
         return read(identity);
     }
 
-    /** Mutations still validate the live catalog and control bindings. */
-    public AuthorizedDeviceScope fresh(RequestIdentity identity) {
+    /** Revalidates bindings against the backend's published local catalog, never the customer gateway. */
+    public AuthorizedDeviceScope authorized(RequestIdentity identity) {
         try {
-            AuthorizedDeviceScope scope = iot.revalidateAuthorizedDeviceScope(identity).block(Duration.ofSeconds(30));
+            AuthorizedDeviceScope scope = iot.loadAuthorizedDeviceScope(identity).block(Duration.ofSeconds(30));
             if (scope == null || scope.source() != identity.source() || !identity.equals(scope.identity())) {
                 throw unavailable();
             }
