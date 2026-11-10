@@ -105,6 +105,15 @@ public final class JdbcEnvironmentHistory implements EnvironmentHistory {
             Map<String,Object> payload=trend ? EnvironmentTrendProjection.payload(samples,from,to)
                     : EnvironmentSamples.payload(samples,from.toString(),to.toString(),true,next,null);
             payload.put("totalElements",total);
+            if(trend) payload.put("availableWindow",jdbc.queryForObject(
+                    "SELECT MIN(recorded_at) AS first_at,MAX(recorded_at) AS last_at FROM local_environment_samples WHERE scope_key=?",
+                    (rs,row)->{
+                        Map<String,Object> bounds=new LinkedHashMap<>();
+                        Instant first=instant(rs,"first_at"),last=instant(rs,"last_at");
+                        bounds.put("from",first==null?null:first.toString());
+                        bounds.put("to",last==null?null:last.toString());
+                        return bounds;
+                    },access.dataKey()));
             Access current=authorize(request.identity());
             Progress latest=progress(current.dataKey());
             if(!access.generation().equals(current.generation()) || !access.dataKey().equals(current.dataKey())

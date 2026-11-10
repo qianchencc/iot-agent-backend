@@ -65,6 +65,27 @@ class EnvironmentTrendBehaviorTest {
         }
     }
 
+    @Test void historyBoundsCoverAuthorizedRecordsOutsideTheSelectedEmptyWindow() {
+        try (var f = new EnvironmentHistoryFixture()) {
+            f.rows = List.of(
+                    EnvironmentHistoryFixture.row("first", null, "2020-01-01T15:30:00Z", "10"),
+                    EnvironmentHistoryFixture.row("last", null, "2020-01-03T01:00:00Z", "20"),
+                    EnvironmentHistoryFixture.row("outside", null, "1999-01-01T00:00:00Z", "5"));
+            f.publish();
+            assertEquals(1, f.jdbc.update("UPDATE local_environment_samples SET scope_key=? WHERE source_record_id=?",
+                    "outside-fixture-scope", "outside"));
+            int calls = f.sourceCalls.get();
+            f.unavailable = true;
+            var empty = f.history().read(query(f, "2020-02-01", "2020-02-02"));
+            assertTrue(((List<?>) empty.payload().get("samples")).isEmpty());
+            var bounds = (Map<?, ?>) empty.payload().get("availableWindow");
+            assertNotNull(bounds);
+            assertEquals("2020-01-01T15:30:00Z", bounds.get("from"));
+            assertEquals("2020-01-03T01:00:00Z", bounds.get("to"));
+            assertEquals(calls, f.sourceCalls.get());
+        }
+    }
+
     private static ObservationRequest query(EnvironmentHistoryFixture f, String from, String to) {
         return new ObservationRequest(f.identity(), ObservationOperationEnum.ENVIRONMENT_HISTORY,
                 Map.of("from", from + "T00:00:00+08:00", "to", to + "T23:59:59.999+08:00", "resolution", "auto"));
