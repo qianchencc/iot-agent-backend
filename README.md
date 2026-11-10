@@ -14,6 +14,8 @@ Java public backend plus an independent Node `agent-sidecar`: Spring Boot 3.5 / 
 
 2026-11-09 历史能耗答复修正：模型摘要按 `buckets.items` 计数并保留分段、指标和位置排行；时间对比复用既有同表集和周分段计算 `periodComparisons`，不足完整可比周不计算比例。沿用既有补数规则，将 `dataProvenance` 同时交给卡片和模型，不改变采样或总量算法。固定3381仅替换原运行包中的三个能耗相关类及公司指引，运行配置22只更新能耗段落，Node3382、模型、凭据与其他设置不变。前端371项、186文件边界及微信编译通过；后端737项（708通过、29跳过）通过，明确排除原有一个视频回放失败。真实小程序结果及未验边界见[AG-080验证记录](../mp/.scratch/huly-test-execution/evidence/AG-080/20261109-fix-verification.json)。
 
+2026-11-10 环境趋势 HTTP 完整窗口修复：`GET /api/agent/environment-history` 未传 `page` 时读取完整所选窗口，显式传页号仍保留原始明细分页；修补此前只覆盖 Agent 工具／引用、仪表盘仍停在最近100条的遗漏。前端不再传页号或要求手动续读，不补造缺测。35项相关后端回归、371项前端回归及微信编译通过，用户已确认通过；固定3381只替换HTTP控制器，Node、私有配置和既有业务实现不变。[修复与确认记录](../mp/.scratch/agent-business-recovery/evidence/environment-http-window-20261110.json)。
+
 ```sh
 # 0. 构建（首次先安装依赖：agent-sidecar 与 web/admin 各执行一次 npm ci）
 mvn package

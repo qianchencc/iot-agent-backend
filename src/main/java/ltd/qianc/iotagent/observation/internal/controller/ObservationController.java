@@ -79,7 +79,8 @@ public final class ObservationController {
         if (source != null) return source;
         ResponseEntity<?> duplicate = rejectDuplicates(request, "INVALID_HISTORY_WINDOW", "查询参数不可重复", "from", "to", "page");
         if (duplicate != null) return duplicate;
-        return read(request, ObservationOperationEnum.ENVIRONMENT_HISTORY, Map.of());
+        return read(request, ObservationOperationEnum.ENVIRONMENT_HISTORY,
+                request.getParameter("page") == null ? Map.of("fullWindow", "true") : Map.of());
     }
 
     @GetMapping("/safety-events")
