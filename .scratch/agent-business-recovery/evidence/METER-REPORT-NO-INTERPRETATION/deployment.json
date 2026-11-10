@@ -1,0 +1,68 @@
+{
+  "activatedAt": "2026-11-10T14:20:22+08:00",
+  "sourceCommit": "5bfa3c5",
+  "runtime": {
+    "javaPort": 3381,
+    "javaPid": 5806,
+    "listenAddress": "0.0.0.0",
+    "nodePort": 3382,
+    "nodePid": 4208,
+    "nodeRestarted": false,
+    "externalConfigurationChanged": false
+  },
+  "artifact": {
+    "sourceCommit": "5bfa3c5",
+    "previousJar": "var/cold-account-bootstrap-20261110-1343/backend.jar",
+    "releaseJar": "var/meter-report-no-interpretation-20261110-141810/backend.jar",
+    "previousSha256": "a05462a608f1b36a7eb59d9114748470ff74c42a6176fa67b2aae4a77365e978",
+    "releaseSha256": "6267789a2bde2bb15b591bf4e09b015afbc4ba75903f9a845bcf6b65051789c1",
+    "changedEntries": [
+      "BOOT-INF/classes/ltd/qianc/iotagent/agent/internal/DefaultAgentCheckpointBridge.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/agent/internal/DefaultAgentCheckpointBridge$2.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/agent/internal/DefaultAgentCheckpointBridge$1.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/agent/internal/DefaultAgentCheckpointBridge$Checkpoint.class"
+    ],
+    "unchangedEntries": 831
+  },
+  "cutover": {
+    "graceful": true,
+    "activeModelRunsBefore": 0,
+    "executingPhasesBefore": 0,
+    "nextPendingPhaseBefore": null
+  },
+  "verification": {
+    "releaseBytecodeSmoke": "RELEASE_SMOKE PASS: completed report; one saved artifact; model configuration not accessed; server total=10",
+    "javaHealth": "ok",
+    "mysql": "ok",
+    "redis": "ok",
+    "nodeHealth": "ok",
+    "activeModelRunsAfter": 0,
+    "businessCountsBefore": {
+      "task_facts": 13,
+      "task_phases": 19,
+      "task_plans": 6,
+      "report_facts": 12,
+      "task_notifications": 10
+    },
+    "businessCountsAfter": {
+      "task_facts": 13,
+      "task_phases": 19,
+      "task_plans": 6,
+      "report_facts": 12,
+      "task_notifications": 10
+    },
+    "businessCountsUnchanged": true,
+    "lanHealth": "ok",
+    "lanHealthUrl": "http://192.168.102.15:3381/healthz"
+  },
+  "businessAcceptance": {
+    "realScheduledOccurrenceTriggered": false,
+    "frontendAccepted": false,
+    "note": "Deployment and exact-artifact behavior verified; no real tasks or notifications created for acceptance."
+  },
+  "rollback": {
+    "jar": "var/cold-account-bootstrap-20261110-1343/backend.jar",
+    "sha256": "a05462a608f1b36a7eb59d9114748470ff74c42a6176fa67b2aae4a77365e978",
+    "configuration": "Retain the same external application.yaml and listen address"
+  }
+}
