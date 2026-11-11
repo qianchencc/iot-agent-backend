@@ -33,12 +33,13 @@ public class AgentBusinessConfiguration {
             ObjectProvider<TaskFacade> tasks,
             ObjectProvider<ReportService> reports,
             ObjectProvider<AdminConfigurationStore> adminConfigurations,
+            ltd.qianc.iotagent.allowlist.PhoneAllowlist allowlist,
             @Value("${agent.run.max-turns:6}") int maxTurns) {
         IotAdapter iot = iotAdapters.getIfAvailable();
         return AgentBusinessEngineFactory.policyProvider(() -> conversations.getObject(),
                 iot, observations.getIfAvailable(), tasks.getIfAvailable(),
                 reports.getIfAvailable(), adminConfigurations::getIfAvailable,
-                Clock.system(ZoneId.of("Asia/Shanghai")), maxTurns);
+                Clock.system(ZoneId.of("Asia/Shanghai")), maxTurns, allowlist);
     }
 
     @Bean
@@ -49,10 +50,11 @@ public class AgentBusinessConfiguration {
             ActionDraftFacade actions, TaskFacade tasks, ObjectMapper mapper,
             ObjectProvider<ReportGenerationPort> reports,
             ObjectProvider<ReportService> savedReports,
+            ltd.qianc.iotagent.allowlist.PhoneAllowlist allowlist,
             ObjectProvider<ltd.qianc.iotagent.agent.AgentCheckpointBridge> checkpoints) {
         AgentToolBridge interactive = AgentBusinessEngineFactory.toolBridge(conversations, iot,
                 observations.getIfAvailable(), projections.getIfAvailable(), actions, tasks, mapper,
-                reports.getIfAvailable(), savedReports.getIfAvailable(), Clock.system(ZoneId.of("Asia/Shanghai")));
+                reports.getIfAvailable(), savedReports.getIfAvailable(), Clock.system(ZoneId.of("Asia/Shanghai")), allowlist);
         return request -> {
             var checkpoint = checkpoints.getIfAvailable();
             var result = checkpoint == null ? java.util.Optional.<java.util.Map<String, Object>>empty() : checkpoint.executeTool(request);

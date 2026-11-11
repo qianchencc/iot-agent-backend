@@ -21,7 +21,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * MySQL 白名单事实：手机号成员表 + 单行 revision 状态表，CAS 于 state 行锁上串行化。
- * 只服务管理读写；任何业务路径都不读取这些表。
+ * 公司任务资格只读内存快照；管理事务提交后发布，回滚不改变资格。
  */
 public final class JdbcPhoneAllowlist implements PhoneAllowlist {
 
@@ -35,6 +35,8 @@ public final class JdbcPhoneAllowlist implements PhoneAllowlist {
     private final ObjectMapper mapper;
     private final AuditEventStore audit;
     private final Clock clock;
+    private record Snapshot(long revision, java.util.Set<String> phones) { }
+    private volatile Snapshot snapshot = new Snapshot(-1, java.util.Set.of());
 
     public JdbcPhoneAllowlist(JdbcTemplate jdbc, TransactionTemplate transactions,
             ObjectMapper mapper, AuditEventStore audit, Clock clock) {
@@ -43,6 +45,37 @@ public final class JdbcPhoneAllowlist implements PhoneAllowlist {
         this.mapper = mapper;
         this.audit = audit;
         this.clock = clock;
+        try {
+            list();
+        } catch (BusinessException unavailable) {
+            org.slf4j.LoggerFactory.getLogger(JdbcPhoneAllowlist.class)
+                    .warn("白名单初始读取失败，公司任务功能暂不开放");
+        }
+    }
+
+    @Override
+    public boolean companyTasksEnabled(ltd.qianc.iotagent.auth.PrincipalInfo principal) {
+        return principal != null && principal.verified() && principal.mobileNumber() != null
+                && snapshot.phones().contains(principal.mobileNumber().strip());
+    }
+
+    private PhoneAllowlistView readView(long revision) {
+        List<AllowedPhone> users = jdbc.query(
+                "SELECT mobile_number,name,added_by,create_time FROM phone_allowlist ORDER BY create_time,id",
+                (rs, row) -> new AllowedPhone(rs.getString(1), rs.getString(2),
+                        rs.getString(3), rs.getTimestamp(4).toInstant().toString()));
+        PhoneAllowlistView view = new PhoneAllowlistView(revision, users);
+        var next = new Snapshot(revision, users.stream().map(AllowedPhone::mobileNumber)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet()));
+        org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                new org.springframework.transaction.support.TransactionSynchronization() {
+                    @Override public void afterCommit() { publish(next); }
+                });
+        return view;
+    }
+
+    private synchronized void publish(Snapshot next) {
+        if (next.revision() >= snapshot.revision()) snapshot = next;
     }
 
     @Override
@@ -50,12 +83,7 @@ public final class JdbcPhoneAllowlist implements PhoneAllowlist {
         try {
             return transactions.execute(status -> {
                 long revision = lockedRevision();
-                List<AllowedPhone> users = jdbc.query(
-                        "SELECT mobile_number,name,added_by,create_time "
-                                + "FROM phone_allowlist ORDER BY create_time,id",
-                        (rs, row) -> new AllowedPhone(rs.getString(1), rs.getString(2),
-                                rs.getString(3), rs.getTimestamp(4).toInstant().toString()));
-                return new PhoneAllowlistView(revision, users);
+                return readView(revision);
             });
         } catch (RuntimeException storageFailure) {
             throw unavailable();
@@ -80,6 +108,7 @@ public final class JdbcPhoneAllowlist implements PhoneAllowlist {
                 long next = bumpRevision();
                 appendAudit("PHONE_ALLOWLIST_ADDED", mobile, note, resolvedActor, next,
                         Map.of("addedAt", at.toInstant().toString()));
+                readView(next);
                 return new AllowedPhone(mobile, note, resolvedActor, at.toInstant().toString());
             });
         } catch (BusinessException error) {
@@ -102,6 +131,7 @@ public final class JdbcPhoneAllowlist implements PhoneAllowlist {
                     long next = bumpRevision();
                     appendAudit("PHONE_ALLOWLIST_REMOVED", mobile, null, resolvedActor, next,
                             Map.of("removedAt", now().toString()));
+                    readView(next);
                 }
             });
         } catch (BusinessException error) {

@@ -54,31 +54,37 @@ public final class AgentBusinessRunPolicyProvider implements AgentRunPolicyProvi
     private final Clock clock;
     private final int fallbackMaxTurns;
     private final TaskFacade tasks;
+    private final ltd.qianc.iotagent.allowlist.PhoneAllowlist allowlist;
 
     public AgentBusinessRunPolicyProvider(Supplier<ConversationFacade> conversations,
             IotAdapter iot, Clock clock, int maxTurns) {
-        this(conversations, iot, null, null, null, () -> null, clock, maxTurns);
+        this(conversations, iot, null, null, null, () -> null, clock, maxTurns,
+                ltd.qianc.iotagent.allowlist.PhoneAllowlist.failClosed("名单未配置"));
     }
 
     public AgentBusinessRunPolicyProvider(Supplier<ConversationFacade> conversations,
             IotAdapter iot, ObservationAdapter observations, TaskFacade tasks, ReportService reports,
             Clock clock, int maxTurns) {
-        this(conversations, iot, observations, tasks, reports, () -> null, clock, maxTurns);
+        this(conversations, iot, observations, tasks, reports, () -> null, clock, maxTurns,
+                ltd.qianc.iotagent.allowlist.PhoneAllowlist.failClosed("名单未配置"));
     }
 
     public AgentBusinessRunPolicyProvider(Supplier<ConversationFacade> conversations,
             IotAdapter iot, Supplier<AdminConfigurationStore> adminConfigurations,
             Clock clock, int maxTurns) {
-        this(conversations, iot, null, null, null, adminConfigurations, clock, maxTurns);
+        this(conversations, iot, null, null, null, adminConfigurations, clock, maxTurns,
+                ltd.qianc.iotagent.allowlist.PhoneAllowlist.failClosed("名单未配置"));
     }
 
     public AgentBusinessRunPolicyProvider(Supplier<ConversationFacade> conversations,
             IotAdapter iot, ObservationAdapter observations, TaskFacade tasks, ReportService reports,
-            Supplier<AdminConfigurationStore> adminConfigurations, Clock clock, int fallbackMaxTurns) {
+            Supplier<AdminConfigurationStore> adminConfigurations, Clock clock, int fallbackMaxTurns,
+            ltd.qianc.iotagent.allowlist.PhoneAllowlist allowlist) {
         this.conversations = Objects.requireNonNull(conversations, "conversations");
         this.iot = iot;
         this.references = new AgentReferenceResolver(observations, tasks, reports, iot, clock);
         this.tasks = tasks;
+        this.allowlist = Objects.requireNonNull(allowlist);
         this.adminConfigurations = adminConfigurations == null ? () -> null : adminConfigurations;
         this.clock = Objects.requireNonNull(clock, "clock");
         if (fallbackMaxTurns < 1 || fallbackMaxTurns > 32) {
@@ -171,8 +177,9 @@ public final class AgentBusinessRunPolicyProvider implements AgentRunPolicyProvi
         requestBody.put("toolContextId", request.toolContextId());
         requestBody.put("content", request.content());
         requestBody.put("sessionScope", sessionScope(context));
+        boolean companyTasks = !"company".equals(source) || allowlist.companyTasksEnabled(context.principal());
         requestBody.put("definition", definition(source, focusRegion, reference, referenceFacts, savedReportFacts,
-                actionDraftContext, settings, officeSafetyCensus, catalog));
+                actionDraftContext, settings, officeSafetyCensus, catalog, companyTasks));
         if (continuation) ((Map<String, Object>) requestBody.get("definition")).put("resume", true);
         AgentBusinessEventProjection projection = new AgentBusinessEventProjection(
                 focusRegion, reference, clock);
@@ -311,12 +318,13 @@ public final class AgentBusinessRunPolicyProvider implements AgentRunPolicyProvi
     private Map<String, Object> definition(String source, Map<String, Object> focusRegion,
             Map<String, Object> reference, Map<String, Object> referenceFacts,
             List<Map<String, Object>> savedReportFacts, Map<String, Object> actionDraftContext,
-            Map<String, Object> settings, boolean officeSafetyCensus, AuthorizedDeviceScope catalog) {
+            Map<String, Object> settings, boolean officeSafetyCensus, AuthorizedDeviceScope catalog, boolean companyTasks) {
         Map<String, Object> definition = new LinkedHashMap<>();
-        definition.put("instructions", AgentInstructions.compose(source, settings));
+        definition.put("instructions", AgentInstructions.compose(source, settings)
+                + (companyTasks ? "" : "\n当前账号未开通公司任务功能；可以正常查询，不生成任务提案，也不以即时控制替代定时任务。"));
         definition.put("context", runContext(source, focusRegion, reference, referenceFacts, savedReportFacts,
                 actionDraftContext, catalog));
-        definition.put("tools", definitions(source, reference, officeSafetyCensus));
+        definition.put("tools", definitions(source, reference, officeSafetyCensus, companyTasks));
         definition.put("maxTurns", integerSetting(settings, "maxAgentTurns", fallbackMaxTurns, 1, 32));
         definition.put("finalizationInstructions", AgentInstructions.section("finalizationInstructions", settings));
         definition.put("compactionInstructions", AgentInstructions.section("compactionInstructions", settings));
@@ -508,13 +516,14 @@ public final class AgentBusinessRunPolicyProvider implements AgentRunPolicyProvi
     }
 
     private List<Map<String, Object>> definitions(String source, Map<String, Object> reference,
-            boolean officeSafetyCensus) {
+            boolean officeSafetyCensus, boolean companyTasks) {
         // A saved-report reference keeps only the energy read-only investigation family,
         // matching the frozen Runtime: report follow-ups never grant control or task tools.
         if (reference != null && "energy_report".equals(reference.get("type"))) return List.of();
         boolean reportInvestigation = reference != null && "report".equals(reference.get("type"));
         List<Map<String, Object>> definitions = new ArrayList<>();
         for (AgentToolCatalog.Definition definition : AgentToolCatalog.forSource(source)) {
+            if (!companyTasks && AgentToolCatalog.taskTool(definition.name())) continue;
             if (reportInvestigation && !REPORT_INVESTIGATION_TOOLS.contains(definition.name())) continue;
             // Runtime parity: Office sees query_alerts only when its current authorized
             // catalog actually contains safety devices; Company keeps it unconditionally.

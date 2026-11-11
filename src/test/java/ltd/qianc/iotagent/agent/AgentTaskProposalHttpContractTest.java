@@ -52,11 +52,14 @@ class AgentTaskProposalHttpContractTest {
     @MockBean private ConversationFacade conversations;
     @MockBean private IotAdapter iot;
     @MockBean private TaskProposalStore proposals;
+    @MockBean(answer = org.mockito.Answers.CALLS_REAL_METHODS)
+    private ltd.qianc.iotagent.allowlist.PhoneAllowlist allowlist;
 
     @Test
     void candidateTaskSurvivesTransportAndAllowsASecondIndependentProposal() throws Exception {
         String context = UUID.randomUUID().toString();
         PrincipalInfo principal = new PrincipalInfo("Bearer fixture", "TENANT", "owner", "fixture");
+        when(allowlist.companyTasksEnabled(principal)).thenReturn(true);
         RequestIdentity identity = new RequestIdentity(principal.authorization(), principal.tenantCode(),
                 IotSourceEnum.COMPANY, principal.ownerKey());
         when(conversations.toolContext(context, "conversation", "turn", "run")).thenReturn(

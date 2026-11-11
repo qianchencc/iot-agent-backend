@@ -10,7 +10,7 @@
 
 配置、启动、持久化或控制台变更前先读 [配置与数据治理规范](docs/configuration-governance.md) 和 [控制台实施与验证入口](.scratch/admin-console-governance/README.md)。部署为常规命令启动：Java `java -jar <backend.jar> --spring.config.additional-location=…`、Node `node dist/server.js --config …`、控制台在 `web/admin` 执行 `npm run dev`（见 [README 常规本地启动](README.md#常规本地启动)）；外置 YAML 显式指定，不加载 `.env`，无启动器脚本；MySQL 管可管理业务修订。历史盘点不作为当前运行证据。
 
-前端控制台在 `web/admin/`，使用 Vue3 / JavaScript / Vite / Element Plus，沿用 A「成员分栏」。白名单仅维护手机号与可选备注，独立于业务准入及任务。开发规范见 `web/admin/AGENTS.md`；运行和未验边界见治理入口。
+前端控制台在 `web/admin/`，使用 Vue3 / JavaScript / Vite / Element Plus，沿用 A「成员分栏」。白名单用途与公司任务资格按[ADR0008](docs/adr/0008-standalone-phone-list.md)；开发规范见 `web/admin/AGENTS.md`，运行和未验边界见治理入口。
 
 ## 实现取舍
 

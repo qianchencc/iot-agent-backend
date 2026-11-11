@@ -823,6 +823,37 @@ class AgentBusinessDefinitionContractTest {
                 .contains("query_alerts");
     }
 
+    @Test
+    void companyTaskToolsFollowEligibilityAndOldRunsCannotBypassRevocation() {
+        var list = mock(ltd.qianc.iotagent.allowlist.PhoneAllowlist.class, org.mockito.Answers.CALLS_REAL_METHODS);
+        var conversations = mock(ConversationFacade.class);
+        when(conversations.toolContext("tool-1", "conversation-1", "turn-1", "run-1"))
+                .thenReturn(new AgentToolContext(PRINCIPAL, "run-1", "conversation-1", "turn-1",
+                        "company", null, Map.of()));
+        var provider = AgentBusinessEngineFactory.policyProvider(
+                () -> conversations, null, null, null, null, () -> null, CLOCK, 8, list);
+        var request = request("company", null, Map.of());
+        assertThat(toolNames(provider.prepare(request))).contains("query_alerts")
+                .doesNotContain("propose_task", "list_tasks");
+        when(list.companyTasksEnabled(PRINCIPAL)).thenReturn(true);
+        assertThat(toolNames(provider.prepare(request))).contains("propose_task", "list_tasks", "get_task");
+        var bridge = AgentBusinessEngineFactory.toolBridge(
+                conversations, null, null, null, null, null, new ObjectMapper(), null, null, CLOCK, list);
+        when(list.companyTasksEnabled(PRINCIPAL)).thenReturn(false);
+        assertThat(toolNames(provider.prepare(request))).contains("query_alerts")
+                .doesNotContain("propose_task", "list_tasks");
+        var error = catchThrowableOfType(BusinessException.class, () -> bridge.execute(Map.of(
+                "runId", "run-1", "conversationId", "conversation-1", "turnId", "turn-1",
+                "toolContextId", "tool-1", "toolCallId", "old-run-call",
+                "toolName", "propose_task", "arguments", Map.of())));
+        assertThat(error.code()).isEqualTo("COMPANY_TASKS_NOT_ALLOWED");
+        when(conversations.toolContext("tool-1", "conversation-1", "turn-1", "run-1"))
+                .thenReturn(new AgentToolContext(PRINCIPAL, "run-1", "conversation-1", "turn-1",
+                        "office", null, Map.of()));
+        assertThat(toolNames(provider.prepare(request("office", null, Map.of()))))
+                .contains("propose_task", "list_tasks");
+    }
+
     private static Set<String> toolNames(AgentRunPolicy policy) {
         return listOfMaps(map(policy.request().get("definition")).get("tools")).stream()
                 .map(tool -> String.valueOf(tool.get("name"))).collect(Collectors.toSet());

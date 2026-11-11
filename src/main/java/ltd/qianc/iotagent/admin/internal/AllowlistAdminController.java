@@ -18,7 +18,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 /**
  * 手机号白名单管理端点；会话、Origin 与 CSRF 由既有 AdminBoundaryFilter 统一核验。
- * 名单只维护手机号与可选姓名备注，未接入任何业务准入。
+ * 名单用于公司任务资格；不代替身份认证或设备授权。
  */
 @RestController
 @RequestMapping("/api/admin/allowlist")
@@ -30,7 +30,7 @@ public final class AllowlistAdminController {
         this.allowlist = provider.getIfAvailable();
     }
 
-    /** Returns revision and phone-only entries; no business admission or device rights are implied. */
+    /** Returns revision and phone-only entries; no login or device rights are granted. */
     @GetMapping
     public ResponseEntity<?> list() {
         if (allowlist == null) return error(503, "ALLOWLIST_UNAVAILABLE", "白名单存储不可用，请稍后重试");

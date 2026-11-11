@@ -6,6 +6,8 @@ Java public backend plus an independent Node `agent-sidecar`: Spring Boot 3.5 / 
 
 控制台已切换为 Vue3 / JavaScript / Element Plus，提供独立部署管理员登录、独立手机号名单、实际参数配置与按成员组织的公司／办公室操作审计。三个进程均以常规命令启动（Java 外置 `application.yaml`、Node 外置 `agent-engine.yaml`、控制台 `npm run dev`），不加载 `.env`；Node 从 Java 获取模型运行定义与启动观测快照，不再使用模型／Langfuse 环境回退。字段、启动方式与隔离验证证据见[控制台治理入口](.scratch/admin-console-governance/README.md)和[维护手册](web/admin/docs/maintenance.md)；当前固定开发实例与核对结果见下文，不表示已部署生产或完成真实业务验收。
 
+2026-11-11 公司任务白名单接入：名单持久化保持原表，启动加载、管理提交后更新内存资格；普通请求不查名单库、不增加上游请求。任务HTTP入口与统一工具分派校验，公司工具列表及小程序入口按资格开放；办公室、设备权限、已确认任务与调度不变。单实例契约见[ADR0008](docs/adr/0008-standalone-phone-list.md)，工程检查、真实截图及未验边界见[证据](../mp/.scratch/company-task-access/evidence/TASK-ACCESS-01/result.json)。
+
 ## 常规本地启动
 
 固定端口 Java `3381`、Node `3382`、管理控制台 `5185`。三个进程都用各自的常规命令启动：无启动器脚本、无自定义进程清单、不加载 `.env`。tmux 只是可选的手动终端——需要时自己 `tmux new -s backend` 开会话、逐窗口粘贴下列命令即可，不作为必需编排，也没有自动重启。

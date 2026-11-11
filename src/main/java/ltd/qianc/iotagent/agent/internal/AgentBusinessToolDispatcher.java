@@ -77,6 +77,7 @@ public final class AgentBusinessToolDispatcher implements AgentToolBridge {
     private final ltd.qianc.iotagent.report.ReportService savedReports;
     private final AgentRunGuard guard;
     private final java.time.Clock clock;
+    private final ltd.qianc.iotagent.allowlist.PhoneAllowlist allowlist;
     /** Run-scoped business state mirroring the Runtime runner loop (listed tasks, task-proposal count). */
     private final RunTaskState taskState = new RunTaskState();
 
@@ -85,13 +86,14 @@ public final class AgentBusinessToolDispatcher implements AgentToolBridge {
             ActionDraftFacade actions, TaskFacade tasks, ObjectMapper mapper, ReportGenerationPort reports,
             ltd.qianc.iotagent.report.ReportService savedReports) {
         this(conversations, iot, observations, projections, actions, tasks, mapper, reports, savedReports,
-                java.time.Clock.systemUTC());
+                java.time.Clock.systemUTC(), ltd.qianc.iotagent.allowlist.PhoneAllowlist.failClosed("名单未配置"));
     }
 
     public AgentBusinessToolDispatcher(ConversationFacade conversations, IotAdapter iot,
             ObservationAdapter observations, TaskProjectionStore projections,
             ActionDraftFacade actions, TaskFacade tasks, ObjectMapper mapper, ReportGenerationPort reports,
-            ltd.qianc.iotagent.report.ReportService savedReports, java.time.Clock clock) {
+            ltd.qianc.iotagent.report.ReportService savedReports, java.time.Clock clock,
+            ltd.qianc.iotagent.allowlist.PhoneAllowlist allowlist) {
         this.conversations = conversations;
         this.iot = iot;
         this.observations = observations;
@@ -103,6 +105,7 @@ public final class AgentBusinessToolDispatcher implements AgentToolBridge {
         this.reports = reports;
         this.savedReports = savedReports;
         this.clock = clock;
+        this.allowlist = java.util.Objects.requireNonNull(allowlist);
     }
 
     @Override
@@ -118,6 +121,7 @@ public final class AgentBusinessToolDispatcher implements AgentToolBridge {
         IotSourceEnum source = parseSource(context.source());
         PrincipalInfo principal = context.principal();
         AgentToolCatalog.Definition definition = AgentToolCatalog.find(source.wireValue(), toolName);
+        if (AgentToolCatalog.taskTool(toolName)) allowlist.requireCompanyTasks(principal, source.wireValue());
         Map<String, Object> arguments = normalizeArguments(definition, request.get("arguments"), context,
                 turnId, toolCallId);
         if (source == IotSourceEnum.COMPANY && Set.of("query_energy_history", "summarize_energy",

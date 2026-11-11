@@ -239,6 +239,11 @@ class PhoneAllowlistAdminApiTest {
         }
 
         @Override
+        public boolean companyTasksEnabled(ltd.qianc.iotagent.auth.PrincipalInfo principal) {
+            return false;
+        }
+
+        @Override
         public AllowedPhone add(long expectedRevision, String mobileNumber, String name, String actor) {
             if (failure != null) throw failure;
             added.add(new Call(expectedRevision, mobileNumber, name));

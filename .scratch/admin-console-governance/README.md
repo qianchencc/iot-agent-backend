@@ -1,12 +1,12 @@
 # 控制台配置、独立名单与用户审计
 
-2026-11-03盘点为历史快照。**2026-11-04最新指令：白名单仅独立维护手机号与备注，不接实际业务，也不管谁能使用公司Agent；此前准入与移除取消任务解释撤回。其余范围获准实施。** 当前实现进度以票据与真实验证为准；见[ADR0008](../../docs/adr/0008-standalone-phone-list.md)。
+2026-11-03盘点为历史快照。**2026-11-11最新决定：现有手机号名单仅开放公司任务中心和公司 Agent 任务能力，不限制普通公司查询、不自动取消任务。** 2026-11-04撤回准入的记录保留为历史；当前范围见[ADR0008](../../docs/adr/0008-standalone-phone-list.md)。
 
 > 2026-11-06：启动与基础设施入口已切换为常规命令（Java `java -jar … --spring.config.additional-location`、Node `node dist/server.js --config`、控制台 `npm run dev`、Compose 原生 secrets 文件），`tools/` 启动器与 launch-YAML 模板已删除；见[仓根常规本地启动](../../README.md#常规本地启动)与[配置治理现行入口](../../docs/configuration-governance.md)。下文涉及 `fixed-backend.example.yaml`／`local-tools.example.yaml`／`tools/*.py` 的条目均为历史记录。
 
 ## 当前交付（2026-11-05）
 
-- 三项能力及独立管理员登录已实现；前端为纯 JavaScript / Element Plus，白名单没有业务读者。配置保存／冲突／跨页草稿／历史恢复、模型草稿连接检查、观测启动采用均已走实际页面。
+- 三项能力及独立管理员登录已实现；白名单已接入公司任务功能，采用范围与验证边界见ADR0008。配置保存／冲突／跨页草稿／历史恢复、模型草稿连接检查、观测启动采用均已走实际页面。
 - 隔离预览：前端 `3490`、Java `3491`、Node `3492`、只读上游代理 `3495`。部署文件为 Git 忽略的 `var/admin-console-20261104-230158/launch.yaml`（0600）；使用独立 MySQL schema。主开发 `3381/3382` 和生产配置未切换。
 - 同一真实账号在微信开发者工具完成办公室照明查询（7台关闭）与公司设备统计（334台），管理端同一成员下出现两来源请求／完成记录，可读公开答复。Node采用观测修订6，本地接收端收到实际span；随后关闭诊断观测、保存修订7并重启确认关闭。重启后同一公司对话仍能回答334台，业务审计保留公司4条／办公室2条记录。这不是客户Langfuse部署验收。
 - Java 聚焦10组共62项通过；Node类型检查、34项测试与构建通过，前端构建通过。全套551项运行中549项通过、1项跳过、1项动作草案用例报错：`ActionDraftProposalContractTest.rootAndLightingExclusionsMergeByDeviceIdentityInsteadOfReferenceSpelling`；未以排除该用例冒充全绿，也未改动该并行业务。

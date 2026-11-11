@@ -32,9 +32,21 @@ public final class TaskController {
     private final ObjectMapper mapper;
     private final ltd.qianc.iotagent.task.TaskProjectionStore projections;
     private final ltd.qianc.iotagent.task.TaskConfirmationService confirmations;
+    private final ltd.qianc.iotagent.allowlist.PhoneAllowlist allowlist;
     public TaskController(TaskFacade facade, ObjectMapper mapper, ltd.qianc.iotagent.task.TaskProjectionStore projections,
-            ltd.qianc.iotagent.task.TaskConfirmationService confirmations) {
+            ltd.qianc.iotagent.task.TaskConfirmationService confirmations,
+            ltd.qianc.iotagent.allowlist.PhoneAllowlist allowlist) {
         this.facade = facade; this.mapper = mapper; this.projections = projections; this.confirmations = confirmations;
+        this.allowlist = allowlist;
+    }
+
+    @org.springframework.web.bind.annotation.ModelAttribute
+    public void authorizeCompanyTasks(@RequestParam(required = false) String source,
+            jakarta.servlet.http.HttpServletRequest request) {
+        // 通知独立保留；任务正文中的 source 在 source(body) 统一核验。
+        if (!request.getRequestURI().startsWith("/api/agent/notifications")) {
+            allowlist.requireCompanyTasks(PrincipalContext.getPrincipalInfo(), source);
+        }
     }
 
     /**
@@ -360,8 +372,10 @@ public final class TaskController {
         return RequestValues.optionalText(body, key, fallback, "INVALID_PARAMETERS", key + " 无效", 400);
     }
     /** source：可缺省为 office；出现即必须是字符串（值合法性由 facade 判定 INVALID_AGENT_SOURCE）。 */
-    private static String source(Map<String, Object> body) {
-        return RequestValues.optionalText(body, "source", "office", "INVALID_AGENT_SOURCE", "Agent 来源无效", 400);
+    private String source(Map<String, Object> body) {
+        String source = RequestValues.optionalText(body, "source", "office", "INVALID_AGENT_SOURCE", "Agent 来源无效", 400);
+        allowlist.requireCompanyTasks(PrincipalContext.getPrincipalInfo(), source);
+        return source;
     }
     /** 必需版本：缺失/显式 null/小数（含 1.0）/字符串/溢出统一 400 INVALID_VERSION，绝不截断。 */
     private static long version(Map<String, Object> body) {

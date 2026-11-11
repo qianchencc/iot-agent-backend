@@ -23,6 +23,14 @@ final class AgentToolCatalog {
 
     private AgentToolCatalog() { }
 
+    static boolean taskTool(String name) {
+        return switch (name) {
+            case "propose_task", "propose_task_change", "propose_task_cancellation",
+                    "list_tasks", "list_task_plans", "get_task" -> true;
+            default -> false;
+        };
+    }
+
     static List<Definition> forSource(String source) {
         return List.copyOf(sourceTools(source).values());
     }

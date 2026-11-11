@@ -15,7 +15,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * 白名单装配：MySQL 启用时使用 JDBC 事实存储（建表见 db/mysql/agent-allowlist.sql，
- * 由共享 StorageSchemaInitializer 执行），否则 fail closed。名单只有管理读写，不参与业务。
+ * 由共享 StorageSchemaInitializer 执行），否则公司任务资格关闭，其他业务保留。
  */
 @Configuration(proxyBeanMethods = false)
 public class AllowlistConfiguration {

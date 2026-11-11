@@ -164,8 +164,11 @@ class AgentRunRecoveryContractTest {
                 .thenAnswer(invocation -> {
                     throw new BusinessException("TASK_REJECTED", "任务参数无效", 400);
                 });
-        AgentToolBridge bridge = AgentToolBridgeFactory.local(conversations, mock(IotAdapter.class),
-                mock(ActionDraftFacade.class), tasks, new ObjectMapper(), null);
+        var allowlist = mock(ltd.qianc.iotagent.allowlist.PhoneAllowlist.class, org.mockito.Answers.CALLS_REAL_METHODS);
+        when(allowlist.companyTasksEnabled(any())).thenReturn(true);
+        AgentToolBridge bridge = AgentBusinessEngineFactory.toolBridge(conversations, mock(IotAdapter.class),
+                null, null, mock(ActionDraftFacade.class), tasks, new ObjectMapper(), null, null,
+                java.time.Clock.systemUTC(), allowlist);
 
         assertThat(catchThrowableOfType(BusinessException.class,
                 () -> bridge.execute(taskRequest("关灯A", "task-a1"))).code()).isEqualTo("TASK_REJECTED");

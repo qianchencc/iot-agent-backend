@@ -3,7 +3,7 @@
     <header class="page-header">
       <div>
         <h1 class="page-title">用户白名单</h1>
-        <p class="page-sub">仅维护手机号与可选姓名备注；名单暂未接入任何业务，不影响公司、办公室与任务。</p>
+        <p class="page-sub">名单内用户可查看公司任务中心并创建任务；不扩大设备权限，不影响办公室功能。</p>
       </div>
       <el-button type="primary" @click="dialogOpen = true">添加手机号</el-button>
     </header>
@@ -125,7 +125,7 @@ function userKey(user) {
 async function remove(user) {
   try {
     await ElMessageBox.confirm(
-      `将从名单移除 ${user.mobileNumber}。这只删除本名单记录，不影响任何业务与已执行任务。`,
+      `将从名单移除 ${user.mobileNumber}，关闭其公司任务功能。已确认的任务和周期计划不会自动取消。`,
       "确认移除？",
       { confirmButtonText: "移除", cancelButtonText: "取消", type: "warning" }
     );

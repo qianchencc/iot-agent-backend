@@ -207,6 +207,34 @@ class PhoneAllowlistContractTest {
         assertThat(list.list().users()).isEmpty();
     }
 
+    @Test
+    void taskEligibilityUsesCommittedPhonesAndSurvivesDatabaseReadOutage() {
+        JdbcDataSource source = phoneTables();
+        PhoneAllowlist list = PhoneAllowlist.mysql(jdbc(source), transactions(source),
+                new ObjectMapper(), new RecordingAudit(), Clock.systemUTC());
+        var principal = new ltd.qianc.iotagent.auth.PrincipalInfo(
+                "fixture", "TEST", "member", "fixture-realm", "测试成员", MOBILE);
+        assertThat(list.companyTasksEnabled(principal)).isFalse();
+        list.add(0, MOBILE, null, "operator");
+        assertThat(list.companyTasksEnabled(principal)).isTrue();
+        transactions(source).executeWithoutResult(status -> {
+            list.remove(1, MOBILE, "operator");
+            assertThat(list.companyTasksEnabled(principal)).isTrue();
+            status.setRollbackOnly();
+        });
+        assertThat(list.companyTasksEnabled(principal)).isTrue();
+        PhoneAllowlist restarted = PhoneAllowlist.mysql(jdbc(source), transactions(source),
+                new ObjectMapper(), new RecordingAudit(), Clock.systemUTC());
+        assertThat(restarted.companyTasksEnabled(principal)).isTrue();
+        list.remove(1, MOBILE, "operator");
+        assertThat(list.companyTasksEnabled(principal)).isFalse();
+        list.add(2, MOBILE, null, "operator");
+        jdbc(source).execute("DROP TABLE phone_allowlist");
+        assertThat(list.companyTasksEnabled(principal)).isTrue();
+        assertThat(list.companyTasksEnabled(new ltd.qianc.iotagent.auth.PrincipalInfo("fixture", "TEST")))
+                .isFalse();
+    }
+
     private static PhoneAllowlist allowlist(RecordingAudit audit) {
         JdbcDataSource source = phoneTables();
         return PhoneAllowlist.mysql(jdbc(source), transactions(source),

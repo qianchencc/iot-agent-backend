@@ -5,7 +5,7 @@ import ltd.qianc.iotagent.allowlist.PhoneAllowlist;
 import ltd.qianc.iotagent.allowlist.PhoneAllowlistView;
 import ltd.qianc.iotagent.error.BusinessException;
 
-/** 无可用存储时管理读写不可用；不参与任何业务路径。 */
+/** 无可用存储时管理不可用，公司任务资格关闭。 */
 public final class FailClosedPhoneAllowlist implements PhoneAllowlist {
 
     private final String reason;
@@ -17,6 +17,11 @@ public final class FailClosedPhoneAllowlist implements PhoneAllowlist {
     @Override
     public PhoneAllowlistView list() {
         throw unavailable();
+    }
+
+    @Override
+    public boolean companyTasksEnabled(ltd.qianc.iotagent.auth.PrincipalInfo principal) {
+        return false;
     }
 
     @Override

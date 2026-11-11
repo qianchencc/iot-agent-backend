@@ -39,9 +39,10 @@ public final class AgentBusinessEngineFactory {
 
     public static AgentRunPolicyProvider policyProvider(Supplier<ConversationFacade> conversations,
             IotAdapter iot, ObservationAdapter observations, TaskFacade tasks, ReportService reports,
-            Supplier<AdminConfigurationStore> adminConfigurations, Clock clock, int maxTurns) {
+            Supplier<AdminConfigurationStore> adminConfigurations, Clock clock, int maxTurns,
+            ltd.qianc.iotagent.allowlist.PhoneAllowlist allowlist) {
         return new AgentBusinessRunPolicyProvider(conversations, iot, observations, tasks, reports,
-                adminConfigurations, clock, maxTurns);
+                adminConfigurations, clock, maxTurns, allowlist);
     }
 
     public static AgentToolBridge toolBridge(ConversationFacade conversations, IotAdapter iot,
@@ -55,9 +56,9 @@ public final class AgentBusinessEngineFactory {
     public static AgentToolBridge toolBridge(ConversationFacade conversations, IotAdapter iot,
             ObservationAdapter observations, TaskProjectionStore projections, ActionDraftFacade actions,
             TaskFacade tasks, ObjectMapper mapper, ReportGenerationPort reports, ReportService savedReports,
-            Clock clock) {
+            Clock clock, ltd.qianc.iotagent.allowlist.PhoneAllowlist allowlist) {
         return new AgentBusinessToolDispatcher(conversations, iot, observations, projections, actions, tasks,
-                mapper, reports, savedReports, clock);
+                mapper, reports, savedReports, clock, allowlist);
     }
 
     /** Convenience for local contract fixtures that only exercise a subset of tools. */

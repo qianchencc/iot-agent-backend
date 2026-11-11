@@ -61,4 +61,29 @@ class TaskHttpContractFixtureTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("INVALID_AGENT_SOURCE"));
     }
+
+    @Test
+    void companyTasksCannotBeReadOrConfirmedByBypassingTheHiddenEntry() throws Exception {
+        for (String path : new String[] {"/tasks", "/task-plans", "/tasks/old-task", "/task-proposals/old-card"}) {
+            http.perform(get("/api/agent" + path).queryParam("source", "company")
+                            .header("Authorization", AUTH).header("Tenantcode", TENANT))
+                    .andExpect(status().isForbidden())
+                    .andExpect(jsonPath("$.code").value("COMPANY_TASKS_NOT_ALLOWED"));
+        }
+        http.perform(post("/api/agent/tasks/old-card/confirm").queryParam("source", "company")
+                        .header("Authorization", AUTH).header("Tenantcode", TENANT)
+                        .contentType(org.springframework.http.MediaType.APPLICATION_JSON).content("{\"version\":1}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("COMPANY_TASKS_NOT_ALLOWED"));
+        http.perform(post("/api/agent/task-proposals")
+                        .header("Authorization", AUTH).header("Tenantcode", TENANT)
+                        .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                        .content("{\"source\":\"company\",\"payload\":{}}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("COMPANY_TASKS_NOT_ALLOWED"));
+        http.perform(get("/api/agent/company-task-access")
+                        .header("Authorization", AUTH).header("Tenantcode", TENANT))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.enabled").value(false));
+        http.perform(get("/api/agent/company-task-access")).andExpect(status().isUnauthorized());
+    }
 }

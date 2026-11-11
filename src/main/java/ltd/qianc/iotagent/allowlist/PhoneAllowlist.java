@@ -8,8 +8,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * 手机号白名单的管理事实：仅维护手机号与可选姓名备注，不参与任何业务准入。
- * 名单不决定谁能使用公司 Agent，也不影响公司／办公室业务可用性。
+ * 持久手机号名单及公司任务资格；业务匹配只读已提交的内存快照。
  *
  * <ul>
  *   <li>存储不可用时管理读写抛 ALLOWLIST_UNAVAILABLE；</li>
@@ -19,6 +18,15 @@ import org.springframework.transaction.support.TransactionTemplate;
 public interface PhoneAllowlist {
 
     PhoneAllowlistView list();
+
+    boolean companyTasksEnabled(ltd.qianc.iotagent.auth.PrincipalInfo principal);
+
+    default void requireCompanyTasks(ltd.qianc.iotagent.auth.PrincipalInfo principal, String source) {
+        if ("company".equals(source) && !companyTasksEnabled(principal)) {
+            throw new ltd.qianc.iotagent.error.BusinessException(
+                    "COMPANY_TASKS_NOT_ALLOWED", "当前账号未开通任务功能", 403);
+        }
+    }
 
     /** 幂等添加：手机号已存在时返回既有记录且不推进 revision。 */
     AllowedPhone add(long expectedRevision, String mobileNumber, String name, String actor);
@@ -32,7 +40,7 @@ public interface PhoneAllowlist {
         return new JdbcPhoneAllowlist(jdbc, transactions, mapper, audit, clock);
     }
 
-    /** 无存储时管理读写不可用；不影响任何业务路径。 */
+    /** 无存储时管理读写不可用，公司任务资格关闭；其他业务不受影响。 */
     static PhoneAllowlist failClosed(String reason) {
         return new FailClosedPhoneAllowlist(reason);
     }
