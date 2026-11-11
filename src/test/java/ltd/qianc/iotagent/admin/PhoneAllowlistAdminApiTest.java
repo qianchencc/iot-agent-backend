@@ -61,38 +61,6 @@ class PhoneAllowlistAdminApiTest {
                 .andExpect(jsonPath("$.code").value("ADMIN_UNAUTHORIZED"));
     }
 
-    @Test
-    void listReturnsPhoneFieldsOnly() throws Exception {
-        AdminSession session = login();
-        ALLOWLIST.view = new PhoneAllowlistView(3, List.of(
-                new AllowedPhone("13800138000", "张三", "operator", "2026-11-03T08:00:00Z")));
-
-        mockMvc.perform(get("/api/admin/allowlist").header("Cookie", session.cookie()))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.revision").value(3))
-                .andExpect(jsonPath("$.users[0].mobileNumber").value("13800138000"))
-                .andExpect(jsonPath("$.users[0].name").value("张三"))
-                .andExpect(jsonPath("$.users[0].addedBy").value("operator"))
-                .andExpect(jsonPath("$.users[0].addedAt").value("2026-11-03T08:00:00Z"));
-
-        MvcResult result = mockMvc.perform(get("/api/admin/allowlist").header("Cookie", session.cookie()))
-                .andExpect(status().isOk()).andReturn();
-        JsonNode user = mapper.readTree(result.getResponse().getContentAsString()).path("users").get(0);
-        assertThat(user.fieldNames()).toIterable()
-                .containsExactlyInAnyOrder("mobileNumber", "name", "addedBy", "addedAt");
-    }
-
-    @Test
-    void listKeepsNullNameForRecordsWithoutNote() throws Exception {
-        AdminSession session = login();
-        ALLOWLIST.view = new PhoneAllowlistView(1, List.of(
-                new AllowedPhone("13800138000", null, "operator", "2026-11-03T08:00:00Z")));
-
-        MvcResult result = mockMvc.perform(get("/api/admin/allowlist").header("Cookie", session.cookie()))
-                .andExpect(status().isOk()).andReturn();
-        JsonNode user = mapper.readTree(result.getResponse().getContentAsString()).path("users").get(0);
-        assertThat(user.path("name").isNull()).isTrue();
-    }
 
     @Test
     void addValidatesRequiredFieldsAndRevision() throws Exception {
@@ -130,26 +98,29 @@ class PhoneAllowlistAdminApiTest {
     }
 
     @Test
-    void addAcceptsOptionalNameAndReportsVersionConflict() throws Exception {
+    void addRejectsManualNameAndReportsVersionConflict() throws Exception {
         AdminSession session = login();
 
         mockMvc.perform(post("/api/admin/allowlist")
                         .header("Cookie", session.cookie()).header("Origin", ORIGIN)
                         .header("X-Admin-CSRF", session.csrf())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(body(3, "张三")))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.user.mobileNumber").value("13800138000"))
-                .andExpect(jsonPath("$.user.name").value("张三"));
-        assertThat(ALLOWLIST.added)
-                .containsExactly(new Call(3, "13800138000", "张三"));
+                        .content("{\"mobileNumber\":\"13800138000\",\"name\":\"不能手填\",\"expectedRevision\":3}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("ALLOWLIST_INVALID"));
+        assertThat(ALLOWLIST.added).isEmpty();
+        mockMvc.perform(post("/api/admin/allowlist")
+                        .header("Cookie", session.cookie()).header("Origin", ORIGIN)
+                        .header("X-Admin-CSRF", session.csrf()).contentType(MediaType.APPLICATION_JSON)
+                        .content(body(3)))
+                .andExpect(status().isOk());
 
         ALLOWLIST.failure = new BusinessException("ALLOWLIST_VERSION_CONFLICT", "白名单已被其他操作修改，请刷新后重试", 409);
         mockMvc.perform(post("/api/admin/allowlist")
                         .header("Cookie", session.cookie()).header("Origin", ORIGIN)
                         .header("X-Admin-CSRF", session.csrf())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(body(3, null)))
+                        .content(body(3)))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("ALLOWLIST_VERSION_CONFLICT"));
     }
@@ -161,7 +132,7 @@ class PhoneAllowlistAdminApiTest {
         mockMvc.perform(post("/api/admin/allowlist/remove")
                         .header("Cookie", session.cookie()).header("Origin", ORIGIN)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(body(0, null)))
+                        .content(body(0)))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value("ADMIN_CSRF_REJECTED"));
 
@@ -169,11 +140,9 @@ class PhoneAllowlistAdminApiTest {
                         .header("Cookie", session.cookie()).header("Origin", ORIGIN)
                         .header("X-Admin-CSRF", session.csrf())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(body(0, null)))
+                        .content(body(0)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.ok").value(true));
-        assertThat(ALLOWLIST.removed)
-                .containsExactly(new Call(0, "13800138000", null));
     }
 
     @Test
@@ -198,16 +167,14 @@ class PhoneAllowlistAdminApiTest {
         return new AdminSession(cookie, csrf);
     }
 
-    private static String body(long expectedRevision, String name) {
-        String nameField = name == null ? "" : ",\"name\":\"" + name + "\"";
-        return "{\"mobileNumber\":\"13800138000\"" + nameField
-                + ",\"expectedRevision\":" + expectedRevision + "}";
+    private static String body(long expectedRevision) {
+        return "{\"mobileNumber\":\"13800138000\",\"expectedRevision\":" + expectedRevision + "}";
     }
 
     private record AdminSession(String cookie, String csrf) {
     }
 
-    private record Call(long expectedRevision, String mobileNumber, String name) {
+    private record Call(long expectedRevision, String mobileNumber) {
     }
 
     @TestConfiguration
@@ -244,16 +211,16 @@ class PhoneAllowlistAdminApiTest {
         }
 
         @Override
-        public AllowedPhone add(long expectedRevision, String mobileNumber, String name, String actor) {
+        public AllowedPhone add(long expectedRevision, String mobileNumber, String actor) {
             if (failure != null) throw failure;
-            added.add(new Call(expectedRevision, mobileNumber, name));
-            return new AllowedPhone(mobileNumber, name, actor, "2026-11-03T08:00:00Z");
+            added.add(new Call(expectedRevision, mobileNumber));
+            return new AllowedPhone(mobileNumber, null, actor, "2026-11-03T08:00:00Z");
         }
 
         @Override
         public void remove(long expectedRevision, String mobileNumber, String actor) {
             if (failure != null) throw failure;
-            removed.add(new Call(expectedRevision, mobileNumber, null));
+            removed.add(new Call(expectedRevision, mobileNumber));
         }
     }
 }

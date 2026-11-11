@@ -45,7 +45,7 @@ public final class AllowlistAdminController {
         }
     }
 
-    /** Adds a phone and optional name at expectedRevision; invalid input is 400 and conflicts 409. */
+    /** Adds only a phone at expectedRevision; names are derived, never accepted from clients. */
     @PostMapping
     public ResponseEntity<?> add(@RequestBody(required = false) Map<String, Object> body) {
         if (allowlist == null) return error(503, "ALLOWLIST_UNAVAILABLE", "白名单存储不可用，请稍后重试");
@@ -53,7 +53,7 @@ public final class AllowlistAdminController {
         if (entry == null) return error(400, "ALLOWLIST_INVALID", "请提供手机号和当前版本号");
         try {
             AllowedPhone user = allowlist.add(entry.expectedRevision(),
-                    entry.mobileNumber(), entry.name(), "operator");
+                    entry.mobileNumber(), "operator");
             return ResponseEntity.ok(Map.of("user", publicUser(user)));
         } catch (BusinessException failure) {
             return error(failure.httpStatus(), failure.code(), failure.getMessage());
@@ -90,14 +90,13 @@ public final class AllowlistAdminController {
     }
 
     private static Entry entry(Map<String, Object> body) {
-        if (body == null) return null;
+        if (body == null || body.containsKey("name")) return null;
         String mobileNumber = text(body, "mobileNumber");
-        String name = text(body, "name");
         Long expectedRevision = longValue(body, "expectedRevision");
         if (mobileNumber == null || expectedRevision == null) {
             return null;
         }
-        return new Entry(mobileNumber, name, expectedRevision);
+        return new Entry(mobileNumber, expectedRevision);
     }
 
     private static String text(Map<String, Object> body, String key) {
@@ -114,6 +113,6 @@ public final class AllowlistAdminController {
         return ResponseEntity.status(status).body(Map.of("code", code, "message", message));
     }
 
-    private record Entry(String mobileNumber, String name, long expectedRevision) {
+    private record Entry(String mobileNumber, long expectedRevision) {
     }
 }

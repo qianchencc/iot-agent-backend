@@ -28,7 +28,6 @@ public final class JdbcPhoneAllowlist implements PhoneAllowlist {
     /** 管理审计事件的租户归属：名单与业务租户无关，统一落在管理域。 */
     static final String AUDIT_TENANT = "ADMIN";
     static final int MOBILE_LIMIT = 20;
-    static final int NAME_LIMIT = 64;
 
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
@@ -61,9 +60,9 @@ public final class JdbcPhoneAllowlist implements PhoneAllowlist {
 
     private PhoneAllowlistView readView(long revision) {
         List<AllowedPhone> users = jdbc.query(
-                "SELECT mobile_number,name,added_by,create_time FROM phone_allowlist ORDER BY create_time,id",
-                (rs, row) -> new AllowedPhone(rs.getString(1), rs.getString(2),
-                        rs.getString(3), rs.getTimestamp(4).toInstant().toString()));
+                "SELECT mobile_number,added_by,create_time FROM phone_allowlist ORDER BY create_time,id",
+                (rs, row) -> new AllowedPhone(rs.getString(1), null,
+                        rs.getString(2), rs.getTimestamp(3).toInstant().toString()));
         PhoneAllowlistView view = new PhoneAllowlistView(revision, users);
         var next = new Snapshot(revision, users.stream().map(AllowedPhone::mobileNumber)
                 .collect(java.util.stream.Collectors.toUnmodifiableSet()));
@@ -81,36 +80,34 @@ public final class JdbcPhoneAllowlist implements PhoneAllowlist {
     @Override
     public PhoneAllowlistView list() {
         try {
-            return transactions.execute(status -> {
-                long revision = lockedRevision();
-                return readView(revision);
-            });
+            PhoneAllowlistView view = transactions.execute(status -> readView(lockedRevision()));
+            return new PhoneAllowlistView(view.revision(), named(view.users()));
         } catch (RuntimeException storageFailure) {
             throw unavailable();
         }
     }
 
     @Override
-    public AllowedPhone add(long expectedRevision, String mobileNumber, String name, String actor) {
+    public AllowedPhone add(long expectedRevision, String mobileNumber, String actor) {
         String mobile = validatedMobile(mobileNumber);
-        String note = validatedName(name);
         String resolvedActor = resolvedActor(actor);
         try {
-            return transactions.execute(status -> {
+            AllowedPhone saved = transactions.execute(status -> {
                 long revision = lockedRevision();
                 if (revision != expectedRevision) throw conflict();
                 Optional<AllowedPhone> existing = find(mobile);
                 if (existing.isPresent()) return existing.get();
                 Timestamp at = Timestamp.from(now());
                 jdbc.update("INSERT INTO phone_allowlist"
-                                + "(mobile_number,name,added_by,create_time,update_time) VALUES (?,?,?,?,?)",
-                        mobile, note, resolvedActor, at, at);
+                                + "(mobile_number,added_by,create_time,update_time) VALUES (?,?,?,?)",
+                        mobile, resolvedActor, at, at);
                 long next = bumpRevision();
-                appendAudit("PHONE_ALLOWLIST_ADDED", mobile, note, resolvedActor, next,
+                appendAudit("PHONE_ALLOWLIST_ADDED", mobile, resolvedActor, next,
                         Map.of("addedAt", at.toInstant().toString()));
                 readView(next);
-                return new AllowedPhone(mobile, note, resolvedActor, at.toInstant().toString());
+                return new AllowedPhone(mobile, null, resolvedActor, at.toInstant().toString());
             });
+            return named(List.of(saved)).getFirst();
         } catch (BusinessException error) {
             throw error;
         } catch (RuntimeException storageFailure) {
@@ -129,7 +126,7 @@ public final class JdbcPhoneAllowlist implements PhoneAllowlist {
                 int deleted = jdbc.update("DELETE FROM phone_allowlist WHERE mobile_number=?", mobile);
                 if (deleted > 0) {
                     long next = bumpRevision();
-                    appendAudit("PHONE_ALLOWLIST_REMOVED", mobile, null, resolvedActor, next,
+                    appendAudit("PHONE_ALLOWLIST_REMOVED", mobile, resolvedActor, next,
                             Map.of("removedAt", now().toString()));
                     readView(next);
                 }
@@ -142,11 +139,25 @@ public final class JdbcPhoneAllowlist implements PhoneAllowlist {
     }
 
     private Optional<AllowedPhone> find(String mobileNumber) {
-        return jdbc.query("SELECT mobile_number,name,added_by,create_time "
+        return jdbc.query("SELECT mobile_number,added_by,create_time "
                         + "FROM phone_allowlist WHERE mobile_number=?",
-                (rs, row) -> new AllowedPhone(rs.getString(1), rs.getString(2),
-                        rs.getString(3), rs.getTimestamp(4).toInstant().toString()),
+                (rs, row) -> new AllowedPhone(rs.getString(1), null,
+                        rs.getString(2), rs.getTimestamp(3).toInstant().toString()),
                 mobileNumber).stream().findFirst();
+    }
+
+    private List<AllowedPhone> named(List<AllowedPhone> users) {
+        if (audit == null || users.isEmpty()) return users;
+        Map<String, String> names;
+        try {
+            names = audit.knownNames(users.stream().map(AllowedPhone::mobileNumber)
+                    .collect(java.util.stream.Collectors.toSet()));
+        } catch (RuntimeException unavailable) {
+            // 姓名只是展示信息；缺失或读取失败不能阻止提前加白。
+            return users;
+        }
+        return users.stream().map(user -> new AllowedPhone(user.mobileNumber(), names.get(user.mobileNumber()),
+                user.addedBy(), user.addedAt())).toList();
     }
 
     /** 白名单 revision 锁：add/remove 在该行锁内完成版本比对与写入，避免并发覆盖。 */
@@ -185,12 +196,11 @@ public final class JdbcPhoneAllowlist implements PhoneAllowlist {
         }
     }
 
-    private void appendAudit(String eventType, String mobileNumber, String name, String actor,
+    private void appendAudit(String eventType, String mobileNumber, String actor,
             long revision, Map<String, Object> tail) {
         if (audit == null) throw new IllegalStateException("名单变更审计不可用");
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("mobileNumber", mobileNumber);
-        if (name != null) body.put("name", name);
         body.put("actor", actor);
         body.put("revision", revision);
         body.putAll(tail);
@@ -216,14 +226,6 @@ public final class JdbcPhoneAllowlist implements PhoneAllowlist {
         return mobile;
     }
 
-    private static String validatedName(String name) {
-        if (name == null || name.isBlank()) return null;
-        String note = name.strip();
-        if (note.length() > NAME_LIMIT) {
-            throw new BusinessException("ALLOWLIST_INVALID", "姓名备注长度超出限制", 400);
-        }
-        return note;
-    }
 
     private static String resolvedActor(String actor) {
         return actor == null || actor.isBlank() ? "operator" : actor.strip();

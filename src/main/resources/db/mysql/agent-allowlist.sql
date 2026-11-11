@@ -19,11 +19,11 @@ CREATE TABLE IF NOT EXISTS company_agent_allowlist_state (
     PRIMARY KEY (id),
     UNIQUE KEY uk_company_agent_allowlist_state (singleton)
 ) ENGINE=InnoDB COMMENT='旧身份白名单修订状态（历史保留）：单行修订计数';
--- 手机号白名单：手机号与可选姓名备注；按可信手机号开放公司任务功能。
+-- 手机号白名单：仅维护手机号；展示姓名关联本地已核验业务记录，不影响提前加白。
 CREATE TABLE IF NOT EXISTS phone_allowlist (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '代理主键，白名单行标识',
     mobile_number VARCHAR(32) NOT NULL COMMENT '手机号（全局唯一键），用于公司任务资格匹配',
-    name VARCHAR(128) NULL COMMENT '可选姓名备注；NULL=未备注',
+    name VARCHAR(128) NULL COMMENT '历史手工备注保留；当前代码不读写，展示姓名关联本地业务记录',
     added_by VARCHAR(128) NOT NULL COMMENT '添加人（管理操作者标识）',
     create_time DATETIME(6) NOT NULL COMMENT '行创建时间（微秒精度）',
     update_time DATETIME(6) NOT NULL COMMENT '行更新时间（微秒精度）',

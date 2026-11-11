@@ -190,6 +190,28 @@ class ReportAuditStoreBehaviorTest {
         assertThat(filtered.members().get(0).eventCount()).isEqualTo(2);
     }
 
+    @Test
+    void nameLookupUsesOnlyRequestedVerifiedPhonesAndLeavesConflictsUnknown() {
+        String first = "13800138000", second = "13900139000";
+        assertThat(audit.knownNames(Set.of(first, second))).isEmpty();
+        audit.append(new AuditEventFact(id(), tenant, "AGENT_REQUESTED",
+                "{\"source\":\"company\",\"principalId\":\"p-1\",\"identityRealm\":\"fixture\","
+                        + "\"mobileNumber\":\"" + first + "\",\"displayName\":\"测试成员甲\"}"));
+        audit.append(new AuditEventFact(id(), tenant, "PHONE_ALLOWLIST_ADDED",
+                "{\"mobileNumber\":\"" + second + "\",\"name\":\"旧备注\",\"displayName\":\"未核验姓名\"}"));
+        assertThat(audit.knownNames(Set.of(first, second))).containsExactly(
+                java.util.Map.entry(first, "测试成员甲"));
+        assertThat(audit.knownNames(Set.of(second))).isEmpty();
+        audit.append(new AuditEventFact(id(), tenant, "AGENT_REQUESTED",
+                "{\"source\":\"office\",\"principalId\":\"p-2\",\"identityRealm\":\"fixture\","
+                        + "\"mobileNumber\":\"" + second + "\",\"displayName\":\"测试成员乙\"}"));
+        audit.append(new AuditEventFact(id(), tenant, "AGENT_REQUESTED",
+                "{\"source\":\"company\",\"principalId\":\"p-3\",\"identityRealm\":\"other-fixture\","
+                        + "\"mobileNumber\":\"" + first + "\",\"displayName\":\"姓名冲突\"}"));
+        assertThat(audit.knownNames(Set.of(first, second))).containsExactly(
+                java.util.Map.entry(second, "测试成员乙"));
+    }
+
     private static String id() {
         return "evt-" + UUID.randomUUID();
     }

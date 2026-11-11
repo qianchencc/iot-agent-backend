@@ -11,6 +11,13 @@ public interface AuditEventStore {
     Optional<AuditEventFact> findByEventId(String eventId);
     List<String> tenants();
 
+    /** Display names from locally recorded verified identities; ambiguous phones stay unnamed. */
+    default java.util.Map<String, String> knownNames(java.util.Set<String> mobileNumbers) {
+        if (mobileNumbers.isEmpty()) return java.util.Map.of();
+        return AuditQuerySupport.knownNames(
+                tenants().stream().flatMap(tenant -> readByTenant(tenant).stream()), mobileNumbers);
+    }
+
     /**
      * Bounded, cursor-paged event read for the admin console. Production MySQL
      * implementations push every filter down; the default derives the same

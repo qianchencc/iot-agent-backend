@@ -36,6 +36,22 @@ public final class JdbcReportAuditStore extends AbstractJdbcFactSupport implemen
     @Override public Optional<AuditEventFact> findByEventId(String eventId) { return one("SELECT event_id,tenant_code,event_type,payload_json,create_time,id FROM audit_events WHERE event_id=?", JdbcReportAuditStore::eventRow, eventId); }
     @Override public List<String> tenants() { return jdbc.queryForList("SELECT DISTINCT tenant_code FROM audit_events ORDER BY tenant_code", String.class); }
 
+    @Override public Map<String, String> knownNames(java.util.Set<String> mobileNumbers) {
+        if (mobileNumbers.isEmpty()) return Map.of();
+        String sql = "SELECT mobile_number,MIN(display_name) display_name FROM (SELECT "
+                + "TRIM(JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.mobileNumber'))) mobile_number,"
+                + "TRIM(JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.displayName'))) display_name"
+                + " FROM audit_events WHERE NOT (" + absent("$.principalId") + " OR " + absent("$.identityRealm") + ")"
+                + " AND JSON_UNQUOTE(JSON_EXTRACT(payload_json,'$.source')) IN ('company','office')) members"
+                + " WHERE mobile_number IN (" + placeholders(mobileNumbers.size()) + ")"
+                + " AND display_name IS NOT NULL AND display_name NOT IN ('','null')"
+                + " GROUP BY mobile_number HAVING COUNT(DISTINCT display_name)=1";
+        Map<String, String> names = new LinkedHashMap<>();
+        jdbc.query(sql, (org.springframework.jdbc.core.RowCallbackHandler) row ->
+                names.put(row.getString("mobile_number"), row.getString("display_name")), mobileNumbers.toArray());
+        return names;
+    }
+
     private static AuditEventFact eventRow(java.sql.ResultSet rs, int row) throws java.sql.SQLException {
         return new AuditEventFact(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4),
                 rs.getTimestamp(5).toInstant(), rs.getLong(6));

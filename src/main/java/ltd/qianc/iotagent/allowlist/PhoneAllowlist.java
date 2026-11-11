@@ -8,7 +8,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * 持久手机号名单及公司任务资格；业务匹配只读已提交的内存快照。
+ * 持久手机号名单及公司任务资格；姓名只关联本地已核验记录，资格匹配只读内存快照。
  *
  * <ul>
  *   <li>存储不可用时管理读写抛 ALLOWLIST_UNAVAILABLE；</li>
@@ -29,7 +29,7 @@ public interface PhoneAllowlist {
     }
 
     /** 幂等添加：手机号已存在时返回既有记录且不推进 revision。 */
-    AllowedPhone add(long expectedRevision, String mobileNumber, String name, String actor);
+    AllowedPhone add(long expectedRevision, String mobileNumber, String actor);
 
     /** 幂等移除：手机号不存在时视为成功且不推进 revision。 */
     void remove(long expectedRevision, String mobileNumber, String actor);

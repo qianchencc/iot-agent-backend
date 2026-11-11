@@ -53,6 +53,26 @@ final class AuditQuerySupport {
         return query.excludeEventTypes() != typeKnown;
     }
 
+    static Map<String, String> knownNames(java.util.stream.Stream<AuditEventFact> events,
+            java.util.Set<String> mobileNumbers) {
+        Map<String, java.util.Set<String>> names = new LinkedHashMap<>();
+        events.forEach(event -> {
+            Map<String, Object> body = payload(event);
+            String source = text(body.get("source"));
+            if (text(body.get("principalId")) == null || text(body.get("identityRealm")) == null
+                    || !("company".equals(source) || "office".equals(source))) return;
+            String phone = text(body.get("mobileNumber")), name = text(body.get("displayName"));
+            if (phone != null && mobileNumbers.contains(phone) && name != null) {
+                names.computeIfAbsent(phone, ignored -> new java.util.HashSet<>()).add(name);
+            }
+        });
+        Map<String, String> result = new LinkedHashMap<>();
+        names.forEach((phone, values) -> {
+            if (values.size() == 1) result.put(phone, values.iterator().next());
+        });
+        return result;
+    }
+
     static AuditMemberIndex index(String tenantCode, List<AuditEventFact> events,
             String identityRealm, String principalId, int limit, int offset) {
         Map<String, AuditMember> members = new LinkedHashMap<>();

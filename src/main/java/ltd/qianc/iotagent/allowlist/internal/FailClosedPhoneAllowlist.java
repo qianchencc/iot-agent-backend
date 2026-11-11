@@ -25,7 +25,7 @@ public final class FailClosedPhoneAllowlist implements PhoneAllowlist {
     }
 
     @Override
-    public AllowedPhone add(long expectedRevision, String mobileNumber, String name, String actor) {
+    public AllowedPhone add(long expectedRevision, String mobileNumber, String actor) {
         throw unavailable();
     }
 

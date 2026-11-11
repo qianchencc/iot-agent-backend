@@ -140,8 +140,8 @@
 
 | 方法与路径 | 输入 | 返回 |
 | --- | --- | --- |
-| `GET /allowlist` | 无参数 | `{revision,users:[{mobileNumber,name,addedBy,addedAt}]}`；name 可为 null |
-| `POST /allowlist` | `{expectedRevision,mobileNumber,name?}` | `{user}`；手机号／备注由服务端校验 |
+| `GET /allowlist` | 无参数 | `{revision,users:[{mobileNumber,name,addedBy,addedAt}]}`；name 仅关联本地已核验业务记录，未知为 null |
+| `POST /allowlist` | `{expectedRevision,mobileNumber}` | `{user}`；拒绝 name 字段，暂无姓名仍可提前加白，后续读取自动补齐 |
 | `POST /allowlist/remove` | `{expectedRevision,mobileNumber}` | `{ok:true}` |
 
 非法输入为400 `ALLOWLIST_INVALID`，冲突409 `ALLOWLIST_VERSION_CONFLICT`，存储不可用503 `ALLOWLIST_UNAVAILABLE`。手机号始终是字符串，不是整数。

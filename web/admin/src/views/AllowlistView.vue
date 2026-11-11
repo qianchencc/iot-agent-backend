@@ -8,14 +8,11 @@
       <el-button type="primary" @click="dialogOpen = true">添加手机号</el-button>
     </header>
 
-    <el-alert type="info" show-icon :closable="false" class="scope-alert"
-      title="此名单当前只做记录，不控制谁能使用公司 Agent，也不触发任务取消。" />
-
     <el-alert v-if="error" :title="error" type="error" show-icon closable class="error-alert" @close="error = ''" />
     <el-card shadow="never" class="table-card">
       <el-table v-loading="loading" :data="users" :row-key="userKey">
         <el-table-column prop="mobileNumber" label="手机号" min-width="160" />
-        <el-table-column label="姓名备注" min-width="160">
+        <el-table-column label="姓名" min-width="160">
           <template #default="{ row }">{{ row.name || "—" }}</template>
         </el-table-column>
         <el-table-column label="添加时间" width="190">
@@ -37,9 +34,6 @@
       <el-form ref="formRef" :model="form" :rules="rules" label-position="top">
         <el-form-item label="手机号" prop="mobileNumber">
           <el-input v-model="form.mobileNumber" placeholder="例如 13800138000" />
-        </el-form-item>
-        <el-form-item label="姓名备注（可选）" prop="name">
-          <el-input v-model="form.name" placeholder="仅作备注，不参与验证" />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -67,7 +61,7 @@ const saving = ref(false);
 const error = ref("");
 const dialogOpen = ref(false);
 const formRef = ref();
-const form = reactive({ mobileNumber: "", name: "" });
+const form = reactive({ mobileNumber: "" });
 const rules = {
   mobileNumber: [
     { required: true, message: "请输入手机号", trigger: "blur" },
@@ -104,8 +98,7 @@ async function add() {
   saving.value = true;
   try {
     await adminApi.addAllowlistedUser(revision.value, {
-      mobileNumber: form.mobileNumber.trim(),
-      name: form.name.trim() || null
+      mobileNumber: form.mobileNumber.trim()
     });
     dialogOpen.value = false;
     await load();
@@ -144,7 +137,6 @@ async function remove(user) {
 
 function resetForm() {
   form.mobileNumber = "";
-  form.name = "";
   formRef.value?.clearValidate();
 }
 
@@ -156,7 +148,6 @@ onMounted(load);
 .page-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 16px; }
 .page-title { margin: 0; color: var(--text-strong); font-size: 20px; line-height: 1.4; }
 .page-sub { margin: 4px 0 0; color: var(--text-muted); font-size: 13px; }
-.scope-alert { margin-bottom: 16px; }
 .error-alert { margin-bottom: 16px; }
 .table-card { border: 1px solid var(--border-subtle); }
 @media (max-width: 640px) {

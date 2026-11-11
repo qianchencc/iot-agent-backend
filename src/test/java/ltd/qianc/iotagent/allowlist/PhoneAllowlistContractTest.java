@@ -31,9 +31,8 @@ class PhoneAllowlistContractTest {
         assertThat(allowlist.list().revision()).isZero();
         assertThat(allowlist.list().users()).isEmpty();
 
-        AllowedPhone added = allowlist.add(0, MOBILE, "张三", "operator");
+        AllowedPhone added = allowlist.add(0, MOBILE, "operator");
         assertThat(added.mobileNumber()).isEqualTo(MOBILE);
-        assertThat(added.name()).isEqualTo("张三");
         assertThat(added.addedBy()).isEqualTo("operator");
         assertThat(added.addedAt()).isNotBlank();
         assertThat(allowlist.list().revision()).isEqualTo(1);
@@ -41,15 +40,14 @@ class PhoneAllowlistContractTest {
                 .extracting(AllowedPhone::mobileNumber)
                 .containsExactly(MOBILE);
 
-        // 重复添加幂等：不推进 revision，保留原记录与原备注
-        AllowedPhone repeated = allowlist.add(1, MOBILE, "李四", "operator");
+        // 重复添加幂等：不推进 revision，保留原记录。
+        AllowedPhone repeated = allowlist.add(1, MOBILE, "operator");
         assertThat(repeated.addedAt()).isEqualTo(added.addedAt());
-        assertThat(repeated.name()).isEqualTo("张三");
         assertThat(allowlist.list().revision()).isEqualTo(1);
         assertThat(allowlist.list().users()).hasSize(1);
 
         // 过期版本号被拒绝
-        assertThatThrownBy(() -> allowlist.add(0, "13900139000", null, "operator"))
+        assertThatThrownBy(() -> allowlist.add(0, "13900139000", "operator"))
                 .isInstanceOfSatisfying(BusinessException.class, error -> {
                     assertThat(error.code()).isEqualTo("ALLOWLIST_VERSION_CONFLICT");
                     assertThat(error.httpStatus()).isEqualTo(409);
@@ -73,16 +71,13 @@ class PhoneAllowlistContractTest {
 
         for (String invalid : new String[] {" ", "abc", "1234", "138 0013 8000",
                 "13800138000x", "+" + "1".repeat(21)}) {
-            assertThatThrownBy(() -> allowlist.add(0, invalid, null, "operator"))
+            assertThatThrownBy(() -> allowlist.add(0, invalid, "operator"))
                     .isInstanceOfSatisfying(BusinessException.class, error -> {
                         assertThat(error.code()).isEqualTo("ALLOWLIST_INVALID");
                         assertThat(error.httpStatus()).isEqualTo(400);
                     });
         }
-        assertThatThrownBy(() -> allowlist.add(0, "1".repeat(21), null, "operator"))
-                .isInstanceOfSatisfying(BusinessException.class,
-                        error -> assertThat(error.code()).isEqualTo("ALLOWLIST_INVALID"));
-        assertThatThrownBy(() -> allowlist.add(0, MOBILE, "很".repeat(65), "operator"))
+        assertThatThrownBy(() -> allowlist.add(0, "1".repeat(21), "operator"))
                 .isInstanceOfSatisfying(BusinessException.class,
                         error -> assertThat(error.code()).isEqualTo("ALLOWLIST_INVALID"));
         assertThatThrownBy(() -> allowlist.remove(0, "not-a-phone", "operator"))
@@ -98,8 +93,8 @@ class PhoneAllowlistContractTest {
         JdbcDataSource source = phoneTables();
         PhoneAllowlist first = PhoneAllowlist.mysql(jdbc(source),
                 transactions(source), new ObjectMapper(), audit, Clock.systemUTC());
-        first.add(0, MOBILE, "张三", "operator");
-        first.add(1, "+8613900139000", null, "operator");
+        first.add(0, MOBILE, "operator");
+        first.add(1, "+8613900139000", "operator");
 
         // 新实例只依赖数据库：证明记录真实持久，而非内存态
         PhoneAllowlist second = PhoneAllowlist.mysql(jdbc(source),
@@ -109,8 +104,6 @@ class PhoneAllowlistContractTest {
         assertThat(view.users())
                 .extracting(AllowedPhone::mobileNumber)
                 .containsExactly(MOBILE, "+8613900139000");
-        assertThat(view.users().get(0).name()).isEqualTo("张三");
-        assertThat(view.users().get(1).name()).isNull();
 
         second.remove(2, MOBILE, "operator");
         assertThat(first.list().users())
@@ -123,8 +116,8 @@ class PhoneAllowlistContractTest {
         RecordingAudit audit = new RecordingAudit();
         PhoneAllowlist allowlist = allowlist(audit);
 
-        allowlist.add(0, MOBILE, "张三", "operator");
-        allowlist.add(1, MOBILE, "张三", "operator"); // 幂等重复：不产生事件
+        allowlist.add(0, MOBILE, "operator");
+        allowlist.add(1, MOBILE, "operator"); // 幂等重复：不产生事件
         allowlist.remove(1, "13900139000", "operator"); // 目标不存在：幂等成功且不产生事件
         allowlist.remove(1, MOBILE, "operator");
 
@@ -133,7 +126,6 @@ class PhoneAllowlistContractTest {
         assertThat(added.tenantCode()).isEqualTo("ADMIN");
         assertThat(added.eventType()).isEqualTo("PHONE_ALLOWLIST_ADDED");
         assertThat(added.payloadJson()).contains("\"mobileNumber\":\"" + MOBILE + "\"");
-        assertThat(added.payloadJson()).contains("\"name\":\"张三\"");
         assertThat(added.payloadJson()).contains("\"actor\":\"operator\"");
         assertThat(added.payloadJson()).contains("\"revision\":1");
         AuditEventFact removed = audit.events.get(1);
@@ -151,7 +143,7 @@ class PhoneAllowlistContractTest {
                     assertThat(error.code()).isEqualTo("ALLOWLIST_UNAVAILABLE");
                     assertThat(error.httpStatus()).isEqualTo(503);
                 });
-        assertThatThrownBy(() -> allowlist.add(0, MOBILE, null, "operator"))
+        assertThatThrownBy(() -> allowlist.add(0, MOBILE, "operator"))
                 .isInstanceOfSatisfying(BusinessException.class,
                         error -> assertThat(error.code()).isEqualTo("ALLOWLIST_UNAVAILABLE"));
         assertThatThrownBy(() -> allowlist.remove(0, MOBILE, "operator"))
@@ -171,7 +163,7 @@ class PhoneAllowlistContractTest {
         assertThatThrownBy(allowlist::list)
                 .isInstanceOfSatisfying(BusinessException.class,
                         error -> assertThat(error.code()).isEqualTo("ALLOWLIST_UNAVAILABLE"));
-        assertThatThrownBy(() -> allowlist.add(0, MOBILE, null, "operator"))
+        assertThatThrownBy(() -> allowlist.add(0, MOBILE, "operator"))
                 .isInstanceOfSatisfying(BusinessException.class,
                         error -> assertThat(error.code()).isEqualTo("ALLOWLIST_UNAVAILABLE"));
     }
@@ -181,14 +173,14 @@ class PhoneAllowlistContractTest {
         RecordingAudit audit = new RecordingAudit();
         PhoneAllowlist list = allowlist(audit);
         audit.unavailable = true;
-        assertThatThrownBy(() -> list.add(0, MOBILE, "备注", "operator"))
+        assertThatThrownBy(() -> list.add(0, MOBILE, "operator"))
                 .isInstanceOfSatisfying(BusinessException.class,
                         error -> assertThat(error.code()).isEqualTo("ALLOWLIST_UNAVAILABLE"));
         assertThat(list.list().revision()).isZero();
         assertThat(list.list().users()).isEmpty();
 
         audit.unavailable = false;
-        list.add(0, MOBILE, "备注", "operator");
+        list.add(0, MOBILE, "operator");
         audit.unavailable = true;
         assertThatThrownBy(() -> list.remove(1, MOBILE, "operator"))
                 .isInstanceOfSatisfying(BusinessException.class,
@@ -200,7 +192,7 @@ class PhoneAllowlistContractTest {
     @Test
     void missingAuditDoesNotAllowAnUnrecordedMutation() {
         PhoneAllowlist list = allowlist(null);
-        assertThatThrownBy(() -> list.add(0, MOBILE, null, "operator"))
+        assertThatThrownBy(() -> list.add(0, MOBILE, "operator"))
                 .isInstanceOfSatisfying(BusinessException.class,
                         error -> assertThat(error.code()).isEqualTo("ALLOWLIST_UNAVAILABLE"));
         assertThat(list.list().revision()).isZero();
@@ -215,7 +207,7 @@ class PhoneAllowlistContractTest {
         var principal = new ltd.qianc.iotagent.auth.PrincipalInfo(
                 "fixture", "TEST", "member", "fixture-realm", "测试成员", MOBILE);
         assertThat(list.companyTasksEnabled(principal)).isFalse();
-        list.add(0, MOBILE, null, "operator");
+        list.add(0, MOBILE, "operator");
         assertThat(list.companyTasksEnabled(principal)).isTrue();
         transactions(source).executeWithoutResult(status -> {
             list.remove(1, MOBILE, "operator");
@@ -228,11 +220,31 @@ class PhoneAllowlistContractTest {
         assertThat(restarted.companyTasksEnabled(principal)).isTrue();
         list.remove(1, MOBILE, "operator");
         assertThat(list.companyTasksEnabled(principal)).isFalse();
-        list.add(2, MOBILE, null, "operator");
+        list.add(2, MOBILE, "operator");
         jdbc(source).execute("DROP TABLE phone_allowlist");
         assertThat(list.companyTasksEnabled(principal)).isTrue();
         assertThat(list.companyTasksEnabled(new ltd.qianc.iotagent.auth.PrincipalInfo("fixture", "TEST")))
                 .isFalse();
+    }
+
+    @Test
+    void preapprovedPhoneGetsItsNameOnLaterReadsWithoutChangingMembership() {
+        JdbcDataSource source = phoneTables();
+        RecordingAudit audit = new RecordingAudit();
+        PhoneAllowlist list = PhoneAllowlist.mysql(jdbc(source), transactions(source),
+                new ObjectMapper(), audit, Clock.systemUTC());
+        audit.namesUnavailable = true;
+        list.add(0, MOBILE, "operator");
+        audit.namesUnavailable = false;
+        jdbc(source).update("UPDATE phone_allowlist SET name=? WHERE mobile_number=?", "旧手工备注", MOBILE);
+        assertThat(list.list().users().getFirst().name()).isNull();
+        audit.append(new AuditEventFact("known-member", "TEST", "AGENT_RUN_REQUESTED",
+                "{\"source\":\"company\",\"principalId\":\"member\",\"identityRealm\":\"fixture\","
+                        + "\"mobileNumber\":\"" + MOBILE + "\",\"displayName\":\"测试成员甲\"}"));
+        assertThat(list.list().users().getFirst().name()).isEqualTo("测试成员甲");
+        assertThat(list.list().revision()).isEqualTo(1);
+        assertThat(list.companyTasksEnabled(new ltd.qianc.iotagent.auth.PrincipalInfo(
+                "fixture", "TEST", "member", "fixture", null, MOBILE))).isTrue();
     }
 
     private static PhoneAllowlist allowlist(RecordingAudit audit) {
@@ -274,12 +286,19 @@ class PhoneAllowlistContractTest {
     private static final class RecordingAudit implements AuditEventStore {
         final List<AuditEventFact> events = new ArrayList<>();
         boolean unavailable;
+        boolean namesUnavailable;
 
         @Override
         public AuditEventFact append(AuditEventFact event) {
             if (unavailable) throw new IllegalStateException("Audit storage offline");
             events.add(event);
             return event;
+        }
+
+        @Override
+        public java.util.Map<String, String> knownNames(java.util.Set<String> phones) {
+            if (namesUnavailable) throw new IllegalStateException("Name metadata offline");
+            return AuditEventStore.super.knownNames(phones);
         }
 
         @Override
