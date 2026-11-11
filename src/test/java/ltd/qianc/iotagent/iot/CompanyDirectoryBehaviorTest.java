@@ -620,6 +620,13 @@ class CompanyDirectoryBehaviorTest {
                 return Mono.just(AuthorizedDeviceScope.of(request, request.source(),
                         devices.stream().filter(device -> "energy".equals(device.kind())).toList()));
             }
+            @Override public Mono<AuthorizedDeviceScope> loadAuthorizedSafetyScope(RequestIdentity request) {
+                return Mono.fromCallable(() -> {
+                    if (failure != null) throw failure;
+                    return AuthorizedDeviceScope.of(request, request.source(),
+                            devices.stream().filter(device -> "safety".equals(device.kind())).toList());
+                });
+            }
             @Override public Mono<DeviceStateReadResult> collectCurrentStates(RequestIdentity request, AuthorizedDeviceScope scope) {
                 return Mono.fromCallable(() -> {
                     stateCalls.incrementAndGet();

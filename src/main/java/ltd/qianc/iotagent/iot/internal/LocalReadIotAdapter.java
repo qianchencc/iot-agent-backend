@@ -130,7 +130,9 @@ public final class LocalReadIotAdapter implements IotAdapter {
         return source.collectCurrentStates(identity, scope);
     }
     @Override public Mono<String> readCreatorDisplayName(RequestIdentity identity) { return source.readCreatorDisplayName(identity); }
-    @Override public Mono<AuthorizedDeviceScope> loadAuthorizedSafetyScope(RequestIdentity identity) { return source.loadAuthorizedSafetyScope(identity); }
+    @Override public Mono<AuthorizedDeviceScope> loadAuthorizedSafetyScope(RequestIdentity identity) {
+        return Mono.fromCallable(() -> directory().safetyHistory().authorizedScope(identity));
+    }
     @Override public Mono<AuthorizedDeviceScope> loadAuthorizedVideoScope(RequestIdentity identity) { return source.loadAuthorizedVideoScope(identity); }
     @Override public Mono<AuthorizedDeviceScope> loadAuthorizedEnergyScope(RequestIdentity identity) {
         return Mono.fromCallable(() -> directory().energyHistory().authorizedScope(identity));

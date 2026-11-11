@@ -116,7 +116,7 @@ public final class SafetyLedgerComposer {
         String queryFrom = parameters.get("from");
         String queryTo = parameters.get("to");
         String from = queryFrom == null ? DEFAULT_FROM : queryFrom;
-        String to = queryTo == null ? clock.instant().toString() : queryTo;
+        String to = queryTo == null ? clock.instant().truncatedTo(java.time.temporal.ChronoUnit.MILLIS).toString() : queryTo;
         CursorState startState = new CursorState(0, 0, "", from, to);
         String cursor = parameters.get("cursor");
         if (cursor != null && !cursor.isEmpty()) {

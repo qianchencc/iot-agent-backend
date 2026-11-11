@@ -304,6 +304,7 @@ public final class ObservationController {
                 && operation != ObservationOperationEnum.REGION_LIST && operation != ObservationOperationEnum.REGION_DEVICES
                 && operation != ObservationOperationEnum.REGION_STATES && operation != ObservationOperationEnum.DASHBOARD
                 && operation != ObservationOperationEnum.ENVIRONMENT_HISTORY && !energyOperation(operation)
+                && operation != ObservationOperationEnum.SAFETY_EVENTS && operation != ObservationOperationEnum.SAFETY_EVENT
                 && operation != ObservationOperationEnum.REPORT && operation != ObservationOperationEnum.REPORT_DOWNLOAD) {
             ReadSnapshots.Identity scope = new ReadSnapshots.Identity(identity.tenantCode(), identity.authorization(),
                     identity.source().name(), identity.ownerKey());
@@ -319,9 +320,11 @@ public final class ObservationController {
         } catch (BusinessException failure) {
             boolean localRead = operation == ObservationOperationEnum.REGION_LIST || operation == ObservationOperationEnum.REGION_DEVICES
                     || operation == ObservationOperationEnum.REGION_STATES || operation == ObservationOperationEnum.DASHBOARD
-                    || operation == ObservationOperationEnum.ENVIRONMENT_HISTORY || energyOperation(operation);
+                    || operation == ObservationOperationEnum.ENVIRONMENT_HISTORY || energyOperation(operation)
+                    || operation == ObservationOperationEnum.SAFETY_EVENTS || operation == ObservationOperationEnum.SAFETY_EVENT;
             if (!localRead || !("IOT_SCOPE_PREPARING".equals(failure.code()) || "DEVICE_STATE_PREPARING".equals(failure.code())
-                    || "ENERGY_HISTORY_PREPARING".equals(failure.code()) || "ENVIRONMENT_HISTORY_PREPARING".equals(failure.code()))) throw failure;
+                    || "ENERGY_HISTORY_PREPARING".equals(failure.code()) || "ENVIRONMENT_HISTORY_PREPARING".equals(failure.code())
+                    || "SAFETY_HISTORY_PREPARING".equals(failure.code()))) throw failure;
             Map<String, Object> cache = new LinkedHashMap<>();
             cache.put("status", "preparing");
             cache.put("updatedAt", null);

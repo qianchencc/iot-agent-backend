@@ -95,7 +95,8 @@ public class ObservationAdapterConfiguration {
     ObservationAdapter observationAdapter(WebClient.Builder builder, Environment environment, IotAdapter iot,
             ObjectProvider<AutomationSummaryReader> automation, ObjectProvider<RegionSeenStore> regionSeen,
             ObjectProvider<CompanyEnergyPolicy> energyPolicy, ObjectProvider<ltd.qianc.iotagent.iot.EnergyHistory> histories,
-            ObjectProvider<ltd.qianc.iotagent.iot.EnvironmentHistory> environments, Source source,
+            ObjectProvider<ltd.qianc.iotagent.iot.EnvironmentHistory> environments,
+            ObjectProvider<ltd.qianc.iotagent.iot.SafetyHistory> safetyHistories, Source source,
             @Value("${iot.gateway.call-timeout-ms:15000}") long timeoutMs,
             @Value("${iot.gateway.base-url:}") String baseUrl) {
         ObservationAdapter delegate = source.adapter();
@@ -105,11 +106,16 @@ public class ObservationAdapterConfiguration {
         CompanyEnergyPolicy configuredPolicy = energyPolicy.getIfAvailable();
         var history = histories.getIfAvailable(UnavailableEnergyHistory::new);
         CompanyEnergyObservationComposer energyComposer = CompanyEnergyObservationComposerFactory.composed(history, clock, configuredPolicy);
-        SafetyLedgerComposer.MetadataSource metadata = metadataReader(builder, baseUrl, environment, timeoutMs);
-        ObservationAdapter safetyLedger = ObservationAdapterFactory.safetyLedger(delegate, iot,
-                metadata == null ? null : metadata::currentDevice, cursorMacKey(environment), clock);
+        var safetyHistory = safetyHistories.getIfAvailable(() -> new ltd.qianc.iotagent.iot.SafetyHistory() {
+            @Override public reactor.core.publisher.Mono<ltd.qianc.iotagent.iot.ObservationResponse> read(ltd.qianc.iotagent.iot.ObservationRequest request) {
+                return reactor.core.publisher.Mono.error(new ltd.qianc.iotagent.error.BusinessException("SAFETY_HISTORY_UNAVAILABLE", "本地安全台账未配置", 503));
+            }
+            @Override public ltd.qianc.iotagent.iot.AuthorizedDeviceScope authorizedScope(ltd.qianc.iotagent.iot.RequestIdentity identity) {
+                throw new ltd.qianc.iotagent.error.BusinessException("SAFETY_HISTORY_UNAVAILABLE", "本地安全台账未配置", 503);
+            }
+        });
         return ObservationAdapterFactory.composed(
-                delegate, iot, automationReader, regionSeen.getIfAvailable(), energyComposer, safetyLedger, environments.getIfAvailable(), clock);
+                delegate, iot, automationReader, regionSeen.getIfAvailable(), energyComposer, safetyHistory::read, environments.getIfAvailable(), clock);
     }
 
     /**
@@ -117,7 +123,7 @@ public class ObservationAdapterConfiguration {
      * admin.config-secret-key; without any secret the composer signs with an
      * ephemeral process key and restarts honestly invalidate outstanding cursors.
      */
-    private static byte[] cursorMacKey(Environment environment) {
+    static byte[] cursorMacKey(Environment environment) {
         String secret = environment.getProperty("iot.observation.safety-cursor-secret");
         if (secret == null) return null;
         secret = secret.trim();
@@ -133,24 +139,6 @@ public class ObservationAdapterConfiguration {
         return key.length >= 16 ? key : null;
     }
 
-    /**
-     * Current device metadata comes from the iot-center detail path behind the same
-     * gateway as the safety ledger itself; without a configured gateway there is no
-     * enrichment source and current-device fields stay honestly unverified.
-     */
-    private static SafetyLedgerComposer.MetadataSource metadataReader(
-            WebClient.Builder builder, String baseUrl, Environment environment, long timeoutMs) {
-        if (baseUrl == null || baseUrl.isBlank()) return null;
-        try {
-            return new WebClientSafetyMetadataReader(
-                    builder.build(),
-                    environment.getProperty("iot.gateway.company-safety-detail-path",
-                            "/micro-api/api/iot-center/device"),
-                    Duration.ofMillis(timeoutMs));
-        } catch (RuntimeException invalidConfiguration) {
-            return null;
-        }
-    }
 
     private static String route(Environment environment, ObservationOperationEnum operation, String fallback) {
         String property = environment.getProperty("iot.observation.routes." + operation.name().toLowerCase().replace('_', '-'));

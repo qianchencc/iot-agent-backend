@@ -427,8 +427,13 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
 
     private Mono<AlertRead> readAlerts(RequestIdentity identity, List<AuthorizedDevice> safety) {
         if (safety.isEmpty()) return Mono.just(AlertRead.empty());
-        return upstream.read(new ObservationRequest(identity, ObservationOperationEnum.SAFETY_EVENTS, Map.of()))
-                .map(response -> alertResponse(response, safety))
+        return reactor.core.publisher.Flux.fromIterable(List.of("gas", "smoke", "water"))
+                .concatMap(type -> safetyLedger.read(new ObservationRequest(identity, ObservationOperationEnum.SAFETY_EVENTS, Map.of("type", type)))
+                        .map(response -> alertResponse(response, safety)))
+                .collectList()
+                .map(parts -> new AlertRead(parts.stream().flatMap(part -> part.records.stream()).limit(50).toList(),
+                        parts.stream().mapToInt(part -> part.total).sum(),
+                        parts.stream().flatMap(part -> part.errors.stream()).toList()))
                 .onErrorResume(error -> Mono.just(AlertRead.failed("消防告警台账读取失败")));
     }
 
@@ -453,7 +458,7 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
             record.putIfAbsent("recordedDeviceName", device.name());
             records.add(record);
         }
-        int total = records.size();
+        int total = response.payload().get("total") instanceof Number count ? count.intValue() : records.size();
         List<Map<String, Object>> visible = records.size() > 50 ? List.copyOf(records.subList(0, 50)) : List.copyOf(records);
         return new AlertRead(visible, total, errors);
     }

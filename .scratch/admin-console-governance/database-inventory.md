@@ -22,6 +22,10 @@
 | `local_environment_samples` | `(scope_key,sample_key)`；来源ID/缺ID命名空间+原始时间+测点代码 | 五项DECIMAL(65,30)，真实时间可NULL、保留原文与质量；代码不证明楼层/设备归属；不自动删除消失测点历史 |
 | `local_environment_sample_batches` | `(run_id,sample_key)`；后台分页私有暂存 | 完整成功才与进度原子发布；旧全量不覆盖更新当前值；运行结束清理暂存，不清理已发布历史 |
 | `local_environment_requests` | `(scope_key,credential_generation,request_key)`；尚未覆盖的起止范围持久登记 | full成功后标READY；重启不丢失，普通读取只登记、不直接回源，也不抹掉后台重试到期 |
+| `local_safety_grants` | `scope_key`；逐主体、凭据代次及目录版本绑定的专用安全设备授权 | 只保留必要设备资料，不以完整展示目录代替安全授权 |
+| `local_safety_sync` | 共享数据`scope_key`；来源实例／租户／来源／类别／精确设备集合 | 当前及全量尝试、完整成功、发布版本和到期时间分列，失败不推进完整覆盖 |
+| `local_safety_events` | `(scope_key,event_key)`；类别／来源事件ID／设备ID／真实时间 | 后台幂等发布；普通列表、详情、日期边界和计数只读；不自动删除历史 |
+| `local_safety_batches` | `(run_id,event_key)`；后台分页暂存 | 未完成批次对普通读取不可见，发布或失败后清理暂存，不删除已发布事件 |
 
 - Current source defines **29 MySQL tables**: 24 from SQL resources (including the two `agent-allowlist.sql` company-Agent user allowlist tables), three task-owned tables created both in a resource and Java, four Pi tables created in Java, and the Java-created `storage_migrations` table. The categories overlap: the three task tables are included in the 24 SQL-resource definitions. No production Node-side `CREATE TABLE` was found in the investigated sidecar; Node uses Java’s private session API.
 - MySQL storage is **disabled by packaged default**. Schema and JDBC writers are conditional on `agent.storage.mysql.enabled=true`; a table definition or local row count does not prove that a writer is active in a particular deployment. `src/main/resources/application.yml:23-27`, `src/main/java/ltd/qianc/iotagent/storage/internal/StorageConfiguration.java:37-56`.

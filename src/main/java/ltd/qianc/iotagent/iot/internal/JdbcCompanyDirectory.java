@@ -58,6 +58,7 @@ public final class JdbcCompanyDirectory implements DeviceDirectory {
     private final JdbcDeviceObservations observations;
     private final JdbcEnergyHistory energyHistory;
     private final JdbcEnvironmentHistory environmentHistory;
+    private final JdbcSafetyHistory safetyHistory;
     private final java.util.function.Supplier<ltd.qianc.iotagent.iot.ObservationAdapter> historySource;
     private final ReentrantLock historyLock = new ReentrantLock();
     private final ReentrantLock syncLock = new ReentrantLock();
@@ -72,7 +73,7 @@ public final class JdbcCompanyDirectory implements DeviceDirectory {
             IotAdapter upstream, java.util.function.Supplier<ltd.qianc.iotagent.iot.ObservationAdapter> historySource,
             AccountPrincipalVerifier verifier, ReadSnapshots snapshots,
             ReadSnapshots.Barrier barrier, String gatewayInstance, String credentialKey, Clock clock,
-            ltd.qianc.iotagent.iot.DeviceCatalogSource catalogSource) {
+            ltd.qianc.iotagent.iot.DeviceCatalogSource catalogSource, byte[] safetyCursorKey) {
         this.jdbc = Objects.requireNonNull(jdbc);
         this.transactions = Objects.requireNonNull(transactions);
         this.mapper = Objects.requireNonNull(mapper);
@@ -92,6 +93,7 @@ public final class JdbcCompanyDirectory implements DeviceDirectory {
         this.observations = new JdbcDeviceObservations(jdbc, transactions, mapper, this::loadBatch, this::scopeKey, clock);
         this.energyHistory = new JdbcEnergyHistory(jdbc, transactions, mapper, this::loadBatch, this::scopeKey, clock);
         this.environmentHistory = new JdbcEnvironmentHistory(jdbc, transactions, mapper, this::loadBatch, this::scopeKey, observations, clock);
+        this.safetyHistory = new JdbcSafetyHistory(jdbc, transactions, mapper, this::loadBatch, this::scopeKey, clock, safetyCursorKey);
         this.cadence = new ScheduledThreadPoolExecutor(3, task -> {
             Thread thread = new Thread(task, "local-company-sync");
             thread.setDaemon(true);
@@ -105,6 +107,8 @@ public final class JdbcCompanyDirectory implements DeviceDirectory {
     @Override public ltd.qianc.iotagent.iot.EnergyHistory energyHistory() { return energyHistory; }
 
     @Override public ltd.qianc.iotagent.iot.EnvironmentHistory environmentHistory() { return environmentHistory; }
+
+    @Override public ltd.qianc.iotagent.iot.SafetyHistory safetyHistory() { return safetyHistory; }
 
     @Override public Map<String, Object> readCatalog(RequestIdentity identity) {
         if (identity.source() != IotSourceEnum.COMPANY) throw new BusinessException("DEVICE_SOURCE_UNAVAILABLE", "设备目录仅支持公司来源", 404);
@@ -391,6 +395,7 @@ public final class JdbcCompanyDirectory implements DeviceDirectory {
                                     + "VALUES (?,'DISPATCHED',?,?,?,?) ON DUPLICATE KEY UPDATE state='DISPATCHED',credential_generation=VALUES(credential_generation),"
                                     + "last_attempt_at=VALUES(last_attempt_at),update_time=VALUES(update_time)",
                             scope.key(), scope.generation(), dispatched, dispatched, dispatched);
+                    synchronizeSafety(scope, identity, false);
                     if (identity.source() == IotSourceEnum.COMPANY) {
                         synchronizeEnergy(scope, identity, false);
                         if (devices.devices().stream().anyMatch(device -> "environment".equals(device.kind())))
@@ -414,16 +419,37 @@ public final class JdbcCompanyDirectory implements DeviceDirectory {
     @Override public void synchronizeHistoryDue() {
         if (closed || !historyLock.tryLock()) return;
         try {
-            List<Scope> scopes = jdbc.query("SELECT * FROM local_sync_scopes WHERE gateway_instance=? AND data_kind='COMPANY_DIRECTORY' "
+            List<Scope> scopes = jdbc.query("SELECT * FROM local_sync_scopes WHERE gateway_instance=? AND data_kind IN ('COMPANY_DIRECTORY','OFFICE_DIRECTORY') "
                             + "AND published_generation=credential_generation AND denial_status=0 ORDER BY id",
                     JdbcCompanyDirectory::scope, gateway);
             for (Scope scope : scopes) {
                 if (closed) break;
-                if (energyHistory.fullDue(scope.key(), scope.generation())) synchronizeEnergy(scope, null, true);
-                if (environmentHistory.fullDue(scope.key(), scope.generation())) synchronizeEnvironment(scope, null, true);
+                synchronizeSafety(scope, null, true);
+                if (scope.source() == IotSourceEnum.COMPANY) {
+                    if (energyHistory.fullDue(scope.key(), scope.generation())) synchronizeEnergy(scope, null, true);
+                    if (environmentHistory.fullDue(scope.key(), scope.generation())) synchronizeEnvironment(scope, null, true);
+                }
             }
         } finally {
             historyLock.unlock();
+        }
+    }
+
+    private void synchronizeSafety(Scope scope, RequestIdentity currentIdentity, boolean full) {
+        RequestIdentity identity = currentIdentity;
+        try {
+            if (identity == null) identity = new RequestIdentity(decrypt(scope), scope.tenant(), scope.source(), scope.owner());
+            verify(identity);
+            requireAuthorization(identity, scope);
+            RequestIdentity captured = identity;
+            safetyHistory.synchronize(identity, historySource.get(), full,
+                    () -> verify(captured), () -> requireAuthorization(captured, scope));
+        } catch (RuntimeException failure) {
+            if (failure instanceof BusinessException business && (business.httpStatus() == 401 || business.httpStatus() == 403)) {
+                jdbc.update("UPDATE local_sync_scopes SET state='DENIED',published_generation=NULL,denial_status=?,failure_code='DIRECTORY_SYNC_DENIED',update_time=? "
+                        + "WHERE scope_key=? AND credential_generation=?", business.httpStatus(), Timestamp.from(clock.instant()), scope.key(), scope.generation());
+                if (identity != null) snapshots.revoke(snapshotIdentity(identity), business);
+            }
         }
     }
 
@@ -529,6 +555,14 @@ public final class JdbcCompanyDirectory implements DeviceDirectory {
             verify(identity);
             requireAuthorization(identity, scope);
             scope = publish(scope, unique, batch.regions());
+            if (scope != null) {
+                RequestIdentity captured = identity;
+                Scope published = scope;
+                AuthorizedDeviceScope safetyGrant = identity.source() == IotSourceEnum.OFFICE
+                        ? collected : upstream.loadAuthorizedSafetyScope(identity).block();
+                verify(identity);
+                safetyHistory.publishGrants(identity, safetyGrant, () -> requireAuthorization(captured, published));
+            }
             if (scope != null && identity.source() == IotSourceEnum.COMPANY) {
                 try { synchronizeEnergyGrants(scope, identity); }
                 catch (RuntimeException failure) {

@@ -35,6 +35,9 @@ public interface DeviceDirectory extends AutoCloseable {
     /** Local current environment observations and independently covered site history. */
     EnvironmentHistory environmentHistory();
 
+    /** Local safety grants, complete alarm history and authorized date boundaries. */
+    SafetyHistory safetyHistory();
+
     /** Starts the process-owned cadence. Tests and operational smoke runs may drive synchronizeDue directly. */
     void start();
 
@@ -47,6 +50,6 @@ public interface DeviceDirectory extends AutoCloseable {
             IotAdapter upstream, ObservationAdapter historySource, AccountPrincipalVerifier verifier, ReadSnapshots snapshots,
             ReadSnapshots.Barrier barrier, String gatewayInstance, String credentialKey, Clock clock, DeviceCatalogSource catalogSource) {
         return new JdbcCompanyDirectory(jdbc, transactions, mapper, upstream, () -> historySource, verifier, snapshots,
-                barrier, gatewayInstance, credentialKey, clock, catalogSource);
+                barrier, gatewayInstance, credentialKey, clock, catalogSource, null);
     }
 }

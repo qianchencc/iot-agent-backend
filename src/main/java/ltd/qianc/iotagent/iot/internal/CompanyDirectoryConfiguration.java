@@ -42,12 +42,14 @@ public class CompanyDirectoryConfiguration {
             ObjectMapper mapper, IotAdapterConfiguration.Source upstream, AccountPrincipalVerifier verifier,
             org.springframework.beans.factory.ObjectProvider<ObservationAdapterConfiguration.Source> sources,
             ReadSnapshots snapshots, ReadSnapshots.Barrier barrier, Credentials credentials, Gateway gateway,
-            org.springframework.web.reactive.function.client.WebClient.Builder builder) {
+            org.springframework.web.reactive.function.client.WebClient.Builder builder,
+            org.springframework.core.env.Environment environment) {
         JdbcCompanyDirectory directory = new JdbcCompanyDirectory(jdbc, transactions, mapper, upstream.adapter(),
                 () -> sources.getObject().adapter(), verifier, snapshots, barrier,
                 gateway.baseUrl(), credentials.credentialKey(), Clock.systemUTC(),
                 ltd.qianc.iotagent.iot.DeviceCatalogSource.http(builder.baseUrl(gateway.baseUrl()).build(),
-                        gateway.deviceCatalogPath(), java.time.Duration.ofMillis(gateway.callTimeoutMs())));
+                        gateway.deviceCatalogPath(), java.time.Duration.ofMillis(gateway.callTimeoutMs())),
+                ObservationAdapterConfiguration.cursorMacKey(environment));
         try {
             new SchemaMigrations(dataSource).ensureLocalCompanyDirectory();
             return directory;
@@ -76,5 +78,12 @@ public class CompanyDirectoryConfiguration {
     @ConditionalOnMissingBean(ltd.qianc.iotagent.iot.EnvironmentHistory.class)
     ltd.qianc.iotagent.iot.EnvironmentHistory environmentHistory(JdbcCompanyDirectory directory) {
         return directory.environmentHistory();
+    }
+
+    @Bean
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnBean(JdbcCompanyDirectory.class)
+    @ConditionalOnMissingBean(ltd.qianc.iotagent.iot.SafetyHistory.class)
+    ltd.qianc.iotagent.iot.SafetyHistory safetyHistory(JdbcCompanyDirectory directory) {
+        return directory.safetyHistory();
     }
 }

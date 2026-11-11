@@ -134,6 +134,7 @@ public final class JdbcSchemaMigrations {
         runOnce("local-device-states-v1", () -> runBaseline("db/mysql/local-device-states.sql"));
         runOnce("local-energy-history-v1", () -> runBaseline("db/mysql/local-energy-history.sql"));
         runOnce("local-environment-history-v1", () -> runBaseline("db/mysql/local-environment-history.sql"));
+        runOnce("local-safety-history-v1", () -> runBaseline("db/mysql/local-safety-history.sql"));
         runOnce(SharedObservationMigration.KEY, () -> new SharedObservationMigration(jdbc, transactions, mapper).migrate());
         polish("local-shared-observation-column-comments-v2", "db/mysql/local-device-states.sql");
     }
