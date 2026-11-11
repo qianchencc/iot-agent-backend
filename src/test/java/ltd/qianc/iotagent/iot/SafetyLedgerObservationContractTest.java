@@ -231,7 +231,7 @@ class SafetyLedgerObservationContractTest {
         Map<String, Object> payload = adapter.read(request(Map.of("type", "gas", "limit", "20"))).block().payload();
         List<Map<String, Object>> rows = items(payload);
         assertThat(rows).extracting(row -> row.get("eventId")).containsExactly("a1", "a2");
-        assertThat(rows.get(0)).containsEntry("deviceName", "27楼茶水间燃气感应器（新）")
+        assertThat(rows.get(0)).containsEntry("deviceName", "27楼茶水间燃气感应器")
                 .containsEntry("recordedDeviceName", "27楼茶水间燃气感应器")
                 .containsEntry("location", "27楼茶水间");
         assertThat(currentDevice(rows.get(0)))

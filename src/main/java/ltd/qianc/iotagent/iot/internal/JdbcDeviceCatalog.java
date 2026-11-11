@@ -11,6 +11,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import ltd.qianc.iotagent.error.BusinessException;
+import ltd.qianc.iotagent.iot.AuthorizedDeviceScope;
 import ltd.qianc.iotagent.iot.DeviceCatalogSource;
 import ltd.qianc.iotagent.iot.RequestIdentity;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -55,6 +56,25 @@ final class JdbcDeviceCatalog {
                     "updatedAt", progress.success().toString(), "refreshing", "SYNCING".equals(progress.state())));
             return result;
         });
+    }
+
+    Map<String, Map<String, Object>> safetyMetadata(AuthorizedDeviceScope scope) {
+        List<String> ids = new ArrayList<>();
+        for (var device : scope.devices()) {
+            if ("safety".equals(device.kind()) && device.hubDeviceId() != null && !device.hubDeviceId().isBlank())
+                ids.add(device.hubDeviceId());
+        }
+        if (ids.isEmpty()) return Map.of();
+        List<Object> args = new ArrayList<>(ids.size() + 1);
+        args.add(key(scope.identity().tenantCode()));
+        args.addAll(ids);
+        Map<String, Map<String, Object>> result = new LinkedHashMap<>();
+        jdbc.query("SELECT source_device_id,device_name,install_address FROM local_device_catalog "
+                        + "WHERE catalog_key=? AND device_kind='safety' AND source_device_id IN ("
+                        + String.join(",", java.util.Collections.nCopies(ids.size(), "?")) + ")",
+                rs -> { result.put(rs.getString(1), Map.of("name", rs.getString(2), "location", rs.getString(3))); },
+                args.toArray());
+        return result;
     }
 
     void synchronize(RequestIdentity identity, Runnable revalidate) {

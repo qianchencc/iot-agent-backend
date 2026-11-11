@@ -396,7 +396,7 @@ public final class SafetyLedgerComposer {
         item.put("eventId", record.eventId());
         item.put("ledger", record.ledger());
         item.put("deviceId", record.deviceId());
-        item.put("deviceName", text(currentDevice, "name") == null ? record.deviceName() : text(currentDevice, "name"));
+        item.put("deviceName", record.deviceName());
         item.put("recordedDeviceName", record.deviceName());
         item.put("currentDevice", currentDevice);
         item.put("location", text(currentDevice, "location") == null ? "" : text(currentDevice, "location"));

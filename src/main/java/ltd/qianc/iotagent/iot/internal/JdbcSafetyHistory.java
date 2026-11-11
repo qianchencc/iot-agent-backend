@@ -32,14 +32,16 @@ public final class JdbcSafetyHistory implements SafetyHistory {
     private final ObjectMapper mapper;
     private final Function<RequestIdentity, DeviceDirectoryBatch> directory;
     private final Function<RequestIdentity, String> keys;
+    private final Function<AuthorizedDeviceScope, Map<String, Map<String, Object>>> currentDevices;
     private final Clock clock;
     private final byte[] cursorKey;
 
     JdbcSafetyHistory(JdbcTemplate jdbc, TransactionTemplate transactions, ObjectMapper mapper,
             Function<RequestIdentity, DeviceDirectoryBatch> directory, Function<RequestIdentity, String> keys,
+            Function<AuthorizedDeviceScope, Map<String, Map<String, Object>>> currentDevices,
             Clock clock, byte[] configuredCursorKey) {
         this.jdbc = jdbc; this.transactions = transactions; this.mapper = mapper;
-        this.directory = directory; this.keys = keys; this.clock = clock;
+        this.directory = directory; this.keys = keys; this.currentDevices = currentDevices; this.clock = clock;
         this.cursorKey = configuredCursorKey == null ? new byte[32] : configuredCursorKey.clone();
         if (configuredCursorKey == null) new java.security.SecureRandom().nextBytes(cursorKey);
     }
@@ -61,6 +63,7 @@ public final class JdbcSafetyHistory implements SafetyHistory {
                 String key = dataKey(access, type);
                 Progress before = progress(key);
                 if (hasDevices(access, type) && (before == null || before.fullSuccess() == null)) throw preparing();
+                Map<String, Map<String, Object>> deviceMetadata = currentDevices.apply(access.scope());
                 IotAdapter localScope = new IotAdapter() {
                     @Override public Mono<AuthorizedDeviceScope> loadAuthorizedDeviceScope(RequestIdentity id) {
                         return Mono.fromCallable(() -> authorizedScope(id));
@@ -68,7 +71,7 @@ public final class JdbcSafetyHistory implements SafetyHistory {
                 };
                 ObservationAdapter local = ObservationAdapterFactory.safetyLedger(
                         page -> Mono.fromCallable(() -> page(key, page.parameters(), request.parameters())),
-                        localScope, (id, hub) -> Mono.just(metadata(access, hub)), cursorKey, clock);
+                        localScope, (id, hub) -> Mono.just(deviceMetadata.getOrDefault(hub, Map.of())), cursorKey, clock);
                 return local.read(request).map(response -> {
                     Map<String, Object> payload = new LinkedHashMap<>(response.payload());
                     if (request.operation() == ObservationOperationEnum.SAFETY_EVENTS) {
@@ -304,10 +307,6 @@ public final class JdbcSafetyHistory implements SafetyHistory {
         row.put("deviceName", rs.getString("recorded_device_name")); row.put("occurredAt", instant(rs, "occurred_at").toString());
         row.put("alarm", rs.getObject("alarm")); row.put("report", rs.getObject("report"));
         return row;
-    }
-    private static Map<String, Object> metadata(Access access, String hub) {
-        var device = access.scope().devices().stream().filter(d -> hub.equals(d.hubDeviceId())).findFirst().orElse(null);
-        return device == null ? Map.of() : Map.of("name", device.name(), "location", device.installAddress());
     }
     private static BusinessException preparing() { return new BusinessException("SAFETY_HISTORY_PREPARING", "安全台账尚未完整同步，请稍后重试", 503); }
     private static BusinessException unavailable() { return new BusinessException("SAFETY_HISTORY_UNAVAILABLE", "本地安全台账暂不可用，请稍后重试", 503); }

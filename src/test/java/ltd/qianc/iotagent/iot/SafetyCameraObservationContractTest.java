@@ -17,28 +17,24 @@ class SafetyCameraObservationContractTest {
             new RequestIdentity("Bearer company", "TENANT-1", IotSourceEnum.COMPANY);
     private static final Instant NOW = Instant.parse("2024-04-20T07:11:01Z");
 
+
     @Test
-    void filtersCompanyMonitorsByCurrentFloorWithoutRewritingEventWindow() {
+    void originalEventNameCanFindCamerasWithoutCurrentDeviceMetadata() {
         ObservationAdapter upstream = event(Map.of(
                 "eventId", "alarm-1", "ledger", "gas", "deviceId", "gas-1",
-                "deviceName", "recorded gas", "occurredAt", "2024-04-20T07:10:01Z"));
-        AuthorizedDevice safety = device("gas-1", "safety", "燃气感应器", "27楼茶水间", null, List.of());
-        AuthorizedDevice pantry = device("cam-27", "video", "监控-27楼茶水间", "27楼茶水间", "hub-27", List.of());
-        AuthorizedDevice otherFloor = device("cam-28", "video", "大厅监控", "28楼大厅", "hub-28", List.of());
-        AuthorizedDevice noHub = device("cam-no-hub", "video", "27楼无授权绑定", "27楼", null, List.of());
-        ObservationAdapter adapter = composed(upstream, scope(safety), scope(pantry, otherFloor, noHub));
-
-        Map<?, ?> payload = adapter.read(new ObservationRequest(COMPANY,
-                        ObservationOperationEnum.SAFETY_EVENT_CAMERAS,
-                        Map.of("id", "alarm-1", "ledger", "gas", "deviceId", "gas-1")))
-                .block().payload();
+                "deviceName", "27楼茶水间燃气感应器", "occurredAt", "2024-04-20T07:10:01Z"));
+        ObservationAdapter adapter = composed(upstream,
+                scope(device("gas-1", "safety", "26楼当前燃气设备", "26楼当前位置", null, List.of())),
+                scope(device("camera-event", "video", "27楼茶水间监控", "27楼茶水间", "hub-event", List.of()),
+                        device("camera-current", "video", "26楼监控", "26楼当前位置", "hub-current", List.of())));
+        Map<?, ?> payload = adapter.read(request()).block().payload();
         List<?> candidates = (List<?>) payload.get("candidates");
-        assertThat(candidates).withFailMessage("payload=%s", payload).hasSize(1);
-        Map<?, ?> candidate = (Map<?, ?>) candidates.get(0);
-        assertThat(candidate.get("deviceId")).isEqualTo("cam-27");
+        assertThat(candidates).hasSize(1);
+        Map<?, ?> candidate = (Map<?, ?>) candidates.getFirst();
+        assertThat(candidate.get("deviceId")).isEqualTo("camera-event");
         assertThat(candidate.get("beginTime")).isEqualTo("2024-04-20T14:55:01.000+08:00");
         assertThat(candidate.get("endTime")).isEqualTo("2024-04-20T15:25:01.000+08:00");
-        assertThat(((Map<?, ?>) candidate.get("safetyContext")).get("eventId")).isEqualTo("alarm-1");
+        assertThat(((Map<?, ?>) payload.get("currentSafetyDevice")).get("location")).isNull();
     }
 
     @Test

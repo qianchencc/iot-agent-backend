@@ -102,6 +102,112 @@ class SafetyHistoryBehaviorTest {
         }
     }
 
+    @Test void currentNamesFollowTheHardwareCatalogWithoutRewritingOldEventFacts() {
+        try (var f = new Fixture()) {
+            f.grants = List.of(new AuthorizedDevice("gas", "safety", "旧业务燃气设备", "旧业务位置", true,
+                    null, "gas", "fixture-hardware", null, List.of(), List.of(), Map.of()));
+            f.catalog = List.of(new DeviceCatalogSource.Entry("fixture-hardware", "当前燃气设备", "safety", "当前安装位置"));
+            f.rows.add(row("gas", "gas", "original-event", "2020-01-01T00:00:00Z"));
+            f.publish();
+            int calls = f.calls.get();
+            f.offline = true;
+            Map<?, ?> listed = (Map<?, ?>) ((List<?>) f.read("gas", null, null).payload().get("items")).getFirst();
+            assertEquals("测试记录设备", listed.get("deviceName"));
+            assertEquals("当前燃气设备", ((Map<?, ?>) listed.get("currentDevice")).get("name"));
+            assertEquals("当前安装位置", ((Map<?, ?>) listed.get("currentDevice")).get("location"));
+            assertEquals("测试记录设备", listed.get("recordedDeviceName"));
+            assertEquals("original-event", listed.get("eventId"));
+            assertEquals("2020-01-01T00:00:00Z", listed.get("occurredAt"));
+            assertEquals(calls, f.calls.get(), "reading current display information must not collect alarm history");
+            f.offline = false;
+            f.catalog = List.of(new DeviceCatalogSource.Entry("fixture-hardware", "再次更名燃气设备", "safety", "新安装位置"));
+            f.clock.advance(61);
+            f.directory.synchronizeDue();
+            calls = f.calls.get();
+            f.offline = true;
+            var detail = f.directory.safetyHistory().read(new ObservationRequest(f.identity(), ObservationOperationEnum.SAFETY_EVENT,
+                    Map.of("ledger", "gas", "deviceId", "gas", "id", "original-event"))).block().payload();
+            var latest = f.directory.safetyHistory().read(new ObservationRequest(f.identity(), ObservationOperationEnum.SAFETY_EVENTS,
+                    Map.of("type", "gas", "selection", "latest", "to", f.clock.instant().toString()))).block().payload();
+            for (var payload : List.of(detail, latest)) {
+                Map<?, ?> record = (Map<?, ?>) payload.get("record");
+                assertEquals("测试记录设备", record.get("deviceName"));
+                assertEquals("再次更名燃气设备", ((Map<?, ?>) record.get("currentDevice")).get("name"));
+                assertEquals("新安装位置", record.get("location"));
+                assertEquals("测试记录设备", record.get("recordedDeviceName"));
+                assertEquals("original-event", record.get("eventId"));
+                assertEquals("2020-01-01T00:00:00Z", record.get("occurredAt"));
+            }
+            assertEquals(calls, f.calls.get(), "displaying a renamed old event must not collect alarm history");
+        }
+    }
+
+    @Test void eventCamerasFollowTheOriginalRecordWhileCurrentDeviceMetadataChanges() {
+        try (var f = new Fixture()) {
+            f.grants = List.of(
+                    new AuthorizedDevice("gas", "safety", "10楼旧燃气设备", "10楼旧位置", true,
+                            null, "gas", "fixture-hardware", null, List.of(), List.of(), Map.of()),
+                    new AuthorizedDevice("camera-old", "video", "10楼监控", "10楼旧位置", true,
+                            null, null, "camera-hardware-old", null, List.of(), List.of(), Map.of()),
+                    new AuthorizedDevice("camera-current", "video", "20楼监控", "20楼当前位置", true,
+                            null, null, "camera-hardware-current", null, List.of(), List.of(), Map.of()));
+            f.catalog = List.of(new DeviceCatalogSource.Entry("fixture-hardware", "20楼当前燃气设备", "safety", "20楼当前位置"));
+            var event = new LinkedHashMap<>(row("gas", "gas", "old-event", "2020-01-01T00:00:00Z"));
+            event.put("deviceName", "10楼旧位置燃气感应器");
+            f.rows.add(event);
+            f.publish();
+            f.offline = true;
+            IotAdapter local = new IotAdapter() {
+                @Override public Mono<AuthorizedDeviceScope> loadAuthorizedDeviceScope(RequestIdentity id) {
+                    return Mono.fromCallable(() -> f.directory.loadScope(id));
+                }
+            };
+            var adapter = ObservationAdapterFactory.composed(
+                    request -> Mono.error(new AssertionError("ordinary read contacted source")), local,
+                    identity -> Mono.just(Map.of()), null, null, f.directory.safetyHistory()::read, null, f.clock);
+            var payload = adapter.read(new ObservationRequest(f.identity(), ObservationOperationEnum.SAFETY_EVENT_CAMERAS,
+                    Map.of("ledger", "gas", "deviceId", "gas", "id", "old-event"))).block().payload();
+            var candidates = (List<?>) payload.get("candidates");
+            assertEquals(1, candidates.size());
+            Map<?, ?> candidate = (Map<?, ?>) candidates.getFirst();
+            assertEquals("camera-old", candidate.get("deviceId"));
+            assertEquals("2020-01-01T07:45:00.000+08:00", candidate.get("beginTime"));
+            assertEquals("2020-01-01T08:15:00.000+08:00", candidate.get("endTime"));
+            Map<?, ?> record = (Map<?, ?>) payload.get("record");
+            assertEquals("10楼旧位置燃气感应器", record.get("deviceName"));
+            assertEquals("20楼当前燃气设备", ((Map<?, ?>) record.get("currentDevice")).get("name"));
+            assertEquals("2020-01-01T00:00:00Z", record.get("occurredAt"));
+            assertEquals("old-event", record.get("eventId"));
+        }
+    }
+
+    @Test void currentDisplayMetadataRemainsTenantScopedAndDoesNotGrantCatalogOnlyHardware() {
+        try (var f = new Fixture()) {
+            f.grants = List.of(new AuthorizedDevice("gas", "safety", "旧业务燃气设备", "旧业务位置", true,
+                    null, "gas", "fixture-hardware", null, List.of(), List.of(), Map.of()));
+            f.catalog = List.of(
+                    new DeviceCatalogSource.Entry("fixture-hardware", "甲租户燃气设备", "safety", "甲位置"),
+                    new DeviceCatalogSource.Entry("catalog-only", "未授权燃气设备", "safety", "未授权位置"));
+            f.rows.add(row("gas", "gas", "allowed-event", "2020-01-01T00:00:00Z"));
+            f.rows.add(row("gas", "catalog-only", "not-authorized", "2019-01-01T00:00:00Z"));
+            f.publish();
+            var secondTenant = f.identity("Bearer fixture-second-tenant", "fixture-second-tenant");
+            f.catalog = List.of(new DeviceCatalogSource.Entry("fixture-hardware", "乙租户燃气设备", "safety", "乙位置"));
+            f.register(secondTenant);
+            f.directory.synchronizeDue();
+            f.directory.synchronizeHistoryDue();
+            f.offline = true;
+            for (var identity : List.of(f.identity(), secondTenant)) {
+                var items = (List<?>) f.read(identity, "gas", null, null, null).payload().get("items");
+                assertEquals(1, items.size());
+                Map<?, ?> record = (Map<?, ?>) items.getFirst();
+                assertEquals("allowed-event", record.get("eventId"));
+                assertEquals(identity.equals(secondTenant) ? "乙租户燃气设备" : "甲租户燃气设备",
+                        ((Map<?, ?>) record.get("currentDevice")).get("name"));
+            }
+        }
+    }
+
     static Map<String, Object> row(String ledger, String device, String id, String at) {
         return Map.of("ledger", ledger, "deviceId", device, "eventId", id,
                 "deviceName", "测试记录设备", "occurredAt", at, "alarm", true, "report", false);
@@ -123,6 +229,7 @@ class SafetyHistoryBehaviorTest {
                 new AuthorizedDevice("gas", "safety", "测试燃气设备", "测试位置", true),
                 new AuthorizedDevice("smoke", "safety", "测试烟感设备", "测试位置", true),
                 new AuthorizedDevice("water", "safety", "测试水浸设备", "测试位置", true));
+        volatile List<DeviceCatalogSource.Entry> catalog = List.of();
         final IotAdapter source = new IotAdapter() {
             @Override public Mono<AuthorizedDeviceScope> loadAuthorizedDeviceScope(RequestIdentity id) {
                 if (offline) return Mono.error(new AssertionError("ordinary read contacted directory source"));
@@ -167,7 +274,10 @@ class SafetyHistoryBehaviorTest {
         void open() {
             directory = DeviceDirectory.jdbc(jdbc, transactions, mapper, source, historySource,
                     presented -> principal(presented.authorization(), presented.tenantCode()), snapshots, barrier,
-                    "https://safety-fixture.example.invalid", "cd".repeat(32), clock, request -> List.of());
+                    "https://safety-fixture.example.invalid", "cd".repeat(32), clock, request -> {
+                        if (offline) throw new AssertionError("ordinary read contacted hardware catalog source");
+                        return catalog;
+                    });
         }
         static PrincipalInfo principal(String token, String tenant) { return new PrincipalInfo(token, tenant, token, "fixture-realm"); }
         RequestIdentity identity() { return identity("Bearer fixture-safety", "fixture-tenant"); }

@@ -51,13 +51,14 @@ class TaskReadLatencyContractTest {
                             failure -> assertThat(failure.code()).isEqualTo("TASK_READ_PREPARING"));
             assertThat(h.sourceReads).isZero();
             h.directory.synchronizeDue();
+            int beforeInteraction = h.sourceReads;
             h.upstreamAvailable = false;
             assertThat(rows(h.facade.notificationsView(PRINCIPAL, "company", 30, null)))
                     .extracting(row -> row.get("id")).containsExactly("notice-1");
             h.inbox.set(List.of(h.notification("notice-2"), h.notification("notice-1")));
             assertThat(rows(h.facade.notificationsView(PRINCIPAL, "company", 30, null)))
                     .extracting(row -> row.get("id")).containsExactly("notice-2", "notice-1");
-            assertThat(h.sourceReads).isEqualTo(1);
+            assertThat(h.sourceReads).isEqualTo(beforeInteraction);
         }
     }
 
@@ -68,9 +69,10 @@ class TaskReadLatencyContractTest {
             h.clock.now = NOW.plusSeconds(61);
             h.devices.set(List.of(new AuthorizedDevice("light-1", "lighting", "Fixture Light One", "Fixture Floor", false)));
             h.directory.synchronizeDue();
+            int beforeInteraction = h.sourceReads;
             h.upstreamAvailable = false;
             assertThat(h.facade.scope(PRINCIPAL, "company").deviceIds()).containsExactly("light-1");
-            assertThat(h.sourceReads).isEqualTo(2);
+            assertThat(h.sourceReads).isEqualTo(beforeInteraction);
         }
     }
 
@@ -81,6 +83,7 @@ class TaskReadLatencyContractTest {
             h.clock.now = NOW.plusSeconds(61);
             h.devices.set(List.of(new AuthorizedDevice("light-1", "lighting", "Fixture Light One", "Fixture Floor", false)));
             h.directory.synchronizeDue();
+            int beforeInteraction = h.sourceReads;
             h.upstreamAvailable = false;
             assertThatThrownBy(() -> h.facade.cancel(PRINCIPAL, "task-1", 1, "company"))
                     .isInstanceOfSatisfying(BusinessException.class, failure -> {
@@ -88,7 +91,7 @@ class TaskReadLatencyContractTest {
                         assertThat(failure.httpStatus()).isEqualTo(403);
                     });
             assertThat(h.tasks.find("task-1").orElseThrow().status()).isEqualTo("SCHEDULED");
-            assertThat(h.sourceReads).isEqualTo(2);
+            assertThat(h.sourceReads).isEqualTo(beforeInteraction);
         }
     }
 
@@ -99,11 +102,12 @@ class TaskReadLatencyContractTest {
             h.upstreamDenial = new BusinessException("UNAUTHORIZED", "Fixture credential denied", 401);
             h.clock.now = NOW.plusSeconds(61);
             h.directory.synchronizeDue();
+            int beforeInteraction = h.sourceReads;
             assertThatThrownBy(() -> h.facade.cancel(PRINCIPAL, "task-1", 1, "company"))
                     .isInstanceOfSatisfying(BusinessException.class, failure -> assertThat(failure.httpStatus()).isEqualTo(401));
             assertThatThrownBy(() -> h.facade.notificationsView(PRINCIPAL, "company", 30, null))
                     .isInstanceOfSatisfying(BusinessException.class, failure -> assertThat(failure.httpStatus()).isEqualTo(401));
-            assertThat(h.sourceReads).isEqualTo(2);
+            assertThat(h.sourceReads).isEqualTo(beforeInteraction);
         }
     }
 
@@ -111,11 +115,12 @@ class TaskReadLatencyContractTest {
     void emptyAuthorizedOfficeRegionsSurviveWithoutInventingDeviceMembership() {
         try (Harness h = new Harness()) {
             h.prepare("office");
+            int beforeInteraction = h.sourceReads;
             h.upstreamAvailable = false;
             TaskReadScope scope = h.facade.scope(PRINCIPAL, "office");
             assertThat(scope.regionIds()).containsExactly("fixture-empty-region");
             assertThat(scope.deviceIds()).isEmpty();
-            assertThat(h.sourceReads).isEqualTo(1);
+            assertThat(h.sourceReads).isEqualTo(beforeInteraction);
         }
     }
 

@@ -47,6 +47,10 @@ import reactor.core.scheduler.Schedulers;
  */
 public final class CompanyOfficeObservationAdapter implements ObservationAdapter {
     private static final Pattern FLOOR_PATTERN = Pattern.compile("(?:^|[^\\d])(\\d+)(?:楼|层)");
+    private static final Pattern SAFETY_NAME_SUFFIX = Pattern.compile("(燃气|光电感烟|烟感|水浸).*");
+    private static final Pattern WHITESPACE = Pattern.compile("\\s");
+    private static final DateTimeFormatter EVENT_VIDEO_TIME =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSXXX").withZone(ZoneOffset.ofHours(8));
 
     private final ObservationAdapter upstream;
     private final IotAdapter iot;
@@ -162,119 +166,63 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
                         return Mono.error(new BusinessException("SAFETY_EVENT_UNAVAILABLE",
                                 "当前范围内未找到这条记录", 404));
                     }
-                    return iot.loadAuthorizedSafetyScope(request.identity())
+                    return iot.loadAuthorizedVideoScope(request.identity())
                             .switchIfEmpty(Mono.error(new BusinessException("SAFETY_EVENT_READ_FAILED",
-                                    "安全设备授权范围为空", 503)))
-                            .map(scope -> checkedCompanyScope(scope, request.identity(), "安全设备授权范围无效"))
-                            .flatMap(safety -> iot.loadAuthorizedVideoScope(request.identity())
-                                    .switchIfEmpty(Mono.error(new BusinessException("SAFETY_EVENT_READ_FAILED",
-                                            "监控授权范围为空", 503)))
-                                    .map(scope -> checkedCompanyScope(scope, request.identity(), "监控授权范围无效"))
-                                    .map(video -> safetyCameraPayload(request, record, safety, video)));
+                                    "监控授权范围为空", 503)))
+                            .map(video -> {
+                                if (video.source() != IotSourceEnum.COMPANY || !request.identity().equals(video.identity()))
+                                    throw new BusinessException("SAFETY_EVENT_READ_FAILED", "监控授权范围无效", 503);
+                                return safetyCameraPayload(request, record, video);
+                            });
                 });
     }
 
-    private static AuthorizedDeviceScope checkedCompanyScope(
-            AuthorizedDeviceScope scope, RequestIdentity identity, String message) {
-        if (scope == null || scope.source() != IotSourceEnum.COMPANY || !identity.equals(scope.identity())) {
-            throw new BusinessException("SAFETY_EVENT_READ_FAILED", message, 503);
-        }
-        return scope;
-    }
 
     private ObservationResponse safetyCameraPayload(
-            ObservationRequest request,
-            Map<String, Object> sourceRecord,
-            AuthorizedDeviceScope safety,
-            AuthorizedDeviceScope video) {
-        AuthorizedDevice current = safety.device(request.parameters().get("deviceId")).orElse(null);
-        Map<String, Object> currentDevice = currentSafetyDevice(sourceRecord, current);
-        Map<String, Object> record = new LinkedHashMap<>(sourceRecord);
-        record.put("currentDevice", currentDevice);
-        record.put("currentSafetyDevice", currentDevice);
-        record.put("deviceName", text(currentDevice, "name") == null
-                ? text(sourceRecord, "deviceName", "recordedDeviceName") : text(currentDevice, "name"));
-        record.put("location", text(currentDevice, "location") == null ? "" : text(currentDevice, "location"));
+            ObservationRequest request, Map<String, Object> record, AuthorizedDeviceScope video) {
+        String recordedName = text(record, "recordedDeviceName", "deviceName");
+        String place = recordedName == null ? ""
+                : WHITESPACE.matcher(SAFETY_NAME_SUFFIX.matcher(recordedName).replaceFirst("")).replaceAll("");
+        String floor = floorOf(place);
+        List<AuthorizedDevice> samePlace = new ArrayList<>(), sameFloor = new ArrayList<>();
+        for (AuthorizedDevice camera : video.devices()) {
+            if (!"video".equalsIgnoreCase(camera.kind()) || camera.hubDeviceId() == null || camera.hubDeviceId().isBlank())
+                continue;
+            String description = cameraText(camera);
+            boolean sameLevel = floor == null || floor.equals(floorOf(description));
+            if (place.length() > 2 && description.contains(place) && sameLevel) samePlace.add(camera);
+            if (floor != null && sameLevel) sameFloor.add(camera);
+        }
+        List<AuthorizedDevice> matches = samePlace.isEmpty() ? sameFloor : samePlace;
         String occurredAt = text(record, "occurredAt");
         Instant occurred = parseInstant(occurredAt);
-        String place = safetyPlace(text(currentDevice, "location"), text(currentDevice, "name"));
-        List<AuthorizedDevice> cameras = video.devices().stream()
-                .filter(device -> "video".equalsIgnoreCase(device.kind()) && device.hubDeviceId() != null)
-                .toList();
-        String floor = floorOf(place);
-        List<AuthorizedDevice> samePlace = place.length() > 2
-                ? cameras.stream().filter(camera -> normalized(camera.installAddress(), camera.name()).contains(normalized(place, "")))
-                        .filter(camera -> floor == null || floor.equals(floorOf(cameraText(camera)))).toList()
-                : List.of();
-        List<AuthorizedDevice> matches = !samePlace.isEmpty() ? samePlace
-                : floor == null ? List.of() : cameras.stream()
-                        .filter(camera -> floor.equals(floorOf(cameraText(camera)))).toList();
-        String basis = !samePlace.isEmpty()
-                ? "按当前安装位置匹配“" + place + "”；仅为候选，记录时位置与画面覆盖未核验"
-                : floor == null
-                        ? "当前安装位置未包含可核验楼层；仅返回同地点候选，记录时位置与画面覆盖未核验"
-                        : "按当前安装位置查找同楼层（" + floor + "楼）候选；记录时位置与画面覆盖未核验";
         List<Map<String, Object>> candidates = new ArrayList<>();
         if (occurred != null) {
-            // The candidate window is the recorded event's actual ±15 minutes. It is
-            // never clipped to "now": a too-recent recording must fail playback
-            // honestly instead of silently rewriting the referenced window.
-            Instant end = occurred.plusSeconds(15 * 60L);
-            if (end.isAfter(occurred)) {
-                DateTimeFormatter format = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSXXX")
-                        .withZone(ZoneOffset.ofHours(8));
-                String beginTime = format.format(occurred.minusSeconds(15 * 60L));
-                String endTime = format.format(end);
-                String label = text(currentDevice, "name");
-                if (label == null) label = text(record, "deviceName", "recordedDeviceName");
-                for (AuthorizedDevice camera : matches) {
-                    Map<String, Object> candidate = new LinkedHashMap<>();
-                    candidate.put("source", "company");
-                    candidate.put("deviceId", camera.id());
-                    candidate.put("name", camera.name());
-                    candidate.put("location", cameraLocation(camera));
-                    candidate.put("beginTime", beginTime);
-                    candidate.put("endTime", endTime);
-                    candidate.put("safetyContext", Map.of(
-                            "type", "safety_event", "ledger", request.parameters().get("ledger"),
-                            "eventId", request.parameters().get("id"), "deviceId", request.parameters().get("deviceId"),
-                            "label", label == null ? "" : label, "occurredAt", occurredAt, "basis", basis));
-                    candidates.add(candidate);
-                }
+            String beginTime = EVENT_VIDEO_TIME.format(occurred.minusSeconds(15 * 60L));
+            String endTime = EVENT_VIDEO_TIME.format(occurred.plusSeconds(15 * 60L));
+            for (AuthorizedDevice camera : matches) {
+                Map<String, Object> candidate = new LinkedHashMap<>();
+                candidate.put("source", "company");
+                candidate.put("deviceId", camera.id());
+                candidate.put("name", camera.name());
+                candidate.put("location", cameraLocation(camera));
+                candidate.put("beginTime", beginTime);
+                candidate.put("endTime", endTime);
+                candidate.put("safetyContext", Map.of("type", "safety_event",
+                        "ledger", request.parameters().get("ledger"), "eventId", request.parameters().get("id"),
+                        "deviceId", request.parameters().get("deviceId"), "label", recordedName == null ? "" : recordedName,
+                        "occurredAt", occurredAt, "basis", "按原告警记录名称匹配监控候选"));
+                candidates.add(candidate);
             }
         }
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("source", "company");
         payload.put("record", record);
-        payload.put("currentSafetyDevice", currentDevice);
+        payload.put("currentSafetyDevice", record.getOrDefault("currentDevice", Map.of()));
+        payload.put("observedAt", clock.instant().toString());
         payload.put("candidates", candidates);
-        payload.put("note", candidates.isEmpty()
-                ? "当前Company目录中未找到同地点或同楼层候选监控；记录时位置未核验，不扩大到Office目录"
-                : "按当前位置匹配，记录时位置未核验；可选直播或回放，默认记录前后各15分钟且不超过当前时间，录像是否存在以播放结果为准");
+        payload.put("note", candidates.isEmpty() ? "按原告警记录暂未找到当前授权监控候选" : "");
         return ObservationResponse.available(payload);
-    }
-
-    private static Map<String, Object> currentSafetyDevice(Map<String, Object> record, AuthorizedDevice current) {
-        Map<String, Object> source = record.get("currentDevice") instanceof Map<?, ?> map
-                ? castMap(map) : new LinkedHashMap<>();
-        Map<String, Object> result = new LinkedHashMap<>();
-        String name = text(source, "name");
-        String location = text(source, "location", "installAddress");
-        if (name == null && current != null) name = current.name();
-        // A blank scope address is an unverified location, not an empty one; keep it
-        // null so candidate lookup cannot fabricate a place from missing metadata.
-        if (location == null && current != null && !current.installAddress().isBlank()) {
-            location = current.installAddress();
-        }
-        result.put("name", name);
-        result.put("location", location);
-        return result;
-    }
-
-    private static String safetyPlace(String location, String name) {
-        String value = location == null ? "" : location;
-        if (value.isBlank()) value = name == null ? "" : name;
-        return value.replaceFirst("(燃气|光电感烟|烟感|水浸).*", "").replaceAll("\\s", "");
     }
 
     private static String floorOf(String value) {
@@ -284,20 +232,15 @@ public final class CompanyOfficeObservationAdapter implements ObservationAdapter
     }
 
     private static String cameraText(AuthorizedDevice camera) {
-        String paths = camera.locationPaths().stream().map(path -> String.join(" ", path)).reduce("", (a, b) -> a + " " + b);
-        return String.join(" ", camera.installAddress() == null ? "" : camera.installAddress(),
-                camera.name() == null ? "" : camera.name(), paths);
-    }
-
-    private static String normalized(String left, String right) {
-        return (left == null ? "" : left + right).replaceAll("\\s", "");
+        StringBuilder value = new StringBuilder(camera.installAddress()).append(camera.name());
+        for (List<String> path : camera.locationPaths()) for (String segment : path) value.append(segment);
+        return WHITESPACE.matcher(value).replaceAll("");
     }
 
     private static String cameraLocation(AuthorizedDevice camera) {
-        if (camera.installAddress() != null && !camera.installAddress().isBlank()
-                && !camera.installAddress().equals(camera.name())) return camera.installAddress();
-        if (!camera.locationPaths().isEmpty()) return String.join(" / ", camera.locationPaths().get(0));
-        return camera.installAddress() == null ? "" : camera.installAddress();
+        if (!camera.installAddress().isBlank() && !camera.installAddress().equals(camera.name())) return camera.installAddress();
+        if (!camera.locationPaths().isEmpty()) return String.join(" / ", camera.locationPaths().getFirst());
+        return camera.installAddress();
     }
 
     private static Instant parseInstant(String value) {
