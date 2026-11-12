@@ -35,9 +35,8 @@ public final class TaskSchemaInitializer {
     /**
      * Migration for pre-reservation data: every device a finished adjust-mode
      * checkpoint actually dispatched or consciously yielded keeps its
-     * once-per-task fact, so later checkpoints of the same task never
-     * re-adjust it. Devices that were merely classified (not_needed, unknown,
-     * adjustable-without-dispatch) carry no dispatch fact and stay free.
+     * per-checkpoint fact, preventing duplicate sends after restart. Later
+     * checkpoints remain independent; historical execution results are unchanged.
      */
     private void seedDispatchReservations() {
         jdbc.query("SELECT task_id, phase_id, ended_at, result_json FROM task_phases "

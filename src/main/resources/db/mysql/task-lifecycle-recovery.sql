@@ -40,21 +40,17 @@ CREATE TABLE IF NOT EXISTS task_notification_attempts (
     UNIQUE KEY uk_task_notification_attempt_task (task_id)
 ) ENGINE=InnoDB COMMENT='任务通知补投重试状态：每个待补投任务一行，补投成功后删除';
 
--- Ticket 10/12: durable per-task device dispatch facts. One row per (task, device)
--- is written atomically immediately before each single AC adjust dispatch; yields
--- are recorded with kind='yielded'. The unique key (task_id, device_id) makes a
--- repeat dispatch by a later checkpoint, concurrent scanner or restarted process
--- impossible. SchemaMigrations seeds historical adjust-mode checkpoint results
--- (TaskSchemaInitializer) so existing once-per-task facts are preserved.
+-- Durable per-checkpoint device facts. Later checkpoints may adjust again;
+-- duplicate execution of the same checkpoint must never send twice.
 CREATE TABLE IF NOT EXISTS task_device_dispatch_reservations (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY COMMENT '代理主键，预约行标识',
-    task_id VARCHAR(64) NOT NULL COMMENT '任务标识，与 device_id 联合唯一（每任务每设备一次）',
+    task_id VARCHAR(64) NOT NULL COMMENT '所属任务标识',
     device_id VARCHAR(64) NOT NULL COMMENT '设备标识（网关侧设备 ID）',
-    phase_id VARCHAR(64) NOT NULL COMMENT '首次产生该事实的阶段标识（索引列）',
+    phase_id VARCHAR(64) NOT NULL COMMENT '检查点标识，与任务和设备联合唯一',
     kind VARCHAR(16) NOT NULL COMMENT '预约类别：attempted=实际下发，yielded=有意让行（枚举域）',
     reserved_at DATETIME NOT NULL COMMENT '预约事实发生时间（阶段下发或结束时刻）',
     create_time DATETIME NOT NULL COMMENT '行创建时间',
     update_time DATETIME NOT NULL COMMENT '行更新时间',
-    UNIQUE KEY uk_task_dispatch_reservation (task_id, device_id),
+    UNIQUE KEY uk_task_phase_dispatch_reservation (task_id, phase_id, device_id),
     KEY ix_task_dispatch_reservation_phase (phase_id)
-) ENGINE=InnoDB COMMENT='任务设备调度预约：每（任务,设备）至多一次实际下发或有意让行，防止重复调温';
+) ENGINE=InnoDB COMMENT='任务设备调度预约：每检查点每设备至多一次下发或让行';

@@ -127,6 +127,28 @@ class TaskReportSummaryContractTest {
                 .containsEntry("estimated", true);
     }
 
+    @Test
+    void repeatedAdjustmentsEstimateDisjointCheckpointWindowsAndKeepSmallSavings() {
+        Map<String, Object> first = Map.of("type", "ac_inspection", "mode", "adjust_to_26",
+                "criteria", Map.of("setpoint", Map.of("value", 27)),
+                "estimateUntil", "2026-11-12T02:15:00Z",
+                "devices", List.of(Map.of("deviceId", "ac-1", "disposition", "adjusted", "outcome", "accepted",
+                        "setpoint", 26, "observedAt", "2026-11-12T02:00:00Z")));
+        Map<String, Object> second = Map.of("type", "ac_inspection", "mode", "adjust_to_26",
+                "criteria", Map.of("setpoint", Map.of("value", 27)),
+                "estimateUntil", "2026-11-12T02:30:00Z",
+                "devices", List.of(Map.of("deviceId", "ac-1", "disposition", "adjusted", "outcome", "accepted",
+                        "setpoint", 26.5, "observedAt", "2026-11-12T02:15:00Z")));
+        var summary = new TaskDetailProjector(mapper, id -> List.of()).summarize(Map.of(
+                "interval", Map.of("endsAt", "2026-11-12T03:00:00Z"),
+                "generatedAt", "2026-11-12T03:00:00Z",
+                "phases", List.of(Map.of("observations", List.of(first)), Map.of("observations", List.of(second)))));
+        assertThat(entries(summary.get("devices"))).containsEntry("adjusted", 1L);
+        assertThat(entries(summary.get("energyImpact")))
+                .containsEntry("value", 0.07).containsEntry("basis", "assumption")
+                .containsEntry("deviceCount", 1L).containsEntry("to", "2026-11-12T02:30:00Z");
+    }
+
     private TaskReadScope scopeOf(String deviceId, String kind, String name) {
         RequestIdentity identity = new RequestIdentity("Bearer isolated", "TENANT", IotSourceEnum.COMPANY);
         return TaskReadScope.of(AuthorizedDeviceScope.of(identity, IotSourceEnum.COMPANY,

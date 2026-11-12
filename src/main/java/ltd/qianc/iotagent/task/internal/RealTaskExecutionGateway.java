@@ -53,7 +53,7 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
     private static final double RATE_PER_DEGREE = 0.07;
     private static final double POWER_KW = 2.5;
     private static final double PRICE_PER_KWH = 0.8;
-    private static final double MIN_ESTIMATE_KWH = 0.1;
+    private static final double MIN_ESTIMATE_KWH = 0.005;
     private static final ZoneId SAFETY_ZONE = ZoneId.of("Asia/Shanghai");
     private static final int SAFETY_MAX_PAGES = 20;
     /** Conservative migration cap for the Runtime's per-hub execution workers (originally 3). */
@@ -725,6 +725,8 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
                 .put("observedAt", clock.instant().toString());
         observations.putObject("criteria").put("power", "on").put("mode", "cool")
                 .putObject("setpoint").put("operator", "lt").put("value", target);
+        Instant estimateUntil = estimateEnd(task, phase);
+        if (estimateUntil != null) observations.put("estimateUntil", estimateUntil.toString());
         Map<String, Double> adjustedBaseline = new LinkedHashMap<>();
         Map<String, Double> potentialBaseline = new LinkedHashMap<>();
         AtomicBoolean dispatchStartedFlag = new AtomicBoolean();
@@ -732,7 +734,7 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
         Instant taskWindowEnd = windowEnd(task);
 
         if (adjusting) {
-            Set<String> reserved = durableReservations(request.taskId());
+            Set<String> reserved = durableReservations(request.taskId(), request.phaseId());
             // Runtime executeDevices shape for the adjusting checkpoint: targets
             // are grouped per hub so one physical chain keeps its parameter
             // order, while independent devices are adjusted by bounded
@@ -744,7 +746,7 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
                 String id = device.path("id").asText();
                 if (!"adjustable".equals(decisions.get(id).disposition())) continue;
                 if (reserved.contains(id)) {
-                    decisions.put(id, new Decision("not_dispatched", "本任务此前已尝试或已让行该设备，不自动重复调温", "not_dispatched"));
+                    decisions.put(id, new Decision("not_dispatched", "本检查点已尝试或已让行该设备，不重复下发", "not_dispatched"));
                     continue;
                 }
                 AuthorizedDevice authorized = scope.device(id).orElse(null);
@@ -806,7 +808,7 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
             JsonNode stateNode = state == null ? mapper.nullNode() : mapper.valueToTree(state);
             String outcome = deviceOutcome(decision, adjusting);
             total++;
-            if ("verified".equals(outcome)) adjusted++;
+            if ("accepted".equals(outcome)) adjusted++;
             if (isSuccessOutcome(outcome)) success++;
             else if ("unconfirmed".equals(outcome) || "unknown".equals(outcome)) unconfirmed++;
             if (!adjusting && "adjustable".equals(decision.disposition())
@@ -838,9 +840,8 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
         }
         observations.set("devices", deviceArray);
         ObjectNode result = mapper.createObjectNode();
-        // An accepted receipt without platform readback is never success; the
-        // whole checkpoint can only be COMPLETED when every device ended in an
-        // observed, verified or satisfied outcome.
+        // Conditional adjustments complete on accepted receipts, not physical readback.
+        // Rejected and uncertain receipts remain failures/unknowns.
         String outcome = success == total ? "COMPLETED"
                 : success > 0 ? "PARTIAL"
                 : unconfirmed == total ? "UNCONFIRMED"
@@ -869,8 +870,7 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
                                  Map<String, Decision> decisions, Map<String, Double> adjustedBaseline,
                                  AtomicBoolean dispatchStarted) {
         String id = device.path("id").asText();
-        // The durable reservation is taken first so no later checkpoint,
-        // concurrent scanner or restart can repeat this device.
+        // Reserve within this checkpoint; later checkpoints evaluate the device afresh.
         if (!guard.dispatchable(request.taskId(), request.phaseId(), clock.instant(), taskWindowEnd)) {
             decisions.put(id, new Decision("not_dispatched", "任务已停止或有效时段已结束", "not_dispatched"));
             guard.yield(request.taskId(), request.phaseId(), id, clock.instant());
@@ -911,7 +911,7 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
             validateControlBindings(phase, fresh);
             Map<String, Object> observed = new LinkedHashMap<>();
             observed.put(id, latest.states().get(id));
-            ActionDispatchResult dispatch = actions.dispatch(identity, fresh, single.toString(), observed);
+            ActionDispatchResult dispatch = actions.dispatch(identity, fresh, single.toString(), observed, false);
             if (dispatch.dispatchStarted()) dispatchStarted.set(true);
             applyAcDispatch(decisions, single, read(dispatch.resultJson()), adjustedBaseline);
         } catch (ActionDispatchException interrupted) {
@@ -959,9 +959,9 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
     }
 
 
-    private Set<String> durableReservations(String taskId) {
+    private Set<String> durableReservations(String taskId, String phaseId) {
         try {
-            return guard.reservedDevices(taskId);
+            return guard.reservedDevices(taskId, phaseId);
         } catch (RuntimeException unavailable) {
             throw new DispatchException("任务调温预约事实暂不可读", unavailable, false);
         }
@@ -992,7 +992,7 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
     }
 
     private static boolean isSuccessOutcome(String outcome) {
-        return "verified".equals(outcome) || "satisfied".equals(outcome) || "observed".equals(outcome);
+        return "accepted".equals(outcome) || "verified".equals(outcome) || "satisfied".equals(outcome) || "observed".equals(outcome);
     }
 
     /** Per-device outcome: dispatch results win; pure reads are honest observations. */
@@ -1010,27 +1010,13 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
     private void applyAcDispatch(Map<String, Decision> decisions, ArrayNode targets,
                                  JsonNode gateway, Map<String, Double> baseline) {
         Map<String, String> receiptByAction = new LinkedHashMap<>();
-        Map<String, String> readbackByAction = new LinkedHashMap<>();
-        Map<String, JsonNode> readbacks = new LinkedHashMap<>();
         for (JsonNode receipt : gateway.path("receipts")) {
             receiptByAction.put(receipt.path("actionId").asText(""), receipt.path("outcome").asText("UNKNOWN"));
-        }
-        for (JsonNode readback : gateway.path("readbacks")) {
-            String id = readback.path("actionId").asText("");
-            readbackByAction.put(id, readback.path("outcome").asText("unconfirmed"));
-            readbacks.put(id, readback);
         }
         for (JsonNode action : targets) {
             String actionId = action.path("id").asText();
             String deviceId = action.path("deviceId").asText();
             String receipt = receiptByAction.getOrDefault(actionId, "UNKNOWN");
-            String readback = readbackByAction.getOrDefault(actionId, "unconfirmed");
-            JsonNode readbackNode = readbacks.get(actionId);
-            Double after = null;
-            if (readbackNode != null) {
-                JsonNode state = readbackNode.path("observedState");
-                if (state.path("temperature").isNumber()) after = state.path("temperature").asDouble();
-            }
             Decision previous = decisions.get(deviceId);
             if ("ALREADY_SATISFIED".equals(receipt)) {
                 decisions.put(deviceId, new Decision("satisfied", null, "satisfied"));
@@ -1038,11 +1024,9 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
                 decisions.put(deviceId, new Decision("not_dispatched", "上游拒绝调温指令", "rejected"));
             } else if ("PARTIALLY_ACCEPTED".equals(receipt)) {
                 decisions.put(deviceId, new Decision("unconfirmed", "部分参数已受理，未全部下发", "unconfirmed"));
-            } else if ("ACCEPTED".equals(receipt) && "confirmed".equals(readback)) {
-                decisions.put(deviceId, new Decision("adjusted", null, "verified", after));
-                if (previous.initialSetpoint() != null) baseline.put(deviceId, previous.initialSetpoint());
             } else if ("ACCEPTED".equals(receipt)) {
-                decisions.put(deviceId, new Decision("unconfirmed", null, "unconfirmed"));
+                decisions.put(deviceId, new Decision("adjusted", "调温指令已下发", "accepted"));
+                if (previous.initialSetpoint() != null) baseline.put(deviceId, previous.initialSetpoint());
             } else {
                 decisions.put(deviceId, new Decision("not_dispatched", "调温指令结果未知", "unknown"));
             }
@@ -1050,23 +1034,30 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
     }
 
 
+    private Instant estimateEnd(JsonNode task, JsonNode phase) {
+        Instant end = windowEnd(task);
+        if (end == null) return null;
+        int cadence = phase.path("read").path("ac").path("cadenceMinutes").asInt(0);
+        if (cadence > 0) {
+            Instant at = phase.path("at").isTextual()
+                    ? Instant.parse(phase.path("at").asText()) : clock.instant();
+            Instant next = at.plusSeconds(cadence * 60L);
+            if (next.isBefore(end)) end = next;
+        }
+        return end;
+    }
+
     private ObjectNode acEnergyEstimate(JsonNode task, JsonNode phase, Map<String, Double> baseline,
                                         int adjusted, boolean potential) {
         if (baseline.isEmpty() || (!potential && adjusted < 1)) return null;
-        JsonNode interval = task.path("interval");
-        if (!interval.isObject() || !interval.path("endsAt").isTextual()) return null;
-        Instant end;
-        try {
-            end = Instant.parse(interval.path("endsAt").asText());
-        } catch (RuntimeException invalid) {
-            return null;
-        }
+        Instant end = estimateEnd(task, phase);
+        if (end == null) return null;
         Instant start = clock.instant();
         if (!end.isAfter(start)) return null;
         double kwh = 0;
         double setpointSum = 0;
         double deltaSum = 0;
-        int target = phase.path("read").path("ac").path("target").asInt(AC_DEFAULT_TARGET);
+        int target = acInspectionTarget(phase.path("read").path("ac"));
         for (Map.Entry<String, Double> entry : baseline.entrySet()) {
             double delta = target - entry.getValue();
             if (delta <= 0) continue;
@@ -1078,8 +1069,8 @@ public final class RealTaskExecutionGateway implements TaskExecutionGateway {
         if (kwh < MIN_ESTIMATE_KWH) return null;
         ObjectNode estimate = mapper.createObjectNode();
         estimate.put("status", "estimated").put("basis", "assumption").put("estimated", true)
-                .put("value", Math.round(kwh * 10) / 10.0).put("unit", "度")
-                .put("costValue", Math.round(kwh * PRICE_PER_KWH * 10) / 10.0).put("costUnit", "元")
+                .put("value", Math.round(kwh * 100) / 100.0).put("unit", "度")
+                .put("costValue", Math.round(kwh * PRICE_PER_KWH * 100) / 100.0).put("costUnit", "元")
                 .put("from", start.toString()).put("to", end.toString()).put("deviceCount", baseline.size());
         if (potential) estimate.put("potential", true);
         estimate.putObject("baseline").put("averageSetpoint", Math.round(setpointSum / baseline.size() * 10) / 10.0)

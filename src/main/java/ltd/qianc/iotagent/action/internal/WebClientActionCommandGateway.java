@@ -70,12 +70,13 @@ public final class WebClientActionCommandGateway implements ActionCommandGateway
 
     @Override
     public ActionDispatchResult dispatch(RequestIdentity identity, AuthorizedDeviceScope scope, String selectedActionsJson) {
-        return dispatch(identity, scope, selectedActionsJson, Map.of());
+        return dispatch(identity, scope, selectedActionsJson, Map.of(), true);
     }
 
     @Override
     public ActionDispatchResult dispatch(RequestIdentity identity, AuthorizedDeviceScope scope,
-                                         String selectedActionsJson, Map<String, Object> observedStates) {
+                                         String selectedActionsJson, Map<String, Object> observedStates,
+                                         boolean verifyReadback) {
         ArrayNode actions = readActions(selectedActionsJson);
         validateActions(scope, actions);
         // Runtime executeDevices shape: actions are grouped by hub (falling back
@@ -153,7 +154,7 @@ public final class WebClientActionCommandGateway implements ActionCommandGateway
         result.put("gateway", "customer");
         result.put("outcome", overall.name());
         result.set("receipts", receipts);
-        ArrayNode readbacks = readbacks(identity, accepted, commandAtMs);
+        ArrayNode readbacks = verifyReadback ? readbacks(identity, accepted, commandAtMs) : mapper.createArrayNode();
         result.set("readbacks", readbacks);
         ObjectNode readback = mapper.createObjectNode();
         ObjectNode observedStateMap = mapper.createObjectNode();

@@ -9,11 +9,8 @@ import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
- * Durable per-task device reservations for conditional AC checkpoints. The
- * dispatchable predicate and the reservation insert are single atomic SQL
- * statements, mirroring the Runtime's reserve-before-command semantics: a
- * cancel or window end between two devices, a concurrent scanner or a restart
- * can never let the same task adjust the same device twice.
+ * Durable per-checkpoint device reservations. The atomic uniqueness constraint
+ * prevents duplicate sends without blocking the next scheduled checkpoint.
  */
 public final class JdbcTaskDispatchGuard implements TaskDispatchGuard {
     /** Phase executing, task dispatchable (scheduled or interval-executing), and the window (if any) not ended; the boundary checkpoint stays dispatchable. */
@@ -29,10 +26,10 @@ public final class JdbcTaskDispatchGuard implements TaskDispatchGuard {
     }
 
     @Override
-    public Set<String> reservedDevices(String taskId) {
+    public Set<String> reservedDevices(String taskId, String phaseId) {
         return new LinkedHashSet<>(jdbc.query(
-                "SELECT device_id FROM task_device_dispatch_reservations WHERE task_id=? ORDER BY reserved_at, device_id",
-                (rs, row) -> rs.getString(1), taskId));
+                "SELECT device_id FROM task_device_dispatch_reservations WHERE task_id=? AND phase_id=? ORDER BY reserved_at, device_id",
+                (rs, row) -> rs.getString(1), taskId, phaseId));
     }
     @Override
     public boolean dispatchable(String taskId, String phaseId, Instant now, Instant windowEnd) {
@@ -54,7 +51,7 @@ public final class JdbcTaskDispatchGuard implements TaskDispatchGuard {
                     taskId, deviceId, phaseId, at, at, at,
                     phaseId, taskId, boundary, boundary, at, boundary) == 1;
         } catch (DuplicateKeyException alreadyReserved) {
-            // An earlier checkpoint, attempt or process owns this fact; never dispatch again.
+            // This checkpoint already owns the device; never dispatch it twice.
             return false;
         }
     }
@@ -69,7 +66,7 @@ public final class JdbcTaskDispatchGuard implements TaskDispatchGuard {
                     taskId, deviceId, phaseId, moment, moment, moment);
         } catch (RuntimeException unreadableFact) {
             // A yield fact that cannot be recorded must not be silently forgotten:
-            // without it a later checkpoint could re-attempt the device.
+            // without it a duplicate execution could re-attempt this checkpoint.
             throw new ltd.qianc.iotagent.error.BusinessException(
                     "TASK_RESERVATION_UNAVAILABLE", "任务设备调温让行事实写入失败", 503);
         }

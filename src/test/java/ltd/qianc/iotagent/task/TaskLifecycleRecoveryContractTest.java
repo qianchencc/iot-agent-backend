@@ -531,7 +531,7 @@ class TaskLifecycleRecoveryContractTest {
         private int checked;
 
         @Override
-        public Set<String> reservedDevices(String taskId) {
+        public Set<String> reservedDevices(String taskId, String phaseId) {
             return new LinkedHashSet<>();
         }
 

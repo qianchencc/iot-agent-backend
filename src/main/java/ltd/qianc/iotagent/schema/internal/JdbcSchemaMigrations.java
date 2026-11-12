@@ -107,6 +107,16 @@ public final class JdbcSchemaMigrations {
             normalize("task_device_dispatch_reservations", "uk_task_dispatch_reservation",
                     "task_id", "device_id");
         });
+        runOnce("task-dispatch-per-checkpoint-v1", () -> {
+            addUniqueKey("task_device_dispatch_reservations", "uk_task_phase_dispatch_reservation",
+                    "task_id", "phase_id", "device_id");
+            if (uniqueIndexExists("task_device_dispatch_reservations", "uk_task_dispatch_reservation")) {
+                jdbc.execute(mysql
+                        ? "ALTER TABLE task_device_dispatch_reservations DROP INDEX uk_task_dispatch_reservation"
+                        : "DROP INDEX uk_task_dispatch_reservation");
+            }
+        });
+        polish("task-dispatch-checkpoint-comments-v1", "db/mysql/task-lifecycle-recovery.sql");
         polish("task-lifecycle-column-comments-v1", "db/mysql/task-lifecycle-recovery.sql");
     }
 

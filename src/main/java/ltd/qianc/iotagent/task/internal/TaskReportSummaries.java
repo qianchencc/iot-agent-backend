@@ -149,79 +149,83 @@ public final class TaskReportSummaries {
         return unavailable;
     }
 
-    @SuppressWarnings("unchecked")
+    /** Estimate each accepted adjustment only until its next checkpoint, never the whole task repeatedly. */
     private static Map<String, Object> estimateAcSavings(List<Map<String, Object>> blocks, long adjustedDevices, String windowEnd) {
         Instant end;
         try { end = Instant.parse(windowEnd); }
         catch (RuntimeException invalid) { return null; }
-        Map<String, double[]> firstAdjusted = new LinkedHashMap<>();
+        Map<String, List<EstimateSegment>> perDevice = new LinkedHashMap<>();
         for (Map<String, Object> block : blocks) {
-            if (!"ac_inspection".equals(String.valueOf(block.get("type")))
-                    || !"adjust_to_26".equals(String.valueOf(block.get("mode")))) continue;
-            Object criteria = ((Map<String, Object>) block.getOrDefault("criteria", Map.of())).get("setpoint");
-            double target = criteria instanceof Map<?, ?> setpoint && setpoint.get("value") instanceof Number number
+            if (!"ac_inspection".equals(block.get("type")) || !"adjust_to_26".equals(block.get("mode"))) continue;
+            Object criteria = block.get("criteria");
+            Object setpoint = criteria instanceof Map<?, ?> map ? map.get("setpoint") : null;
+            double target = setpoint instanceof Map<?, ?> map && map.get("value") instanceof Number number
                     ? number.doubleValue() : 26;
             if (!(block.get("devices") instanceof List<?> devices)) continue;
             for (Object item : devices) {
                 if (!(item instanceof Map<?, ?> device)) continue;
-                if (!"adjusted".equals(String.valueOf(device.get("disposition")))
-                        || firstAdjusted.containsKey(String.valueOf(device.get("deviceId")))) continue;
-                Object setpointRaw = device.get("setpoint");
-                Object observedAt = device.get("observedAt");
-                if (observedAt == null) observedAt = block.get("observedAt");
-                if (!(setpointRaw instanceof Number setpoint) || setpoint.doubleValue() < 16
-                        || setpoint.doubleValue() >= target) continue;
-                Instant at;
-                try { at = Instant.parse(String.valueOf(observedAt)); }
-                catch (RuntimeException missing) { continue; }
-                if (!at.isBefore(end)) continue;
-                firstAdjusted.put(String.valueOf(device.get("deviceId")),
-                        new double[]{setpoint.doubleValue(), at.toEpochMilli(), target});
+                Instant at, until = end;
+                try {
+                    at = Instant.parse(String.valueOf(device.get("observedAt") == null
+                            ? block.get("observedAt") : device.get("observedAt")));
+                    if (block.get("estimateUntil") != null) {
+                        Instant bound = Instant.parse(String.valueOf(block.get("estimateUntil")));
+                        if (bound.isBefore(until)) until = bound;
+                    }
+                } catch (RuntimeException invalid) { continue; }
+                double before = device.get("setpoint") instanceof Number number ? number.doubleValue() : Double.NaN;
+                boolean adjusted = "adjusted".equals(device.get("disposition"))
+                        && Double.isFinite(before) && before >= 16 && before < target;
+                perDevice.computeIfAbsent(String.valueOf(device.get("deviceId")), ignored -> new ArrayList<>())
+                        .add(new EstimateSegment(at, until, before, target, adjusted));
             }
         }
-        if (firstAdjusted.isEmpty()) return null;
-        double kwh = 0, deltaSum = 0, beforeSum = 0;
-        double firstAt = Double.POSITIVE_INFINITY, targetValue = Double.NaN;
-        for (double[] device : firstAdjusted.values()) {
-            double delta = device[2] - device[0];
-            kwh += delta * 0.07 * 2.5 * (end.toEpochMilli() - device[1]) / 3_600_000;
-            deltaSum += delta;
-            beforeSum += device[0];
-            firstAt = Math.min(firstAt, device[1]);
-            if (Double.isNaN(targetValue)) targetValue = device[2];
+        double degreeHours = 0, deviceHours = 0, beforeHours = 0, targetHours = 0;
+        Instant first = end, last = Instant.MIN;
+        long count = 0, segments = 0;
+        for (List<EstimateSegment> values : perDevice.values()) {
+            values.sort(java.util.Comparator.comparing(EstimateSegment::at));
+            boolean included = false;
+            for (int i = 0; i < values.size(); i++) {
+                EstimateSegment segment = values.get(i);
+                Instant until = segment.until();
+                if (i + 1 < values.size() && values.get(i + 1).at().isBefore(until)) until = values.get(i + 1).at();
+                if (!segment.adjusted() || !until.isAfter(segment.at())) continue;
+                double hours = java.time.Duration.between(segment.at(), until).toMillis() / 3_600_000.0;
+                degreeHours += (segment.target() - segment.before()) * hours;
+                deviceHours += hours;
+                beforeHours += segment.before() * hours;
+                targetHours += segment.target() * hours;
+                if (segment.at().isBefore(first)) first = segment.at();
+                if (until.isAfter(last)) last = until;
+                included = true;
+                segments++;
+            }
+            if (included) count++;
         }
-        if (kwh < 0.1) return null;
+        double kwh = degreeHours * 0.07 * 2.5;
+        if (kwh < 0.005) return null;
         Map<String, Object> impact = new LinkedHashMap<>();
-        int count = firstAdjusted.size();
         impact.put("status", "estimated");
         impact.put("basis", "assumption");
-        impact.put("from", Instant.ofEpochMilli((long) firstAt).toString());
-        impact.put("to", windowEnd);
-        impact.put("deviceCount", (long) count);
-        impact.put("value", round1(kwh));
-        impact.put("unit", "度");
-        Map<String, Object> cost = new LinkedHashMap<>();
-        cost.put("value", round1(kwh * 0.8));
-        cost.put("unit", "元");
-        impact.put("cost", cost);
         impact.put("estimated", true);
-        Map<String, Object> baseline = new LinkedHashMap<>();
-        baseline.put("averageSetpoint", round1(beforeSum / count));
-        baseline.put("target", round1(targetValue));
-        baseline.put("averageRise", round1(deltaSum / count));
-        impact.put("baseline", baseline);
-        Map<String, Object> assumptions = new LinkedHashMap<>();
-        assumptions.put("ratePerDegree", 0.07);
-        assumptions.put("powerKw", 2.5);
-        assumptions.put("pricePerKwh", 0.8);
-        impact.put("assumptions", assumptions);
-        Map<String, Object> coverage = new LinkedHashMap<>();
-        coverage.put("adjusted", adjustedDevices);
-        coverage.put("estimated", (long) count);
-        impact.put("coverage", coverage);
-        impact.put("reason", "按调前设定温度与经验参数估算，非电表实测");
+        impact.put("from", first.toString());
+        impact.put("to", last.toString());
+        impact.put("deviceCount", count);
+        impact.put("checkpointCount", segments);
+        impact.put("degreeHours", Math.round(degreeHours * 10000) / 10000.0);
+        impact.put("value", Math.round(kwh * 100) / 100.0);
+        impact.put("unit", "度");
+        impact.put("cost", Map.of("value", Math.round(kwh * 0.8 * 100) / 100.0, "unit", "元"));
+        impact.put("baseline", Map.of("averageSetpoint", round1(beforeHours / deviceHours),
+                "target", round1(targetHours / deviceHours), "averageRise", round1(degreeHours / deviceHours)));
+        impact.put("assumptions", Map.of("ratePerDegree", 0.07, "powerKw", 2.5, "pricePerKwh", 0.8));
+        impact.put("coverage", Map.of("adjusted", adjustedDevices, "estimated", count));
+        impact.put("reason", "按各检查点调温指令、调前温度与不重叠时段估算，非电表实测");
         return impact;
     }
+
+    private record EstimateSegment(Instant at, Instant until, double before, double target, boolean adjusted) { }
 
     /**
      * Defensive String-keyed copy that keeps null facts. Collectors.toMap

@@ -146,8 +146,8 @@ public final class DefaultReportFactProducer implements ReportFactProducer {
         List<Map<String, Object>> blocks = new ArrayList<>();
         List<String> gaps = new ArrayList<>();
         Set<String> deviceIds = new LinkedHashSet<>();
-        int adjusted = 0;
-        int unconfirmed = 0;
+        Set<String> adjusted = new LinkedHashSet<>();
+        Set<String> unconfirmed = new LinkedHashSet<>();
         Instant from = null;
         Instant to = null;
         for (Map<String, Object> item : checkpoints) {
@@ -177,8 +177,8 @@ public final class DefaultReportFactProducer implements ReportFactProducer {
                 deviceIds.add(deviceId);
                 String disposition = text(device.get("disposition"));
                 String outcome = text(device.get("outcome"));
-                if ("adjusted".equals(disposition) || "verified".equals(outcome)) adjusted++;
-                if ("unconfirmed".equals(outcome) || "unknown".equals(outcome) || "not_dispatched".equals(disposition)) unconfirmed++;
+                if ("adjusted".equals(disposition) || "verified".equals(outcome)) adjusted.add(deviceId);
+                if ("unconfirmed".equals(outcome) || "unknown".equals(outcome) || "not_dispatched".equals(disposition)) unconfirmed.add(deviceId);
                 cleanDevices.add(new LinkedHashMap<>(device));
             }
             Map<String, Object> block = new LinkedHashMap<>();
@@ -190,6 +190,7 @@ public final class DefaultReportFactProducer implements ReportFactProducer {
             block.put("mode", text(item.get("mode")));
             block.put("target", item.get("target"));
             block.put("criteria", item.get("criteria"));
+            if (item.get("estimateUntil") != null) block.put("estimateUntil", item.get("estimateUntil"));
             block.put("devices", cleanDevices);
             if (item.get("energyEstimate") instanceof Map<?, ?> estimate) block.put("energyEstimate", estimatedEnergy((Map<?, ?>) estimate));
             blocks.add(block);
@@ -200,14 +201,14 @@ public final class DefaultReportFactProducer implements ReportFactProducer {
         Map<String, Object> period = period(request.get("period"), from, to);
         String status = gaps.isEmpty() ? "completed" : "partial";
         String summary = "空调巡检报告，期间 " + text(period.get("from"), "") + " 至 " + text(period.get("to"), "")
-                + "；阶段 " + checkpoints.size() + " 个，设备 " + deviceIds.size() + " 台，已调整 " + adjusted
-                + " 台，待确认/未知 " + unconfirmed + " 台"
+                + "；阶段 " + checkpoints.size() + " 个，设备 " + deviceIds.size() + " 台，调温指令已下发 " + adjusted.size()
+                + " 台，待确认/未下发 " + unconfirmed.size() + " 台"
                 + (gaps.isEmpty() ? "。" : "；" + String.join("；", gaps) + "。");
         Map<String, Object> coverage = new LinkedHashMap<>();
         coverage.put("checkpoints", checkpoints.size());
         coverage.put("deviceIds", new ArrayList<>(deviceIds));
-        coverage.put("adjusted", adjusted);
-        coverage.put("unconfirmed", unconfirmed);
+        coverage.put("adjusted", adjusted.size());
+        coverage.put("unconfirmed", unconfirmed.size());
         coverage.put("missing", gaps);
         Map<String, Object> requirements = new LinkedHashMap<>();
         requirements.put("kind", "ac_inspection");

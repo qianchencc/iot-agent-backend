@@ -46,7 +46,7 @@ class RealTaskExecutionGatewayBehaviorTest {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     @Test
-    void acceptedWithoutReadbackIsUnconfirmedAndNeverCompleted() {
+    void acceptedAdjustmentCompletesWithoutReadbackAndKeepsEstimateNonMeasured() {
         States states = new States();
         states.script("ac-1", state("on", "cool", 20));
         Actions actions = new Actions();
@@ -60,12 +60,12 @@ class RealTaskExecutionGatewayBehaviorTest {
                 task("2026-11-02T12:00:00Z")));
 
         JsonNode payload = parse(result.payloadJson());
-        assertThat(result.outcome()).isEqualTo("UNCONFIRMED");
-        assertThat(payload.path("adjustedDevices").asInt()).isZero();
-        assertThat(payload.path("devices").path("ac-1").path("disposition").asText()).isEqualTo("unconfirmed");
-        assertThat(payload.path("devices").path("ac-1").path("outcome").asText()).isEqualTo("unconfirmed");
-        assertThat(payload.path("devices").path("ac-1").has("reason")).isFalse();
-        assertThat(payload.path("energyEstimate").isMissingNode()).isTrue();
+        assertThat(result.outcome()).isEqualTo("COMPLETED");
+        assertThat(payload.path("adjustedDevices").asInt()).isEqualTo(1);
+        assertThat(payload.path("devices").path("ac-1").path("disposition").asText()).isEqualTo("adjusted");
+        assertThat(payload.path("devices").path("ac-1").path("outcome").asText()).isEqualTo("accepted");
+        assertThat(payload.path("devices").path("ac-1").has("afterSetpoint")).isFalse();
+        assertThat(payload.path("energyEstimate").path("basis").asText()).isEqualTo("assumption");
         assertThat(actions.dispatchedDeviceIds).containsExactly(List.of("ac-1"));
     }
 
@@ -111,7 +111,7 @@ class RealTaskExecutionGatewayBehaviorTest {
         JsonNode payload = parse(result.payloadJson());
         assertThat(actions.dispatchedDeviceIds).hasSize(1);
         assertThat(actions.dispatchedDeviceIds.get(0)).isEqualTo(List.of("ac-1"));
-        assertThat(payload.path("devices").path("ac-1").path("outcome").asText()).isEqualTo("verified");
+        assertThat(payload.path("devices").path("ac-1").path("outcome").asText()).isEqualTo("accepted");
         assertThat(payload.path("devices").path("ac-2").path("outcome").asText()).isEqualTo("not_dispatched");
         assertThat(payload.path("devices").path("ac-2").path("reason").asText()).contains("任务已停止");
         assertThat(result.outcome()).isEqualTo("PARTIAL");
@@ -143,7 +143,7 @@ class RealTaskExecutionGatewayBehaviorTest {
     }
 
     @Test
-    void reservationSurvivesAcrossCheckpointsAndRestarts() {
+    void reservationSurvivesDuplicateCheckpointAndRestart() {
         States states = new States();
         states.script("ac-1", state("on", "cool", 20));
         states.script("ac-2", state("on", "cool", 20));
@@ -152,7 +152,7 @@ class RealTaskExecutionGatewayBehaviorTest {
                 + "\"readbacks\":[{\"actionId\":\"%s\",\"outcome\":\"confirmed\","
                 + "\"observedState\":{\"temperature\":26}}]}";
         Guard guard = new Guard();
-        guard.reserved.add("ac-1");
+        guard.reserved.add("phase-1:ac-1");
         TaskExecutionGateway gateway = gateway(states, actions, guard);
 
         TaskExecutionGateway.TaskExecutionResult result = gateway.execute(request(
@@ -163,9 +163,29 @@ class RealTaskExecutionGatewayBehaviorTest {
         JsonNode payload = parse(result.payloadJson());
         assertThat(actions.dispatchedDeviceIds).containsExactly(List.of("ac-2"));
         assertThat(payload.path("devices").path("ac-1").path("outcome").asText()).isEqualTo("not_dispatched");
-        assertThat(payload.path("devices").path("ac-1").path("reason").asText()).contains("不自动重复调温");
-        assertThat(payload.path("devices").path("ac-2").path("outcome").asText()).isEqualTo("verified");
+        assertThat(payload.path("devices").path("ac-1").path("reason").asText()).contains("不重复下发");
+        assertThat(payload.path("devices").path("ac-2").path("outcome").asText()).isEqualTo("accepted");
         assertThat(result.outcome()).isEqualTo("PARTIAL");
+    }
+
+    @Test
+    void laterCheckpointMayAdjustAgainButDuplicateCheckpointCannot() {
+        States states = new States();
+        states.script("ac-1", state("on", "cool", 26.5));
+        Actions actions = new Actions();
+        actions.result = "{\"receipts\":[{\"actionId\":\"%s\",\"outcome\":\"ACCEPTED\"}],"
+                + "\"readbacks\":[{\"actionId\":\"%s\",\"outcome\":\"unconfirmed\"}]}";
+        Guard guard = new Guard();
+        TaskExecutionGateway gateway = gateway(states, actions, guard);
+        String phase = "{\"read\":{\"ac\":{\"mode\":\"adjust_to_26\",\"target\":27,\"cadenceMinutes\":15},"
+                + "\"devices\":[" + device("ac-1", "ac") + "]}}";
+        var first = request(phase, task("2026-11-02T12:00:00Z"));
+        assertThat(gateway.execute(first).outcome()).isEqualTo("COMPLETED");
+        gateway.execute(first);
+        var next = new TaskExecutionGateway.TaskExecutionRequest("task-1", "phase-2", "company",
+                phase, NOW.plusSeconds(900), task("2026-11-02T12:00:00Z"));
+        assertThat(gateway(states, actions, guard).execute(next).outcome()).isEqualTo("COMPLETED");
+        assertThat(actions.dispatchedDeviceIds).containsExactly(List.of("ac-1"), List.of("ac-1"));
     }
 
     @Test
@@ -419,7 +439,7 @@ class RealTaskExecutionGatewayBehaviorTest {
         return "{\"id\":\"" + id + "\",\"kind\":\"" + kind + "\",\"name\":\"" + id + "\",\"location\":\"\"}";
     }
 
-    private static Map<String, Object> state(String power, String mode, int temperature) {
+    private static Map<String, Object> state(String power, String mode, double temperature) {
         Map<String, Object> value = new LinkedHashMap<>();
         value.put("power", power);
         value.put("mode", mode);
@@ -499,8 +519,8 @@ class RealTaskExecutionGatewayBehaviorTest {
             List<String> ids = new ArrayList<>();
             for (JsonNode action : parse(selectedActionsJson)) ids.add(action.path("deviceId").asText());
             dispatchedDeviceIds.add(ids);
-            String resolved = result.contains("%s")
-                    ? String.format(result, "phase-1:" + ids.get(0), "phase-1:" + ids.get(0)) : result;
+            String actionId = parse(selectedActionsJson).get(0).path("id").asText();
+            String resolved = result.contains("%s") ? String.format(result, actionId, actionId) : result;
             return new ActionDispatchResult(ActionDraftStatusEnum.ACCEPTED, resolved, true);
         }
     }
@@ -585,8 +605,9 @@ class RealTaskExecutionGatewayBehaviorTest {
         private int dispatchableAfterReservations = Integer.MAX_VALUE;
 
         @Override
-        public synchronized Set<String> reservedDevices(String taskId) {
-            return new LinkedHashSet<>(reserved);
+        public synchronized Set<String> reservedDevices(String taskId, String phaseId) {
+            return reserved.stream().filter(key -> key.startsWith(phaseId + ":"))
+                    .map(key -> key.substring(phaseId.length() + 1)).collect(java.util.stream.Collectors.toSet());
         }
 
         @Override
@@ -597,14 +618,12 @@ class RealTaskExecutionGatewayBehaviorTest {
         @Override
         public synchronized boolean reserve(String taskId, String phaseId, String deviceId, Instant now, Instant windowEnd) {
             if (!dispatchable(taskId, phaseId, now, windowEnd)) return false;
-            if (reserved.contains(deviceId)) return false;
-            reserved.add(deviceId);
-            return true;
+            return reserved.add(phaseId + ":" + deviceId);
         }
 
         @Override
         public synchronized void yield(String taskId, String phaseId, String deviceId, Instant at) {
-            reserved.add(deviceId);
+            reserved.add(phaseId + ":" + deviceId);
         }
     }
 

@@ -19,6 +19,13 @@ public interface ActionCommandGateway {
      */
     default ActionDispatchResult dispatch(RequestIdentity identity, AuthorizedDeviceScope scope,
                                           String selectedActionsJson, java.util.Map<String, Object> observedStates) {
+        return dispatch(identity, scope, selectedActionsJson, observedStates, true);
+    }
+
+    /** Conditional AC tasks complete on accepted receipts; other controls retain readback. */
+    default ActionDispatchResult dispatch(RequestIdentity identity, AuthorizedDeviceScope scope,
+                                          String selectedActionsJson, java.util.Map<String, Object> observedStates,
+                                          boolean verifyReadback) {
         return dispatch(identity, scope, selectedActionsJson);
     }
 

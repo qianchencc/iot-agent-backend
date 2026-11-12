@@ -81,8 +81,12 @@ class SchemaMigrationsUpgradeBehaviorTest {
         assertThatThrownBy(() -> jdbc.update(
                 "INSERT INTO task_device_dispatch_reservations"
                         + "(task_id,device_id,phase_id,kind,reserved_at,create_time,update_time) "
-                        + "VALUES('task-1','device-1','phase-9','attempted',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)"))
+                        + "VALUES('task-1','device-1','phase-1','attempted',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)"))
                 .isInstanceOf(org.springframework.dao.DataAccessException.class);
+        assertThat(jdbc.update("INSERT INTO task_device_dispatch_reservations"
+                + "(task_id,device_id,phase_id,kind,reserved_at,create_time,update_time) "
+                + "VALUES('task-1','device-1','phase-9','attempted',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)"))
+                .isEqualTo(1);
 
         // task_phases 历史缺列被防御补齐，definition_json 回填自同行 payload_json（保留原值）。
         assertThat(jdbc.<String>queryForObject(

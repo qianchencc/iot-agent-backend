@@ -87,75 +87,17 @@ public final class TaskReportComposer implements TaskReportCheckpointComposer {
      */
     @Override
     public String summarize(TaskFact task, List<TaskPhaseStore.PhaseResult> results) {
-        Map<String, List<String>> outcomesByDevice = new LinkedHashMap<>();
-        Map<String, String> dispositionByDevice = new LinkedHashMap<>();
-        int checkpoints = 0;
+        ObjectNode report = mapper.createObjectNode();
+        report.set("interval", read(task.payloadJson()).path("interval"));
+        Instant generated = Instant.EPOCH;
+        ArrayNode phases = report.putArray("phases");
         for (TaskPhaseStore.PhaseResult result : results) {
-            JsonNode observations = read(result.resultJson()).path("observations");
-            if (!observations.isArray()) continue;
-            for (JsonNode block : observations) {
-                if (!"ac_inspection".equals(block.path("type").asText(""))) continue;
-                checkpoints++;
-                for (JsonNode device : block.path("devices")) {
-                    String id = device.path("deviceId").asText("");
-                    if (id.isBlank()) continue;
-                    outcomesByDevice.computeIfAbsent(id, ignored -> new ArrayList<>())
-                            .add(device.path("outcome").asText(""));
-                    String disposition = device.path("disposition").asText("");
-                    String current = dispositionByDevice.get(id);
-                    if ("adjusted".equals(disposition)
-                            || current == null
-                            || ("not_dispatched".equals(disposition) && !"adjusted".equals(current))
-                            || ("unknown".equals(disposition) && "adjustable".equals(current))) {
-                        dispositionByDevice.put(id, disposition);
-                    }
-                }
-            }
+            phases.add(read(result.resultJson()));
+            if (result.endedAt() != null && result.endedAt().isAfter(generated)) generated = result.endedAt();
         }
-        if (checkpoints == 0) return null;
-        int adjusted = 0, satisfied = 0, skipped = 0, failed = 0, unknown = 0, unverified = 0;
-        Set<String> failureOutcomes = Set.of("failed", "rejected", "missing", "unreadable", "read_failed");
-        for (Map.Entry<String, List<String>> entry : outcomesByDevice.entrySet()) {
-            String disposition = dispositionByDevice.get(entry.getKey());
-            if ("adjusted".equals(disposition)) adjusted++;
-            else if ("not_needed".equals(disposition)) satisfied++;
-            else if ("not_dispatched".equals(disposition)) skipped++;
-            else if ("unknown".equals(disposition)) unknown++;
-            else unverified++;
-            if (entry.getValue().stream().anyMatch(failureOutcomes::contains) && !"adjusted".equals(disposition)) failed++;
-        }
-        ObjectNode summary = mapper.createObjectNode();
-        summary.put("checkpoints", checkpoints);
-        ObjectNode devices = summary.putObject("devices");
-        devices.put("total", outcomesByDevice.size()).put("adjusted", adjusted).put("satisfied", satisfied)
-                .put("skipped", skipped).put("failed", failed).put("unknown", unknown).put("unverified", unverified);
-        summary.set("energyImpact", energyImpact(results, adjusted));
-        return summary.toString();
-    }
-
-    private JsonNode energyImpact(List<TaskPhaseStore.PhaseResult> results, int adjustedDevices) {
-        for (TaskPhaseStore.PhaseResult result : results) {
-            JsonNode estimate = read(result.resultJson()).path("energyEstimate");
-            if (estimate.isObject() && estimate.has("value")) {
-                ObjectNode impact = mapper.createObjectNode();
-                impact.put("status", "estimated").put("basis", "assumption").put("estimated", true)
-                        .put("value", estimate.path("value").asDouble()).put("unit", "度");
-                impact.putObject("cost").put("value", estimate.path("costValue").asDouble(0)).put("unit", "元");
-                impact.put("from", estimate.path("from").asText(null)).put("to", estimate.path("to").asText(null))
-                        .put("deviceCount", estimate.path("deviceCount").asInt(adjustedDevices));
-                impact.set("baseline", estimate.path("baseline").deepCopy());
-                impact.set("assumptions", estimate.path("assumptions").deepCopy());
-                impact.set("coverage", estimate.path("coverage").deepCopy());
-                impact.put("reason", estimate.path("reason").asText("按调前设定温度与经验参数估算，非电表实测"));
-                return impact;
-            }
-        }
-        ObjectNode unavailable = mapper.createObjectNode();
-        unavailable.put("status", "unavailable");
-        unavailable.put("reason", adjustedDevices > 0
-                ? "已调温，但缺少可用的调前设定温度或调温时长不足，暂不展示估算数字"
-                : "本次没有实际调温，且没有可比较的电表事实");
-        return unavailable;
+        report.put("generatedAt", generated.toString());
+        Map<String, Object> summary = TaskReportSummaries.summarize(mapper.convertValue(report, Map.class));
+        return summary == null ? null : mapper.valueToTree(summary).toString();
     }
 
     private ObjectNode inspectionEvidence(String taskId, List<TaskPhaseStore.PhaseResult> results,
@@ -182,6 +124,7 @@ public final class TaskReportComposer implements TaskReportCheckpointComposer {
                     checkpoint.put("target", block.path("criteria").path("setpoint").path("value")
                             .asInt(executed.path("target").asInt(26)));
                     checkpoint.set("criteria", TaskPayloadSafety.withoutCredentials(mapper, block.path("criteria")));
+                    if (block.has("estimateUntil")) checkpoint.set("estimateUntil", block.get("estimateUntil"));
                     checkpoint.set("devices", TaskPayloadSafety.withoutCredentials(mapper, block.path("devices")));
                     JsonNode estimate = executed.path("energyEstimate");
                     if (estimate.isObject()) {

@@ -43,6 +43,18 @@ class ActionGatewayOutcomeContractTest {
     }
 
     @Test
+    void receiptOnlyAcDispatchDoesNotReadOrWaitForDeviceState() throws Exception {
+        ActionCommandGateway gateway = gateway(request -> Mono.just(response("{\"code\":0}")),
+                states(Map.of(), true));
+        ActionDispatchResult result = gateway.dispatch(IDENTITY, scope(device("ac", "ac", false)),
+                actions("ac", "ac", Map.of("temperature", 27)),
+                Map.of("ac", Map.of("power", "on", "temperature", 26.5)), false);
+        assertThat(result.status()).isEqualTo(ActionDraftStatusEnum.ACCEPTED);
+        assertThat(JSON.readTree(result.resultJson()).path("receipts").get(0).path("outcome").asText()).isEqualTo("ACCEPTED");
+        assertThat(JSON.readTree(result.resultJson()).path("readbacks").isEmpty()).isTrue();
+    }
+
+    @Test
     void explicitBusinessRefusalIsNotAnUncertainDispatch() throws Exception {
         ActionCommandGateway gateway = gateway(request -> Mono.just(response("{\"code\":0,\"content\":{\"code\":422,\"message\":\"rejected\"}}")),
                 states(Map.of(), true));
