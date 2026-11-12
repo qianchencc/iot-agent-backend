@@ -1,0 +1,64 @@
+{
+  "caseId": "NAME-01",
+  "date": "2026-11-11",
+  "status": "implemented_and_local_ui_verified",
+  "scope": "白名单仅维护手机号；姓名关联本地已核验公司／办公室业务记录，不接受手工备注",
+  "behavior": {
+    "unknownName": "显示—，不阻止提前加白或任务资格匹配",
+    "laterKnownName": "后续存在对应业务记录后，重新读取名单自动显示",
+    "ambiguousName": "同一手机号有不同已记录姓名时留空，不猜测",
+    "legacyNotes": "旧列与数据保留但不再读写、不作为回退",
+    "lookup": "管理读取批量查询本地记录；普通业务任务资格仍匹配内存快照，无新增上游请求、轮询或同步服务"
+  },
+  "verification": [
+    {
+      "command": "mvn -q -Dtest=PhoneAllowlistContractTest,PhoneAllowlistAdminApiTest test",
+      "result": "passed",
+      "coverage": "手机号添加、版本冲突、事务与资格；HTTP拒绝手工name字段；原有审计失败处理"
+    },
+    {
+      "command": "mvn -q -Dtest=PhoneAllowlistContractTest#preapprovedPhoneGetsItsNameOnLaterReadsWithoutChangingMembership test",
+      "result": "passed",
+      "coverage": "姓名元数据故障仍可添加；忽略旧手工备注；后续本地可信记录补齐姓名且修订号和资格不变"
+    },
+    {
+      "command": "mvn -q -Dtest=ReportAuditStoreBehaviorTest test",
+      "result": "passed",
+      "coverage": "真实MySQL的批量手机号关联、未核验记录排除、冲突姓名留空",
+      "isolation": "单独创建临时测试schema，测试结束已删除；未将业务库作为测试夹具",
+      "setupNote": "首次合并运行因隔离夹具缺少IoT gateway配置启动失败，补齐仅用于测试的本地配置后单独重跑此类通过"
+    },
+    {
+      "check": "ArchitectureTest",
+      "result": "passed_in_combined_run",
+      "note": "同次运行的MySQL夹具启动问题已按上项单独解决；不宣称跑过全套测试"
+    },
+    {
+      "command": "npm run build (web/admin)",
+      "result": "passed",
+      "note": "保留现有大chunk提示，未扩展构建优化范围"
+    },
+    {
+      "check": "真实Chrome管理控制台",
+      "url": "http://127.0.0.1:5185/allowlist",
+      "result": "passed",
+      "observed": "原空白姓名已自动显示；表头为姓名；添加弹窗只有手机号输入，已打开并取消；未提交真实添加或移除",
+      "screenshots": ["names-resolved.webp", "phone-only-form.webp", "names-320px.png"]
+    }
+  ],
+  "uiReviewBoundary": {
+    "scope": "姓名列、手机号添加弹窗；复用现有Vue3／Element Plus样式和控件",
+    "verified": "桌面列表及弹窗、可访问控件名称、320px列表截图；Escape关闭后焦点返回添加按钮有观察记录",
+    "notVerified": "320px弹窗交互、系统原生200%缩放、屏幕阅读器、全页色彩／动效审计；窗口尺寸模拟后出现自动化输入未送达，未据此修改业务代码"
+  },
+  "safety": {
+    "realWhitelistRows": 2,
+    "realWhitelistRevision": 6,
+    "realWhitelistDataUnchanged": true,
+    "realTasksCreated": false,
+    "deviceControlsSent": false,
+    "notificationsSent": false,
+    "publicDeployment": false,
+    "screenshotsKeptAsPrivateLocalEvidence": true
+  }
+}

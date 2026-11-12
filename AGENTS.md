@@ -1,6 +1,6 @@
 # iot-agent-backend
 
-`../iot-agent-runtime`（Fastify/TypeScript）的 Java 版实现，逐功能对齐，全本地开发。HTTP 契约以 runtime 的 `docs/api/`（openapi + NDJSON 事件协议）为对齐基准；业务语义以 runtime `apps/runtime/src` 各模块 `AGENTS.md` 为准。
+本项目是 [iot-agent-runtime](https://github.com/qianchencc/microbrain-iot-agent-runtime/tree/cbc5ccad9973b697a3e976de9be101bd30bb42d1)（Fastify/TypeScript）的 Java 版实现，逐功能对齐，全本地开发。HTTP 契约以该基线的 `docs/api/`（openapi + NDJSON 事件协议）为准；业务语义以 `apps/runtime/src` 各模块 `AGENTS.md` 为准。对照时从 GitHub 读取或按需检出源码；原 `../iot-agent-runtime` 已退役删除，当前 Java／Node 不依赖它，旧运行数据不恢复。
 
 当前业务恢复入口：[规格与十六组闭环](.scratch/agent-business-recovery/README.md)；涉及 Java/Node 职责、智能体工具/指引、Runtime 对照或验收时先读。业务定义归 Java、Node 只提供通用 Agent Engine，见 [ADR 0004](docs/adr/0004-java-business-definition-generic-agent-engine.md)。
 

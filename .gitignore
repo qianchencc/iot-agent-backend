@@ -3,6 +3,9 @@ var/
 .env
 .idea/
 *.iml
+/.classpath
+/.project
+/.settings/
 .DS_Store
 .mvn/wrapper/maven-wrapper.jar
 

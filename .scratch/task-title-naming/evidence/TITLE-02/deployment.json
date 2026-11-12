@@ -1,0 +1,95 @@
+{
+  "sourceCommit": "48e1bf3",
+  "includesWorkingTreeChanges": true,
+  "release": "var/fixed-latest-20261106-194349",
+  "jarSha256": "1ff1473b30da0234121178f9af73db1356547e1664001873b7884889f995cf24",
+  "processes": {
+    "java": {
+      "pid": 32871,
+      "port": 3381
+    },
+    "node": {
+      "pid": 32963,
+      "port": 3382
+    },
+    "console": {
+      "pid": 59944,
+      "port": 5185,
+      "restarted": false
+    }
+  },
+  "build": {
+    "java": "mvn -q -DskipTests clean package: passed",
+    "node": "Node22 npm run typecheck && npm run build: passed",
+    "testLimit": "Full-suite three known alert/video failures were reported in result.json; not rerun to confirm."
+  },
+  "configuration": {
+    "beforeRevision": 13,
+    "activeRevision": 14,
+    "changedFields": [
+      "sharedInstructions"
+    ],
+    "changedParagraphs": 2,
+    "userAuthorized": true,
+    "otherSettingsPreserved": true,
+    "privateConfigFilesUnchanged": true,
+    "officeAndCompanyPromptPreviewVerified": true,
+    "pendingRestart": false
+  },
+  "health": {
+    "java": {
+      "service": "iot-agent-backend",
+      "version": "0.1.0",
+      "status": "ok",
+      "checks": {
+        "java": {
+          "status": "ok"
+        },
+        "nodeBridge": {
+          "status": "configured"
+        },
+        "mysql": {
+          "status": "ok"
+        },
+        "redis": {
+          "status": "ok"
+        },
+        "piSession": {
+          "status": "boundary",
+          "owner": "node-sidecar"
+        }
+      }
+    },
+    "node": {
+      "status": "ok",
+      "service": "agent-sidecar",
+      "node": "22",
+      "activeRuns": 0
+    }
+  },
+  "businessCountsBefore": {
+    "conversations": 26,
+    "conversation_turns": 187,
+    "task_plans": 2,
+    "task_facts": 3,
+    "task_phases": 7,
+    "task_proposals": 49,
+    "pi_session_documents": 54,
+    "pi_session_commits": 1508
+  },
+  "businessCountsAfter": {
+    "conversations": 26,
+    "conversation_turns": 187,
+    "task_plans": 2,
+    "task_facts": 3,
+    "task_phases": 7,
+    "task_proposals": 49,
+    "pi_session_documents": 54,
+    "pi_session_commits": 1508
+  },
+  "authentication": {
+    "anonymousJavaTasks": 401,
+    "anonymousNodeHealth": 401
+  },
+  "frontendAcceptance": "Not performed in this deployment; no task confirmation or device operation was invoked."
+}

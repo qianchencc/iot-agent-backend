@@ -1,6 +1,6 @@
 # iot-agent-backend
 
-Java public backend plus an independent Node `agent-sidecar`: Spring Boot 3.5 / Java 21+ and Node 22. Java owns customer HTTP, identity, business instructions/tools, device/task/report behavior, MySQL business facts **and durable Pi Sessions**. Redis is coordination/cache, not session authority. Node owns only the generic Pi loop, streaming, tool transport and interruption checkpoints; no SQLite, database credentials or local session volume. `../iot-agent-runtime` is read-only behavior evidence, never a runtime dependency.
+Java public backend plus an independent Node `agent-sidecar`: Spring Boot 3.5 / Java 21+ and Node 22. Java owns customer HTTP, identity, business instructions/tools, device/task/report behavior, MySQL business facts **and durable Pi Sessions**. Redis is coordination/cache, not session authority. Node owns only the generic Pi loop, streaming, tool transport and interruption checkpoints; no SQLite, database credentials or local session volume. The read-only Runtime behavior baseline is on [GitHub](https://github.com/qianchencc/microbrain-iot-agent-runtime/tree/cbc5ccad9973b697a3e976de9be101bd30bb42d1), never a runtime dependency; its former sibling directory and old runtime data have been deleted.
 
 架构约定、模块边界纪律与 Runtime→Java 模块映射见 [AGENTS.md](./AGENTS.md)；issue tracker 与领域文档规则见 `docs/agents/`。
 
@@ -8,11 +8,13 @@ Java命名空间统一为 `com.ehe.iotagent`，Maven groupId为 `com.ehe`，沿�
 
 ## 客户交付隔离
 
-GitHub保存完整开发历史；客户交付沿用前端仓库的 `.gitattributes`／`export-ignore` 和内部导出工具，不改开发仓库的 `.gitignore`。源码、测试、SQL、许可证、依赖锁文件和非敏感配置模板保留，开发材料及内部README排除；客户部署入口为 [docs/deployment.md](docs/deployment.md)。
+GitHub保存完整开发历史；客户交付沿用前端仓库的 `.gitattributes`／`export-ignore` 和内部导出工具。开发材料保留版本管理，本机IDE产物由 `.gitignore` 排除。源码、测试、SQL、许可证、依赖锁文件和非敏感配置模板保留，开发材料及内部README排除；客户部署入口为 [docs/deployment.md](docs/deployment.md)。
 
 提交并确定交付版本后，先运行 `node tools/check-delivery.mjs --archive HEAD`，通过后才显式运行 `node tools/deliver.mjs --ref HEAD --out /absolute/empty-directory`。工具只导出所选提交，独立检查后生成单提交快照，不设置远端、不推送；在客户仓库可用本工具的 `--tree HEAD` 复核最终提交树，`--base <ref>`检查变更路径。禁止把这些检查当作构建／业务验收。
 
 `export-ignore`只作用于archive，不过滤普通git push或合并历史；客户不得直接合并开发分支。未提交文件不会进入交付，提交前须确保被源码引用的新组件／资源已跟踪；交付构建必须从导出目录进行，不能把本机可构建当作Git版本完整的证明。
+
+2026-11-12告警查询源码收口：按固定窗口完成本地台账分页、事件去重与未上报过滤，再生成完整计数、设备汇总和最多8条预览；分页失败保留已知记录并明确覆盖不足。各类型汇总保留本地`cache`质量信息，一旦读到陈旧页，后续新鲜页不消除该标记；分页完整性与数据新鲜度分别表达。Java定向29项、Node类型检查和会话关闭回归1项通过。本次为源码交付，不替换在线发布包。
 
 控制台已切换为 Vue3 / JavaScript / Element Plus，提供独立部署管理员登录、独立手机号名单、实际参数配置与按成员组织的公司／办公室操作审计。三个进程均以常规命令启动（Java 外置 `application.yaml`、Node 外置 `agent-engine.yaml`、控制台 `npm run dev`），不加载 `.env`；Node 从 Java 获取模型运行定义与启动观测快照，不再使用模型／Langfuse 环境回退。字段、启动方式与隔离验证证据见[控制台治理入口](.scratch/admin-console-governance/README.md)和[维护手册](web/admin/docs/maintenance.md)；当前固定开发实例与核对结果见下文，不表示已部署生产或完成真实业务验收。
 
@@ -21,6 +23,10 @@ GitHub保存完整开发历史；客户交付沿用前端仓库的 `.gitattribut
 ## 常规本地启动
 
 固定端口 Java `3381`、Node `3382`、管理控制台 `5185`。三个进程都用各自的常规命令启动：无启动器脚本、无自定义进程清单、不加载 `.env`。tmux 只是可选的手动终端——需要时自己 `tmux new -s backend` 开会话、逐窗口粘贴下列命令即可，不作为必需编排，也没有自动重启。
+
+2026-11-12旧业务工作区清理完成：`../iot-agent-backend-business`已退役删除，访问日志、旧文件配置及MySQL初始化SQL挂载已迁回主目录；当前／回退发布包、原数据库卷及独有材料保留。Java继续按原参数`--server.address=0.0.0.0`提供局域网访问，清理后健康检查通过。当前路径、空间变化与保留清单见[在线入口](.scratch/agent-business-recovery/local-preview.md)。
+
+2026-11-12命名空间迁移已实际切换固定Java3381为`com.ehe.iotagent`版本；保留原在线修复、配置、数据和Node／控制台进程，当前产物、回退及验证边界以[在线入口](.scratch/agent-business-recovery/local-preview.md)为准。以下较早发布记录保留作历史。
 
 2026-11-12存储治理已部署：固定Java3381运行`var/sync-storage-20261112-093244/backend.jar`，只更新四组IoT持久化类，Node、前端和外置配置不变；两套MySQL已关闭无用途binlog并正规回收旧日志，目录／授权／安全事件减少重复正文写入。当前产物、空间实测、回归及未验边界见[执行入口](.scratch/sync-storage-governance/README.md)；下列较早发布记录仅作历史。
 

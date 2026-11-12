@@ -1,0 +1,32 @@
+{
+  "artifactSha256": "7e14e4b8642aff3cd965c455bf015619b2f98c0b9aef0339016af0848eb87876",
+  "coldStatus": "preparing",
+  "historyStatus": "partial",
+  "historySamples": 4,
+  "unknownTimeSamples": 1,
+  "tempPeak": "26.000000000000000000000000000000",
+  "ancientExact": "25.123456789012345678900000000000",
+  "ordinarySourceDelta": {
+    "history": 0,
+    "current": 0,
+    "directory": 0,
+    "blocked": 0
+  },
+  "restartSourceBlockedSamplesUnchanged": true,
+  "offlineOrdinarySourceDelta": {
+    "history": 0,
+    "current": 0,
+    "directory": 0,
+    "blocked": 0
+  },
+  "failedFullRefreshCache": {
+    "status": "stale",
+    "updatedAt": "2026-11-06T07:58:28.744970Z",
+    "lastError": "环境采集未完成"
+  },
+  "dashboardCurrentSamplePreserved": true,
+  "redisEnabled": false,
+  "syntheticSource": true,
+  "realWeChatAcceptance": false,
+  "recordedAt": "2026-11-06T08:00:05.036652+00:00"
+}

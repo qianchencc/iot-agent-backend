@@ -1,0 +1,57 @@
+{
+  "devices": 13,
+  "online": 13,
+  "offline": 0,
+  "unknown": 0,
+  "observedAt": null,
+  "readOnly": true,
+  "authorizationFixture": true,
+  "upstreamCalls": 0,
+  "streamRequests": 0,
+  "frontendMapping": {
+    "liveLabels": 13,
+    "unknownLabels": 0
+  },
+  "focusedTests": {
+    "tests": 66,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "fullSuite": {
+    "tests": 712,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 28
+  },
+  "knownFailure": "SafetyReviewToolContractTest.singleCandidatePreparesRealPlaybackCardAndProjectsVideoPlaybackBlock:81",
+  "frontendAcceptance": false,
+  "jar": "var/fixed-video-state-20261108-231135/backend.jar",
+  "sha256": "46816a507a345a7981713f9e6e8350c85b2e27368254a719c8c38f9054b996f3",
+  "javaPid": 15433,
+  "nodePid": 32963,
+  "nodeRestarted": false,
+  "schemaChanged": false,
+  "configChanged": false,
+  "businessCountsBefore": {
+    "plans": 3,
+    "tasks": 3,
+    "turns": 234,
+    "events": 28861,
+    "phases": 7,
+    "reports": 11,
+    "conversations": 35,
+    "notifications": 3
+  },
+  "businessCountsAfter": {
+    "plans": 3,
+    "tasks": 3,
+    "turns": 234,
+    "events": 28861,
+    "phases": 7,
+    "reports": 11,
+    "conversations": 35,
+    "notifications": 3
+  },
+  "rollbackJar": "var/fixed-environment-window-20261108-224008/backend.jar"
+}

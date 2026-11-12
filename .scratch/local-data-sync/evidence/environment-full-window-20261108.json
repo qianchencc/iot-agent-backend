@@ -1,0 +1,94 @@
+{
+  "authorizationFixture": true,
+  "readOnly": true,
+  "window": {
+    "from": "2026-11-01T16:00:00Z",
+    "to": "2026-11-08T12:50:00Z"
+  },
+  "fullSamples": 165,
+  "customerUpstreamCalls": 0,
+  "rawPageSamples": 100,
+  "coverage": {
+    "complete": true,
+    "readSamples": 165,
+    "from": "2026-11-01T16:00:00Z",
+    "to": "2026-11-08T12:00:00Z",
+    "truncated": false,
+    "unknownTimeSamples": 0,
+    "invalidValueSamples": 0,
+    "conflictedSamples": 0,
+    "missingValueSamples": 0,
+    "unverifiedQualitySamples": 0
+  },
+  "rawNextPage": 1,
+  "metrics": [
+    {
+      "key": "temp",
+      "label": "温度",
+      "unit": "°C",
+      "count": 165,
+      "min": 22.3,
+      "peak": {
+        "value": 27.4,
+        "at": "2026-11-04T04:00:00Z"
+      }
+    },
+    {
+      "key": "humidity",
+      "label": "湿度",
+      "unit": "%",
+      "count": 165,
+      "min": 50.3,
+      "peak": {
+        "value": 71.8,
+        "at": "2026-11-04T23:00:00Z"
+      }
+    },
+    {
+      "key": "pm25",
+      "label": "PM2.5",
+      "unit": null,
+      "count": 165,
+      "min": 1.0,
+      "peak": {
+        "value": 76.0,
+        "at": "2026-11-01T20:00:00Z"
+      }
+    },
+    {
+      "key": "pm10",
+      "label": "PM10",
+      "unit": null,
+      "count": 165,
+      "min": 2.0,
+      "peak": {
+        "value": 138.0,
+        "at": "2026-11-01T20:00:00Z"
+      }
+    },
+    {
+      "key": "pm1",
+      "label": "PM1.0",
+      "unit": null,
+      "count": 165,
+      "min": 0.0,
+      "peak": {
+        "value": 61.0,
+        "at": "2026-11-01T20:00:00Z"
+      }
+    }
+  ],
+  "verification": {
+    "focusedTests": "AgentBusinessDefinitionContractTest,EnvironmentHistoryBehaviorTest,AgentToolBridgeContractTest",
+    "focusedResult": "passed",
+    "fullSuite": {
+      "tests": 710,
+      "passed": 681,
+      "failures": 1,
+      "skipped": 28,
+      "failure": "SafetyReviewToolContractTest.singleCandidatePreparesRealPlaybackCardAndProjectsVideoPlaybackBlock:81"
+    },
+    "frontendAcceptance": false,
+    "runningInstancesChanged": false
+  }
+}
