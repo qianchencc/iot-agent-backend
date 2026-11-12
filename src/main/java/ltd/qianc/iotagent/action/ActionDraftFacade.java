@@ -1075,7 +1075,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
                              PrincipalInfo principal,
                              String conversationId, IotSourceEnum source) {
         Map<String, String> handleIndex = new LinkedHashMap<>();
-        List<CandidateView> sets = payload.path("lighting").isObject() && payload.path("candidateSetIds").isEmpty()
+        List<CandidateView> sets = payload.path("candidateSetIds").isArray() && payload.path("candidateSetIds").isEmpty()
                 ? new ArrayList<>() : new ArrayList<>(resolveCandidateSets(payload, "candidateSetIds",
                         scope, principal, conversationId, source, handleIndex));
         Map<String, String> exclusionRefs = resolveExcludedReferences(payload, scope,
@@ -1084,6 +1084,7 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
             expandLighting(payload, sets, scope, principal, conversationId, source,
                     handleIndex, exclusionRefs);
         }
+        sets.addAll(resolveActionReferences(payload, scope, principal, conversationId, source, handleIndex));
         if (sets.isEmpty()) {
             throw new BusinessException("CANDIDATE_SET_REQUIRED", "操作草案必须引用已核验的候选集", 422);
         }
@@ -1202,6 +1203,48 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
         payload.set("stateObservedAtByDevice", mapper.valueToTree(observations.observedAtByDevice()));
     }
 
+
+    /** Infer only explicitly named devices, never the other members of their source sets. */
+    private List<CandidateView> resolveActionReferences(ObjectNode payload, AuthorizedDeviceScope scope,
+            PrincipalInfo principal, String conversationId, IotSourceEnum source, Map<String, String> handleIndex) {
+        Set<String> refs = new LinkedHashSet<>();
+        Set<String> sources = new LinkedHashSet<>();
+        for (JsonNode action : payload.path("actions")) {
+            String ref = action.path("deviceId").asText("");
+            java.util.regex.Matcher matcher = DEVICE_HANDLE.matcher(ref);
+            if (matcher.matches() && !handleIndex.containsKey(ref)) {
+                refs.add(ref);
+                sources.add("s" + matcher.group(1));
+            }
+        }
+        if (refs.isEmpty()) return List.of();
+        ObjectNode request = mapper.createObjectNode();
+        request.set("candidateSetIds", mapper.valueToTree(sources));
+        List<CandidateView> resolved = resolveCandidateSets(request, "candidateSetIds", scope,
+                principal, conversationId, source, handleIndex);
+        Set<String> selected = new HashSet<>();
+        for (String ref : refs) {
+            String id = handleIndex.get(ref);
+            if (id == null) throw invalidActionReference(ref);
+            selected.add(id);
+        }
+        List<CandidateView> exact = new ArrayList<>();
+        Set<String> included = new LinkedHashSet<>();
+        for (JsonNode ref : payload.path("candidateSetIds")) included.add(ref.asText());
+        for (CandidateView set : resolved) {
+            exact.add(new CandidateView(set.candidateSetId(), set.kind(),
+                    set.members().stream().filter(device -> selected.contains(device.id())).toList()));
+            included.add(set.candidateSetId());
+        }
+        payload.set("candidateSetIds", mapper.valueToTree(included));
+        return exact;
+    }
+
+    private static BusinessException invalidActionReference(String ref) {
+        return new BusinessException("INVALID_DEVICE_REFERENCE", "操作清单中的设备引用无效，尚未生成确认单",
+                Map.of("reason", "invalid_device_reference", "deviceRef", ref,
+                        "nextTool", "get_device_details", "retrySameScope", false), 422);
+    }
 
     /** Runtime resolveExcludedDevice: verify the source set without expanding the operation universe. */
     private Map<String, String> resolveExcludedReferences(ObjectNode payload, AuthorizedDeviceScope scope,
@@ -1373,6 +1416,9 @@ public final class ActionDraftFacade implements ltd.qianc.iotagent.conversation.
             if (!item.isObject() || !item.path("deviceId").isTextual()) {
                 throw new BusinessException("INVALID_ACTION_DRAFT", "action is invalid");
             }
+            String ref = item.path("deviceId").asText();
+            if (DEVICE_HANDLE.matcher(ref).matches() && !handleIndex.containsKey(ref))
+                throw invalidActionReference(ref);
             String deviceId = handleIndex.getOrDefault(item.path("deviceId").asText(), item.path("deviceId").asText());
             AuthorizedDevice device = scope.device(deviceId).orElseThrow(ActionDraftScopeChangedException::new);
             if (!universe.containsKey(device.id())) {

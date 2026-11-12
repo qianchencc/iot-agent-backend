@@ -339,7 +339,7 @@
               "minLength": 1
             },
             "maxItems": 10,
-            "description": "逐设备actions引用的完整候选集；仅使用lighting范围时可为空。"
+            "description": "逐设备actions引用的完整候选集；仅使用lighting范围或全部动作已使用有效dN_k设备引用时可为空。服务器校验并解析设备引用所属集合，漏列所属集合时只补入该明确设备，不扩大到其他成员。引用无效时修正原引用或补读已有候选详情，不重复搜索相同范围。"
           },
           "summary": {
             "type": "string",

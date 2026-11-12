@@ -69,6 +69,77 @@ class ActionDraftProposalContractTest {
     }
 
     @Test
+    void mixedDraftInfersTheNamedAcSourceWithoutExpandingItsOtherMembers() throws Exception {
+        var ac = new AuthorizedDevice("fixture-ac", "ac", "Fixture AC", "Fixture room", false,
+                "fixture-control", "fixture-ac", "fixture-hub", null, List.of(), List.of("region-1"), Map.of());
+        var otherAc = new AuthorizedDevice("other-ac", "ac", "Other fixture AC", "Fixture room", false,
+                "other-control", "other-ac", "other-hub", null, List.of(), List.of("region-1"), Map.of());
+        var devices = List.of(LIGHTS.get(0), ac, otherAc);
+        var iot = new TestIotAdapter(devices, id -> Map.of("light-1", true,
+                "fixture-ac", Map.of("power", "on"), "other-ac", Map.of("power", "on")));
+        var lightSet = handled(set("lights", "lighting", List.of(LIGHTS.get(0)), iot), "s1");
+        var acSet = handled(set("acs", "ac", List.of(ac, otherAc), iot), "s2");
+        var facade = facade(new InMemoryActionDraftStore(), new InMemoryCandidateStore(lightSet, acSet), iot);
+        var draft = facade.propose(PRINCIPAL, "office", CONVERSATION, "mixed-turn", payload(Map.of(
+                "candidateSetIds", List.of("s1"), "expandCandidates", true,
+                "lighting", Map.of("candidateSetId", "s1", "closeOrOpen", 0),
+                "actions", List.of(Map.of("deviceId", "d2_1", "ac", Map.of("power", "off"), "selected", true)))),
+                "mixed-source");
+        assertThat(draft.status()).isEqualTo("PENDING_CONFIRMATION");
+        assertThat(actions(facade.view(draft))).extracting(row -> row.get("deviceId"))
+                .containsExactlyInAnyOrder("light-1", "fixture-ac");
+        assertThat(inventory(facade.view(draft))).extracting(row -> row.get("deviceId"))
+                .doesNotContain("other-ac");
+    }
+
+    @Test
+    void invalidHandlePositionIsNotReportedAsAnAuthorizationChange() throws Exception {
+        var iot = new TestIotAdapter(LIGHTS, id -> states);
+        var included = handled(set("included", "lighting", LIGHTS.subList(0, 3), iot), "s7");
+        var facade = facade(new InMemoryActionDraftStore(), new InMemoryCandidateStore(included), iot);
+        assertThatThrownBy(() -> facade.propose(PRINCIPAL, "office", CONVERSATION, "bad-ref", payload(Map.of(
+                "candidateSetIds", List.of("s7"), "actions", List.of(Map.of("deviceId", "d7_99", "closeOrOpen", 0)))),
+                "bad-ref")).isInstanceOfSatisfying(BusinessException.class,
+                        error -> assertThat(error.code()).isEqualTo("INVALID_DEVICE_REFERENCE"));
+    }
+
+    @Test
+    void inferredActionSourcesRetainOwnershipCompletenessAndCurrentAuthorizationChecks() throws Exception {
+        var iot = new TestIotAdapter(LIGHTS, id -> states);
+        var included = handled(set("included", "lighting", List.of(LIGHTS.get(0)), iot), "s7");
+        var base = handled(set("action-source", "lighting", List.of(LIGHTS.get(3)), iot), "s8");
+        for (String invalid : List.of("tenant", "owner", "source", "conversation", "fuzzy", "incomplete", "revoked")) {
+            var referenced = new DeviceCandidateRecord(base.candidateSetId(),
+                    "conversation".equals(invalid) ? "foreign-conversation" : base.conversationId(),
+                    "tenant".equals(invalid) ? "OTHER" : base.tenantCode(),
+                    "owner".equals(invalid) ? "other-owner" : base.ownerKey(),
+                    "source".equals(invalid) ? IotSourceEnum.COMPANY : base.source(),
+                    base.catalogFingerprint(), base.query(), base.members(), true,
+                    "incomplete".equals(invalid) ? 2 : 1, base.createdAt(),
+                    "fuzzy".equals(invalid) ? "fuzzy" : "exact", "s8");
+            var current = "revoked".equals(invalid) ? new TestIotAdapter(LIGHTS.subList(0, 3), id -> states) : iot;
+            var drafts = new InMemoryActionDraftStore();
+            var facade = facade(drafts, new InMemoryCandidateStore(included, referenced), current);
+            assertThatThrownBy(() -> facade.propose(PRINCIPAL, "office", CONVERSATION, "foreign-ref", payload(Map.of(
+                    "candidateSetIds", List.of("s7"),
+                    "actions", List.of(Map.of("deviceId", "d8_1", "closeOrOpen", 0)))), invalid))
+                    .isInstanceOf(BusinessException.class);
+            assertThat(drafts.findByConversation(CONVERSATION)).isEmpty();
+        }
+    }
+
+    @Test
+    void explicitHandleDoesNotRequireRepeatingItsSourceSet() throws Exception {
+        var iot = new TestIotAdapter(LIGHTS, id -> states);
+        var source = handled(set("source", "lighting", LIGHTS.subList(0, 3), iot), "s7");
+        var facade = facade(new InMemoryActionDraftStore(), new InMemoryCandidateStore(source), iot);
+        var draft = facade.propose(PRINCIPAL, "office", CONVERSATION, "explicit-only", payload(Map.of(
+                "candidateSetIds", List.of(), "expandCandidates", true,
+                "actions", List.of(Map.of("deviceId", "d7_2", "closeOrOpen", 1)))), "explicit-only");
+        assertThat(actions(facade.view(draft))).extracting(row -> row.get("deviceId")).containsExactly("light-2");
+    }
+
+    @Test
     void expandsFixedMembersSubtractsCorridorAndSeparatesCounts() throws Exception {
         TestIotAdapter iot = new TestIotAdapter(LIGHTS, identity -> states);
         InMemoryActionDraftStore drafts = new InMemoryActionDraftStore();
@@ -368,7 +439,7 @@ class ActionDraftProposalContractTest {
     }
 
     @Test
-    void loadingAnExclusionSourceDoesNotAuthorizeItsHandlesAsActionReferences() throws Exception {
+    void anExplicitActionFromAnExclusionSourceIsIndependentlyResolved() throws Exception {
         TestIotAdapter iot = new TestIotAdapter(LIGHTS, identity -> states);
         var included = handled(set("included", "lighting", LIGHTS.subList(0, 3), iot), "s7");
         var detail = handled(set("detail", "lighting", List.of(LIGHTS.get(2), LIGHTS.get(1)), iot), "s8");
@@ -378,9 +449,10 @@ class ActionDraftProposalContractTest {
                 "excludedDeviceIds", List.of("d8_1"),
                 "actions", List.of(Map.of("deviceId", "d8_2", "closeOrOpen", 1))));
 
-        assertThatThrownBy(() -> facade.propose(PRINCIPAL, "office", CONVERSATION,
-                "turn-action-ref", request, "action-ref")).isInstanceOf(BusinessException.class);
-        assertThat(drafts.findByConversation(CONVERSATION)).isEmpty();
+        var draft = facade.propose(PRINCIPAL, "office", CONVERSATION, "turn-action-ref", request, "action-ref");
+        assertThat(actions(facade.view(draft))).extracting(row -> row.get("deviceId"))
+                .containsExactlyInAnyOrder("light-1", "light-2");
+        assertThat(((Map<?, ?>) facade.view(draft).get("counts")).get("excluded")).isEqualTo(1);
     }
 
     @Test
