@@ -11,7 +11,7 @@
     <relativePath/>
   </parent>
 
-  <groupId>ltd.qianc</groupId>
+  <groupId>com.ehe</groupId>
   <artifactId>iot-agent-backend</artifactId>
   <version>0.1.0</version>
   <name>iot-agent-backend</name>

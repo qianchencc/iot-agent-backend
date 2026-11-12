@@ -1,0 +1,118 @@
+package com.ehe.iotagent.iot.internal;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.Duration;
+import javax.sql.DataSource;
+import com.ehe.iotagent.iot.DeviceCandidateSetStore;
+import com.ehe.iotagent.iot.IotAdapter;
+import com.ehe.iotagent.iot.IotAdapterFactory;
+import com.ehe.iotagent.iot.IotCallPolicy;
+import com.ehe.iotagent.iot.IotGatewayRoutes;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.web.reactive.function.client.WebClient;
+
+/** Missing gateway configuration is an explicit 503 boundary, never an in-memory fallback. */
+@Configuration(proxyBeanMethods = false)
+public class IotAdapterConfiguration {
+    /** Raw transport is injectable only through this collector-specific type. */
+    public record Source(IotAdapter adapter) { }
+
+    @Bean(initMethod = "initialize")
+    @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
+    DeviceCandidateSchemaInitializer deviceCandidateSchemaInitializer(DataSource dataSource) {
+        return new DeviceCandidateSchemaInitializer(dataSource);
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "true")
+    @ConditionalOnMissingBean(DeviceCandidateSetStore.class)
+    DeviceCandidateSetStore jdbcDeviceCandidateSetStore(JdbcTemplate jdbc, ObjectMapper mapper) {
+        return IotAdapterFactory.candidateSets(jdbc, mapper);
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "agent.storage.mysql.enabled", havingValue = "false", matchIfMissing = true)
+    @ConditionalOnMissingBean(DeviceCandidateSetStore.class)
+    DeviceCandidateSetStore failClosedDeviceCandidateSetStore() {
+        return new FailClosedDeviceCandidateSetStore("设备候选集事实存储未配置");
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "agent.control.mode", havingValue = "fixture")
+    IotAdapter fixtureIotAdapter() {
+        return new FixtureIotAdapter();
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "agent.control.mode", havingValue = "fixture")
+    Source fixtureIotSource(IotAdapter adapter) {
+        return new Source(adapter);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(IotAdapter.class)
+    IotAdapter iotAdapter(Source source, DeviceCandidateSetStore candidateStore,
+            org.springframework.beans.factory.ObjectProvider<com.ehe.iotagent.iot.DeviceDirectory> directories,
+            org.springframework.beans.factory.ObjectProvider<com.ehe.iotagent.iot.DeviceObservations> observations) {
+        return IotAdapterFactory.localReads(source.adapter(), directories::getIfAvailable, observations::getIfAvailable, candidateStore);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(Source.class)
+    Source iotSource(
+            WebClient.Builder builder,
+            @Value("${iot.gateway.base-url:}") String baseUrl,
+            @Value("${iot.gateway.office-scope-path:}") String officePath,
+            @Value("${iot.gateway.company-scope-path:}") String companyPath,
+            @Value("${iot.gateway.office-membership-path:/micro-api/api/office/office/member/my/office}") String membershipPath,
+            @Value("${iot.gateway.office-ac-path:/micro-api/api/office/app/device/ac/myOffice/pageByAc}") String acPath,
+            @Value("${iot.gateway.office-lighting-path:/micro-api/api/office/device/page}") String lightingPath,
+            @Value("${iot.gateway.office-access-path:/micro-api/api/office/device/page}") String accessPath,
+            @Value("${iot.gateway.office-video-path:/micro-api/api/office/device/page}") String videoPath,
+            @Value("${iot.gateway.office-ac-association-path:/micro-api/api/office/acAreaDevice/page}") String acAssociationPath,
+            @Value("${iot.gateway.office-lighting-association-path:/micro-api/api/office/lightingAreaDevice/page}") String lightingAssociationPath,
+            @Value("${iot.gateway.office-access-association-path:/micro-api/api/office/accessAreaDevice/page}") String accessAssociationPath,
+            @Value("${iot.gateway.company-environment-path:/micro-api/api/iot-center/device/page}") String companyEnvironmentPath,
+            @Value("${iot.gateway.company-energy-path:/micro-api/api/energy/equipment/page}") String companyEnergyPath,
+            @Value("${iot.gateway.company-safety-path:/micro-api/api/perception/device/page}") String companySafetyPath,
+            @Value("${iot.gateway.company-safety-detail-path:/micro-api/api/iot-center/device}") String companySafetyDetailPath,
+            @Value("${iot.gateway.company-smart-base-path:/micro-api/api/office/app/device}") String companySmartBasePath,
+            @Value("${iot.gateway.company-ac-area-path:/micro-api/api/office/app/device/ac/myAreaList}") String companyAcAreaPath,
+            @Value("${iot.gateway.company-ac-device-path:/micro-api/api/office/app/device/ac/devicePage}") String companyAcDevicePath,
+            @Value("${iot.gateway.company-ac-binding-path:/micro-api/api/iot-center/device/page}") String companyAcBindingPath,
+            @Value("${iot.gateway.company-monitor-down-path:/micro-api/api/office/app/device/monitor/down}") String companyMonitorDownPath,
+            @Value("${iot.gateway.call-timeout-ms:30000}") long timeoutMs,
+            DeviceCandidateSetStore candidateStore) {
+        if (officePath == null || officePath.isBlank()) {
+            return new Source(IotAdapterFactory.failClosed("物联 Office 授权设备范围路径未配置"));
+        }
+        if ((companyEnvironmentPath == null || companyEnvironmentPath.isBlank())
+                || (companyEnergyPath == null || companyEnergyPath.isBlank())
+                || (companySafetyPath == null || companySafetyPath.isBlank())
+                || (companySmartBasePath == null || companySmartBasePath.isBlank())
+                || (companyAcAreaPath == null || companyAcAreaPath.isBlank())
+                || (companyAcDevicePath == null || companyAcDevicePath.isBlank())
+                || (companyAcBindingPath == null || companyAcBindingPath.isBlank())) {
+            return new Source(IotAdapterFactory.failClosed("物联 Company 授权设备目录路径未配置"));
+        }
+        try {
+            return new Source(IotAdapterFactory.webClient(
+                    builder.baseUrl(baseUrl).build(),
+                    new IotGatewayRoutes(officePath, companyPath, membershipPath,
+                            IotGatewayRoutes.runtimeOfficeSources(acPath, lightingPath, accessPath, videoPath,
+                                    acAssociationPath, lightingAssociationPath, accessAssociationPath),
+                            companyEnvironmentPath, companyEnergyPath, companySafetyPath, companySafetyDetailPath,
+                            companySmartBasePath, companyAcAreaPath, companyAcDevicePath, companyAcBindingPath,
+                            companyMonitorDownPath),
+                    Duration.ofMillis(timeoutMs),
+                    IotCallPolicy.passThrough(), candidateStore));
+        } catch (RuntimeException invalidConfiguration) {
+            return new Source(IotAdapterFactory.failClosed("物联上游配置无效"));
+        }
+    }
+}

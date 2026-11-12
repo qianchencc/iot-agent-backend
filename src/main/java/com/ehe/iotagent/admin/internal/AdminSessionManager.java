@@ -1,0 +1,186 @@
+package com.ehe.iotagent.admin.internal;
+
+import com.ehe.iotagent.admin.AdminPasswordPolicy;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.PosixFilePermission;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
+import java.time.Duration;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import org.slf4j.LoggerFactory;
+
+/** Independent cookie sessions for the admin panel; never reads PrincipalContext or Agent tokens. */
+public final class AdminSessionManager {
+    public static final String COOKIE = "runtime_admin";
+    private static final org.slf4j.Logger LOG = LoggerFactory.getLogger(AdminSessionManager.class);
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+    // Effectively permanent: sessions only end on explicit logout, password change or file loss.
+    private static final long SESSION_MILLIS = Duration.ofDays(3650).toMillis();
+    private static final long ATTEMPT_MILLIS = Duration.ofMinutes(5).toMillis();
+    private final Map<String, Session> sessions = new ConcurrentHashMap<>();
+    private final Map<String, Attempt> attempts = new ConcurrentHashMap<>();
+    private final SecureRandom random = new SecureRandom();
+    private final String passwordHash;
+    private final Path sessionsFile;
+
+    public AdminSessionManager(String password, int passwordMinimum) {
+        this(password, passwordMinimum, null);
+    }
+
+    public AdminSessionManager(String password, int passwordMinimum, Path sessionsFile) {
+        String configuredHash = null;
+        if (password != null && !password.isBlank()) {
+            try {
+                configuredHash = AdminPasswordPolicy.hash(AdminPasswordPolicy.validate(password, passwordMinimum));
+            } catch (IllegalArgumentException invalidDeploymentPassword) {
+                // An invalid deployment credential leaves administration closed.
+            }
+        }
+        this.passwordHash = configuredHash;
+        this.sessionsFile = sessionsFile;
+        restore();
+    }
+
+    public synchronized LoginResult login(String ip, String password) {
+        cleanup();
+        Attempt attempt = attempts.computeIfAbsent(ip == null ? "unknown" : ip,
+                ignored -> new Attempt(0, System.currentTimeMillis() + ATTEMPT_MILLIS));
+        if (passwordHash == null) return LoginResult.unavailable();
+        if (attempt.count >= 5) return LoginResult.rateLimited();
+        if (sessions.size() >= 1000) {
+            sessions.entrySet().stream()
+                    .min(java.util.Comparator.comparingLong(entry -> entry.getValue().expires))
+                    .ifPresent(eldest -> sessions.remove(eldest.getKey()));
+        }
+        if (password == null || !AdminPasswordPolicy.matches(password, passwordHash)) {
+            attempts.put(ip == null ? "unknown" : ip, new Attempt(attempt.count + 1, attempt.expires));
+            persist();
+            return LoginResult.failed();
+        }
+        attempts.remove(ip == null ? "unknown" : ip);
+        String token = randomHex(32);
+        String csrf = randomHex(32);
+        sessions.put(hash(token), new Session(csrf, System.currentTimeMillis() + SESSION_MILLIS));
+        persist();
+        return LoginResult.success(token, csrf, (int) (SESSION_MILLIS / 1000));
+    }
+
+    public boolean valid(String token) {
+        return session(token) != null;
+    }
+
+    public String csrf(String token) {
+        Session session = session(token);
+        return session == null ? null : session.csrf;
+    }
+
+    public void logout(String token) {
+        if (token != null) sessions.remove(hash(token));
+        persist();
+    }
+
+
+    public void clear() {
+        sessions.clear();
+        attempts.clear();
+        persist();
+    }
+
+
+    private Session session(String token) {
+        if (token == null || !token.matches("[a-fA-F0-9]{64}")) return null;
+        Session value = sessions.get(hash(token));
+        if (value == null || value.expires <= System.currentTimeMillis()) {
+            if (token != null) sessions.remove(hash(token));
+            return null;
+        }
+        return value;
+    }
+
+    private void cleanup() {
+        long now = System.currentTimeMillis();
+        sessions.entrySet().removeIf(entry -> entry.getValue().expires <= now);
+        attempts.entrySet().removeIf(entry -> entry.getValue().expires <= now);
+    }
+
+    /** Restores previously persisted state; an unreadable file means logged-out, never a startup failure. */
+    private void restore() {
+        if (sessionsFile == null || !Files.exists(sessionsFile)) return;
+        try {
+            Map<String, Map<String, Map<String, Object>>> state =
+                    MAPPER.readValue(sessionsFile.toFile(), new TypeReference<>() { });
+            long now = System.currentTimeMillis();
+            Map<String, Map<String, Object>> savedSessions = state.get("sessions");
+            if (savedSessions != null) savedSessions.forEach((key, value) -> {
+                long expires = ((Number) value.getOrDefault("expires", 0)).longValue();
+                Object csrf = value.get("csrf");
+                if (expires > now && csrf instanceof String text) sessions.put(key, new Session(text, expires));
+            });
+            Map<String, Map<String, Object>> savedAttempts = state.get("attempts");
+            if (savedAttempts != null) savedAttempts.forEach((ip, value) -> {
+                long expires = ((Number) value.getOrDefault("expires", 0)).longValue();
+                int count = ((Number) value.getOrDefault("count", 0)).intValue();
+                if (expires > now && count > 0) attempts.put(ip, new Attempt(count, expires));
+            });
+        } catch (Exception unreadable) {
+            LOG.warn("Admin session store unreadable; starting logged out", unreadable);
+        }
+    }
+
+    /** Write-through snapshot of session and attempt state; failures degrade to memory-only. */
+    private synchronized void persist() {
+        if (sessionsFile == null) return;
+        try {
+            Path parent = sessionsFile.toAbsolutePath().getParent();
+            if (parent != null) Files.createDirectories(parent);
+            Path temporary = sessionsFile.resolveSibling(sessionsFile.getFileName() + ".tmp");
+            MAPPER.writeValue(temporary.toFile(), Map.of("sessions", sessions, "attempts", attempts));
+            try {
+                Files.setPosixFilePermissions(temporary,
+                        Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
+            } catch (UnsupportedOperationException ignored) {
+                // Development filesystems without POSIX permissions are allowed.
+            }
+            Files.move(temporary, sessionsFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        } catch (Exception failed) {
+            LOG.warn("Admin session store write failed; continuing memory-only", failed);
+        }
+    }
+
+    private String randomHex(int bytes) {
+        byte[] value = new byte[bytes];
+        random.nextBytes(value);
+        StringBuilder result = new StringBuilder(bytes * 2);
+        for (byte item : value) result.append(String.format("%02x", item & 0xff));
+        return result.toString();
+    }
+
+    private static String hash(String token) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(token.getBytes(StandardCharsets.UTF_8));
+            StringBuilder result = new StringBuilder(64);
+            for (byte item : digest) result.append(String.format("%02x", item & 0xff));
+            return result.toString();
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    private record Session(String csrf, long expires) { }
+    private record Attempt(int count, long expires) { }
+
+    public record LoginResult(int status, String code, String token, String csrf, int maxAge) {
+        static LoginResult success(String token, String csrf, int maxAge) { return new LoginResult(200, null, token, csrf, maxAge); }
+        static LoginResult failed() { return new LoginResult(401, "ADMIN_LOGIN_FAILED", null, null, 0); }
+        static LoginResult rateLimited() { return new LoginResult(429, "ADMIN_RATE_LIMIT", null, null, 0); }
+        static LoginResult unavailable() { return new LoginResult(503, "ADMIN_UNAVAILABLE", null, null, 0); }
+    }
+
+}

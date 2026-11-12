@@ -21,7 +21,7 @@ const REQUIRED = [
   'docs/deployment.md', 'src/main/resources/application.yml',
   'src/main/resources/db/mysql/agent-facts.sql', 'src/main/resources/reports/LICENSE',
   'src/main/resources/reports/NotoSansSC-Regular.ttf',
-  'src/test/java/ltd/qianc/iotagent/ArchitectureTest.java',
+  'src/test/java/com/ehe/iotagent/ArchitectureTest.java',
   'agent-sidecar/package.json', 'agent-sidecar/package-lock.json',
   'agent-sidecar/src/server.ts', 'web/admin/package.json', 'web/admin/package-lock.json',
   'web/admin/src/main.js',

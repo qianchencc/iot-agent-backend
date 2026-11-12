@@ -10,7 +10,7 @@
 
 从权威 Runtime OpenAPI 推导路径和 operation 数，不把 66/69 写死在实现里；默认仍把 66 paths / 69 operations 作为客户交付门槛。同时检查 security schemes（bearer、tenantcode、admin cookie、admin CSRF）、`ErrorResponse.message`、NDJSON 事件类型/sequence/终态，以及 Java 源码中认证 Header、`source`、统一错误体和 NDJSON media type 的证据。
 
-`src/test/java/ltd/qianc/iotagent/RuntimeContractGateTest.java` 另提供一个不联网的代表性行为夹具：MockMvc 经过实际 Java controller/filter/facade，使用内存存储与 fixture bridge，验证认证缺失、source、状态码、错误码和 NDJSON 序列/终态。它不是 66/69 全量 parity 结果；全量 route inventory 仍是静态证据。
+`src/test/java/com/ehe/iotagent/RuntimeContractGateTest.java` 另提供一个不联网的代表性行为夹具：MockMvc 经过实际 Java controller/filter/facade，使用内存存储与 fixture bridge，验证认证缺失、source、状态码、错误码和 NDJSON 序列/终态。它不是 66/69 全量 parity 结果；全量 route inventory 仍是静态证据。
 
 （历史门禁名为 `contract`；命令已随脚本删除。）
 当前 Java 工作树仍有任务/计划/通知等未完成路由，因此这条门禁应当明确输出 `status=failed` 和缺失路径；这不是“通过”的假证据。

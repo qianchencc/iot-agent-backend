@@ -6,6 +6,8 @@ Java 提供业务 HTTP、授权、设备／任务／报告逻辑及 MySQL 持久
 
 客户交付包含源码、测试、SQL、必要资源及许可证、依赖锁文件、非敏感配置模板和本部署文档。不含开发仓库历史、开发笔记、验收数据、运行配置、业务数据或已安装依赖。HTTP接口及字段以交付源码中的Controller、DTO和契约测试为准。
 
+Java根包为 `com.ehe.iotagent`，Maven坐标为 `com.ehe:iot-agent-backend`；保留单一后端工程及现有业务模块边界。命名空间迁移不改变HTTP接口、配置键或数据库结构；构建必须先清理旧产物（`mvn clean package`），避免旧包名class与新包名class并存。升级须替换完整JAR并重启Java，不可向旧包名的JAR增量覆盖新包名class文件。
+
 ## 环境要求
 
 - Java 21；源码构建使用 JDK 21 或兼容 JDK、Maven 3.9.x。
@@ -19,7 +21,7 @@ Java 提供业务 HTTP、授权、设备／任务／报告逻辑及 MySQL 持久
 在本目录执行：
 
 ```sh
-mvn -B -Dmaven.test.skip=true package
+mvn -B -Dmaven.test.skip=true clean package
 npm --prefix agent-sidecar ci
 npm --prefix agent-sidecar run build
 npm --prefix web/admin ci

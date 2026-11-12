@@ -4,6 +4,8 @@ Java public backend plus an independent Node `agent-sidecar`: Spring Boot 3.5 / 
 
 架构约定、模块边界纪律与 Runtime→Java 模块映射见 [AGENTS.md](./AGENTS.md)；issue tracker 与领域文档规则见 `docs/agents/`。
 
+Java命名空间统一为 `com.ehe.iotagent`，Maven groupId为 `com.ehe`，沿用客户 `com.ehe` 包名体系；artifactId、业务模块边界及接口不变。命名空间切换后的首次构建须执行 `mvn clean package` 清除旧包名class，部署使用完整重建的JAR，见[部署说明](docs/deployment.md)。
+
 ## 客户交付隔离
 
 GitHub保存完整开发历史；客户交付沿用前端仓库的 `.gitattributes`／`export-ignore` 和内部导出工具，不改开发仓库的 `.gitignore`。源码、测试、SQL、许可证、依赖锁文件和非敏感配置模板保留，开发材料及内部README排除；客户部署入口为 [docs/deployment.md](docs/deployment.md)。

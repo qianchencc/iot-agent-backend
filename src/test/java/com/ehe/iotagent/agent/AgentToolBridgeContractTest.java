@@ -1,0 +1,582 @@
+package com.ehe.iotagent.agent;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.catchThrowableOfType;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
+import com.ehe.iotagent.action.ActionDraftFacade;
+import com.ehe.iotagent.auth.PrincipalInfo;
+import com.ehe.iotagent.conversation.AgentToolContext;
+import com.ehe.iotagent.conversation.ConversationFacade;
+import com.ehe.iotagent.error.BusinessException;
+import com.ehe.iotagent.iot.DeviceCandidateQuery;
+import com.ehe.iotagent.iot.DeviceCandidateSet;
+import com.ehe.iotagent.iot.DeviceStateReadResult;
+import com.ehe.iotagent.iot.IotAdapter;
+import com.ehe.iotagent.iot.OfficeRegion;
+import com.ehe.iotagent.iot.ObservationAdapter;
+import com.ehe.iotagent.iot.ObservationOperationEnum;
+import com.ehe.iotagent.iot.ObservationRequest;
+import com.ehe.iotagent.iot.ObservationResponse;
+import com.ehe.iotagent.task.TaskFacade;
+import com.ehe.iotagent.task.TaskProjectionStore;
+import org.junit.jupiter.api.Test;
+import reactor.core.publisher.Mono;
+
+class AgentToolBridgeContractTest {
+    private final ObjectMapper mapper = new ObjectMapper();
+    private final PrincipalInfo principal = new PrincipalInfo("Bearer fixture", "TENANT", "owner-1", "fixture");
+
+    @Test
+    void lightingDraftKeepsFullInventoryOutOfTheModelHistory() {
+        ConversationFacade conversations = mock(ConversationFacade.class);
+        IotAdapter iot = mock(IotAdapter.class);
+        ActionDraftFacade actions = mock(ActionDraftFacade.class);
+        bind(conversations, "company", null);
+        var rows = java.util.stream.IntStream.rangeClosed(1, 156).mapToObj(index ->
+                Map.<String, Object>of("deviceId", "light-" + index, "kind", "lighting",
+                        "name", "灯" + index, "satisfied", index > 1)).toList();
+        var fact = new com.ehe.iotagent.action.ActionDraftFact("draft-1", 1, "PENDING_CONFIRMATION", "{}", "key");
+        when(actions.propose(any(), any(), any(), any(), any(), any(), any())).thenReturn(fact);
+        when(actions.view(fact)).thenReturn(new LinkedHashMap<>(Map.of(
+                "draftId", "draft-1", "status", "PENDING_CONFIRMATION", "actions", rows, "inventory", rows,
+                "counts", Map.of("total", 156, "operate", 1, "satisfied", 155, "excluded", 0))));
+        when(iot.resolveDeviceCandidateSet(any(), any(), any())).thenReturn(Mono.just(
+                new com.ehe.iotagent.iot.DeviceCandidateRecord("set-1", "conversation-1", "TENANT", "owner-1",
+                        com.ehe.iotagent.iot.IotSourceEnum.COMPANY, "catalog",
+                        new DeviceCandidateQuery("lighting", List.of(), "全公司", List.of(), List.of(), null, null),
+                        List.of(), false, 156, "2026-11-03T00:00:00Z", "exact", "s1")));
+        AgentToolBridge bridge = AgentToolBridgeFactory.local(conversations, iot,
+                actions, mock(TaskFacade.class), mapper, null);
+
+        Map<String, Object> result = bridge.execute(request("propose_lighting_draft",
+                Map.of("candidateSetIds", List.of("s1"), "closeOrOpen", 0)));
+
+        assertThat((List<?>) result.get("inventory")).hasSize(156);
+        assertThat(result.get("modelResult")).isInstanceOf(Map.class);
+        var model = mapper.convertValue(result.get("modelResult"), Map.class);
+        assertThat(model).containsEntry("scopeCount", 156).containsEntry("actionCount", 1)
+                .containsEntry("alreadySatisfiedCount", 155).containsEntry("excludedCount", 0);
+        assertThat(model).doesNotContainKeys("inventory", "actions", "selectedActionIds");
+        assertThat(model.toString()).doesNotContain("light-1");
+    }
+
+    @Test
+    void wholeCandidateReadCannotBeMixedWithAnExplicitDeviceSelection() {
+        ConversationFacade conversations = mock(ConversationFacade.class);
+        IotAdapter iot = mock(IotAdapter.class);
+        bind(conversations, "company", null);
+        AgentToolBridge bridge = AgentToolBridgeFactory.local(conversations, iot,
+                mock(ActionDraftFacade.class), mock(TaskFacade.class), mapper, null);
+        BusinessException error = catchThrowableOfType(() -> bridge.execute(request("read_device_states",
+                Map.of("candidateSets", List.of(Map.of("candidateSetId", "set-1",
+                        "all", true, "deviceIds", List.of("selected-only")))))), BusinessException.class);
+        assertThat(error.code()).isEqualTo("INVALID_DEVICE_REFERENCE");
+    }
+
+    @Test
+    void officeRegionNameSearchReturnsOnlyMatchingAuthorizedRegions() {
+        ConversationFacade conversations = mock(ConversationFacade.class);
+        IotAdapter iot = mock(IotAdapter.class);
+        bind(conversations, "office", "region-1");
+        when(iot.loadOfficeRegions(any())).thenReturn(Mono.just(List.of(
+                new OfficeRegion("region-1", "26楼运营办公区"),
+                new OfficeRegion("region-2", "杨国英办公室"))));
+        AgentToolBridge bridge = AgentToolBridgeFactory.local(conversations, iot,
+                mock(ActionDraftFacade.class), mock(TaskFacade.class), mapper, null);
+
+        Map<String, Object> result = bridge.execute(request("list_office_regions",
+                Map.of("nameContains", "杨国英")));
+
+        assertThat(result.get("regions")).isEqualTo(List.of(new OfficeRegion("region-2", "杨国英办公室")));
+    }
+
+
+    @Test
+    void alertLedgersOverlapAndKeepPartialResultsInRequestedOrder() throws Exception {
+        ConversationFacade conversations = mock(ConversationFacade.class);
+        bind(conversations, "company", null);
+        var started = new java.util.concurrent.CountDownLatch(3);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        ObservationAdapter observations = query -> Mono.fromCallable(() -> {
+            String type = query.parameters().get("type");
+            started.countDown();
+            if (!release.await(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                throw new IllegalStateException("ledger fixture was not released");
+            }
+            if ("gas".equals(type)) throw new BusinessException("AGENT_TOOL_UNAVAILABLE", "燃气台账暂不可用", 503);
+            return ObservationResponse.available(Map.of("items", List.of(Map.of("eventId", type + "-1")),
+                    "total", 1, "scanned", 1, "coverageComplete", true));
+        }).subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic());
+        AgentToolBridge bridge = AgentToolBridgeFactory.local(conversations, mock(IotAdapter.class), observations,
+                mock(TaskProjectionStore.class), mock(ActionDraftFacade.class), mock(TaskFacade.class), mapper, null);
+        var result = new java.util.concurrent.FutureTask<>(() -> bridge.execute(request("query_alerts",
+                Map.of("types", List.of("smoke", "gas", "water")))));
+        Thread caller = Thread.ofVirtual().start(result);
+        try {
+            assertThat(started.await(3, java.util.concurrent.TimeUnit.SECONDS))
+                    .as("independent smoke, gas and water ledgers start without waiting for each other").isTrue();
+            release.countDown();
+            Map<String, Object> value = result.get(5, java.util.concurrent.TimeUnit.SECONDS);
+            assertThat(value).containsEntry("total", 2).containsEntry("summaryStatus", "partial")
+                    .containsEntry("coverageComplete", false);
+            assertThat(value.get("items")).isEqualTo(List.of(
+                    Map.of("eventId", "smoke-1"), Map.of("eventId", "water-1")));
+            assertThat(value.get("failures").toString()).contains("gas").contains("燃气");
+        } finally {
+            release.countDown();
+            caller.join(5000);
+        }
+    }
+
+    @Test
+    void aggregatesRequestedAlertTypesWithoutMaskingMissingTotals() {
+        ConversationFacade conversations = mock(ConversationFacade.class);
+        ObservationAdapter observations = mock(ObservationAdapter.class);
+        bind(conversations, "company", null);
+        when(observations.read(any(ObservationRequest.class))).thenAnswer(invocation -> {
+            ObservationRequest query = invocation.getArgument(0);
+            return switch (query.parameters().get("type")) {
+                case "smoke" -> Mono.just(ObservationResponse.available(Map.of(
+                        "items", List.of(Map.of("eventId", "smoke-1")),
+                        "total", 2, "scanned", 5, "excludedCount", 0, "coverageComplete", true)));
+                case "gas" -> {
+                    Map<String, Object> gas = new LinkedHashMap<>();
+                    gas.put("items", List.of());
+                    gas.put("total", null);
+                    gas.put("scanned", 0);
+                    gas.put("excludedCount", 0);
+                    gas.put("coverageComplete", true);
+                    yield Mono.just(ObservationResponse.available(gas));
+                }
+                default -> Mono.error(new BusinessException("AGENT_TOOL_UNAVAILABLE", "水浸台账暂不可用", 503));
+            };
+        });
+        AgentToolBridge bridge = AgentToolBridgeFactory.local(conversations, mock(IotAdapter.class), observations,
+                mock(TaskProjectionStore.class), mock(ActionDraftFacade.class), mock(TaskFacade.class), mapper, null);
+
+        Map<String, Object> result = bridge.execute(request("query_alerts",
+                Map.of("types", List.of("smoke", "gas", "water"))));
+
+        assertThat(result).containsEntry("total", 2)
+                .containsEntry("summaryStatus", "partial")
+                .containsEntry("coverageComplete", false);
+        assertThat(result.get("items")).isEqualTo(List.of(Map.of("eventId", "smoke-1")));
+        assertThat(result.get("failures").toString()).contains("water").contains("水浸");
+        verify(observations, org.mockito.Mockito.times(3)).read(any(ObservationRequest.class));
+    }
+
+    @Test
+    void waterAlertCoverageKeepsModelFactsAndSuppliesExclusionMeaning() {
+        ConversationFacade conversations = mock(ConversationFacade.class);
+        ObservationAdapter observations = mock(ObservationAdapter.class);
+        bind(conversations, "company", null);
+        when(observations.read(any(ObservationRequest.class))).thenAnswer(invocation -> {
+            Map<String, Object> water = new LinkedHashMap<>();
+            water.put("items", List.of());
+            water.put("total", null);
+            water.put("scanned", 300);
+            water.put("excludedCount", 289);
+            water.put("unknownCount", 11);
+            water.put("coverageComplete", false);
+            water.put("nextCursor", "opaque-continuation");
+            water.put("window", Map.of("from", "2026-11-02T00:00:00+08:00",
+                    "to", "2099-01-01T00:00:00.000+08:00"));
+            return Mono.just(ObservationResponse.available(water));
+        });
+        AgentToolBridge bridge = AgentToolBridgeFactory.local(conversations, mock(IotAdapter.class), observations,
+                mock(TaskProjectionStore.class), mock(ActionDraftFacade.class), mock(TaskFacade.class), mapper, null);
+
+        String currentTime = java.time.OffsetDateTime.now(java.time.ZoneOffset.UTC).format(
+                java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSXXX"));
+        Map<String, Object> result = bridge.execute(request("query_alerts",
+                Map.of("types", List.of("water"), "from", "2026-11-02T00:00:00+08:00", "to", currentTime)));
+
+        assertThat(result).containsEntry("coverageComplete", false)
+                .containsEntry("scanned", 300).containsEntry("excludedCount", 289)
+                .containsEntry("excludedCountNote", "excludedCount 是在查询的授权设备和所请求告警类型范围内被过滤的记录数；"
+                        + "不是时间窗外的记录数。窗口外记录另行处理，不计入该字段。");
+        Map<String, Object> model = mapper.convertValue(result.get("modelResult"), Map.class);
+        assertThat(model).containsEntry("excludedCountNote", result.get("excludedCountNote"))
+                .containsEntry("scanned", 300).containsEntry("excludedCount", 289)
+                .containsEntry("coverageComplete", false);
+    }
+
+    @Test
+    void currentOfficeRegionIsBoundIntoPersistedCandidateQuery() {
+        ConversationFacade conversations = mock(ConversationFacade.class);
+        IotAdapter iot = mock(IotAdapter.class);
+        bind(conversations, "office", "region-1");
+        AtomicReference<DeviceCandidateQuery> query = new AtomicReference<>();
+        AtomicReference<com.ehe.iotagent.iot.DeviceCandidateBinding> binding = new AtomicReference<>();
+        when(iot.findDeviceCandidates(any(), any(), any())).thenAnswer(invocation -> {
+            query.set(invocation.getArgument(1));
+            binding.set(invocation.getArgument(2));
+            return Mono.just(new DeviceCandidateSet("set-1", query.get(), List.of(), true, 0));
+        });
+        AgentToolBridge bridge = AgentToolBridgeFactory.local(conversations, iot,
+                mock(ActionDraftFacade.class), mock(TaskFacade.class), mapper, null);
+
+        bridge.execute(request("find_device_candidates", Map.of(
+                "scopeText", "当前位置", "kind", "lighting", "deviceText", "灯")));
+
+        assertThat(query.get().regionId()).isEqualTo("region-1");
+        assertThat(query.get().scopeText()).isNull();
+        assertThat(binding.get().conversationId()).isEqualTo("conversation-1");
+    }
+
+    @Test
+    void canonicalFocusRegionNameBindsVerifiedRegionMetadataInsteadOfFuzzyAddress() {
+        DeviceCandidateQuery query = officeFind("region-1",
+                Map.of("kind", "lighting", "scopeText", "26 楼运营办公区", "scopeTerms", List.of("26楼运营办公区")),
+                List.of(new OfficeRegion("region-1", "26楼运营办公区"),
+                        new OfficeRegion("region-2", "杨国英办公室")));
+
+        assertThat(query.regionId()).isEqualTo("region-1");
+        assertThat(query.scopeText()).isNull();
+        assertThat(query.scopeTerms()).isEmpty();
+    }
+
+    @Test
+    void genericCurrentPhraseBindsTheFocusRegionAndKeepsRealSubsetFilters() {
+        DeviceCandidateQuery query = officeFind("region-1", Map.of("kind", "lighting",
+                "scopeText", "当前区域", "scopeTerms", List.of("26楼运营办公区", "前台"), "nameHints", List.of("筒灯")),
+                List.of(new OfficeRegion("region-1", "26楼运营办公区")));
+
+        assertThat(query.regionId()).isEqualTo("region-1");
+        assertThat(query.scopeText()).isNull();
+        assertThat(query.scopeTerms()).containsExactly("前台");
+        assertThat(query.nameHints()).containsExactly("筒灯");
+    }
+
+    @Test
+    void absentScopeBindsTheFocusRegionWithoutNeedingRegionMetadata() {
+        DeviceCandidateQuery query = officeFind("region-1", Map.of("kind", "lighting"), null);
+
+        assertThat(query.regionId()).isEqualTo("region-1");
+        assertThat(query.scopeText()).isNull();
+    }
+
+    @Test
+    void narrowerLocationTextStaysAFilterInsideTheFocusRegion() {
+        DeviceCandidateQuery query = officeFind("region-1",
+                Map.of("kind", "lighting", "scopeText", "运营办公区前台"),
+                List.of(new OfficeRegion("region-1", "26楼运营办公区"),
+                        new OfficeRegion("region-2", "杨国英办公室")));
+
+        assertThat(query.regionId()).isEqualTo("region-1");
+        assertThat(query.scopeText()).isEqualTo("运营办公区前台");
+    }
+
+    @Test
+    void explicitlyNamedOtherAuthorizedRegionSelectsThatRegionNotTheFocus() {
+        DeviceCandidateQuery query = officeFind("region-1",
+                Map.of("kind", "lighting", "scopeText", "杨国英办公室"),
+                List.of(new OfficeRegion("region-1", "26楼运营办公区"),
+                        new OfficeRegion("region-2", "杨国英办公室")));
+
+        assertThat(query.regionId()).isEqualTo("region-2");
+        assertThat(query.scopeText()).isNull();
+    }
+
+    @Test
+    void unknownRegionTextStaysFocusBoundInsteadOfInventingAliases() {
+        DeviceCandidateQuery query = officeFind("region-1",
+                Map.of("kind", "lighting", "scopeText", "27楼行政办公区"),
+                List.of(new OfficeRegion("region-1", "26楼运营办公区"),
+                        new OfficeRegion("region-2", "杨国英办公室")));
+
+        assertThat(query.regionId()).isEqualTo("region-1");
+        assertThat(query.scopeText()).isEqualTo("27楼行政办公区");
+    }
+
+    @Test
+    void punctuationInCanonicalRegionNamesCannotAliasAnotherAuthorizedRegion() {
+        DeviceCandidateQuery query = officeFind("region-1",
+                Map.of("kind", "lighting", "scopeText", "AB办公室"),
+                List.of(new OfficeRegion("region-1", "A-B办公室"),
+                        new OfficeRegion("region-2", "AB办公室")));
+
+        assertThat(query.regionId()).isEqualTo("region-2");
+        assertThat(query.scopeText()).isNull();
+    }
+
+    @Test
+    void duplicateOtherRegionNamesCannotSilentlySelectTheFirstRegion() {
+        DeviceCandidateQuery query = officeFind("region-1",
+                Map.of("kind", "lighting", "scopeText", "共享会议室"),
+                List.of(new OfficeRegion("region-1", "26楼运营办公区"),
+                        new OfficeRegion("region-2", "共享会议室"),
+                        new OfficeRegion("region-3", "共享会议室")));
+
+        assertThat(query.regionId()).isEqualTo("region-1");
+        assertThat(query.scopeText()).isEqualTo("共享会议室");
+    }
+
+
+    @Test
+    void companyEnergyToolsUseMeterReportWithBoundSourceAndWindow() {
+        ConversationFacade conversations = mock(ConversationFacade.class);
+        ObservationAdapter observations = mock(ObservationAdapter.class);
+        bind(conversations, "company", null);
+        AtomicReference<ObservationRequest> request = new AtomicReference<>();
+        when(observations.read(any(ObservationRequest.class))).thenAnswer(invocation -> {
+            request.set(invocation.getArgument(0));
+            return Mono.just(ObservationResponse.available(Map.of("total", Map.of("value", 1))));
+        });
+        AgentToolBridge bridge = AgentToolBridgeFactory.local(conversations, mock(IotAdapter.class), observations,
+                mock(TaskProjectionStore.class), mock(ActionDraftFacade.class), mock(TaskFacade.class), mapper, null);
+
+        bridge.execute(request("summarize_energy", Map.of(
+                "scope", Map.of("level", "floor", "floor", "26楼"),
+                "from", "2026-10-01T00:00:00+08:00", "to", "2026-10-02T00:00:00+08:00")));
+
+        assertThat(request.get().operation()).isEqualTo(ObservationOperationEnum.COMPANY_METER_REPORT);
+        assertThat(request.get().identity().source().wireValue()).isEqualTo("company");
+        assertThat(request.get().parameters()).containsEntry("scopeLevel", "floor")
+                .containsEntry("floor", "26楼")
+                .containsEntry("kind", "statistics")
+                .containsEntry("from", "2026-10-01T00:00:00+08:00")
+                .containsEntry("to", "2026-10-02T00:00:00+08:00");
+    }
+
+    @Test
+    void energyResultKeepsFullMeterRowsForCardsButHidesThemFromModelProjection() {
+        ConversationFacade conversations = mock(ConversationFacade.class);
+        ObservationAdapter observations = mock(ObservationAdapter.class);
+        bind(conversations, "company", null);
+        Map<String, Object> meter = new LinkedHashMap<>(Map.of(
+                "id", "meter-1", "name", "27楼总办公室", "areaName", "27楼",
+                "value", 5.39, "status", "ok",
+                "observed", Map.of("fromSample", Map.of("readTime", "2026-11-03T20:00:00+08:00"),
+                        "toSample", Map.of("readTime", "2026-11-04T20:00:00+08:00"))));
+        when(observations.read(any(ObservationRequest.class))).thenReturn(Mono.just(
+                ObservationResponse.available(new LinkedHashMap<>(Map.of(
+                        "type", "meter-report", "reportId", "report-1", "kind", "statistics",
+                        "params", Map.of("span", Map.of("requested", Map.of(
+                                "from", "2026-11-03T20:00:00+08:00", "to", "2026-11-04T20:00:00+08:00")),
+                                "scope", Map.of("level", "all", "label", "公司全部电表", "meterCount", 1)),
+                        "total", Map.of("value", 5.39, "unit", "度"),
+                        "coverage", Map.of("meters", 1, "dataMeters", 1),
+                        "meters", List.of(meter), "authorizationMeterIds", List.of("meter-1"))))));
+        AgentToolBridge bridge = AgentToolBridgeFactory.local(conversations, mock(IotAdapter.class),
+                observations, mock(TaskProjectionStore.class), mock(ActionDraftFacade.class),
+                mock(TaskFacade.class), mapper, null);
+
+        Map<String, Object> result = bridge.execute(request("summarize_energy", Map.of(
+                "scope", Map.of("level", "all"),
+                "from", "2026-11-03T20:00:00+08:00", "to", "2026-11-04T20:00:00+08:00")));
+
+        assertThat(result.get("meters")).isEqualTo(List.of(meter));
+        Map<String, Object> model = mapper.convertValue(result.get("modelResult"), Map.class);
+        assertThat(model).doesNotContainKey("meters");
+        assertThat(model.toString()).doesNotContain("27楼总办公室");
+    }
+
+    @Test
+    void weeklyEnergyFactsKeepRealSegmentsMetricsAndLocationEvidenceForTheModel() {
+        ConversationFacade conversations = mock(ConversationFacade.class);
+        bind(conversations, "company", null);
+        var start = java.time.LocalDate.of(2026, 8, 1);
+        List<Map<String, Object>> weeks = java.util.stream.IntStream.range(0, 9).mapToObj(index -> {
+            int days = index == 8 ? 5 : 7;
+            return Map.<String, Object>of("from", start.plusDays(index * 7L) + "T00:00:00+08:00",
+                    "to", start.plusDays(index * 7L + days) + "T00:00:00+08:00",
+                    "days", days, "value", days * 10.0, "partial", index == 8);
+        }).toList();
+        Map<String, Object> report = new LinkedHashMap<>(Map.of(
+                "type", "meter-report", "kind", "statistics", "reportId", "weekly-report",
+                "params", Map.of("grain", "week", "span", Map.of("requested", Map.of(
+                        "from", "2026-08-01T00:00:00+08:00", "to", "2026-10-01T00:00:00+08:00"))),
+                "total", Map.of("value", 610.0, "unit", "度"),
+                "coverage", Map.of("meters", 1, "dataMeters", 1),
+                "buckets", Map.of("grain", "week", "items", weeks),
+                "metrics", List.of(Map.of("key", "dailyAvg", "value", 10.0, "unit", "度/日")),
+                "composition", Map.of("kind", "ranking", "rows", List.of(
+                        Map.of("label", "测试位置甲", "value", 400.0),
+                        Map.of("label", "测试位置乙", "value", 210.0)))));
+        ObservationAdapter observations = query -> Mono.just(ObservationResponse.available(report));
+        AgentToolBridge bridge = AgentToolBridgeFactory.local(conversations, mock(IotAdapter.class),
+                observations, mock(TaskProjectionStore.class), mock(ActionDraftFacade.class),
+                mock(TaskFacade.class), mapper, null);
+
+        Map<String, Object> result = bridge.execute(request("summarize_energy", Map.of(
+                "scope", Map.of("level", "all"), "grain", "week",
+                "from", "2026-08-01T00:00:00+08:00", "to", "2026-10-01T00:00:00+08:00")));
+        var model = mapper.valueToTree(result.get("modelResult"));
+        assertThat(model.path("buckets").path("count").asInt()).isEqualTo(9);
+        assertThat(model.path("dataProvenance").asText()).isEqualTo("upstream-simulated-backfill");
+        assertThat(result.get("dataProvenance")).isEqualTo("upstream-simulated-backfill");
+        assertThat(model.path("buckets").path("grain").asText()).isEqualTo("week");
+        assertThat(model.path("buckets").path("items").get(8).path("days").asInt()).isEqualTo(5);
+        assertThat(model.path("buckets").path("items").get(8).path("value").asDouble()).isEqualTo(50.0);
+        assertThat(model.path("metrics").get(0).path("value").asDouble()).isEqualTo(10.0);
+        assertThat(model.path("composition").path("rows").get(0).path("label").asText()).isEqualTo("测试位置甲");
+        assertThat(model.path("composition").path("rows").get(0).path("value").asDouble()).isEqualTo(400.0);
+        assertThat(mapper.valueToTree(result).path("buckets").has("count")).isFalse();
+    }
+
+
+    @Test
+    void truncatedCandidateDisplayDoesNotMeanStoredMembersAreIncomplete() {
+        ConversationFacade conversations = mock(ConversationFacade.class);
+        IotAdapter iot = mock(IotAdapter.class);
+        bind(conversations, "company", null);
+        var query = new DeviceCandidateQuery("lighting", List.of(), "26楼", List.of(), List.of(), null, null);
+        var members = java.util.stream.IntStream.rangeClosed(1, 81)
+                .mapToObj(index -> new com.ehe.iotagent.iot.AuthorizedDevice(
+                        "light-" + index, "lighting", "照明" + index, "26楼", false)).toList();
+        when(iot.findDeviceCandidates(any(), any(), any())).thenReturn(Mono.just(
+                new DeviceCandidateSet("set-1", query, members.subList(0, 50), false, 81,
+                        null, List.of(), List.of(), null, members)));
+        AgentToolBridge bridge = AgentToolBridgeFactory.local(conversations, iot,
+                mock(ActionDraftFacade.class), mock(TaskFacade.class), mapper, null);
+
+        Map<String, Object> result = bridge.execute(request("find_device_candidates",
+                Map.of("kind", "lighting", "scopeText", "26楼")));
+
+        assertThat(result).containsEntry("totalMatches", 81).containsEntry("complete", false);
+        assertThat(((Map<?, ?>) result.get("modelResult")).get("membersComplete")).isEqualTo(true);
+        assertThat((List<?>) ((Map<?, ?>) result.get("modelResult")).get("devices")).hasSize(10);
+        assertThat((List<?>) result.get("devices")).hasSize(50);
+    }
+
+    @Test
+    void readDeviceStatesAcceptsRuntimeCandidateSetShape() {
+        ConversationFacade conversations = mock(ConversationFacade.class);
+        IotAdapter iot = mock(IotAdapter.class);
+        bind(conversations, "office", null);
+        when(iot.resolveDeviceCandidateSet(any(), org.mockito.ArgumentMatchers.eq("s1"),
+                org.mockito.ArgumentMatchers.eq("conversation-1"))).thenAnswer(invocation -> {
+            var identity = (com.ehe.iotagent.iot.RequestIdentity) invocation.getArgument(0);
+            return Mono.just(new com.ehe.iotagent.iot.DeviceCandidateRecord("set-1", "conversation-1",
+                    identity.tenantCode(), identity.ownerKey(), identity.source(), "catalog",
+                    new DeviceCandidateQuery("ac", List.of(), null, List.of(), List.of(), null, null),
+                    List.of(new com.ehe.iotagent.iot.AuthorizedDevice("device-1", "ac", "空调", "26楼", false)),
+                    true, 1, "2026-11-03T00:00:00Z", "exact", "s1"));
+        });
+        when(iot.readDeviceStates(any(), any(), org.mockito.ArgumentMatchers.eq("conversation-1")))
+                .thenReturn(Mono.just(new DeviceStateReadResult(
+                        Map.of("device-1", Map.of("power", "on")), "2026-10-30T00:00:00Z")));
+        AgentToolBridge bridge = AgentToolBridgeFactory.local(conversations, iot,
+                mock(ActionDraftFacade.class), mock(TaskFacade.class), mapper, null);
+
+        Map<String, Object> result = bridge.execute(request("read_device_states",
+                Map.of("candidateSets", List.of(Map.of("candidateSetId", "s1", "deviceIds", List.of("d1_1"))))));
+
+        assertThat(result).containsEntry("observedAt", "2026-10-30T00:00:00Z");
+        assertThat(result.get("states")).isEqualTo(Map.of("device-1", Map.of("power", "on")));
+    }
+
+    @Test
+    void deviceDetailsCannotResolveADeviceOutsideTheReferencedCandidateSet() {
+        ConversationFacade conversations = mock(ConversationFacade.class);
+        IotAdapter iot = mock(IotAdapter.class);
+        bind(conversations, "company", null);
+        when(iot.resolveDeviceCandidateSet(any(), org.mockito.ArgumentMatchers.eq("s1"),
+                org.mockito.ArgumentMatchers.eq("conversation-1"))).thenAnswer(invocation -> {
+            var identity = (com.ehe.iotagent.iot.RequestIdentity) invocation.getArgument(0);
+            return Mono.just(new com.ehe.iotagent.iot.DeviceCandidateRecord("set-1", "conversation-1",
+                    identity.tenantCode(), identity.ownerKey(), identity.source(), "catalog",
+                    new DeviceCandidateQuery("lighting", List.of(), null, List.of(), List.of(), null, null),
+                    List.of(new com.ehe.iotagent.iot.AuthorizedDevice("light-1", "lighting", "照明", "26楼", false)),
+                    true, 1, "2026-11-03T00:00:00Z", "exact", "s1"));
+        });
+        AgentToolBridge bridge = AgentToolBridgeFactory.local(conversations, iot,
+                mock(ActionDraftFacade.class), mock(TaskFacade.class), mapper, null);
+
+        BusinessException error = catchThrowableOfType(() -> bridge.execute(request("get_device_details",
+                Map.of("candidateSetId", "s1", "deviceIds", List.of("foreign-light")))), BusinessException.class);
+
+        assertThat(error.code()).isEqualTo("INVALID_DEVICE_REFERENCE");
+    }
+
+
+    @Test
+    void prepareVideoPlaybackUsesBoundCompanySourceAndNormalizesWindow() {
+        ConversationFacade conversations = mock(ConversationFacade.class);
+        IotAdapter iot = mock(IotAdapter.class);
+        bind(conversations, "company", null);
+        when(iot.prepareVideoPlayback(any(), any(), any())).thenReturn(Mono.just(
+                new com.ehe.iotagent.iot.VideoPlaybackPreparation("company", "camera-1", "大堂摄像头", "一层大堂",
+                        "2026-10-16T10:57:00.000+08:00", "2026-10-16T11:27:00.000+08:00")));
+        AgentToolBridge bridge = AgentToolBridgeFactory.local(conversations, iot,
+                mock(ActionDraftFacade.class), mock(TaskFacade.class), mapper, null);
+
+        Map<String, Object> result = bridge.execute(request("prepare_video_playback", Map.of(
+                "deviceId", "camera-1",
+                "beginTime", "2026-10-16T02:57:00Z", "endTime", "2026-10-16T03:27:00Z")));
+
+        assertThat(result).containsKey("videoPlayback");
+        assertThat(result.get("videoPlayback").toString()).contains("2026-10-16T10:57:00.000+08:00");
+    }
+
+    @Test
+    void rejectsLegacyExecutionAliasesAndMismatchedBoundContext() {
+        ConversationFacade conversations = mock(ConversationFacade.class);
+        bind(conversations, "office", "region-1");
+        AgentToolBridge bridge = AgentToolBridgeFactory.local(conversations, mock(IotAdapter.class),
+                mock(ActionDraftFacade.class), mock(TaskFacade.class), mapper, null);
+
+        BusinessException alias = catchThrowableOfType(() -> bridge.execute(request("confirm_action",
+                Map.of("draftId", "draft-1"))), BusinessException.class);
+        assertThat(alias.code()).isEqualTo("AGENT_TOOL_UNAVAILABLE");
+
+        BusinessException tamperedSource = catchThrowableOfType(() -> bridge.execute(request("read_device_states",
+                Map.of("source", "company", "candidateSets", List.of(Map.of("candidateSetId", "s", "deviceIds", List.of("d")))))),
+                BusinessException.class);
+        assertThat(tamperedSource.code()).isEqualTo("AGENT_TOOL_CONTEXT_MISMATCH");
+
+        BusinessException tamperedFocus = catchThrowableOfType(() -> bridge.execute(request("find_device_candidates",
+                Map.of("focusRegionId", "region-2", "kind", "lighting"))), BusinessException.class);
+        assertThat(tamperedFocus.code()).isEqualTo("AGENT_TOOL_CONTEXT_MISMATCH");
+
+        BusinessException unknownArgument = catchThrowableOfType(() -> bridge.execute(request("read_action_draft",
+                Map.of("draftId", "draft-1", "tenantCode", "other"))), BusinessException.class);
+        assertThat(unknownArgument.code()).isEqualTo("AGENT_TOOL_CONTEXT_MISMATCH");
+    }
+
+    private void bind(ConversationFacade conversations, String source, String focusRegionId) {
+        when(conversations.toolContext("tool-1", "conversation-1", "turn-1", "run-1"))
+                .thenReturn(new AgentToolContext(principal, "run-1", "conversation-1", "turn-1",
+                        source, focusRegionId, Map.of()));
+    }
+
+    private DeviceCandidateQuery officeFind(String focusRegionId, Map<String, Object> arguments,
+            List<OfficeRegion> regions) {
+        ConversationFacade conversations = mock(ConversationFacade.class);
+        IotAdapter iot = mock(IotAdapter.class);
+        bind(conversations, "office", focusRegionId);
+        AtomicReference<DeviceCandidateQuery> captured = new AtomicReference<>();
+        when(iot.findDeviceCandidates(any(), any(), any())).thenAnswer(invocation -> {
+            captured.set(invocation.getArgument(1));
+            return Mono.just(new DeviceCandidateSet("set-1", captured.get(), List.of(), true, 0));
+        });
+        if (regions != null) when(iot.loadOfficeRegions(any())).thenReturn(Mono.just(regions));
+        AgentToolBridge bridge = AgentToolBridgeFactory.local(conversations, iot,
+                mock(ActionDraftFacade.class), mock(TaskFacade.class), mapper, null);
+        bridge.execute(request("find_device_candidates", arguments));
+        return captured.get();
+    }
+
+    private static Map<String, Object> request(String toolName, Map<String, Object> arguments) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("runId", "run-1");
+        body.put("toolContextId", "tool-1");
+        body.put("conversationId", "conversation-1");
+        body.put("turnId", "turn-1");
+        body.put("toolCallId", "call-1");
+        body.put("toolName", toolName);
+        body.put("arguments", arguments);
+        return body;
+    }
+}

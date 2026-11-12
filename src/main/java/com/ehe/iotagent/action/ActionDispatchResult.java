@@ -1,0 +1,27 @@
+package com.ehe.iotagent.action;
+
+import java.util.Objects;
+
+/**
+ * Adapter result. {@code dispatchStarted} is retained separately because an
+ * exception after dispatch cannot be reported as safely not-dispatched.
+ */
+public record ActionDispatchResult(
+        ActionDraftStatusEnum status,
+        String resultJson,
+        boolean dispatchStarted,
+        ActionReceiptOutcomeEnum receiptOutcome) {
+
+    public ActionDispatchResult(ActionDraftStatusEnum status, String resultJson, boolean dispatchStarted) {
+        this(status, resultJson, dispatchStarted, null);
+    }
+
+    public ActionDispatchResult {
+        Objects.requireNonNull(status, "status");
+        if (!status.terminal() || status == ActionDraftStatusEnum.CANCELLED || status == ActionDraftStatusEnum.EXPIRED) {
+            throw new IllegalArgumentException("Gateway result must be an execution terminal status");
+        }
+        resultJson = resultJson == null || resultJson.isBlank() ? "{}" : resultJson;
+        receiptOutcome = receiptOutcome == null ? ActionReceiptOutcomeEnum.UNKNOWN : receiptOutcome;
+    }
+}

@@ -60,12 +60,12 @@ curl -s http://127.0.0.1:3381/healthz
 
 ## 模块边界（deep module 纪律）
 
-- 每个业务模块是一个顶层包 `ltd.qianc.iotagent.<module>`；**包根下的类是唯一入口（entry points）**，外部只准 import 这些。
+- 每个业务模块是一个顶层包 `com.ehe.iotagent.<module>`；**包根下的类是唯一入口（entry points）**，外部只准 import 这些。
 - 实现一律放 `<module>.internal` 及其他子包；外部（其他模块、测试）禁止触碰子包里的类。internal 类需标 `public`（Java 无包级友元，编译需跨包可达），实际可访问性由 ArchUnit 强制。
 - 宁可暴露多个小入口类，不要做一个 re-export 全子树的大 barrel。
 - 增加入口 = 在模块包根加类；隐藏实现 = 挪进子包，规则永不改配置。
 - 技术规范的 MVC 分层（controller/service/mapper/domain）放模块 `internal/` 下；controller 按端分子包（`controller/agent/`、`controller/admin/`）。HTTP 路由是运行时入口，包根类是代码级入口——外部模块只 import 包根，永不 import controller。
-- 强制：`src/test/java/ltd/qianc/iotagent/ArchitectureTest.java`（入口边界 / 测试走入口 / 模块间禁循环）。
+- 强制：`src/test/java/com/ehe/iotagent/ArchitectureTest.java`（入口边界 / 测试走入口 / 模块间禁循环）。
 - 分层（哪个模块准依赖哪个）暂不约束，模块数量稳定后再补——对应依赖规约里的预留位。
 
 ## 目标模块映射（runtime → Java）
