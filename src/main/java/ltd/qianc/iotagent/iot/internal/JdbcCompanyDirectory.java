@@ -93,7 +93,7 @@ public final class JdbcCompanyDirectory implements DeviceDirectory {
         this.observations = new JdbcDeviceObservations(jdbc, transactions, mapper, this::loadBatch, this::scopeKey, clock);
         this.energyHistory = new JdbcEnergyHistory(jdbc, transactions, mapper, this::loadBatch, this::scopeKey, clock);
         this.environmentHistory = new JdbcEnvironmentHistory(jdbc, transactions, mapper, this::loadBatch, this::scopeKey, observations, clock);
-        this.safetyHistory = new JdbcSafetyHistory(jdbc, transactions, mapper, this::loadBatch, this::scopeKey, catalog::safetyMetadata, clock, safetyCursorKey);
+        this.safetyHistory = new JdbcSafetyHistory(jdbc, transactions, mapper, this::loadBatch, this::scopeKey, clock, safetyCursorKey);
         this.cadence = new ScheduledThreadPoolExecutor(3, task -> {
             Thread thread = new Thread(task, "local-company-sync");
             thread.setDaemon(true);

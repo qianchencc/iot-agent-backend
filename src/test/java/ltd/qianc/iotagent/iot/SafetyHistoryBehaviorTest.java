@@ -142,7 +142,7 @@ class SafetyHistoryBehaviorTest {
         }
     }
 
-    @Test void currentNamesFollowTheHardwareCatalogWithoutRewritingOldEventFacts() {
+    @Test void currentMetadataUsesFireBusinessSourceWithoutMixingHardwareCatalog() {
         try (var f = new Fixture()) {
             f.grants = List.of(new AuthorizedDevice("gas", "safety", "旧业务燃气设备", "旧业务位置", true,
                     null, "gas", "fixture-hardware", null, List.of(), List.of(), Map.of()));
@@ -153,14 +153,16 @@ class SafetyHistoryBehaviorTest {
             f.offline = true;
             Map<?, ?> listed = (Map<?, ?>) ((List<?>) f.read("gas", null, null).payload().get("items")).getFirst();
             assertEquals("测试记录设备", listed.get("deviceName"));
-            assertEquals("当前燃气设备", ((Map<?, ?>) listed.get("currentDevice")).get("name"));
-            assertEquals("当前安装位置", ((Map<?, ?>) listed.get("currentDevice")).get("location"));
+            assertEquals("旧业务燃气设备", ((Map<?, ?>) listed.get("currentDevice")).get("name"));
+            assertEquals("旧业务位置", ((Map<?, ?>) listed.get("currentDevice")).get("location"));
             assertEquals("测试记录设备", listed.get("recordedDeviceName"));
             assertEquals("original-event", listed.get("eventId"));
             assertEquals("2020-01-01T00:00:00Z", listed.get("occurredAt"));
             assertEquals(calls, f.calls.get(), "reading current display information must not collect alarm history");
             f.offline = false;
             f.catalog = List.of(new DeviceCatalogSource.Entry("fixture-hardware", "再次更名燃气设备", "safety", "新安装位置"));
+            f.grants = List.of(new AuthorizedDevice("gas", "safety", "更名后的消防燃气设备", "消防更新位置", true,
+                    null, "gas", "fixture-hardware", null, List.of(), List.of(), Map.of()));
             f.clock.advance(61);
             f.directory.synchronizeDue();
             calls = f.calls.get();
@@ -172,8 +174,8 @@ class SafetyHistoryBehaviorTest {
             for (var payload : List.of(detail, latest)) {
                 Map<?, ?> record = (Map<?, ?>) payload.get("record");
                 assertEquals("测试记录设备", record.get("deviceName"));
-                assertEquals("再次更名燃气设备", ((Map<?, ?>) record.get("currentDevice")).get("name"));
-                assertEquals("新安装位置", record.get("location"));
+                assertEquals("更名后的消防燃气设备", ((Map<?, ?>) record.get("currentDevice")).get("name"));
+                assertEquals("消防更新位置", record.get("location"));
                 assertEquals("测试记录设备", record.get("recordedDeviceName"));
                 assertEquals("original-event", record.get("eventId"));
                 assertEquals("2020-01-01T00:00:00Z", record.get("occurredAt"));
@@ -215,7 +217,7 @@ class SafetyHistoryBehaviorTest {
             assertEquals("2020-01-01T08:15:00.000+08:00", candidate.get("endTime"));
             Map<?, ?> record = (Map<?, ?>) payload.get("record");
             assertEquals("10楼旧位置燃气感应器", record.get("deviceName"));
-            assertEquals("20楼当前燃气设备", ((Map<?, ?>) record.get("currentDevice")).get("name"));
+            assertEquals("10楼旧燃气设备", ((Map<?, ?>) record.get("currentDevice")).get("name"));
             assertEquals("2020-01-01T00:00:00Z", record.get("occurredAt"));
             assertEquals("old-event", record.get("eventId"));
         }
@@ -223,7 +225,7 @@ class SafetyHistoryBehaviorTest {
 
     @Test void currentDisplayMetadataRemainsTenantScopedAndDoesNotGrantCatalogOnlyHardware() {
         try (var f = new Fixture()) {
-            f.grants = List.of(new AuthorizedDevice("gas", "safety", "旧业务燃气设备", "旧业务位置", true,
+            f.grants = List.of(new AuthorizedDevice("gas", "safety", "甲租户燃气设备", "甲消防位置", true,
                     null, "gas", "fixture-hardware", null, List.of(), List.of(), Map.of()));
             f.catalog = List.of(
                     new DeviceCatalogSource.Entry("fixture-hardware", "甲租户燃气设备", "safety", "甲位置"),
@@ -233,6 +235,8 @@ class SafetyHistoryBehaviorTest {
             f.publish();
             var secondTenant = f.identity("Bearer fixture-second-tenant", "fixture-second-tenant");
             f.catalog = List.of(new DeviceCatalogSource.Entry("fixture-hardware", "乙租户燃气设备", "safety", "乙位置"));
+            f.grants = List.of(new AuthorizedDevice("gas", "safety", "乙租户燃气设备", "乙消防位置", true,
+                    null, "gas", "fixture-hardware", null, List.of(), List.of(), Map.of()));
             f.register(secondTenant);
             f.directory.synchronizeDue();
             f.directory.synchronizeHistoryDue();
