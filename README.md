@@ -4,6 +4,14 @@ Java public backend plus an independent Node `agent-sidecar`: Spring Boot 3.5 / 
 
 架构约定、模块边界纪律与 Runtime→Java 模块映射见 [AGENTS.md](./AGENTS.md)；issue tracker 与领域文档规则见 `docs/agents/`。
 
+## 客户交付隔离
+
+GitHub保存完整开发历史；客户交付沿用前端仓库的 `.gitattributes`／`export-ignore` 和内部导出工具，不改开发仓库的 `.gitignore`。源码、测试、SQL、许可证、依赖锁文件和非敏感配置模板保留，开发材料及内部README排除；客户部署入口为 [docs/deployment.md](docs/deployment.md)。
+
+提交并确定交付版本后，先运行 `node tools/check-delivery.mjs --archive HEAD`，通过后才显式运行 `node tools/deliver.mjs --ref HEAD --out /absolute/empty-directory`。工具只导出所选提交，独立检查后生成单提交快照，不设置远端、不推送；在客户仓库可用本工具的 `--tree HEAD` 复核最终提交树，`--base <ref>`检查变更路径。禁止把这些检查当作构建／业务验收。
+
+`export-ignore`只作用于archive，不过滤普通git push或合并历史；客户不得直接合并开发分支。未提交文件不会进入交付，提交前须确保被源码引用的新组件／资源已跟踪；交付构建必须从导出目录进行，不能把本机可构建当作Git版本完整的证明。
+
 控制台已切换为 Vue3 / JavaScript / Element Plus，提供独立部署管理员登录、独立手机号名单、实际参数配置与按成员组织的公司／办公室操作审计。三个进程均以常规命令启动（Java 外置 `application.yaml`、Node 外置 `agent-engine.yaml`、控制台 `npm run dev`），不加载 `.env`；Node 从 Java 获取模型运行定义与启动观测快照，不再使用模型／Langfuse 环境回退。字段、启动方式与隔离验证证据见[控制台治理入口](.scratch/admin-console-governance/README.md)和[维护手册](web/admin/docs/maintenance.md)；当前固定开发实例与核对结果见下文，不表示已部署生产或完成真实业务验收。
 
 2026-11-11 公司任务白名单接入：名单持久化保持原表，启动加载、管理提交后更新内存资格；普通请求不查名单库、不增加上游请求。任务HTTP入口与统一工具分派校验，公司工具列表及小程序入口按资格开放；办公室、设备权限、已确认任务与调度不变。单实例契约见[ADR0008](docs/adr/0008-standalone-phone-list.md)，工程检查、真实截图及未验边界见[证据](../mp/.scratch/company-task-access/evidence/TASK-ACCESS-01/result.json)。

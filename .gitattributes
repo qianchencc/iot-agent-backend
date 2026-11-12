@@ -1,1 +1,30 @@
 *.pdf binary
+
+# Customer export only; normal GitHub commits/pushes retain development material.
+/.scratch/ export-ignore
+/.agents/ export-ignore
+/.claude/ export-ignore
+/.codex/ export-ignore
+/.zcode/ export-ignore
+/plan/ export-ignore
+/tools/ export-ignore
+/skills-lock.json export-ignore
+AGENTS.md export-ignore
+CLAUDE.md export-ignore
+CONTEXT.md export-ignore
+GLOSSARY.md export-ignore
+README.md export-ignore
+/docs/* export-ignore
+/docs/deployment.md -export-ignore
+/compose.business-preview.yaml export-ignore
+/web/admin/docs/ export-ignore
+/var/ export-ignore
+/target/ export-ignore
+node_modules/ export-ignore
+dist/ export-ignore
+.env export-ignore
+.env.* export-ignore
+/.classpath export-ignore
+/.project export-ignore
+/.settings/ export-ignore
+/.idea/ export-ignore
