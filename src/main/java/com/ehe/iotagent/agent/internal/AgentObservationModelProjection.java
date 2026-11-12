@@ -14,8 +14,9 @@ final class AgentObservationModelProjection {
     static Map<String, Object> project(String tool, Map<String, Object> result) {
         return switch (tool) {
             case "query_alerts" -> summary(result, "alert_list", List.of(
-                    "status", "total", "scanned", "excludedCount", "coverageComplete", "summaryStatus",
-                    "windowDays", "failures"), List.of("items"));
+                    "status", "types", "unreportedOnly", "window", "windowDays", "total", "uniqueDevices",
+                    "byType", "byDevice", "windowLatest", "scanned", "excludedCount", "excludedCountNote",
+                    "unknownCount", "coverageComplete", "summaryStatus", "failures"), List.of("records"));
             case "query_environment_history" -> summary(result, "environment_history", List.of(
                     "status", "type", "observedAt", "from", "to", "window", "windowSummary",
                     "coverage", "coverageComplete", "summary", "metrics", "failures", "message", "retryable"),

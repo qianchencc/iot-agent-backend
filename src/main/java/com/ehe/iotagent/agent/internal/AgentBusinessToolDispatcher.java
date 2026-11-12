@@ -42,9 +42,6 @@ import com.ehe.iotagent.iot.VideoPlaybackPreparation;
 import com.ehe.iotagent.iot.VideoPlaybackWindow;
 import com.ehe.iotagent.task.TaskFacade;
 import com.ehe.iotagent.task.TaskProjectionStore;
-import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
-import reactor.core.scheduler.Schedulers;
 
 /**
  * Deep business implementation behind the public Tool Bridge entry. It owns
@@ -167,13 +164,7 @@ public final class AgentBusinessToolDispatcher implements AgentToolBridge {
             default -> throw new BusinessException("AGENT_TOOL_UNAVAILABLE", "工具未接入", 404);
             };
             if ("query_alerts".equals(definition.name())) {
-                Map<String, Object> model = new LinkedHashMap<>();
-                for (String key : List.of("status", "total", "scanned", "excludedCount", "excludedCountNote",
-                        "coverageComplete", "summaryStatus", "windowDays", "failures")) {
-                    if (result.containsKey(key)) model.put(key, result.get(key));
-                }
-                if (result.get("items") instanceof List<?> items) model.put("itemsCount", items.size());
-                result.put("modelResult", model);
+                result.put("modelResult", AgentObservationModelProjection.project(definition.name(), result));
             }
             if (Set.of("propose_action_draft", "propose_lighting_draft").contains(toolName)
                     && ("PENDING_CONFIRMATION".equals(result.get("status")) || "NO_CHANGE".equals(result.get("status")))) {
@@ -452,7 +443,7 @@ public final class AgentBusinessToolDispatcher implements AgentToolBridge {
     }
 
     private Map<String, Object> queryAlerts(PrincipalInfo principal, IotSourceEnum source, Map<String, Object> args) {
-        List<String> types = strings(args.get("types"));
+        List<String> types = strings(args.get("types")).stream().distinct().toList();
         if (types.isEmpty()) types = List.of("smoke", "gas", "water");
         for (String type : types) {
             if (!ALERT_TYPES.contains(type)) {
@@ -471,20 +462,18 @@ public final class AgentBusinessToolDispatcher implements AgentToolBridge {
         }
         String from = text(args, "from", "");
         String to = text(args, "to", "");
-        Map<String, Object> window = new LinkedHashMap<>(args);
-        window.remove("days");
+        Map<String, Object> window = new LinkedHashMap<>();
         boolean explicitWindow = !from.isBlank() || !to.isBlank();
         if (from.isBlank() != to.isBlank()) {
             throw new BusinessException("INVALID_AGENT_TOOL_ARGUMENTS", "告警统计的from和to必须同时提供；否则请只提供days", 400);
         }
-        Instant windowTo = now;
         if (explicitWindow) {
             if (!ZONED_TIME.matcher(from).matches() || !ZONED_TIME.matcher(to).matches()) {
                 throw new BusinessException("INVALID_AGENT_TOOL_ARGUMENTS", "告警统计窗口无效，请提供明确上海时区、起点早于终点且不晚于当前时间的范围", 400);
             }
             try {
                 Instant since = OffsetDateTime.parse(from).toInstant();
-                windowTo = OffsetDateTime.parse(to).toInstant();
+                Instant windowTo = OffsetDateTime.parse(to).toInstant();
                 if (!since.isBefore(windowTo) || windowTo.isAfter(now)) {
                     throw new BusinessException("INVALID_AGENT_TOOL_ARGUMENTS", "告警统计窗口无效，请提供明确上海时区、起点早于终点且不晚于当前时间的范围", 400);
                 }
@@ -494,88 +483,19 @@ public final class AgentBusinessToolDispatcher implements AgentToolBridge {
                 throw new BusinessException("INVALID_AGENT_TOOL_ARGUMENTS", "告警统计窗口无效，请提供明确上海时区、起点早于终点且不晚于当前时间的范围", 400);
             }
         } else {
-            // days drives the window start; the ledger composer reads "to" as now when absent.
-            window.put("from", now.minus(Duration.ofDays(days)).toString());
+            Instant end = now.truncatedTo(java.time.temporal.ChronoUnit.MILLIS);
+            window.put("from", end.minus(Duration.ofDays(days)).toString());
+            window.put("to", end.toString());
         }
         boolean unreportedOnly = Boolean.TRUE.equals(args.get("unreportedOnly"));
-        Map<String, Object> result;
-        if (types.size() == 1) {
-            Map<String, Object> normalized = new LinkedHashMap<>(window);
-            normalized.put("type", types.get(0));
-            result = observation(principal, source, ObservationOperationEnum.SAFETY_EVENTS, normalized);
-        } else {
-            result = new LinkedHashMap<>();
-            List<Object> items = new ArrayList<>();
-            List<Map<String, Object>> failures = new ArrayList<>();
-            Integer total = null;
-            int scanned = 0;
-            int excluded = 0;
-            boolean complete = true;
-            int available = 0;
-            // Runtime app.ts queries independent ledger types together; merge only
-            // after each type settles so a failed ledger retains the others' evidence.
-            record AlertPart(String type, Map<String, Object> value, BusinessException error) { }
-            List<AlertPart> parts = Flux.fromIterable(types)
-                    .flatMapSequential(type -> Mono.fromCallable(() -> {
-                        Map<String, Object> normalized = new LinkedHashMap<>(window);
-                        normalized.put("type", type);
-                        try {
-                            return new AlertPart(type,
-                                    observation(principal, source, ObservationOperationEnum.SAFETY_EVENTS, normalized), null);
-                        } catch (BusinessException error) {
-                            return new AlertPart(type, null, error);
-                        }
-                    }).subscribeOn(Schedulers.boundedElastic()), 6)
-                    .collectList().block();
-            for (AlertPart item : parts) {
-                Map<String, Object> part = item.value();
-                if (item.error() != null) {
-                    Map<String, Object> failure = new LinkedHashMap<>();
-                    failure.put("type", item.type());
-                    failure.put("message", item.error().getMessage());
-                    failures.add(failure);
-                    complete = false;
-                    continue;
-                }
-                available += 1;
-                if (result.isEmpty()) result.putAll(part);
-                appendValues(items, part.get("items"));
-                appendValues(items, part.get("records"));
-                if (part.get("total") instanceof Number numeric) {
-                    total = (total == null ? 0 : total) + numeric.intValue();
-                }
-                if (part.get("scanned") instanceof Number numeric) scanned += numeric.intValue();
-                if (part.get("excludedCount") instanceof Number numeric) excluded += numeric.intValue();
-                complete &= !Boolean.FALSE.equals(part.get("coverageComplete"));
-            }
-            if (!items.isEmpty()) {
-                result.put("items", items);
-                result.remove("records");
-            } else if (!result.containsKey("items")) {
-                result.put("items", List.of());
-            }
-            result.put("total", total);
-            result.put("scanned", scanned);
-            result.put("excludedCount", excluded);
-            result.put("coverageComplete", complete && failures.isEmpty());
-            result.put("summaryStatus", available == 0 ? "unavailable" : failures.isEmpty() && complete ? "complete" : "partial");
-            if (!failures.isEmpty()) result.put("failures", failures);
-        }
+        Map<String, Object> result = AgentSafetyAlertQuery.read(types, window, unreportedOnly,
+                parameters -> observation(principal, source, ObservationOperationEnum.SAFETY_EVENTS, parameters));
         if (result.get("excludedCount") instanceof Number excluded && excluded.longValue() > 0) {
             result.put("excludedCountNote", "excludedCount 是在查询的授权设备和所请求告警类型范围内被过滤的记录数；"
                     + "不是时间窗外的记录数。窗口外记录另行处理，不计入该字段。");
         }
-        if (unreportedOnly && result.get("items") instanceof List<?> rows) {
-            result.put("items", rows.stream()
-                    .filter(row -> row instanceof Map<?, ?> record && Boolean.FALSE.equals(record.get("report")))
-                    .toList());
-        }
         result.put("windowDays", explicitWindow ? 0 : days);
         return result;
-    }
-
-    private static void appendValues(List<Object> target, Object value) {
-        if (value instanceof List<?> values) target.addAll(values);
     }
 
     private Map<String, Object> observation(PrincipalInfo principal, IotSourceEnum source,

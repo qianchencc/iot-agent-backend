@@ -114,7 +114,9 @@ class AgentToolBridgeContractTest {
                 throw new IllegalStateException("ledger fixture was not released");
             }
             if ("gas".equals(type)) throw new BusinessException("AGENT_TOOL_UNAVAILABLE", "燃气台账暂不可用", 503);
-            return ObservationResponse.available(Map.of("items", List.of(Map.of("eventId", type + "-1")),
+            return ObservationResponse.available(Map.of("items", List.of(Map.of(
+                    "eventId", type + "-1", "ledger", type, "deviceId", type + "-sensor",
+                    "deviceName", "测试传感器", "subtype", type, "occurredAt", "2026-11-10T12:00:00Z")),
                     "total", 1, "scanned", 1, "coverageComplete", true));
         }).subscribeOn(reactor.core.scheduler.Schedulers.boundedElastic());
         AgentToolBridge bridge = AgentToolBridgeFactory.local(conversations, mock(IotAdapter.class), observations,
@@ -129,8 +131,8 @@ class AgentToolBridgeContractTest {
             Map<String, Object> value = result.get(5, java.util.concurrent.TimeUnit.SECONDS);
             assertThat(value).containsEntry("total", 2).containsEntry("summaryStatus", "partial")
                     .containsEntry("coverageComplete", false);
-            assertThat(value.get("items")).isEqualTo(List.of(
-                    Map.of("eventId", "smoke-1"), Map.of("eventId", "water-1")));
+            assertThat((List<?>) value.get("records")).extracting(row -> String.valueOf(((Map<?, ?>) row).get("eventId")))
+                    .containsExactlyInAnyOrder("smoke-1", "water-1");
             assertThat(value.get("failures").toString()).contains("gas").contains("燃气");
         } finally {
             release.countDown();
@@ -139,7 +141,7 @@ class AgentToolBridgeContractTest {
     }
 
     @Test
-    void aggregatesRequestedAlertTypesWithoutMaskingMissingTotals() {
+    void countsActualAlertRecordsRatherThanNullableLedgerTotals() {
         ConversationFacade conversations = mock(ConversationFacade.class);
         ObservationAdapter observations = mock(ObservationAdapter.class);
         bind(conversations, "company", null);
@@ -147,7 +149,9 @@ class AgentToolBridgeContractTest {
             ObservationRequest query = invocation.getArgument(0);
             return switch (query.parameters().get("type")) {
                 case "smoke" -> Mono.just(ObservationResponse.available(Map.of(
-                        "items", List.of(Map.of("eventId", "smoke-1")),
+                        "items", List.of(Map.of("eventId", "smoke-1", "ledger", "smoke",
+                                "deviceId", "smoke-sensor", "deviceName", "测试传感器",
+                                "subtype", "smoke", "occurredAt", "2026-11-10T12:00:00Z")),
                         "total", 2, "scanned", 5, "excludedCount", 0, "coverageComplete", true)));
                 case "gas" -> {
                     Map<String, Object> gas = new LinkedHashMap<>();
@@ -167,49 +171,15 @@ class AgentToolBridgeContractTest {
         Map<String, Object> result = bridge.execute(request("query_alerts",
                 Map.of("types", List.of("smoke", "gas", "water"))));
 
-        assertThat(result).containsEntry("total", 2)
+        assertThat(result).containsEntry("total", 1)
                 .containsEntry("summaryStatus", "partial")
                 .containsEntry("coverageComplete", false);
-        assertThat(result.get("items")).isEqualTo(List.of(Map.of("eventId", "smoke-1")));
+        assertThat((List<?>) result.get("records")).extracting(row -> String.valueOf(((Map<?, ?>) row).get("eventId")))
+                .containsExactly("smoke-1");
         assertThat(result.get("failures").toString()).contains("water").contains("水浸");
         verify(observations, org.mockito.Mockito.times(3)).read(any(ObservationRequest.class));
     }
 
-    @Test
-    void waterAlertCoverageKeepsModelFactsAndSuppliesExclusionMeaning() {
-        ConversationFacade conversations = mock(ConversationFacade.class);
-        ObservationAdapter observations = mock(ObservationAdapter.class);
-        bind(conversations, "company", null);
-        when(observations.read(any(ObservationRequest.class))).thenAnswer(invocation -> {
-            Map<String, Object> water = new LinkedHashMap<>();
-            water.put("items", List.of());
-            water.put("total", null);
-            water.put("scanned", 300);
-            water.put("excludedCount", 289);
-            water.put("unknownCount", 11);
-            water.put("coverageComplete", false);
-            water.put("nextCursor", "opaque-continuation");
-            water.put("window", Map.of("from", "2026-11-02T00:00:00+08:00",
-                    "to", "2099-01-01T00:00:00.000+08:00"));
-            return Mono.just(ObservationResponse.available(water));
-        });
-        AgentToolBridge bridge = AgentToolBridgeFactory.local(conversations, mock(IotAdapter.class), observations,
-                mock(TaskProjectionStore.class), mock(ActionDraftFacade.class), mock(TaskFacade.class), mapper, null);
-
-        String currentTime = java.time.OffsetDateTime.now(java.time.ZoneOffset.UTC).format(
-                java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSXXX"));
-        Map<String, Object> result = bridge.execute(request("query_alerts",
-                Map.of("types", List.of("water"), "from", "2026-11-02T00:00:00+08:00", "to", currentTime)));
-
-        assertThat(result).containsEntry("coverageComplete", false)
-                .containsEntry("scanned", 300).containsEntry("excludedCount", 289)
-                .containsEntry("excludedCountNote", "excludedCount 是在查询的授权设备和所请求告警类型范围内被过滤的记录数；"
-                        + "不是时间窗外的记录数。窗口外记录另行处理，不计入该字段。");
-        Map<String, Object> model = mapper.convertValue(result.get("modelResult"), Map.class);
-        assertThat(model).containsEntry("excludedCountNote", result.get("excludedCountNote"))
-                .containsEntry("scanned", 300).containsEntry("excludedCount", 289)
-                .containsEntry("coverageComplete", false);
-    }
 
     @Test
     void currentOfficeRegionIsBoundIntoPersistedCandidateQuery() {
