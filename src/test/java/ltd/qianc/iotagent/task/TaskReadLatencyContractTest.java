@@ -177,7 +177,7 @@ class TaskReadLatencyContractTest {
             directory = DeviceDirectory.jdbc(jdbc, new TransactionTemplate(new DataSourceTransactionManager(database)),
                     mapper, iot, ltd.qianc.iotagent.iot.ObservationAdapterFactory.failClosed("fixture history unavailable"),
                     presented -> new PrincipalInfo(presented.authorization(), presented.tenantCode(), "member", "gateway"),
-                    snapshots, barrier, "https://gateway.example.invalid", "45".repeat(32), clock, request -> List.of());
+                    snapshots, barrier, "https://gateway.example.invalid", "45".repeat(32), clock, request -> List.of(), 20);
             String payload = "{\"source\":\"company\",\"tenantCode\":\"TENANT\",\"ownerKey\":\""
                     + PRINCIPAL.ownerKey() + "\",\"label\":\"Fixture task\",\"phases\":[{\"actions\":["
                     + "{\"deviceId\":\"light-1\",\"kind\":\"lighting\"},{\"deviceId\":\"light-2\",\"kind\":\"lighting\"}]}]}";

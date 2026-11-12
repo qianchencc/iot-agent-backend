@@ -63,6 +63,8 @@ public final class JdbcCompanyDirectory implements DeviceDirectory {
     private final ReentrantLock historyLock = new ReentrantLock();
     private final ReentrantLock syncLock = new ReentrantLock();
     private final ReentrantLock currentLock = new ReentrantLock();
+    private final ReentrantLock safetyLock = new ReentrantLock();
+    private final long safetySyncIntervalSeconds;
     private final ScheduledThreadPoolExecutor cadence;
     private boolean started;
     private volatile boolean closed;
@@ -73,7 +75,7 @@ public final class JdbcCompanyDirectory implements DeviceDirectory {
             IotAdapter upstream, java.util.function.Supplier<ltd.qianc.iotagent.iot.ObservationAdapter> historySource,
             AccountPrincipalVerifier verifier, ReadSnapshots snapshots,
             ReadSnapshots.Barrier barrier, String gatewayInstance, String credentialKey, Clock clock,
-            ltd.qianc.iotagent.iot.DeviceCatalogSource catalogSource, byte[] safetyCursorKey) {
+            ltd.qianc.iotagent.iot.DeviceCatalogSource catalogSource, byte[] safetyCursorKey, long safetySyncIntervalSeconds) {
         this.jdbc = Objects.requireNonNull(jdbc);
         this.transactions = Objects.requireNonNull(transactions);
         this.mapper = Objects.requireNonNull(mapper);
@@ -93,8 +95,10 @@ public final class JdbcCompanyDirectory implements DeviceDirectory {
         this.observations = new JdbcDeviceObservations(jdbc, transactions, mapper, this::loadBatch, this::scopeKey, clock);
         this.energyHistory = new JdbcEnergyHistory(jdbc, transactions, mapper, this::loadBatch, this::scopeKey, clock);
         this.environmentHistory = new JdbcEnvironmentHistory(jdbc, transactions, mapper, this::loadBatch, this::scopeKey, observations, clock);
-        this.safetyHistory = new JdbcSafetyHistory(jdbc, transactions, mapper, this::loadBatch, this::scopeKey, clock, safetyCursorKey);
-        this.cadence = new ScheduledThreadPoolExecutor(3, task -> {
+        this.safetySyncIntervalSeconds = safetySyncIntervalSeconds;
+        this.safetyHistory = new JdbcSafetyHistory(jdbc, transactions, mapper, this::loadBatch, this::scopeKey,
+                clock, safetyCursorKey, safetySyncIntervalSeconds);
+        this.cadence = new ScheduledThreadPoolExecutor(4, task -> {
             Thread thread = new Thread(task, "local-company-sync");
             thread.setDaemon(true);
             return thread;
@@ -341,11 +345,19 @@ public final class JdbcCompanyDirectory implements DeviceDirectory {
                         "Local historical synchronization unavailable; persisted progress retained");
             }
         }, 0, 5, TimeUnit.SECONDS);
+        cadence.scheduleWithFixedDelay(() -> {
+            try { synchronizeSafetyDue(); }
+            catch (RuntimeException unavailable) {
+                System.getLogger(JdbcCompanyDirectory.class.getName()).log(System.Logger.Level.WARNING,
+                        "Local safety synchronization unavailable; persisted progress retained");
+            }
+        }, 0, Math.min(5, safetySyncIntervalSeconds), TimeUnit.SECONDS);
     }
 
     @Override public void synchronizeDue() {
         synchronizeDirectoriesDue();
         synchronizeCurrentDue();
+        synchronizeSafetyDue();
     }
 
     private void synchronizeDirectoriesDue() {
@@ -395,7 +407,6 @@ public final class JdbcCompanyDirectory implements DeviceDirectory {
                                     + "VALUES (?,'DISPATCHED',?,?,?,?) ON DUPLICATE KEY UPDATE state='DISPATCHED',credential_generation=VALUES(credential_generation),"
                                     + "last_attempt_at=VALUES(last_attempt_at),update_time=VALUES(update_time)",
                             scope.key(), scope.generation(), dispatched, dispatched, dispatched);
-                    synchronizeSafety(scope, identity, false);
                     if (identity.source() == IotSourceEnum.COMPANY) {
                         synchronizeEnergy(scope, identity, false);
                         if (devices.devices().stream().anyMatch(device -> "environment".equals(device.kind())))
@@ -413,6 +424,22 @@ public final class JdbcCompanyDirectory implements DeviceDirectory {
             }
         } finally {
             currentLock.unlock();
+        }
+    }
+
+    @Override public void synchronizeSafetyDue() {
+        if (closed || !safetyLock.tryLock()) return;
+        try {
+            List<Scope> scopes = jdbc.query("SELECT * FROM local_sync_scopes WHERE gateway_instance=? "
+                            + "AND data_kind IN ('COMPANY_DIRECTORY','OFFICE_DIRECTORY') "
+                            + "AND published_generation=credential_generation AND denial_status=0 AND state='READY' ORDER BY id",
+                    JdbcCompanyDirectory::scope, gateway);
+            for (Scope scope : scopes) {
+                if (closed) break;
+                synchronizeSafety(scope, null, false);
+            }
+        } finally {
+            safetyLock.unlock();
         }
     }
 

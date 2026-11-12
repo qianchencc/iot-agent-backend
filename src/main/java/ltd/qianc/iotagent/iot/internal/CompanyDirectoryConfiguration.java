@@ -26,7 +26,12 @@ import ltd.qianc.iotagent.schema.SchemaMigrations;
 @EnableConfigurationProperties({CompanyDirectoryConfiguration.Credentials.class, CompanyDirectoryConfiguration.Gateway.class})
 public class CompanyDirectoryConfiguration {
     @ConfigurationProperties("agent.local-data")
-    public record Credentials(String credentialKey) {
+    public record Credentials(String credentialKey,
+            @org.springframework.boot.context.properties.bind.DefaultValue("20") long safetySyncIntervalSeconds) {
+        public Credentials {
+            if (safetySyncIntervalSeconds <= 0)
+                throw new IllegalArgumentException("agent.local-data.safety-sync-interval-seconds must be positive");
+        }
         @Override public String toString() { return "LocalDataCredentials[redacted]"; }
     }
 
@@ -49,7 +54,7 @@ public class CompanyDirectoryConfiguration {
                 gateway.baseUrl(), credentials.credentialKey(), Clock.systemUTC(),
                 ltd.qianc.iotagent.iot.DeviceCatalogSource.http(builder.baseUrl(gateway.baseUrl()).build(),
                         gateway.deviceCatalogPath(), java.time.Duration.ofMillis(gateway.callTimeoutMs())),
-                ObservationAdapterConfiguration.cursorMacKey(environment));
+                ObservationAdapterConfiguration.cursorMacKey(environment), credentials.safetySyncIntervalSeconds());
         try {
             new SchemaMigrations(dataSource).ensureLocalCompanyDirectory();
             return directory;

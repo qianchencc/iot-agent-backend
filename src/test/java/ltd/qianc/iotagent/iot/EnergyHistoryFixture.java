@@ -134,7 +134,7 @@ public final class EnergyHistoryFixture implements AutoCloseable {
     private void open() {
         snapshots = ReadSnapshots.create(clock,Runnable::run,Runnable::run,null,barrier,mapper,ReadSnapshots.Settings.defaults());
         directory = DeviceDirectory.jdbc(jdbc,transactions,mapper,gateway,source,
-                presented -> principal(presented.authorization(),presented.tenantCode()),snapshots,barrier,gatewayBase,"ef".repeat(32),clock, request -> List.of());
+                presented -> principal(presented.authorization(),presented.tenantCode()),snapshots,barrier,gatewayBase,"ef".repeat(32),clock, request -> List.of(), 20);
     }
     public RequestIdentity identity() { return identity("Bearer fixture-energy","fixture-tenant"); }
     public RequestIdentity identity(String token,String tenant) {

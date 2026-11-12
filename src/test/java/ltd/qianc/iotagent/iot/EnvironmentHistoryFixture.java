@@ -107,7 +107,7 @@ public final class EnvironmentHistoryFixture implements AutoCloseable {
     private void open() {
         snapshots=ReadSnapshots.create(clock,Runnable::run,Runnable::run,null,barrier,mapper,ReadSnapshots.Settings.defaults());
         directory=DeviceDirectory.jdbc(jdbc,transactions,mapper,gateway,source,
-                presented -> principal(presented.authorization(),presented.tenantCode()),snapshots,barrier,gatewayBase,"cd".repeat(32),clock, request -> List.of());
+                presented -> principal(presented.authorization(),presented.tenantCode()),snapshots,barrier,gatewayBase,"cd".repeat(32),clock, request -> List.of(), 20);
         DeviceObservations observations=DeviceObservations.jdbc(jdbc,transactions,mapper,directory,gatewayBase,clock);
         ordinary=IotAdapterFactory.localReads(gateway,()->directory,()->observations,IotAdapterFactory.candidateSets(jdbc,mapper));
     }

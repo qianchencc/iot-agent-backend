@@ -52,6 +52,7 @@ cd web/admin && npm run dev                  # http://127.0.0.1:5185/login
 - 模型、指引、生成参数与观测设置不是启动输入：MySQL 管理的可管理业务修订仍是权威，Node 每次 `/run` 从 Java 获取完整模型定义快照，启动观测从 Java 私有接口拉取。
 - 需要固定版本时，把 jar 与 `agent-sidecar/dist` 复制到 `var/` 下带时间戳的目录，再用同一命令启动该副本，避免运行中的产物被下一次 `mvn package` 覆盖。
 - **独立同步安全根**：公司目录要求 Java 外置 YAML 的 `agent.local-data.credential-key`（64位十六进制，独立于任务密钥；无默认），部署所有者须稳定保管，不传给Node。2026-11-06固定实例已配置并初始化本地同步表；各领域实现与未验边界仍按[本地数据执行图](.scratch/local-data-sync/README.md)推进，启动成功不等于14票全部完成。
+- **安全台账同步频率**：外置YAML的`agent.local-data.safety-sync-interval-seconds`默认`20`秒，独立于其他领域约60秒同步；正整数、重启生效。首次／每日全量与本地读取边界不变，详见[独立同步配置](docs/configuration-governance.md#安全台账独立同步2026-11-12)。
 
 控制台监听 `0.0.0.0:5185`（strict port，被占用直接失败，不漂移到 5186），仅代理 `/api/admin` 到 `127.0.0.1:3381`（`ADMIN_API_TARGET` 可覆盖）；`ADMIN_PROXY_ORIGIN`（默认 `http://127.0.0.1:5185`）必须等于 Java 的 `admin.origin`，而不是填 `0.0.0.0`。只有与来访 Host 同源的 HTTP Origin 才规范化为 Java 配置的源；外部 Origin 不改写，管理员密码、Cookie 和 CSRF 校验仍由 Java 执行。仅限可信开发网络；不是生产部署或公网 HTTPS 方案。Node 内部监听不因此对外开放。
 

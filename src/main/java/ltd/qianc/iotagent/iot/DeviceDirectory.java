@@ -29,6 +29,9 @@ public interface DeviceDirectory extends AutoCloseable {
     /** Drives due full historical scans; the production cadence runs this independently of current data. */
     void synchronizeHistoryDue();
 
+    /** Drives safety updates independently of device-state and historical scans. */
+    void synchronizeSafetyDue();
+
     /** Persisted raw energy facts and dedicated energy authorization. */
     EnergyHistory energyHistory();
 
@@ -48,8 +51,9 @@ public interface DeviceDirectory extends AutoCloseable {
 
     static DeviceDirectory jdbc(JdbcTemplate jdbc, TransactionTemplate transactions, ObjectMapper mapper,
             IotAdapter upstream, ObservationAdapter historySource, AccountPrincipalVerifier verifier, ReadSnapshots snapshots,
-            ReadSnapshots.Barrier barrier, String gatewayInstance, String credentialKey, Clock clock, DeviceCatalogSource catalogSource) {
+            ReadSnapshots.Barrier barrier, String gatewayInstance, String credentialKey, Clock clock,
+            DeviceCatalogSource catalogSource, long safetySyncIntervalSeconds) {
         return new JdbcCompanyDirectory(jdbc, transactions, mapper, upstream, () -> historySource, verifier, snapshots,
-                barrier, gatewayInstance, credentialKey, clock, catalogSource, null);
+                barrier, gatewayInstance, credentialKey, clock, catalogSource, null, safetySyncIntervalSeconds);
     }
 }

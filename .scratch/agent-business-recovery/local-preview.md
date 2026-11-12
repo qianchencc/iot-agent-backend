@@ -2,6 +2,8 @@
 
 > 固定开发后端的最新入口为 Java `3381` / Node `3382` / 控制台 `5185`；2026-11-06 起以常规命令启动（Java `java -jar … --spring.config.additional-location`、Node `node dist/server.js --config`、`web/admin` 内 `npm run dev`），见[仓根常规本地启动](../../README.md#常规本地启动)；Python／tmux 统一启动器与 launch-YAML 已随 `tools/` 退役。下文3217、13215等端口及 `tools/start-sidecar.py` 等命令为历史独立验收环境记录，不应据此启动或覆盖当前固定后端。
 
+> 2026-11-12 10:26安全台账独立同步已部署：Java3381为`var/safety-cadence-20261112-1025/backend.jar`，PID21642，SHA256=`a60c0a56f62f8e1edbf7aac3fb4468efc9883b4e8676d7c41575d124d894df4f`；以此前实际运行的`var/fire-source-20261112/backend.jar`为基线，仅替换14项类条目，其他845项保持，不夹带另行修改的Agent代码。外置YAML新增`agent.local-data.safety-sync-interval-seconds: 20`，独立安全调度已生效，其他领域及首次／每日全量不变。93项定向回归通过；外置YAML覆盖及非法值启动失败烟测通过。MySQL三类台账自然同步均成功，成功至下次到期均为20秒；切换前后受保护业务记录计数不变，局域网healthz为200。切换前10:26:07已有一次旧实例采集失败，新实例已自然恢复，未额外向客户发诊断请求。Node／控制台／前端未改；本轮未重新验收微信页面或首次／夜间全量周期。配置与延迟边界见[配置治理](../../docs/configuration-governance.md#安全台账独立同步2026-11-12)，私有工程／运行证据保存在同发布目录`verification.json`。
+
 > 2026-11-12 09:33存储治理已部署：Java3381为`var/sync-storage-20261112-093244/backend.jar`，PID2974，SHA256=`2cde2c2e60176e3d33b4f38721f892089c7f164adc02be4dd0c8205c82d573e9`；以前一运行包为基线，只替换／新增四组IoT类19项，其他840项字节保持，未夹带工作区另行修改的Agent代码。回退仍为`var/safety-identity-20261111-153405/backend-revised.jar`。Node4208、控制台26873、外置YAML／桥接Token及任务等记录数量不变。两个原MySQL容器已受控重启，`log_bin=OFF`；业务卷由约21.11GB降至1.43GB，另清理415MB旧binlog归档，工作目录最终约1.44GB。实际控制台显示修订23无差异、MySQL会话存储在线；新包自然同步持续成功，下次活跃电表全量为上海2026-11-13 03:00。真实微信业务页与新包夜间周期未复验，不以健康检查替代。完整证据见[执行入口](../sync-storage-governance/README.md)。
 
 > 2026-11-11旧产物清理：工作目录由5.163GB降至1.803GB，释放3.359GB（3.129GiB）。删除18份停用JAR、8份过期数据库备份、10处旧构建／前端副本、72份封闭日志及失败的部分备份；当前源码、配置、依赖、数据库表文件和正式验收证据保留。下文涉及已删除产物的路径仅为历史记录，不再是可用回退入口。

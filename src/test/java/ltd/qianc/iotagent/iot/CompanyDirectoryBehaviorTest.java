@@ -717,7 +717,7 @@ class CompanyDirectoryBehaviorTest {
                         catalogCalls.incrementAndGet();
                         if (catalogFailure != null) throw catalogFailure;
                         return catalogDevices;
-                    });
+                    }, 20);
             observations = DeviceObservations.jdbc(jdbc, transactions, mapper, directory, "https://gateway.example.invalid", clock);
         }
         void restart() { directory.close(); snapshots.close(); open(); }

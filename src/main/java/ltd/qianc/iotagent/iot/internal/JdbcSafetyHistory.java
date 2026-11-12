@@ -34,10 +34,14 @@ public final class JdbcSafetyHistory implements SafetyHistory {
     private final Function<RequestIdentity, String> keys;
     private final Clock clock;
     private final byte[] cursorKey;
+    private final long syncIntervalSeconds;
 
     JdbcSafetyHistory(JdbcTemplate jdbc, TransactionTemplate transactions, ObjectMapper mapper,
             Function<RequestIdentity, DeviceDirectoryBatch> directory, Function<RequestIdentity, String> keys,
-            Clock clock, byte[] configuredCursorKey) {
+            Clock clock, byte[] configuredCursorKey, long syncIntervalSeconds) {
+        if (syncIntervalSeconds <= 0)
+            throw new IllegalArgumentException("agent.local-data.safety-sync-interval-seconds must be positive");
+        this.syncIntervalSeconds = syncIntervalSeconds;
         this.jdbc = jdbc; this.transactions = transactions; this.mapper = mapper;
         this.directory = directory; this.keys = keys; this.clock = clock;
         this.cursorKey = configuredCursorKey == null ? new byte[32] : configuredCursorKey.clone();
@@ -91,7 +95,7 @@ public final class JdbcSafetyHistory implements SafetyHistory {
                     if (latest != null) {
                         Map<String, Object> cache = new LinkedHashMap<>();
                         cache.put("updatedAt", latest.success() == null ? null : latest.success().toString());
-                        cache.put("status", latest.failed() || latest.success() == null || !clock.instant().isBefore(latest.success().plusSeconds(60)) ? "stale" : "fresh");
+                        cache.put("status", latest.failed() || latest.success() == null || !clock.instant().isBefore(latest.success().plusSeconds(syncIntervalSeconds)) ? "stale" : "fresh");
                         if (latest.failed()) cache.put("lastError", "安全台账同步未完成");
                         payload.put("cache", cache);
                     }
@@ -172,7 +176,7 @@ public final class JdbcSafetyHistory implements SafetyHistory {
         });
     }
 
-    /** Only the existing background directory cadence calls this method. No read invokes it. */
+    /** Only explicit background synchronization calls this method. No read invokes it. */
     void synchronize(RequestIdentity identity, ObservationAdapter source, boolean full, Runnable verify, Runnable authorize) {
         Access access = access(identity);
         for (String type : TYPES) {
@@ -207,13 +211,13 @@ public final class JdbcSafetyHistory implements SafetyHistory {
                             now, now, now, run, key);
                     jdbc.update("UPDATE local_safety_sync SET publication_version=publication_version+1,success_at=?,covered_until=?,"
                             + (full ? "full_success_at=?,full_next_due_at=?," : "") + "failure_code=NULL,next_due_at=?,update_time=? WHERE scope_key=?",
-                            full ? new Object[]{now, Timestamp.from(attempt), now, Timestamp.from(JdbcEnergyHistory.nextNight(clock.instant())), Timestamp.from(clock.instant().plusSeconds(60)), now, key}
-                                    : new Object[]{now, Timestamp.from(attempt), Timestamp.from(clock.instant().plusSeconds(60)), now, key});
+                            full ? new Object[]{now, Timestamp.from(attempt), now, Timestamp.from(JdbcEnergyHistory.nextNight(clock.instant())), Timestamp.from(clock.instant().plusSeconds(syncIntervalSeconds)), now, key}
+                                    : new Object[]{now, Timestamp.from(attempt), Timestamp.from(clock.instant().plusSeconds(syncIntervalSeconds)), now, key});
                     authorize.run();
                 });
             } catch (RuntimeException failure) {
                 jdbc.update("UPDATE local_safety_sync SET failure_code='SAFETY_HISTORY_SYNC_UNAVAILABLE',next_due_at=?,update_time=? WHERE scope_key=? AND attempt_at=?",
-                        Timestamp.from(clock.instant().plusSeconds(60)), Timestamp.from(clock.instant()), key, Timestamp.from(attempt));
+                        Timestamp.from(clock.instant().plusSeconds(syncIntervalSeconds)), Timestamp.from(clock.instant()), key, Timestamp.from(attempt));
                 if (failure instanceof GatewayAuthorizationException) throw failure;
                 if (failure instanceof BusinessException business && (business.httpStatus() == 401 || business.httpStatus() == 403)) throw failure;
             } finally { jdbc.update("DELETE FROM local_safety_batches WHERE run_id=?", run); }

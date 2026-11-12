@@ -24,6 +24,91 @@ import org.springframework.transaction.support.TransactionTemplate;
 import reactor.core.publisher.Mono;
 
 class SafetyHistoryBehaviorTest {
+    @Test void safetyRefreshesAtTwentySecondsWithoutRefreshingOtherData() {
+        try (var f = new Fixture()) {
+            var original = new LinkedHashMap<>(row("gas", "gas", "fixture-cadence", "2020-01-01T00:00:00Z"));
+            f.rows.add(original);
+            f.publish();
+            int directories = f.directoryCalls.get(), states = f.stateCalls.get(), calls = f.calls.get();
+            original.put("deviceName", "Updated fixture alarm");
+            f.clock.advance(19);
+            f.directory.synchronizeDue();
+            assertEquals(calls, f.calls.get());
+            assertNotEquals("Updated fixture alarm", f.record("fixture-cadence").get("recordedDeviceName"));
+            f.clock.advance(1);
+            f.directory.synchronizeDue();
+            assertEquals("Updated fixture alarm", f.record("fixture-cadence").get("recordedDeviceName"));
+            assertEquals(directories, f.directoryCalls.get());
+            assertEquals(states, f.stateCalls.get());
+            assertEquals("fresh", ((Map<?, ?>) f.read("gas", null, null).payload().get("cache")).get("status"));
+            calls = f.calls.get();
+            f.offline = true;
+            f.read("gas", null, null);
+            assertEquals(calls, f.calls.get());
+        }
+    }
+
+    @Test void configuredSafetyIntervalAlsoGovernsFailureRetryAndFreshness() {
+        try (var f = new Fixture()) {
+            f.directory.close();
+            f.safetyInterval = 7;
+            f.open();
+            var event = new LinkedHashMap<>(row("gas", "gas", "fixture-retry", "2020-01-01T00:00:00Z"));
+            f.rows.add(event);
+            f.publish();
+            event.put("deviceName", "Revised after retry");
+            f.clock.advance(7);
+            assertEquals("stale", ((Map<?, ?>) f.read("gas", null, null).payload().get("cache")).get("status"));
+            f.failPage = 0;
+            f.directory.synchronizeSafetyDue();
+            int calls = f.calls.get();
+            assertNotEquals("Revised after retry", f.record("fixture-retry").get("recordedDeviceName"));
+            f.failPage = -1;
+            f.clock.advance(6);
+            f.directory.synchronizeSafetyDue();
+            assertEquals(calls, f.calls.get());
+            f.clock.advance(1);
+            f.directory.synchronizeSafetyDue();
+            assertEquals("Revised after retry", f.record("fixture-retry").get("recordedDeviceName"));
+            assertEquals("fresh", ((Map<?, ?>) f.read("gas", null, null).payload().get("cache")).get("status"));
+        }
+    }
+
+    @Test void incrementalSafetyCannotOverlapAnInFlightFullPublication() throws Exception {
+        try (var f = new Fixture()) {
+            var event = new LinkedHashMap<>(row("gas", "gas", "fixture-overlap", "2020-01-01T00:00:00Z"));
+            f.rows.add(event);
+            f.publish();
+            event.put("deviceName", "Full refresh event");
+            f.clock.advance(86400);
+            var entered = new java.util.concurrent.CountDownLatch(1);
+            var release = new java.util.concurrent.CountDownLatch(1);
+            var failure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
+            f.beforeRead = () -> {
+                if (entered.getCount() == 0) return;
+                entered.countDown();
+                try {
+                    if (!release.await(5, java.util.concurrent.TimeUnit.SECONDS)) throw new AssertionError("fixture release timed out");
+                } catch (InterruptedException interrupted) { throw new AssertionError(interrupted); }
+            };
+            Thread full = Thread.ofVirtual().start(() -> {
+                try { f.directory.synchronizeHistoryDue(); }
+                catch (Throwable thrown) { failure.set(thrown); }
+            });
+            try {
+                assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS));
+                f.directory.synchronizeSafetyDue();
+                assertEquals(1, f.gasCallsDuringBlock.get());
+            } finally {
+                release.countDown();
+                full.join(5000);
+            }
+            assertFalse(full.isAlive());
+            assertNull(failure.get());
+            assertEquals("Full refresh event", f.record("fixture-overlap").get("recordedDeviceName"));
+        }
+    }
+
     @Test void boundsBelongToTheAuthorizedTypeNotTheSelectedWindowOrFirstPage() {
         try (var f = new Fixture()) {
             for (int i = 0; i < 105; i++) f.rows.add(row("gas", "gas", "" + i,
@@ -262,6 +347,11 @@ class SafetyHistoryBehaviorTest {
         final EnergyHistoryFixture.MutableClock clock = new EnergyHistoryFixture.MutableClock();
         final List<Map<String, Object>> rows = new ArrayList<>();
         final AtomicInteger calls = new AtomicInteger();
+        final AtomicInteger directoryCalls = new AtomicInteger();
+        final AtomicInteger stateCalls = new AtomicInteger();
+        final AtomicInteger gasCallsDuringBlock = new AtomicInteger();
+        volatile Runnable beforeRead;
+        long safetyInterval = 20;
         final JdbcTemplate jdbc;
         final TransactionTemplate transactions;
         final ObjectMapper mapper = new ObjectMapper();
@@ -276,6 +366,7 @@ class SafetyHistoryBehaviorTest {
         volatile List<DeviceCatalogSource.Entry> catalog = List.of();
         final IotAdapter source = new IotAdapter() {
             @Override public Mono<AuthorizedDeviceScope> loadAuthorizedDeviceScope(RequestIdentity id) {
+                directoryCalls.incrementAndGet();
                 if (offline) return Mono.error(new AssertionError("ordinary read contacted directory source"));
                 return Mono.just(AuthorizedDeviceScope.of(id, id.source(), grants));
             }
@@ -283,11 +374,16 @@ class SafetyHistoryBehaviorTest {
                 return Mono.just(AuthorizedDeviceScope.of(id, id.source(), List.of()));
             }
             @Override public Mono<DeviceStateReadResult> collectCurrentStates(RequestIdentity id, AuthorizedDeviceScope scope) {
+                stateCalls.incrementAndGet();
                 return Mono.just(new DeviceStateReadResult(Map.of(), null));
             }
         };
         final ObservationAdapter historySource = request -> {
             calls.incrementAndGet();
+            if (beforeRead != null) {
+                if ("gas".equals(request.parameters().get("ledger"))) gasCallsDuringBlock.incrementAndGet();
+                beforeRead.run();
+            }
             if (offline) return Mono.error(new AssertionError("ordinary read contacted alarm source"));
             int page = Integer.parseInt(request.parameters().getOrDefault("page", "0"));
             if (page == failPage) return Mono.error(new IllegalStateException("synthetic page failure"));
@@ -321,7 +417,7 @@ class SafetyHistoryBehaviorTest {
                     "https://safety-fixture.example.invalid", "cd".repeat(32), clock, request -> {
                         if (offline) throw new AssertionError("ordinary read contacted hardware catalog source");
                         return catalog;
-                    });
+                    }, safetyInterval);
         }
         static PrincipalInfo principal(String token, String tenant) { return new PrincipalInfo(token, tenant, token, "fixture-realm"); }
         RequestIdentity identity() { return identity("Bearer fixture-safety", "fixture-tenant"); }
@@ -331,6 +427,11 @@ class SafetyHistoryBehaviorTest {
             catch (BusinessException failure) { if (!"IOT_SCOPE_PREPARING".equals(failure.code())) throw failure; }
         }
         void publish() { register(identity()); directory.synchronizeDue(); directory.synchronizeHistoryDue(); }
+        Map<?, ?> record(String id) {
+            return (Map<?, ?>) directory.safetyHistory().read(new ObservationRequest(identity(),
+                    ObservationOperationEnum.SAFETY_EVENT, Map.of("ledger", "gas", "deviceId", "gas", "id", id)))
+                    .block().payload().get("record");
+        }
         ObservationResponse read(String type, String from, String to) { return read(identity(), type, from, to, null); }
         ObservationResponse read(RequestIdentity id, String type, String from, String to, String cursor) {
             Map<String, String> query = new LinkedHashMap<>();
