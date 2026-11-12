@@ -258,7 +258,18 @@ public final class JdbcEnergyHistory implements EnergyHistory {
             List<Map<String, Object>> progress = jdbc.queryForList("SELECT credential_generation,grant_version FROM local_energy_sync WHERE scope_key=? FOR UPDATE", key);
             Map<String, Object> previous = progress.getFirst();
             boolean rotated = !generation.equals(previous.get("credential_generation"));
-            var oldIds = new LinkedHashSet<>(jdbc.query("SELECT source_meter_id FROM local_energy_meters WHERE scope_key=?", (rs,row) -> rs.getString(1), key));
+            Map<String, StoredMeter> previousMeters = new LinkedHashMap<>();
+            jdbc.query("SELECT * FROM local_energy_meters WHERE scope_key=?",
+                    (org.springframework.jdbc.core.RowCallbackHandler) rs -> {
+                        try {
+                            previousMeters.put(rs.getString("source_meter_id"), new StoredMeter(rs.getString("meter_key"),
+                                    new MeterBody(rs.getString("meter_name"), rs.getString("install_address"),
+                                            mapper.readValue(rs.getString("location_paths_json"), PATHS),
+                                            mapper.readValue(rs.getString("metadata_json"), METADATA)),
+                                    rs.getString("credential_generation"), rs.getLong("grant_version")));
+                        } catch (java.io.IOException invalid) { throw unavailable(); }
+                    }, key);
+            var oldIds = new LinkedHashSet<>(previousMeters.keySet());
             var nextIds = new LinkedHashSet<>(scope.devices().stream().map(AuthorizedDevice::id).toList());
             boolean membershipChanged = !nextIds.equals(oldIds);
             if (nextIds.size() != scope.devices().size() || scope.devices().stream().anyMatch(device -> !"energy".equals(device.kind())))
@@ -267,12 +278,34 @@ public final class JdbcEnergyHistory implements EnergyHistory {
             // Collection freshness is not an authorization change.
             long version = previousVersion == 0 || rotated || membershipChanged
                     ? previousVersion + 1 : previousVersion;
-            jdbc.update("DELETE FROM local_energy_meters WHERE scope_key=?", key);
-            List<Object[]> meters = new ArrayList<>();
-            for (AuthorizedDevice device : scope.devices()) meters.add(new Object[]{key,meterKey(device.id()),device.id(),device.name(),device.installAddress(),
-                    json(device.locationPaths()),json(device.metadata()),generation,version,now,now});
-            if (!meters.isEmpty()) jdbc.batchUpdate("INSERT INTO local_energy_meters(scope_key,meter_key,source_meter_id,meter_name,install_address,location_paths_json,metadata_json,"
-                    + "credential_generation,grant_version,create_time,update_time) VALUES (?,?,?,?,?,?,?,?,?,?,?)", meters);
+            List<Object[]> inserts = new ArrayList<>();
+            List<Object[]> updates = new ArrayList<>();
+            List<Object[]> versions = new ArrayList<>();
+            for (AuthorizedDevice device : scope.devices()) {
+                StoredMeter old = previousMeters.remove(device.id());
+                String metadataJson = json(device.metadata());
+                if (old == null) {
+                    inserts.add(new Object[]{key,meterKey(device.id()),device.id(),device.name(),device.installAddress(),
+                            json(device.locationPaths()),metadataJson,generation,version,now,now});
+                } else {
+                    MeterBody body;
+                    try { body = new MeterBody(device.name(),device.installAddress(),device.locationPaths(),mapper.readValue(metadataJson,METADATA)); }
+                    catch (java.io.IOException invalid) { throw unavailable(); }
+                    if (!body.equals(old.body())) {
+                        updates.add(new Object[]{device.name(),device.installAddress(),json(device.locationPaths()),metadataJson,
+                                generation,version,now,key,old.key()});
+                    } else if (!generation.equals(old.generation()) || version != old.version()) {
+                        versions.add(new Object[]{generation,version,now,key,old.key()});
+                    }
+                }
+            }
+            if (!previousMeters.isEmpty()) jdbc.batchUpdate("DELETE FROM local_energy_meters WHERE scope_key=? AND meter_key=?",
+                    previousMeters.values().stream().map(old -> new Object[]{key,old.key()}).toList());
+            if (!updates.isEmpty()) jdbc.batchUpdate("UPDATE local_energy_meters SET meter_name=?,install_address=?,location_paths_json=?,metadata_json=?,"
+                    + "credential_generation=?,grant_version=?,update_time=? WHERE scope_key=? AND meter_key=?", updates);
+            if (!versions.isEmpty()) jdbc.batchUpdate("UPDATE local_energy_meters SET credential_generation=?,grant_version=?,update_time=? WHERE scope_key=? AND meter_key=?", versions);
+            if (!inserts.isEmpty()) jdbc.batchUpdate("INSERT INTO local_energy_meters(scope_key,meter_key,source_meter_id,meter_name,install_address,location_paths_json,metadata_json,"
+                    + "credential_generation,grant_version,create_time,update_time) VALUES (?,?,?,?,?,?,?,?,?,?,?)", inserts);
             jdbc.update("UPDATE local_energy_sync SET credential_generation=?,grant_version=?,grants_published_at=?,update_time=? WHERE scope_key=?",
                     generation,version,now,now,key);
             if (membershipChanged) jdbc.update("UPDATE local_energy_sync SET current_attempt_at=NULL WHERE scope_key=?", key);
@@ -281,6 +314,9 @@ public final class JdbcEnergyHistory implements EnergyHistory {
             authorize.run();
         });
     }
+
+    private record MeterBody(String name, String address, List<List<String>> paths, Map<String, Object> metadata) { }
+    private record StoredMeter(String key, MeterBody body, String generation, long version) { }
 
     public boolean fullDue(String key, String generation) {
         return !jdbc.queryForList("SELECT id FROM local_energy_sync WHERE scope_key=? AND credential_generation=? AND full_next_due_at<=?", key,generation,Timestamp.from(clock.instant())).isEmpty();

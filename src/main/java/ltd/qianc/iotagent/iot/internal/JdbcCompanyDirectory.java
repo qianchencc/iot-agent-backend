@@ -631,44 +631,126 @@ public final class JdbcCompanyDirectory implements DeviceDirectory {
         return transactions.execute(tx -> {
             Scope current = find(expected.key(), true);
             if (current == null || !current.generation().equals(expected.generation()) || current.version() != expected.version()) return null;
-            for (String table : List.of("local_company_grants", "local_company_locations", "local_company_offices", "local_company_devices", "local_office_regions")) {
-                jdbc.update("DELETE FROM " + table + " WHERE scope_key=?", current.key());
-            }
+            Map<String, StoredDevice> previous = new LinkedHashMap<>();
+            jdbc.query("SELECT * FROM local_company_devices WHERE scope_key=? ORDER BY id",
+                    (org.springframework.jdbc.core.RowCallbackHandler) rs -> previous.put(rs.getString("device_key"),
+                            new StoredDevice(rs.getLong("id"), new DeviceBody(rs.getString("source_device_id"), rs.getString("device_kind"),
+                                    rs.getString("device_name"), rs.getString("install_address"), rs.getBoolean("observation_only"),
+                                    rs.getString("control_ref"), rs.getString("office_device_ref"), rs.getString("hub_device_id"),
+                                    rs.getString("smart_area_code"), metadata(rs.getString("metadata_json")), rs.getString("catalog_fingerprint")))),
+                    current.key());
+            Map<String, Map<Integer, List<String>>> previousPaths = new LinkedHashMap<>();
+            jdbc.query("SELECT device_key,path_index,segment_name FROM local_company_locations WHERE scope_key=? ORDER BY device_key,path_index,segment_index",
+                    (org.springframework.jdbc.core.RowCallbackHandler) rs -> previousPaths.computeIfAbsent(rs.getString(1), ignored -> new LinkedHashMap<>())
+                            .computeIfAbsent(rs.getInt(2), ignored -> new ArrayList<>()).add(rs.getString(3)), current.key());
+            Map<String, List<String>> previousOffices = new LinkedHashMap<>();
+            jdbc.query("SELECT device_key,office_id FROM local_company_offices WHERE scope_key=? ORDER BY device_key,id",
+                    (org.springframework.jdbc.core.RowCallbackHandler) rs -> previousOffices.computeIfAbsent(rs.getString(1), ignored -> new ArrayList<>())
+                            .add(rs.getString(2)), current.key());
             long version = Math.incrementExact(current.version());
             Timestamp now = Timestamp.from(clock.instant());
-            List<Object[]> rows = new ArrayList<>(devices.size());
-            List<Object[]> grants = new ArrayList<>(devices.size());
+            List<Object[]> inserts = new ArrayList<>();
+            List<Object[]> updates = new ArrayList<>();
+            List<Object[]> reordered = new ArrayList<>();
+            List<Object[]> grants = new ArrayList<>();
+            List<Object[]> changedPaths = new ArrayList<>();
             List<Object[]> locations = new ArrayList<>();
+            List<Object[]> changedOffices = new ArrayList<>();
             List<Object[]> offices = new ArrayList<>();
-            devices.forEach((deviceKey, device) -> {
-                rows.add(new Object[]{current.key(), deviceKey, device.id(), device.kind(), device.name(), device.installAddress(),
-                        device.observationOnly() ? 1 : 0, device.controlRef(), device.officeDeviceRef(), device.hubDeviceId(),
-                        device.smartAreaCode(), json(device.metadata()), device.catalogFingerprint(), now, now});
-                grants.add(new Object[]{current.key(), deviceKey, version, now, now});
-                for (int path = 0; path < device.locationPaths().size(); path++) {
-                    List<String> segments = device.locationPaths().get(path);
-                    for (int segment = 0; segment < segments.size(); segment++) {
-                        locations.add(new Object[]{current.key(), deviceKey, path, segment, segments.get(segment), now, now});
+            long lastRetainedId = 0;
+            boolean append = false;
+            for (var entry : devices.entrySet()) {
+                String deviceKey = entry.getKey();
+                AuthorizedDevice device = entry.getValue();
+                StoredDevice old = previous.remove(deviceKey);
+                String metadataJson = json(device.metadata());
+                String fingerprint = device.catalogFingerprint();
+                DeviceBody body = new DeviceBody(device.id(), device.kind(), device.name(), device.installAddress(),
+                        device.observationOnly(), device.controlRef(), device.officeDeviceRef(), device.hubDeviceId(),
+                        device.smartAreaCode(), metadata(metadataJson), fingerprint);
+                // Existing readers use row order. Only an actual source-order change rebuilds its affected tail.
+                append = append || old == null || old.rowId() < lastRetainedId;
+                if (append) {
+                    if (old != null) reordered.add(new Object[]{current.key(), deviceKey});
+                    inserts.add(new Object[]{current.key(), deviceKey, device.id(), device.kind(), device.name(), device.installAddress(),
+                            device.observationOnly() ? 1 : 0, device.controlRef(), device.officeDeviceRef(), device.hubDeviceId(),
+                            device.smartAreaCode(), metadataJson, fingerprint, now, now});
+                } else {
+                    lastRetainedId = old.rowId();
+                    if (!body.equals(old.body())) updates.add(new Object[]{device.id(), device.kind(), device.name(), device.installAddress(),
+                            device.observationOnly() ? 1 : 0, device.controlRef(), device.officeDeviceRef(), device.hubDeviceId(),
+                            device.smartAreaCode(), metadataJson, fingerprint, now, current.key(), deviceKey});
+                }
+                if (old == null) grants.add(new Object[]{current.key(), deviceKey, version, now, now});
+                if (!List.copyOf(previousPaths.getOrDefault(deviceKey, Map.of()).values()).equals(device.locationPaths())) {
+                    changedPaths.add(new Object[]{current.key(), deviceKey});
+                    for (int path = 0; path < device.locationPaths().size(); path++) {
+                        List<String> segments = device.locationPaths().get(path);
+                        for (int segment = 0; segment < segments.size(); segment++)
+                            locations.add(new Object[]{current.key(), deviceKey, path, segment, segments.get(segment), now, now});
                     }
                 }
-                for (String office : device.officeIds()) offices.add(new Object[]{current.key(), deviceKey, office, now, now});
-            });
-            if (!rows.isEmpty()) jdbc.batchUpdate("INSERT INTO local_company_devices(scope_key,device_key,source_device_id,device_kind,device_name,"
+                if (!previousOffices.getOrDefault(deviceKey, List.of()).equals(device.officeIds())) {
+                    changedOffices.add(new Object[]{current.key(), deviceKey});
+                    for (String office : device.officeIds()) offices.add(new Object[]{current.key(), deviceKey, office, now, now});
+                }
+            }
+            List<Object[]> removed = previous.keySet().stream().map(deviceKey -> new Object[]{current.key(), deviceKey}).toList();
+            if (!removed.isEmpty()) for (String table : List.of("local_company_grants", "local_company_locations", "local_company_offices", "local_company_devices"))
+                jdbc.batchUpdate("DELETE FROM " + table + " WHERE scope_key=? AND device_key=?", removed);
+            if (!reordered.isEmpty()) jdbc.batchUpdate("DELETE FROM local_company_devices WHERE scope_key=? AND device_key=?", reordered);
+            if (!changedPaths.isEmpty()) jdbc.batchUpdate("DELETE FROM local_company_locations WHERE scope_key=? AND device_key=?", changedPaths);
+            if (!changedOffices.isEmpty()) jdbc.batchUpdate("DELETE FROM local_company_offices WHERE scope_key=? AND device_key=?", changedOffices);
+            if (!updates.isEmpty()) jdbc.batchUpdate("UPDATE local_company_devices SET source_device_id=?,device_kind=?,device_name=?,install_address=?,"
+                    + "observation_only=?,control_ref=?,office_device_ref=?,hub_device_id=?,smart_area_code=?,metadata_json=?,catalog_fingerprint=?,update_time=? "
+                    + "WHERE scope_key=? AND device_key=?", updates);
+            if (!inserts.isEmpty()) jdbc.batchUpdate("INSERT INTO local_company_devices(scope_key,device_key,source_device_id,device_kind,device_name,"
                     + "install_address,observation_only,control_ref,office_device_ref,hub_device_id,smart_area_code,metadata_json,catalog_fingerprint,create_time,update_time) "
-                    + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows);
+                    + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", inserts);
+            jdbc.update("UPDATE local_company_grants SET batch_version=?,update_time=? WHERE scope_key=?", version, now, current.key());
             if (!grants.isEmpty()) jdbc.batchUpdate("INSERT INTO local_company_grants(scope_key,device_key,batch_version,create_time,update_time) VALUES (?,?,?,?,?)", grants);
             if (!locations.isEmpty()) jdbc.batchUpdate("INSERT INTO local_company_locations(scope_key,device_key,path_index,segment_index,segment_name,create_time,update_time) VALUES (?,?,?,?,?,?,?)", locations);
             if (!offices.isEmpty()) jdbc.batchUpdate("INSERT INTO local_company_offices(scope_key,device_key,office_id,create_time,update_time) VALUES (?,?,?,?,?)", offices);
-            if (!regions.isEmpty()) {
-                List<Object[]> regionRows = regions.stream().map(region ->
-                        new Object[]{current.key(), region.id(), region.name(), version, now, now}).toList();
-                jdbc.batchUpdate("INSERT INTO local_office_regions(scope_key,source_region_id,region_name,batch_version,create_time,update_time) VALUES (?,?,?,?,?,?)", regionRows);
-            }
+            publishRegions(current.key(), regions, version, now);
             jdbc.update("UPDATE local_sync_scopes SET published_generation=credential_generation,batch_version=?,state='READY',"
                             + "denial_status=0,failure_code=NULL,last_success_at=?,next_due_at=?,update_time=? WHERE scope_key=?",
                     version, now, Timestamp.from(now.toInstant().plusSeconds(SYNC_INTERVAL_SECONDS)), now, current.key());
             return find(current.key(), false);
         });
+    }
+
+    private record DeviceBody(String sourceId, String kind, String name, String address, boolean observationOnly,
+            String controlRef, String officeDeviceRef, String hubDeviceId, String smartAreaCode,
+            Map<String, Object> metadata, String fingerprint) { }
+    private record StoredDevice(long rowId, DeviceBody body) { }
+    private record StoredRegion(long rowId, String name) { }
+
+    private void publishRegions(String key, List<OfficeRegion> regions, long version, Timestamp now) {
+        Map<String, StoredRegion> previous = new LinkedHashMap<>();
+        jdbc.query("SELECT id,source_region_id,region_name FROM local_office_regions WHERE scope_key=? ORDER BY id",
+                (org.springframework.jdbc.core.RowCallbackHandler) rs -> previous.put(rs.getString(2), new StoredRegion(rs.getLong(1), rs.getString(3))), key);
+        List<Object[]> inserts = new ArrayList<>();
+        List<Object[]> updates = new ArrayList<>();
+        List<Object[]> deletes = new ArrayList<>();
+        long lastRetainedId = 0;
+        boolean append = false;
+        for (OfficeRegion region : regions) {
+            StoredRegion old = previous.remove(region.id());
+            append = append || old == null || old.rowId() < lastRetainedId;
+            if (append) {
+                if (old != null) deletes.add(new Object[]{key, region.id()});
+                inserts.add(new Object[]{key, region.id(), region.name(), version, now, now});
+            } else {
+                lastRetainedId = old.rowId();
+                if (!region.name().equals(old.name()))
+                    updates.add(new Object[]{region.name(), version, now, key, region.id()});
+            }
+        }
+        previous.keySet().forEach(id -> deletes.add(new Object[]{key, id}));
+        if (!deletes.isEmpty()) jdbc.batchUpdate("DELETE FROM local_office_regions WHERE scope_key=? AND source_region_id=?", deletes);
+        if (!updates.isEmpty()) jdbc.batchUpdate("UPDATE local_office_regions SET region_name=?,batch_version=?,update_time=? WHERE scope_key=? AND source_region_id=?", updates);
+        jdbc.update("UPDATE local_office_regions SET batch_version=?,update_time=? WHERE scope_key=? AND batch_version<>?", version, now, key, version);
+        if (!inserts.isEmpty()) jdbc.batchUpdate("INSERT INTO local_office_regions(scope_key,source_region_id,region_name,batch_version,create_time,update_time) VALUES (?,?,?,?,?,?)", inserts);
     }
 
     private Scope find(String scopeKey, boolean lock) {

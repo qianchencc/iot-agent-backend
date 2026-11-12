@@ -91,6 +91,30 @@ class CompanyDirectoryBehaviorTest {
         }
     }
 
+    @Test void catalogChangesKeepSameIdKindsSeparateAndPublishCompleteMetadata() {
+        try (Fixture f = new Fixture()) {
+            var light = new DeviceCatalogSource.Entry("fixture-shared-id", "测试照明", "lighting", "原位置");
+            var ac = new DeviceCatalogSource.Entry("fixture-shared-id", "测试空调", "ac", "原位置");
+            f.catalogDevices = List.of(light, ac);
+            assertPreparing(() -> f.directory.readCatalog(IDENTITY));
+            f.directory.synchronizeDue();
+            f.clock.advance(61);
+            f.catalogDevices = List.of(light, new DeviceCatalogSource.Entry(ac.id(), "新空调名称", ac.kind(), "新位置"));
+            f.directory.synchronizeDue();
+            assertEquals(List.of(
+                    Map.of("id", ac.id(), "name", "新空调名称", "kind", "ac", "location", "新位置"),
+                    Map.of("id", light.id(), "name", light.name(), "kind", "lighting", "location", "原位置")),
+                    f.directory.readCatalog(IDENTITY).get("devices"));
+            f.clock.advance(61);
+            f.catalogDevices = List.of(light);
+            f.directory.synchronizeDue();
+            Map<String, Object> view = f.directory.readCatalog(IDENTITY);
+            assertEquals(List.of(Map.of("id", light.id(), "name", light.name(), "kind", "lighting", "location", "原位置")), view.get("devices"));
+            assertEquals(f.clock.instant().toString(), view.get("synchronizedAt"));
+            assertEquals(List.of(FIRST), f.directory.loadBatch(IDENTITY).scope().devices());
+        }
+    }
+
     @Test void localReadsAndAgentRecoverFromCacheLossAndRestartWithoutCollecting() {
         try (Fixture f = new Fixture()) {
             assertPreparing(() -> f.directory.read(IDENTITY));
@@ -241,6 +265,38 @@ class CompanyDirectoryBehaviorTest {
             assertEquals("smoke", publicDevice.get("subtype"));
             assertFalse(publicDevice.containsKey("controlRef"));
             assertFalse(publicDevice.containsKey("metadata"));
+        }
+    }
+
+    @Test void changedBindingsRelationsAndSourceOrderRemainOneCompleteOfficeBatch() {
+        try (Fixture f = new Fixture()) {
+            var office = new RequestIdentity(IDENTITY.authorization(), IDENTITY.tenantCode(), IotSourceEnum.OFFICE, IDENTITY.ownerKey());
+            var before = new AuthorizedDevice("fixture-light", "lighting", "测试照明", "", true,
+                    "fixture-control", "fixture-office-ref", "fixture-hub", "fixture-area",
+                    List.of(List.of("测试园区", "旧楼层")), List.of("room-a", "room-b"), Map.of("mode", "old"));
+            f.devices = List.of(FIRST, before, SECOND);
+            f.regions = List.of(new OfficeRegion("room-a", "区域甲"), new OfficeRegion("room-b", "区域乙"));
+            assertPreparing(() -> f.directory.loadBatch(office));
+            f.directory.synchronizeDue();
+            var changed = new AuthorizedDevice(before.id(), before.kind(), before.name(), "", false,
+                    null, "fixture-new-office-ref", "fixture-new-hub", null,
+                    List.of(List.of("测试园区", "新楼层"), List.of("备用位置")), List.of("room-b", "room-a"),
+                    Map.of("mode", "new", "port", 2));
+            f.devices = List.of(SECOND, changed, FIRST);
+            f.regions = List.of(new OfficeRegion("room-b", "新区乙"), new OfficeRegion("room-a", "区域甲"));
+            f.clock.advance(61);
+            f.directory.synchronizeDue();
+            var batch = f.directory.loadBatch(office);
+            assertEquals(f.devices, batch.scope().devices());
+            assertEquals(f.regions, batch.regions());
+            assertEquals(List.of(changed), batch.forRegion("room-b").devices());
+            assertEquals(changed.bindingFingerprint(), batch.scope().device(changed.id()).orElseThrow().bindingFingerprint());
+            f.clock.advance(61);
+            f.directory.synchronizeDue();
+            f.restart();
+            f.failure = new IllegalStateException("fixture source offline");
+            assertEquals(f.devices, f.directory.loadBatch(office).scope().devices());
+            assertEquals(f.regions, f.directory.loadBatch(office).regions());
         }
     }
 

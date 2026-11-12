@@ -91,13 +91,35 @@ final class JdbcDeviceCatalog {
                 Progress expected = progress(key, true);
                 // Another due run may have started after a long source call; never overwrite its newer batch.
                 if (!attempt.equals(expected.attempt())) return;
-                jdbc.update("DELETE FROM local_device_catalog WHERE catalog_key=?", key);
+                Map<String, Map<String, DeviceCatalogSource.Entry>> previous = new LinkedHashMap<>();
+                jdbc.query("SELECT source_device_id,device_name,device_kind,install_address FROM local_device_catalog WHERE catalog_key=?",
+                        (org.springframework.jdbc.core.RowCallbackHandler) rs -> {
+                            var device = new DeviceCatalogSource.Entry(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4));
+                            previous.computeIfAbsent(device.kind(), ignored -> new LinkedHashMap<>()).put(device.id(), device);
+                        }, key);
                 Timestamp success = Timestamp.from(clock.instant());
-                List<Object[]> rows = new ArrayList<>(devices.size());
-                for (DeviceCatalogSource.Entry device : devices) rows.add(new Object[]{key, device.id(), device.kind(),
-                        device.name(), device.location(), success, success});
-                if (!rows.isEmpty()) jdbc.batchUpdate("INSERT INTO local_device_catalog(catalog_key,source_device_id,device_kind,"
-                        + "device_name,install_address,create_time,update_time) VALUES (?,?,?,?,?,?,?)", rows);
+                List<Object[]> inserts = new ArrayList<>();
+                List<Object[]> updates = new ArrayList<>();
+                for (DeviceCatalogSource.Entry device : devices) {
+                    Map<String, DeviceCatalogSource.Entry> kind = previous.get(device.kind());
+                    DeviceCatalogSource.Entry old = kind == null ? null : kind.remove(device.id());
+                    if (old == null) {
+                        inserts.add(new Object[]{key, device.id(), device.kind(), device.name(), device.location(), success, success});
+                    } else if (!device.equals(old)) {
+                        updates.add(new Object[]{device.name(), device.location(), success, key, device.id(), device.kind()});
+                    }
+                }
+                List<Object[]> deletes = new ArrayList<>();
+                for (Map<String, DeviceCatalogSource.Entry> kind : previous.values()) {
+                    for (DeviceCatalogSource.Entry removed : kind.values()) {
+                        deletes.add(new Object[]{key, removed.id(), removed.kind()});
+                    }
+                }
+                if (!deletes.isEmpty()) jdbc.batchUpdate("DELETE FROM local_device_catalog WHERE catalog_key=? AND source_device_id=? AND device_kind=?", deletes);
+                if (!updates.isEmpty()) jdbc.batchUpdate("UPDATE local_device_catalog SET device_name=?,install_address=?,update_time=? "
+                        + "WHERE catalog_key=? AND source_device_id=? AND device_kind=?", updates);
+                if (!inserts.isEmpty()) jdbc.batchUpdate("INSERT INTO local_device_catalog(catalog_key,source_device_id,device_kind,"
+                        + "device_name,install_address,create_time,update_time) VALUES (?,?,?,?,?,?,?)", inserts);
                 jdbc.update("UPDATE local_device_catalog_scopes SET batch_version=batch_version+1,state='READY',last_success_at=?,"
                                 + "next_due_at=?,update_time=? WHERE catalog_key=?", success,
                         Timestamp.from(success.toInstant().plusSeconds(intervalSeconds)), success, key);

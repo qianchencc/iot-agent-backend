@@ -138,6 +138,26 @@ class EnergyHistoryBehaviorTest {
         }
     }
 
+    @Test void memberMetadataAndPathsRefreshWithoutLosingExistingHistory() {
+        try (var f = new EnergyHistoryFixture()) {
+            f.rows = List.of(EnergyHistoryFixture.row(METER, "retained", "2020-01-01T00:00:00Z", "100"));
+            f.publish();
+            var renamed = new AuthorizedDevice(METER, "energy", "新电表名称", "新安装位置", true,
+                    null, null, null, null, List.of(List.of("测试园区", "新楼层")), List.of(),
+                    Map.of("channel", 2, "unit", "kWh"));
+            f.meters = List.of(renamed);
+            f.clock.advance(65);
+            f.synchronize();
+            assertEquals(List.of(renamed), f.history().authorizedScope(f.identity()).devices());
+            var retained = f.history().window(f.identity(), List.of(METER), FROM, TO, false);
+            assertTrue(retained.missingCoverageMeterIds().isEmpty());
+            assertEquals(List.of(new BigDecimal("100").setScale(30)), retained.samples().stream().map(EnergyHistory.Sample::epf).toList());
+            f.restart();
+            f.unavailable = true;
+            assertEquals(List.of(renamed), f.history().authorizedScope(f.identity()).devices());
+        }
+    }
+
     @Test void newMetersRemainCoverageGapsAndDatabaseFailureHasNoSourceFallback() {
         try(var f = new EnergyHistoryFixture()) {
             f.rows=List.of(EnergyHistoryFixture.row(METER,"original","2020-01-01T00:00:00Z","100"));f.publish();

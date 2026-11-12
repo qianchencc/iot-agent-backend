@@ -1,0 +1,1593 @@
+{
+  "method": "Real MySQL 8.4, two owned isolated schemas with identical synthetic inputs; AFTER row triggers count actual INSERT/UPDATE/DELETE, not JDBC affected-row counts. Both Company and Office grants present. No production binlog re-enabled.",
+  "baseline_jar_sha256": "ef026a070bbb8b0e99cafbd81db84bd50075dfcb6edafd170d5ca7cf91353d47",
+  "operations_before": {
+    "local": {
+      "data_kib": 401912,
+      "binlog_bytes": 158
+    },
+    "business": {
+      "data_kib": 20613804,
+      "binlog_bytes": 19676897182
+    }
+  },
+  "operations_after": {
+    "local": {
+      "log_bin": false,
+      "data_kib": 401912,
+      "released_kib": 0,
+      "container_id": "dc7a7f4e0e0a"
+    },
+    "business": {
+      "log_bin": false,
+      "data_kib": 1397964,
+      "released_kib": 19215840,
+      "container_id": "5846c6eae356"
+    }
+  },
+  "retired_archive_bytes": 415225967,
+  "mysql_comparison": {
+    "baseline": {
+      "phases": [
+        {
+          "phase": "five_identical_rounds",
+          "mutations": [
+            {
+              "table_name": "local_company_devices",
+              "operation": "DELETE",
+              "row_operations": 30
+            },
+            {
+              "table_name": "local_company_devices",
+              "operation": "INSERT",
+              "row_operations": 30
+            },
+            {
+              "table_name": "local_company_grants",
+              "operation": "DELETE",
+              "row_operations": 30
+            },
+            {
+              "table_name": "local_company_grants",
+              "operation": "INSERT",
+              "row_operations": 30
+            },
+            {
+              "table_name": "local_company_locations",
+              "operation": "DELETE",
+              "row_operations": 40
+            },
+            {
+              "table_name": "local_company_locations",
+              "operation": "INSERT",
+              "row_operations": 40
+            },
+            {
+              "table_name": "local_company_offices",
+              "operation": "DELETE",
+              "row_operations": 30
+            },
+            {
+              "table_name": "local_company_offices",
+              "operation": "INSERT",
+              "row_operations": 30
+            },
+            {
+              "table_name": "local_device_catalog",
+              "operation": "DELETE",
+              "row_operations": 15
+            },
+            {
+              "table_name": "local_device_catalog",
+              "operation": "INSERT",
+              "row_operations": 15
+            },
+            {
+              "table_name": "local_device_catalog_scopes",
+              "operation": "UPDATE",
+              "row_operations": 10
+            },
+            {
+              "table_name": "local_energy_meters",
+              "operation": "DELETE",
+              "row_operations": 5
+            },
+            {
+              "table_name": "local_energy_meters",
+              "operation": "INSERT",
+              "row_operations": 5
+            },
+            {
+              "table_name": "local_energy_sample_batches",
+              "operation": "DELETE",
+              "row_operations": 5
+            },
+            {
+              "table_name": "local_energy_sample_batches",
+              "operation": "INSERT",
+              "row_operations": 5
+            },
+            {
+              "table_name": "local_energy_samples",
+              "operation": "UPDATE",
+              "row_operations": 5
+            },
+            {
+              "table_name": "local_energy_sync",
+              "operation": "UPDATE",
+              "row_operations": 15
+            },
+            {
+              "table_name": "local_office_regions",
+              "operation": "DELETE",
+              "row_operations": 10
+            },
+            {
+              "table_name": "local_office_regions",
+              "operation": "INSERT",
+              "row_operations": 10
+            },
+            {
+              "table_name": "local_safety_batches",
+              "operation": "DELETE",
+              "row_operations": 20
+            },
+            {
+              "table_name": "local_safety_batches",
+              "operation": "INSERT",
+              "row_operations": 20
+            },
+            {
+              "table_name": "local_safety_events",
+              "operation": "UPDATE",
+              "row_operations": 20
+            },
+            {
+              "table_name": "local_safety_sync",
+              "operation": "UPDATE",
+              "row_operations": 20
+            },
+            {
+              "table_name": "local_sync_scopes",
+              "operation": "UPDATE",
+              "row_operations": 20
+            }
+          ]
+        },
+        {
+          "phase": "targeted_revisions",
+          "mutations": [
+            {
+              "table_name": "local_company_devices",
+              "operation": "DELETE",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_company_devices",
+              "operation": "INSERT",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_company_grants",
+              "operation": "DELETE",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_company_grants",
+              "operation": "INSERT",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_company_locations",
+              "operation": "DELETE",
+              "row_operations": 8
+            },
+            {
+              "table_name": "local_company_locations",
+              "operation": "INSERT",
+              "row_operations": 8
+            },
+            {
+              "table_name": "local_company_offices",
+              "operation": "DELETE",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_company_offices",
+              "operation": "INSERT",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_device_catalog",
+              "operation": "DELETE",
+              "row_operations": 3
+            },
+            {
+              "table_name": "local_device_catalog",
+              "operation": "INSERT",
+              "row_operations": 3
+            },
+            {
+              "table_name": "local_device_catalog_scopes",
+              "operation": "UPDATE",
+              "row_operations": 2
+            },
+            {
+              "table_name": "local_energy_meters",
+              "operation": "DELETE",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_energy_meters",
+              "operation": "INSERT",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_energy_sample_batches",
+              "operation": "DELETE",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_energy_sample_batches",
+              "operation": "INSERT",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_energy_samples",
+              "operation": "UPDATE",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_energy_sync",
+              "operation": "UPDATE",
+              "row_operations": 3
+            },
+            {
+              "table_name": "local_office_regions",
+              "operation": "DELETE",
+              "row_operations": 2
+            },
+            {
+              "table_name": "local_office_regions",
+              "operation": "INSERT",
+              "row_operations": 2
+            },
+            {
+              "table_name": "local_safety_batches",
+              "operation": "DELETE",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_safety_batches",
+              "operation": "INSERT",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_safety_events",
+              "operation": "UPDATE",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_safety_sync",
+              "operation": "UPDATE",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_sync_scopes",
+              "operation": "UPDATE",
+              "row_operations": 4
+            }
+          ]
+        },
+        {
+          "phase": "nullable_event_revisions",
+          "mutations": [
+            {
+              "table_name": "local_company_devices",
+              "operation": "DELETE",
+              "row_operations": 12
+            },
+            {
+              "table_name": "local_company_devices",
+              "operation": "INSERT",
+              "row_operations": 12
+            },
+            {
+              "table_name": "local_company_grants",
+              "operation": "DELETE",
+              "row_operations": 12
+            },
+            {
+              "table_name": "local_company_grants",
+              "operation": "INSERT",
+              "row_operations": 12
+            },
+            {
+              "table_name": "local_company_locations",
+              "operation": "DELETE",
+              "row_operations": 16
+            },
+            {
+              "table_name": "local_company_locations",
+              "operation": "INSERT",
+              "row_operations": 16
+            },
+            {
+              "table_name": "local_company_offices",
+              "operation": "DELETE",
+              "row_operations": 12
+            },
+            {
+              "table_name": "local_company_offices",
+              "operation": "INSERT",
+              "row_operations": 12
+            },
+            {
+              "table_name": "local_device_catalog",
+              "operation": "DELETE",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_device_catalog",
+              "operation": "INSERT",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_device_catalog_scopes",
+              "operation": "UPDATE",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_energy_meters",
+              "operation": "DELETE",
+              "row_operations": 2
+            },
+            {
+              "table_name": "local_energy_meters",
+              "operation": "INSERT",
+              "row_operations": 2
+            },
+            {
+              "table_name": "local_energy_sample_batches",
+              "operation": "DELETE",
+              "row_operations": 2
+            },
+            {
+              "table_name": "local_energy_sample_batches",
+              "operation": "INSERT",
+              "row_operations": 2
+            },
+            {
+              "table_name": "local_energy_samples",
+              "operation": "UPDATE",
+              "row_operations": 2
+            },
+            {
+              "table_name": "local_energy_sync",
+              "operation": "UPDATE",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_office_regions",
+              "operation": "DELETE",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_office_regions",
+              "operation": "INSERT",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_safety_batches",
+              "operation": "DELETE",
+              "row_operations": 8
+            },
+            {
+              "table_name": "local_safety_batches",
+              "operation": "INSERT",
+              "row_operations": 8
+            },
+            {
+              "table_name": "local_safety_events",
+              "operation": "UPDATE",
+              "row_operations": 8
+            },
+            {
+              "table_name": "local_safety_sync",
+              "operation": "UPDATE",
+              "row_operations": 8
+            },
+            {
+              "table_name": "local_sync_scopes",
+              "operation": "UPDATE",
+              "row_operations": 8
+            }
+          ]
+        },
+        {
+          "phase": "source_order_revision",
+          "mutations": [
+            {
+              "table_name": "local_company_devices",
+              "operation": "DELETE",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_company_devices",
+              "operation": "INSERT",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_company_grants",
+              "operation": "DELETE",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_company_grants",
+              "operation": "INSERT",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_company_locations",
+              "operation": "DELETE",
+              "row_operations": 8
+            },
+            {
+              "table_name": "local_company_locations",
+              "operation": "INSERT",
+              "row_operations": 8
+            },
+            {
+              "table_name": "local_company_offices",
+              "operation": "DELETE",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_company_offices",
+              "operation": "INSERT",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_device_catalog",
+              "operation": "DELETE",
+              "row_operations": 3
+            },
+            {
+              "table_name": "local_device_catalog",
+              "operation": "INSERT",
+              "row_operations": 3
+            },
+            {
+              "table_name": "local_device_catalog_scopes",
+              "operation": "UPDATE",
+              "row_operations": 2
+            },
+            {
+              "table_name": "local_energy_meters",
+              "operation": "DELETE",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_energy_meters",
+              "operation": "INSERT",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_energy_sample_batches",
+              "operation": "DELETE",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_energy_sample_batches",
+              "operation": "INSERT",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_energy_samples",
+              "operation": "UPDATE",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_energy_sync",
+              "operation": "UPDATE",
+              "row_operations": 3
+            },
+            {
+              "table_name": "local_office_regions",
+              "operation": "DELETE",
+              "row_operations": 2
+            },
+            {
+              "table_name": "local_office_regions",
+              "operation": "INSERT",
+              "row_operations": 2
+            },
+            {
+              "table_name": "local_safety_batches",
+              "operation": "DELETE",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_safety_batches",
+              "operation": "INSERT",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_safety_events",
+              "operation": "UPDATE",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_safety_sync",
+              "operation": "UPDATE",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_sync_scopes",
+              "operation": "UPDATE",
+              "row_operations": 4
+            }
+          ]
+        },
+        {
+          "phase": "failed_batch_rollback",
+          "mutations": [
+            {
+              "table_name": "local_device_catalog_scopes",
+              "operation": "UPDATE",
+              "row_operations": 2
+            },
+            {
+              "table_name": "local_sync_scopes",
+              "operation": "UPDATE",
+              "row_operations": 4
+            }
+          ]
+        },
+        {
+          "phase": "failure_recovery",
+          "mutations": [
+            {
+              "table_name": "local_company_devices",
+              "operation": "DELETE",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_company_devices",
+              "operation": "INSERT",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_company_grants",
+              "operation": "DELETE",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_company_grants",
+              "operation": "INSERT",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_company_locations",
+              "operation": "DELETE",
+              "row_operations": 8
+            },
+            {
+              "table_name": "local_company_locations",
+              "operation": "INSERT",
+              "row_operations": 8
+            },
+            {
+              "table_name": "local_company_offices",
+              "operation": "DELETE",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_company_offices",
+              "operation": "INSERT",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_device_catalog",
+              "operation": "DELETE",
+              "row_operations": 3
+            },
+            {
+              "table_name": "local_device_catalog",
+              "operation": "INSERT",
+              "row_operations": 3
+            },
+            {
+              "table_name": "local_device_catalog_scopes",
+              "operation": "UPDATE",
+              "row_operations": 2
+            },
+            {
+              "table_name": "local_energy_meters",
+              "operation": "DELETE",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_energy_meters",
+              "operation": "INSERT",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_energy_sample_batches",
+              "operation": "DELETE",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_energy_sample_batches",
+              "operation": "INSERT",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_energy_samples",
+              "operation": "UPDATE",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_energy_sync",
+              "operation": "UPDATE",
+              "row_operations": 3
+            },
+            {
+              "table_name": "local_office_regions",
+              "operation": "DELETE",
+              "row_operations": 2
+            },
+            {
+              "table_name": "local_office_regions",
+              "operation": "INSERT",
+              "row_operations": 2
+            },
+            {
+              "table_name": "local_safety_batches",
+              "operation": "DELETE",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_safety_batches",
+              "operation": "INSERT",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_safety_events",
+              "operation": "UPDATE",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_safety_sync",
+              "operation": "UPDATE",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_sync_scopes",
+              "operation": "UPDATE",
+              "row_operations": 4
+            }
+          ]
+        },
+        {
+          "phase": "late_catalog_protection",
+          "mutations": [
+            {
+              "table_name": "local_company_devices",
+              "operation": "DELETE",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_company_devices",
+              "operation": "INSERT",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_company_grants",
+              "operation": "DELETE",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_company_grants",
+              "operation": "INSERT",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_company_locations",
+              "operation": "DELETE",
+              "row_operations": 8
+            },
+            {
+              "table_name": "local_company_locations",
+              "operation": "INSERT",
+              "row_operations": 8
+            },
+            {
+              "table_name": "local_company_offices",
+              "operation": "DELETE",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_company_offices",
+              "operation": "INSERT",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_device_catalog",
+              "operation": "DELETE",
+              "row_operations": 3
+            },
+            {
+              "table_name": "local_device_catalog",
+              "operation": "INSERT",
+              "row_operations": 3
+            },
+            {
+              "table_name": "local_device_catalog_scopes",
+              "operation": "UPDATE",
+              "row_operations": 3
+            },
+            {
+              "table_name": "local_energy_meters",
+              "operation": "DELETE",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_energy_meters",
+              "operation": "INSERT",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_energy_sample_batches",
+              "operation": "DELETE",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_energy_sample_batches",
+              "operation": "INSERT",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_energy_samples",
+              "operation": "UPDATE",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_energy_sync",
+              "operation": "UPDATE",
+              "row_operations": 3
+            },
+            {
+              "table_name": "local_office_regions",
+              "operation": "DELETE",
+              "row_operations": 2
+            },
+            {
+              "table_name": "local_office_regions",
+              "operation": "INSERT",
+              "row_operations": 2
+            },
+            {
+              "table_name": "local_safety_batches",
+              "operation": "DELETE",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_safety_batches",
+              "operation": "INSERT",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_safety_events",
+              "operation": "UPDATE",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_safety_sync",
+              "operation": "UPDATE",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_sync_scopes",
+              "operation": "UPDATE",
+              "row_operations": 5
+            }
+          ]
+        },
+        {
+          "phase": "complete_empty_grants_facts_retained",
+          "mutations": [
+            {
+              "table_name": "local_company_devices",
+              "operation": "DELETE",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_company_grants",
+              "operation": "DELETE",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_company_locations",
+              "operation": "DELETE",
+              "row_operations": 8
+            },
+            {
+              "table_name": "local_company_offices",
+              "operation": "DELETE",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_device_catalog",
+              "operation": "DELETE",
+              "row_operations": 3
+            },
+            {
+              "table_name": "local_device_catalog_scopes",
+              "operation": "UPDATE",
+              "row_operations": 2
+            },
+            {
+              "table_name": "local_energy_meters",
+              "operation": "DELETE",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_energy_sync",
+              "operation": "UPDATE",
+              "row_operations": 2
+            },
+            {
+              "table_name": "local_office_regions",
+              "operation": "DELETE",
+              "row_operations": 2
+            },
+            {
+              "table_name": "local_sync_scopes",
+              "operation": "UPDATE",
+              "row_operations": 4
+            }
+          ]
+        }
+      ],
+      "result": {
+        "directorySourceCalls": 80,
+        "energySourceCalls": 12,
+        "passed": true,
+        "catalogSourceCalls": 15,
+        "ordinaryReadSourceCalls": 0,
+        "mode": "baseline",
+        "safetySourceCalls": 24
+      }
+    },
+    "optimized": {
+      "phases": [
+        {
+          "phase": "five_identical_rounds",
+          "mutations": [
+            {
+              "table_name": "local_company_grants",
+              "operation": "UPDATE",
+              "row_operations": 30
+            },
+            {
+              "table_name": "local_device_catalog_scopes",
+              "operation": "UPDATE",
+              "row_operations": 10
+            },
+            {
+              "table_name": "local_energy_sample_batches",
+              "operation": "DELETE",
+              "row_operations": 5
+            },
+            {
+              "table_name": "local_energy_sample_batches",
+              "operation": "INSERT",
+              "row_operations": 5
+            },
+            {
+              "table_name": "local_energy_samples",
+              "operation": "UPDATE",
+              "row_operations": 5
+            },
+            {
+              "table_name": "local_energy_sync",
+              "operation": "UPDATE",
+              "row_operations": 15
+            },
+            {
+              "table_name": "local_office_regions",
+              "operation": "UPDATE",
+              "row_operations": 10
+            },
+            {
+              "table_name": "local_safety_batches",
+              "operation": "DELETE",
+              "row_operations": 20
+            },
+            {
+              "table_name": "local_safety_batches",
+              "operation": "INSERT",
+              "row_operations": 20
+            },
+            {
+              "table_name": "local_safety_sync",
+              "operation": "UPDATE",
+              "row_operations": 20
+            },
+            {
+              "table_name": "local_sync_scopes",
+              "operation": "UPDATE",
+              "row_operations": 20
+            }
+          ]
+        },
+        {
+          "phase": "targeted_revisions",
+          "mutations": [
+            {
+              "table_name": "local_company_devices",
+              "operation": "UPDATE",
+              "row_operations": 2
+            },
+            {
+              "table_name": "local_company_grants",
+              "operation": "UPDATE",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_company_locations",
+              "operation": "DELETE",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_company_locations",
+              "operation": "INSERT",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_device_catalog",
+              "operation": "UPDATE",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_device_catalog_scopes",
+              "operation": "UPDATE",
+              "row_operations": 2
+            },
+            {
+              "table_name": "local_energy_meters",
+              "operation": "UPDATE",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_energy_sample_batches",
+              "operation": "DELETE",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_energy_sample_batches",
+              "operation": "INSERT",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_energy_samples",
+              "operation": "UPDATE",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_energy_sync",
+              "operation": "UPDATE",
+              "row_operations": 3
+            },
+            {
+              "table_name": "local_office_regions",
+              "operation": "UPDATE",
+              "row_operations": 2
+            },
+            {
+              "table_name": "local_safety_batches",
+              "operation": "DELETE",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_safety_batches",
+              "operation": "INSERT",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_safety_events",
+              "operation": "UPDATE",
+              "row_operations": 2
+            },
+            {
+              "table_name": "local_safety_sync",
+              "operation": "UPDATE",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_sync_scopes",
+              "operation": "UPDATE",
+              "row_operations": 4
+            }
+          ]
+        },
+        {
+          "phase": "nullable_event_revisions",
+          "mutations": [
+            {
+              "table_name": "local_company_grants",
+              "operation": "UPDATE",
+              "row_operations": 12
+            },
+            {
+              "table_name": "local_device_catalog_scopes",
+              "operation": "UPDATE",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_energy_sample_batches",
+              "operation": "DELETE",
+              "row_operations": 2
+            },
+            {
+              "table_name": "local_energy_sample_batches",
+              "operation": "INSERT",
+              "row_operations": 2
+            },
+            {
+              "table_name": "local_energy_samples",
+              "operation": "UPDATE",
+              "row_operations": 2
+            },
+            {
+              "table_name": "local_energy_sync",
+              "operation": "UPDATE",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_office_regions",
+              "operation": "UPDATE",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_safety_batches",
+              "operation": "DELETE",
+              "row_operations": 8
+            },
+            {
+              "table_name": "local_safety_batches",
+              "operation": "INSERT",
+              "row_operations": 8
+            },
+            {
+              "table_name": "local_safety_events",
+              "operation": "UPDATE",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_safety_sync",
+              "operation": "UPDATE",
+              "row_operations": 8
+            },
+            {
+              "table_name": "local_sync_scopes",
+              "operation": "UPDATE",
+              "row_operations": 8
+            }
+          ]
+        },
+        {
+          "phase": "source_order_revision",
+          "mutations": [
+            {
+              "table_name": "local_company_devices",
+              "operation": "DELETE",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_company_devices",
+              "operation": "INSERT",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_company_grants",
+              "operation": "UPDATE",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_device_catalog_scopes",
+              "operation": "UPDATE",
+              "row_operations": 2
+            },
+            {
+              "table_name": "local_energy_sample_batches",
+              "operation": "DELETE",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_energy_sample_batches",
+              "operation": "INSERT",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_energy_samples",
+              "operation": "UPDATE",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_energy_sync",
+              "operation": "UPDATE",
+              "row_operations": 3
+            },
+            {
+              "table_name": "local_office_regions",
+              "operation": "DELETE",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_office_regions",
+              "operation": "INSERT",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_office_regions",
+              "operation": "UPDATE",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_safety_batches",
+              "operation": "DELETE",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_safety_batches",
+              "operation": "INSERT",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_safety_sync",
+              "operation": "UPDATE",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_sync_scopes",
+              "operation": "UPDATE",
+              "row_operations": 4
+            }
+          ]
+        },
+        {
+          "phase": "failed_batch_rollback",
+          "mutations": [
+            {
+              "table_name": "local_device_catalog_scopes",
+              "operation": "UPDATE",
+              "row_operations": 2
+            },
+            {
+              "table_name": "local_sync_scopes",
+              "operation": "UPDATE",
+              "row_operations": 4
+            }
+          ]
+        },
+        {
+          "phase": "failure_recovery",
+          "mutations": [
+            {
+              "table_name": "local_company_grants",
+              "operation": "UPDATE",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_device_catalog_scopes",
+              "operation": "UPDATE",
+              "row_operations": 2
+            },
+            {
+              "table_name": "local_energy_sample_batches",
+              "operation": "DELETE",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_energy_sample_batches",
+              "operation": "INSERT",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_energy_samples",
+              "operation": "UPDATE",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_energy_sync",
+              "operation": "UPDATE",
+              "row_operations": 3
+            },
+            {
+              "table_name": "local_office_regions",
+              "operation": "UPDATE",
+              "row_operations": 2
+            },
+            {
+              "table_name": "local_safety_batches",
+              "operation": "DELETE",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_safety_batches",
+              "operation": "INSERT",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_safety_sync",
+              "operation": "UPDATE",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_sync_scopes",
+              "operation": "UPDATE",
+              "row_operations": 4
+            }
+          ]
+        },
+        {
+          "phase": "late_catalog_protection",
+          "mutations": [
+            {
+              "table_name": "local_company_grants",
+              "operation": "UPDATE",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_device_catalog",
+              "operation": "UPDATE",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_device_catalog_scopes",
+              "operation": "UPDATE",
+              "row_operations": 3
+            },
+            {
+              "table_name": "local_energy_sample_batches",
+              "operation": "DELETE",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_energy_sample_batches",
+              "operation": "INSERT",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_energy_samples",
+              "operation": "UPDATE",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_energy_sync",
+              "operation": "UPDATE",
+              "row_operations": 3
+            },
+            {
+              "table_name": "local_office_regions",
+              "operation": "UPDATE",
+              "row_operations": 2
+            },
+            {
+              "table_name": "local_safety_batches",
+              "operation": "DELETE",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_safety_batches",
+              "operation": "INSERT",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_safety_sync",
+              "operation": "UPDATE",
+              "row_operations": 4
+            },
+            {
+              "table_name": "local_sync_scopes",
+              "operation": "UPDATE",
+              "row_operations": 5
+            }
+          ]
+        },
+        {
+          "phase": "complete_empty_grants_facts_retained",
+          "mutations": [
+            {
+              "table_name": "local_company_devices",
+              "operation": "DELETE",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_company_grants",
+              "operation": "DELETE",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_company_locations",
+              "operation": "DELETE",
+              "row_operations": 8
+            },
+            {
+              "table_name": "local_company_offices",
+              "operation": "DELETE",
+              "row_operations": 6
+            },
+            {
+              "table_name": "local_device_catalog",
+              "operation": "DELETE",
+              "row_operations": 3
+            },
+            {
+              "table_name": "local_device_catalog_scopes",
+              "operation": "UPDATE",
+              "row_operations": 2
+            },
+            {
+              "table_name": "local_energy_meters",
+              "operation": "DELETE",
+              "row_operations": 1
+            },
+            {
+              "table_name": "local_energy_sync",
+              "operation": "UPDATE",
+              "row_operations": 2
+            },
+            {
+              "table_name": "local_office_regions",
+              "operation": "DELETE",
+              "row_operations": 2
+            },
+            {
+              "table_name": "local_sync_scopes",
+              "operation": "UPDATE",
+              "row_operations": 4
+            }
+          ]
+        }
+      ],
+      "result": {
+        "energySourceCalls": 12,
+        "passed": true,
+        "catalogSourceCalls": 15,
+        "ordinaryReadSourceCalls": 0,
+        "mode": "optimized",
+        "safetySourceCalls": 24,
+        "directorySourceCalls": 80
+      }
+    }
+  },
+  "final_source_regressions": [
+    {
+      "name": "ltd.qianc.iotagent.task.TaskAuthorizationFingerprintContractTest",
+      "tests": "2",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0"
+    },
+    {
+      "name": "ltd.qianc.iotagent.action.ActionDraftProposalContractTest",
+      "tests": "23",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "1"
+    },
+    {
+      "name": "ltd.qianc.iotagent.iot.EnvironmentHistoryBehaviorTest",
+      "tests": "20",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0"
+    },
+    {
+      "name": "ltd.qianc.iotagent.action.ActionConfirmationLocalReadsTest",
+      "tests": "3",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0"
+    },
+    {
+      "name": "ltd.qianc.iotagent.iot.EnergyHistoryBehaviorTest",
+      "tests": "27",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0"
+    },
+    {
+      "name": "ltd.qianc.iotagent.task.TaskReadScopeContractTest",
+      "tests": "6",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0"
+    },
+    {
+      "name": "ltd.qianc.iotagent.iot.SafetyHistoryBehaviorTest",
+      "tests": "8",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0"
+    },
+    {
+      "name": "ltd.qianc.iotagent.iot.CompanyDirectoryBehaviorTest",
+      "tests": "25",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0"
+    },
+    {
+      "name": "ltd.qianc.iotagent.iot.EnvironmentTrendBehaviorTest",
+      "tests": "3",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0"
+    },
+    {
+      "name": "ltd.qianc.iotagent.iot.LatestSafetyAlertContractTest",
+      "tests": "3",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0"
+    },
+    {
+      "name": "ltd.qianc.iotagent.task.TaskReadLatencyContractTest",
+      "tests": "5",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0"
+    },
+    {
+      "name": "ltd.qianc.iotagent.ArchitectureTest",
+      "tests": "4",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0"
+    },
+    {
+      "name": "ltd.qianc.iotagent.action.ActionDraftEditRevalidationContractTest",
+      "tests": "6",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0"
+    },
+    {
+      "name": "ltd.qianc.iotagent.agent.CompanyDeviceDiscoveryContractTest",
+      "tests": "6",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0"
+    },
+    {
+      "name": "ltd.qianc.iotagent.report.ReportExportCompletenessTest",
+      "tests": "2",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0"
+    },
+    {
+      "name": "ltd.qianc.iotagent.report.ReportFactProducerContractTest",
+      "tests": "9",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0"
+    },
+    {
+      "name": "ltd.qianc.iotagent.CompanyEnergyHistoryPreparationContractTest",
+      "tests": "1",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0"
+    },
+    {
+      "name": "ltd.qianc.iotagent.iot.SafetyHistoryHttpContractTest",
+      "tests": "1",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0"
+    },
+    {
+      "name": "ltd.qianc.iotagent.iot.SafetyCameraObservationContractTest",
+      "tests": "4",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0"
+    },
+    {
+      "name": "ltd.qianc.iotagent.iot.SafetyLedgerObservationContractTest",
+      "tests": "10",
+      "failures": "0",
+      "errors": "0",
+      "skipped": "0"
+    }
+  ],
+  "safety_fencing_smoke": {
+    "returncode": 0,
+    "output": "PASS old-current/new-full claim fencing on real MySQL\nPASS credential rotation fences in-flight publication and renews own local grant\n"
+  },
+  "artifact": {
+    "path": "var/sync-storage-20261112-093244/backend.jar",
+    "sha256": "2cde2c2e60176e3d33b4f38721f892089c7f164adc02be4dd0c8205c82d573e9",
+    "replaced_class_entries": [
+      "BOOT-INF/classes/ltd/qianc/iotagent/iot/internal/JdbcCompanyDirectory$1.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/iot/internal/JdbcCompanyDirectory$DeviceBody.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/iot/internal/JdbcCompanyDirectory$Scope.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/iot/internal/JdbcCompanyDirectory$StoredDevice.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/iot/internal/JdbcCompanyDirectory$StoredRegion.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/iot/internal/JdbcCompanyDirectory.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/iot/internal/JdbcDeviceCatalog$Progress.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/iot/internal/JdbcDeviceCatalog.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/iot/internal/JdbcEnergyHistory$1.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/iot/internal/JdbcEnergyHistory$2.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/iot/internal/JdbcEnergyHistory$Grant.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/iot/internal/JdbcEnergyHistory$MeterBody.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/iot/internal/JdbcEnergyHistory$SharedCoverage.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/iot/internal/JdbcEnergyHistory$StoredMeter.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/iot/internal/JdbcEnergyHistory.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/iot/internal/JdbcSafetyHistory$1.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/iot/internal/JdbcSafetyHistory$Access.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/iot/internal/JdbcSafetyHistory$Progress.class",
+      "BOOT-INF/classes/ltd/qianc/iotagent/iot/internal/JdbcSafetyHistory.class"
+    ],
+    "untouched_entries": 840,
+    "rollback": "var/safety-identity-20261111-153405/backend-revised.jar"
+  },
+  "deployment": {
+    "java_pid": 2974,
+    "node_pid": 4208,
+    "admin_pid": 26873,
+    "java_health": 200,
+    "node_health": "ok",
+    "protected_record_counts_unchanged": true,
+    "original_configuration_hashes_unchanged": true,
+    "temporary_schemas_removed": true,
+    "temporary_probe_files_removed": true
+  },
+  "final_space": {
+    "local": {
+      "data_kib": 401912,
+      "log_bin": "0"
+    },
+    "business": {
+      "data_kib": 1397996,
+      "log_bin": "0"
+    },
+    "workdir_kib": 1409224
+  },
+  "review": {
+    "standards": "One H2 full-name comparison defect found and fixed with explicit full-width binary comparison plus byte length; sharpened regression and real MySQL case-only revision passed.",
+    "spec": "No blocking implementation findings."
+  },
+  "ui": {
+    "admin": "Actual Chrome UI after deployment: saved revision23 equals next-read revision23, no config diff, Java3381 displayed, MySQL session store online; only status check performed.",
+    "screenshot": "var/sync-storage-20261112-093244/admin-state.png",
+    "wechat_business_paths": "Not re-accepted; known official automator connection unavailable, no re-probe or injected identity/card. Admin proof does not replace WeChat business acceptance.",
+    "nightly_cycle": "03:00 scheduling rule covered in regression; deployed build next active energy full is 2026-11-13 03:00 Shanghai, no post-deployment night observed."
+  },
+  "runtime_observation": {
+    "active_company_scopes_ready": 4,
+    "active_office_scopes_ready": 4,
+    "directory_latest_success": "2026-11-12 09:35:42.346 Asia/Shanghai",
+    "energy_current_latest_success": "2026-11-12 09:35:27.120748 Asia/Shanghai",
+    "active_energy_next_full": "2026-11-13 03:00:00 Asia/Shanghai",
+    "business_log_bin": 0,
+    "local_log_bin": 0
+  },
+  "storage_breakdown": {
+    "active_schema_metadata": "data_mib\tindex_mib\n321.19\t231.41\n",
+    "volume_allocated_kib": "4064\t/var/lib/mysql/iot_agent_task_storage_smoke_20261104_125428\n28332\t/var/lib/mysql/iot_agent_business_restore_20261103\n14872\t/var/lib/mysql/iot_agent_console_test_20261104_231631\n116\t/var/lib/mysql/sys\n871352\t/var/lib/mysql/iot_agent_business\n102404\t/var/lib/mysql/#innodb_redo\n28932\t/var/lib/mysql/iot_agent_semantic_contract\n36\t/var/lib/mysql/mysql\n3652\t/var/lib/mysql/iot_agent_concurrency_test_1104095334_runtime\n2668\t/var/lib/mysql/iot_agent_contract_b8a00056\n3656\t/var/lib/mysql/iot_agent_concurrency_20261104_103323\n29472\t/var/lib/mysql/iot_agent_business_restore_v17_20261103\n3944\t/var/lib/mysql/iot_agent_concurrency_test_1104095334\n23020\t/var/lib/mysql/iot_agent_mysql_final\n4812\t/var/lib/mysql/iot_agent_task_parity_20261104_113615\n9868\t/var/lib/mysql/iot_agent_latency_contract_20261105\n1668\t/var/lib/mysql/performance_schema\n26356\t/var/lib/mysql/agent_business_contract_v6\n4588\t/var/lib/mysql/iot_agent_console_20261104_230158\n804\t/var/lib/mysql/#innodb_temp\n3928\t/var/lib/mysql/iot_agent_semantic_verify\n1397996\t/var/lib/mysql\n",
+    "selected_internal_allocated_kib": "12288\t/var/lib/mysql/ibdata1\n65536\t/var/lib/mysql/undo_001\n81920\t/var/lib/mysql/undo_002\n"
+  },
+  "additional_playback_preparation_regression": {
+    "name": "ltd.qianc.iotagent.agent.SafetyReviewToolContractTest",
+    "tests": "1",
+    "failures": "0",
+    "errors": "0",
+    "skipped": "0"
+  }
+}

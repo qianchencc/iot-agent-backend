@@ -42,6 +42,46 @@ class SafetyHistoryBehaviorTest {
         }
     }
 
+    @Test void eventRevisionsPreserveIdentityAndApplyCaseOnlyNamesAndNullableFlags() {
+        try (var f = new Fixture()) {
+            var original = new LinkedHashMap<>(row("gas", "gas", "fixture-revised", "2020-01-01T00:00:00Z"));
+            original.put("deviceName", "Fixture DEVICE");
+            f.rows.add(original);
+            f.rows.add(row("gas", "gas", "fixture-other", "2020-01-01T00:00:00Z"));
+            f.publish();
+            var revised = new LinkedHashMap<>(original);
+            revised.put("deviceName", "Fixture device");
+            f.rows.set(0, revised);
+            f.clock.advance(61);
+            f.directory.synchronizeDue();
+            var detail = new ObservationRequest(f.identity(), ObservationOperationEnum.SAFETY_EVENT,
+                    Map.of("ledger", "gas", "deviceId", "gas", "id", "fixture-revised"));
+            assertEquals("Fixture device", ((Map<?, ?>) f.directory.safetyHistory().read(detail).block()
+                    .payload().get("record")).get("recordedDeviceName"));
+            revised.put("alarm", null);
+            revised.put("report", true);
+            f.rows.set(0, revised);
+            f.clock.advance(61);
+            f.directory.synchronizeDue();
+            Map<?, ?> record = (Map<?, ?>) f.directory.safetyHistory().read(detail).block().payload().get("record");
+            assertEquals("Fixture device", record.get("recordedDeviceName"));
+            assertNull(record.get("alarm"));
+            assertEquals(true, record.get("report"));
+            assertEquals("2020-01-01T00:00:00Z", record.get("occurredAt"));
+            revised.put("alarm", false);
+            revised.put("report", null);
+            f.clock.advance(61);
+            f.directory.synchronizeDue();
+            int calls = f.calls.get();
+            f.offline = true;
+            record = (Map<?, ?>) f.directory.safetyHistory().read(detail).block().payload().get("record");
+            assertEquals(false, record.get("alarm"));
+            assertNull(record.get("report"));
+            assertEquals(2, ((List<?>) f.read("gas", null, null).payload().get("items")).size());
+            assertEquals(calls, f.calls.get());
+        }
+    }
+
     @Test void anotherPrincipalReusesFactsOnlyAfterItsOwnGrantIsPublished() {
         try (var f = new Fixture()) {
             f.rows.add(row("gas", "gas", "original", "2020-01-01T00:00:00Z"));

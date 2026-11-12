@@ -196,8 +196,16 @@ public final class JdbcSafetyHistory implements SafetyHistory {
                     if (jdbc.queryForList("SELECT id FROM local_safety_sync WHERE scope_key=? AND attempt_at=? FOR UPDATE", key, Timestamp.from(attempt)).isEmpty()) throw preparing();
                     authorize.run();
                     Timestamp now = Timestamp.from(clock.instant());
+                    // Event timestamps describe its last revision; stream progress records every successful collection.
+                    // 512 utf8mb4 characters fit 2048 bytes; H2 otherwise defaults BINARY casts to one byte.
                     jdbc.update("INSERT INTO local_safety_events(" + FIELDS + ",synchronized_at,create_time,update_time) SELECT " + FIELDS
-                            + ",?,?,? FROM local_safety_batches WHERE run_id=? AND scope_key=? ON DUPLICATE KEY UPDATE "
+                            + ",?,?,? FROM local_safety_batches b WHERE b.run_id=? AND b.scope_key=? AND NOT EXISTS ("
+                            + "SELECT 1 FROM local_safety_events e WHERE e.scope_key=b.scope_key AND e.event_key=b.event_key "
+                            + "AND ((OCTET_LENGTH(e.recorded_device_name)=OCTET_LENGTH(b.recorded_device_name) "
+                            + "AND CAST(e.recorded_device_name AS BINARY(2048))=CAST(b.recorded_device_name AS BINARY(2048))) "
+                            + "OR (e.recorded_device_name IS NULL AND b.recorded_device_name IS NULL)) "
+                            + "AND (e.alarm=b.alarm OR (e.alarm IS NULL AND b.alarm IS NULL)) "
+                            + "AND (e.report=b.report OR (e.report IS NULL AND b.report IS NULL))) ON DUPLICATE KEY UPDATE "
                             + "recorded_device_name=VALUES(recorded_device_name),alarm=VALUES(alarm),report=VALUES(report),synchronized_at=VALUES(synchronized_at),update_time=VALUES(update_time)",
                             now, now, now, run, key);
                     jdbc.update("UPDATE local_safety_sync SET publication_version=publication_version+1,success_at=?,covered_until=?,"

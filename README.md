@@ -12,6 +12,8 @@ Java public backend plus an independent Node `agent-sidecar`: Spring Boot 3.5 / 
 
 固定端口 Java `3381`、Node `3382`、管理控制台 `5185`。三个进程都用各自的常规命令启动：无启动器脚本、无自定义进程清单、不加载 `.env`。tmux 只是可选的手动终端——需要时自己 `tmux new -s backend` 开会话、逐窗口粘贴下列命令即可，不作为必需编排，也没有自动重启。
 
+2026-11-12存储治理已部署：固定Java3381运行`var/sync-storage-20261112-093244/backend.jar`，只更新四组IoT持久化类，Node、前端和外置配置不变；两套MySQL已关闭无用途binlog并正规回收旧日志，目录／授权／安全事件减少重复正文写入。当前产物、空间实测、回归及未验边界见[执行入口](.scratch/sync-storage-governance/README.md)；下列较早发布记录仅作历史。
+
 2026-11-06 21:22固定Java3381已更新为`var/fixed-energy-20261106-212234/backend.jar`，修复正常刷新误判授权变化、同主体合法换证重拉已有电表历史及本地统计逐表查询；Node3382仍使用`var/fixed-latest-20261106-194349/agent-sidecar/`，原外置YAML、控制台、MySQL、Redis和管理设置保持。定向42/42及打包通过；全量701项中670通过、28跳过，原有3项告警／视频断言失败仍在。重启后43台/237624条样本及全量覆盖保持，真实小程序日统计约0.89–1.76秒并正常展示；未备份或下发控制。[当前运行及验证边界](.scratch/agent-business-recovery/local-preview.md)；[此前任务命名部署证据](.scratch/task-title-naming/evidence/TITLE-02/deployment.json)及[18:46启动清理记录](.scratch/local-data-sync/evidence/fixed-latest-20261106.json)保留。
 
 2026-11-09 历史能耗答复修正：模型摘要按 `buckets.items` 计数并保留分段、指标和位置排行；时间对比复用既有同表集和周分段计算 `periodComparisons`，不足完整可比周不计算比例。沿用既有补数规则，将 `dataProvenance` 同时交给卡片和模型，不改变采样或总量算法。固定3381仅替换原运行包中的三个能耗相关类及公司指引，运行配置22只更新能耗段落，Node3382、模型、凭据与其他设置不变。前端371项、186文件边界及微信编译通过；后端737项（708通过、29跳过）通过，明确排除原有一个视频回放失败。真实小程序结果及未验边界见[AG-080验证记录](../mp/.scratch/huly-test-execution/evidence/AG-080/20261109-fix-verification.json)。
@@ -71,6 +73,7 @@ docker compose --env-file /dev/null -f compose.yaml up -d mysql redis
 - 密码只经 `var/config/infrastructure/local/mysql-password`／`mysql-root-password`（业务栈 `var/config/infrastructure/business/` 同名文件）提供；`--env-file /dev/null` 固定禁用隐式 `.env` 发现，secrets 文件缺失时 compose 直接失败，无弱默认。
 - 已初始化卷的凭据以卷当初的初始化值为准：文件值不匹配时连接／健康检查显式失败，不自动重置或重建卷。仅首次新库在确认容器与卷归属本项目后执行 `up -d`。
 - 业务预览栈单独执行：`docker compose --env-file /dev/null -f compose.business-preview.yaml …`（`127.0.0.1:3338`／`6398`，独立命名卷，凭据不轮换）。
+- 两套开发MySQL均以 `--skip-log-bin` 启动：上游数据是可重建的本地读取副本，无实际复制／订阅用途时不保留binlog；正常事务、redo／undo及任务等记录仍持久化。现存历史容器已在原挂载上通过 `/etc/mysql/conf.d/99-iot-no-binlog.cnf` 生效，后续按仓内Compose重建也保持禁用。已有日志须通过MySQL管理操作清理，不能直接删数据文件；[实施与实测](.scratch/sync-storage-governance/README.md)。
 - 原只读上游探针条目（`upstream-probe`）随 `tools/` 退役；其历史观察保留在[本地后端准备记录](docs/local-backend-preparation.md)。
 
 Java 构建、测试、启动和本地 healthz 验证命令见 [AGENTS.md](./AGENTS.md)。独立 sidecar 的安装、构建、启动和私有 HTTP contract 见 [agent-sidecar/README.md](./agent-sidecar/README.md)。
